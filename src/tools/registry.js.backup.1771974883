@@ -755,63 +755,12 @@ export class ToolRegistry {
   // ─── Private ──────────────────────────────────────────
 
   async _connectServer(name, serverConf) {
-    // Substitute placeholders in args (same logic as enablePreset)
-    const workspace = this.config._dir ? `${this.config._dir}/workspace` : '.';
-    if (serverConf.args) {
-      serverConf.args = serverConf.args.map(a => {
-        if (a === '{workspace}') return workspace;
-        if (a === '{connection_string}') return '';
-        if (a === '{db_path}') return '';
-        return a;
-      });
-    }
-
     const client = new MCPClient({ name, ...serverConf });
     const tools = await client.connect();
     this._clients.set(name, client);
     for (const tool of tools) {
       this._tools.set(`${name}__${tool.name}`, { tool, client });
     }
-  }
-
-  /**
-   * Register a skill-based tool from an agent's skill definition.
-   * Supports both:
-   *   registerSkillTool(agentName, skillName, parsedSkill, toolDef)
-   * and legacy:
-   *   registerSkillTool(skillName, parsedSkill, toolDef)
-   */
-  registerSkillTool(agentName, skillName, parsedSkill, toolDef) {
-    // Backward compatibility with older 3-arg call sites.
-    if (toolDef === undefined) {
-      toolDef = parsedSkill;
-      parsedSkill = skillName;
-      skillName = agentName;
-      agentName = parsedSkill?.agentName || 'shared';
-    }
-
-    if (!toolDef?.name || !parsedSkill?.baseUrl) {
-      return;
-    }
-
-    const fullName = `${agentName}__${skillName}__${toolDef.name}`;
-
-    const preset = {
-      name: `skill:${skillName}`,
-      type: 'api',
-      baseUrl: parsedSkill.baseUrl,
-      headers: parsedSkill.headers || {},
-      secretKey: parsedSkill.secretKey || null
-    };
-
-    const entry = {
-      preset,
-      toolDef,
-      skill: parsedSkill
-    };
-
-    this._apiTools.set(fullName, entry);
-    console.log(`[ToolRegistry] Registered skill tool: ${fullName}`);
   }
 
   async _registerAPITools(presetName, preset) {
@@ -821,11 +770,71 @@ export class ToolRegistry {
     }
   }
 
+
+  /**
+   * Register an agent skill as an API tool
+   */
+  registerSkill(skill) {
+    const toolDef = {
+      name: skill.name,
+      description: skill.description || `Agent skill: ${skill.name}`,
+      inputSchema: {
+        type: 'object',
+        properties: {
+          method: { type: 'string', description: 'HTTP method (GET/POST/PUT/DELETE)' },
+          path: { type: 'string', description: 'API endpoint path' },
+          body: { type: 'object', description: 'Request body (for POST/PUT)' }
+        },
+        required: ['method', 'path']
+      }
+    };
+
+    const preset = {
+      name: `skill:${skill.agent}`,
+      type: 'api',
+      skill: skill
+    };
+
+    const fullName = `${skill.agent}__${skill.name}`;
+    this._apiTools.set(fullName, { preset, toolDef });
+  }
+
   async _executeAPITool(preset, toolDef, args) {
     const apiKey = preset.secretKey ? await this.secrets.get(preset.secretKey) : null;
     const toolName = toolDef.name;
 
     try {
+      if (preset.skill) {
+        const skill = preset.skill;
+        const command = { method: args.method || 'GET', path: args.path || '/', body: args.body };
+        const targetUrl = `${skill.baseUrl}${command.path}`;
+        const headers = {};
+        for (const [key, value] of Object.entries(skill.headers || {})) {
+          if (value.startsWith('{{secrets.') && value.endsWith('}}')) {
+            const secretKey = value.slice(11, -2);
+            headers[key] = await this.secrets.get(secretKey);
+          } else {
+            headers[key] = value;
+          }
+        }
+        if (command.body !== undefined && !headers['Content-Type']) {
+          headers['Content-Type'] = 'application/json';
+        }
+        const res = await fetch(targetUrl, {
+          method: command.method, headers,
+          body: command.body !== undefined ? JSON.stringify(command.body) : undefined,
+          signal: AbortSignal.timeout(20000)
+        });
+        const contentType = (res.headers.get('content-type') || '').toLowerCase();
+        const isJson = contentType.includes('application/json');
+        const body = isJson ? await res.json() : await res.text();
+        if (!res.ok) {
+          const preview = typeof body === 'string' ? body.slice(0, 500) : JSON.stringify(body).slice(0, 500);
+          throw new Error(`HTTP ${res.status} from ${new URL(targetUrl).hostname}: ${preview}`);
+        }
+        return typeof body === 'string' ? body : JSON.stringify(body, null, 2);
+      }
+
       // ── Google Places ───────────────────────────────────
       if (preset.name === 'Google Places') {
         if (toolName === 'search_places') {

@@ -8,7 +8,6 @@
 import { readdirSync, existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { log } from '../core/logger.js';
-import { parseSkill, skillToTools, executeSkillTool } from './skill-parser.js';
 
 export class AgentRegistry {
   constructor(config, services) {
@@ -187,7 +186,7 @@ export class Agent {
       } catch { /* corrupt aid.json — non-fatal */ }
     }
 
-    // Load skills and register as executable tools
+    // Load skills
     const skillsDir = join(this.dir, 'skills');
     if (existsSync(skillsDir)) {
       this.skills = readdirSync(skillsDir)
@@ -196,20 +195,6 @@ export class Agent {
           name: f.replace('.md', ''),
           content: readFileSync(join(skillsDir, f), 'utf-8')
         }));
-
-      // Parse skills into executable tools and register them
-      if (this.services.toolRegistry && this.services.secrets) {
-        for (const skill of this.skills) {
-          const parsed = parseSkill(skill.name, skill.content, this.services.secrets);
-          if (parsed) {
-            const tools = skillToTools(parsed);
-            for (const tool of tools) {
-              this.services.toolRegistry.registerSkillTool(skill.name, parsed, tool);
-            }
-            log.debug(`Skill [${skill.name}]: registered ${tools.length} tools`);
-          }
-        }
-      }
     }
   }
 

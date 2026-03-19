@@ -25,6 +25,9 @@ import { getDb, closeDb } from './core/database.js';
 import { DeliveryQueue } from './core/delivery-queue.js';
 import { CompletionCache } from './core/completion-cache.js';
 import { ExecApprovals } from './security/approvals.js';
+import ApprovalGates from './security/approvalGates.js';
+import RateLimiter from './security/rateLimiter.js';
+import ContentQueue from './security/contentQueue.js';
 import { banner } from './cli/brand.js';
 import { log } from './core/logger.js';
 import { writeFileSync, unlinkSync } from 'fs';
@@ -265,10 +268,22 @@ class QuantumClaw {
         }
       });
 
+      // AGEX Security Stack
+      const approvalGate = new ApprovalGates('charlie', join(this.config._dir, 'workspace'));
+      const rateLimiter = new RateLimiter('charlie', join(this.config._dir, 'workspace'), {
+        stripe: 100,
+        ghl: 200,
+        'n8n-router': 50
+      });
+      const contentQueue = new ContentQueue('charlie', join(this.config._dir, 'workspace'));
+
       this.toolExecutor = new ToolExecutor(this.router, this.tools, {
         requireApproval: this.config.tools?.requireApproval || ['shell', 'file_write'],
+        approvalGate,
+        rateLimiter,
+        contentQueue,
         onToolCall: (call) => {
-          log.debug(`Tool call: ${call.name}(${JSON.stringify(call.args).slice(0, 100)})`);
+          log.debug(`Tool call: ${call.name}(${JSON.stringify(call.args).slice(0, 100)}`);
           this.audit.log('tool', call.name, JSON.stringify(call.args).slice(0, 200));
         },
       });
@@ -287,6 +302,7 @@ class QuantumClaw {
         memory: this.memory,
         router: this.router,
         skills: this.skills,
+        toolRegistry: this.tools,
         trustKernel: this.trustKernel,
         audit: this.audit,
         secrets: this.credentials,
@@ -321,7 +337,7 @@ class QuantumClaw {
 
     // ── Layer 6: Channels (non-fatal, dashboard is the fallback) ──
     try {
-      this.channels = new ChannelManager(this.config, this.agents, this.credentials);
+      this.channels = new ChannelManager(this.config, this.agents, this.credentials, this.approvals);
       await this.channels.startAll();
     } catch (err) {
       log.warn(`Channel startup failed: ${err.message} — dashboard still available`);

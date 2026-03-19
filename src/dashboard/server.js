@@ -111,13 +111,17 @@ export class DashboardServer {
     // Create HTTP server
     this.server = createServer(this.app);
 
-    // WebSocket for real-time chat
-    this.wss = new WebSocketServer({ server: this.server, path: '/ws' });
-    this._setupWebSocket();
-
     // Find available port
     const actualPort = await this._listen(host, port);
     this.actualPort = actualPort;
+
+    // WebSocket for real-time chat (initialise after successful bind)
+    this.wss = new WebSocketServer({ server: this.server, path: '/ws' });
+    this.wss.on('error', (err) => {
+      log.warn(`Dashboard WebSocket error: ${err.message}`);
+    });
+    this._setupWebSocket();
+
     const localHost = (host === '0.0.0.0' || host === '127.0.0.1') ? 'localhost' : host;
     const localUrl = `http://${localHost}:${actualPort}`;
 
