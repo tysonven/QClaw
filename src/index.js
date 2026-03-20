@@ -378,7 +378,7 @@ class QuantumClaw {
             const cmd = platform === 'win32' ? `start "" "${dashUrl}"`
                       : platform === 'darwin' ? `open "${dashUrl}"`
                       : `xdg-open "${dashUrl}" 2>/dev/null || true`;
-            exec(cmd);
+            // exec(cmd); // disabled — auto-open causes multiple tabs
           } catch { /* non-fatal */ }
         }
 
