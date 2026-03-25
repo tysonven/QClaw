@@ -165,11 +165,13 @@ export function skillToTools(skill) {
 
     const toolName = `${skill.name}__${methodVerb}${pathSlug ? '_' + pathSlug : ''}`;
 
-    // Extract path parameters (e.g. {{customer_id}})
+    // Extract path parameters (e.g. {{customer_id}}) — skip {{secrets.*}} which are resolved at runtime
     const pathParams = [];
     const paramMatches = endpoint.path.matchAll(/\{\{([^}]+)\}\}/g);
     for (const match of paramMatches) {
-      pathParams.push(match[1]);
+      if (!match[1].startsWith('secrets.')) {
+        pathParams.push(match[1]);
+      }
     }
 
     // Build input schema
