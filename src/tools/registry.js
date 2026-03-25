@@ -1147,8 +1147,13 @@ export class ToolRegistry {
         const res = await fetch(fetchUrl, { method, headers, body, signal: AbortSignal.timeout(15000) });
         const text = await res.text();
         if (!res.ok) return `${preset.name} error ${res.status}: ${text.slice(0, 500)}`;
-        try { return JSON.stringify(JSON.parse(text), null, 2).slice(0, 4000); }
-        catch { return text.slice(0, 4000); }
+        try {
+          const json = JSON.parse(text);
+          // Array-heavy responses (e.g. contacts, invoices): compact JSON to fit more records
+          const topArrayKey = Object.keys(json).find(k => Array.isArray(json[k]));
+          if (topArrayKey) return JSON.stringify(json).slice(0, 8000);
+          return JSON.stringify(json, null, 2).slice(0, 8000);
+        } catch { return text.slice(0, 8000); }
       }
       return `API tool ${toolName} not implemented for ${preset.name}`;
     } catch (err) {
