@@ -1127,7 +1127,15 @@ export class ToolRegistry {
       if (preset.name?.startsWith('skill:')) {
         const endpoint = toolDef.endpoint || toolDef.path || '';
         const method = toolDef.method || 'GET';
-        const url = `${preset.baseUrl}${endpoint}`;
+        let url = `${preset.baseUrl}${endpoint}`;
+
+        // Resolve {{secrets.key}} patterns in endpoint URL (e.g. locationId query params)
+        const urlSecretMatches = url.matchAll(/\{\{secrets\.([^}]+)\}\}/g);
+        for (const match of urlSecretMatches) {
+          const val = await this.secrets.get(match[1]);
+          url = url.replace(match[0], val || '');
+        }
+
         const headers = {};
 
         // Resolve all headers — replace {{secrets.key}} with actual secret values
