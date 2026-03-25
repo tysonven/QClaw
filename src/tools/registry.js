@@ -1158,10 +1158,17 @@ export class ToolRegistry {
         let fetchUrl = url;
         let body = undefined;
         if (method === 'GET' && args && Object.keys(args).length > 0) {
-          const params = new URLSearchParams(args);
-          // Append with & if URL already has query params, otherwise ?
-          const sep = url.includes('?') ? '&' : '?';
-          fetchUrl = `${url}${sep}${params}`;
+          // Strip params already present in the URL to avoid duplicates (e.g. limit)
+          const existingUrl = new URL(url, 'http://placeholder');
+          const extra = {};
+          for (const [k, v] of Object.entries(args)) {
+            if (!existingUrl.searchParams.has(k)) extra[k] = v;
+          }
+          if (Object.keys(extra).length > 0) {
+            const params = new URLSearchParams(extra);
+            const sep = url.includes('?') ? '&' : '?';
+            fetchUrl = `${url}${sep}${params}`;
+          }
         } else if (method !== 'GET' && args) {
           body = JSON.stringify(args);
           headers['Content-Type'] = 'application/json';
