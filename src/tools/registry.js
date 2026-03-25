@@ -1094,6 +1094,41 @@ export class ToolRegistry {
         return res.ok ? `Webhook triggered. Response: ${text.slice(0, 2000)}` : `Webhook error ${res.status}: ${text.slice(0, 500)}`;
       }
 
+      // ── Generic Skill HTTP Executor ─────────────────
+      if (preset.name?.startsWith('skill:')) {
+        const endpoint = toolDef.endpoint || toolDef.path || '';
+        const method = toolDef.method || 'GET';
+    {};
+        // Resolve all headers — replace {{secrets.key}} with actual secret values
+        for (const [k, v] of Object.entries(preset.headers || {})) {
+          if (v && v.includes('{{secrets.')) {
+            const secretKey = v.match(/\{\{secrets\.([^}]+)\}\}/)?.[1];
+            if (secretKey) {
+              const val = await this.secrets.get(secretKey);
+              headers[k] = v.replace(`{{secrets.${secretKey}}}`, val || '');
+            } else {
+              headers[k] = v;
+            }
+          } else {
+            headers[k] = v;
+          }
+        }
+        // Build query params or body
+        const isGet = method === 'GET';
+        let fetchUrl = url;
+        let body = undefined;
+        if (isGet && args && Object.keys(args).leew URLSearchParams(args);
+          fetchUrl = `${url}?${params}`;
+        } else if (!isGet && args) {
+          body = JSON.stringify(args);
+          headers['Content-Type'] = 'application/json';
+        }
+        const res = await fetch(fetchUrl, { method, headers, body, signal: AbortSignal.timeout(15000) });
+        const text = await res.text();
+        if (!res.ok) return `${preset.name} error ${res.status}: ${text.slice(0, 500)}`;
+        try { return JSON.stringify(JSON.parse(text), null, 2).slice(0, 4000); }
+        catch { return text.slice(0, 4000); }
+      }
       return `API tool ${toolName} not implemented for ${preset.name}`;
     } catch (err) {
       return `API error (${preset.name}/${toolName}): ${err.message}`;
