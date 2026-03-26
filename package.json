@@ -50,7 +50,7 @@
     "ws": "^8.18.0"
   },
   "optionalDependencies": {
-    "@agexhq/core": "^1.0.0",
+    "@agexhq/core": "file:packages/agex-core",
     "@agexhq/hub-lite": "^1.0.0",
     "@agexhq/sdk": "^1.0.0",
     "@agexhq/store": "^1.1.0",
