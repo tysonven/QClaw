@@ -16,6 +16,7 @@ jobs:
           key: ${{ secrets.SERVER_SSH_KEY }}
           script: |
             cd ~/QClaw
+            git stash
             git pull origin main
             npm install --ignore-scripts
             pm2 restart quantumclaw
