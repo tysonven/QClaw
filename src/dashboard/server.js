@@ -12,6 +12,7 @@ import { log } from '../core/logger.js';
 import { readFileSync, existsSync, readdirSync, unlinkSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { setupManusWebhook } from './webhook-manus.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -57,6 +58,9 @@ export class DashboardServer {
 
     // API routes
     this._setupAPI();
+
+    // Manus webhook handler
+    try { setupManusWebhook(this); } catch (err) { log.debug(`Manus webhook: ${err.message}`); }
 
     // Serve dashboard UI
     this.app.get('/', (req, res) => {
@@ -750,6 +754,184 @@ export class DashboardServer {
       } catch (err) {
         res.status(500).json({ error: err.message });
       }
+    });
+
+    // ─── Tools Management ────────────────────────────────────
+    this.app.get('/api/tools', (req, res) => {
+      try {
+        const tools = this.qclaw.tools?.listTools?.() || [];
+        res.json(tools);
+      } catch { res.json([]); }
+    });
+
+    this.app.get('/api/tools/log', (req, res) => {
+      try {
+        const logs = this.qclaw.audit?.recent?.(50)?.filter(e => e.action === 'tool') || [];
+        res.json(logs);
+      } catch { res.json([]); }
+    });
+
+    // ─── Agent Management (delete + SOUL editor) ────────────
+    this.app.delete('/api/agents/:name', async (req, res) => {
+      try {
+        const name = req.params.name;
+        const { rmSync, existsSync } = await import('fs');
+        const agentDir = join(this.qclaw.config._dir, 'workspace', 'agents', name);
+        if (!existsSync(agentDir)) return res.status(404).json({ error: 'Agent not found' });
+        rmSync(agentDir, { recursive: true, force: true });
+        if (this.qclaw.agents?.agents) this.qclaw.agents.agents.delete(name);
+        res.json({ ok: true, message: `Agent "${name}" deleted` });
+      } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+
+    this.app.get('/api/agents/:name/soul', async (req, res) => {
+      try {
+        const name = req.params.name;
+        const { readFileSync, existsSync } = await import('fs');
+        const soulPath = join(this.qclaw.config._dir, 'workspace', 'agents', name, 'SOUL.md');
+        if (!existsSync(soulPath)) return res.status(404).json({ error: 'SOUL.md not found' });
+        res.json({ content: readFileSync(soulPath, 'utf-8') });
+      } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+
+    this.app.put('/api/agents/:name/soul', async (req, res) => {
+      try {
+        const name = req.params.name;
+        const { content } = req.body;
+        if (!content) return res.status(400).json({ error: 'content required' });
+        const { writeFileSync, existsSync } = await import('fs');
+        const soulPath = join(this.qclaw.config._dir, 'workspace', 'agents', name, 'SOUL.md');
+        if (!existsSync(join(this.qclaw.config._dir, 'workspace', 'agents', name))) {
+          return res.status(404).json({ error: 'Agent not found' });
+        }
+        writeFileSync(soulPath, content);
+        res.json({ ok: true, message: 'SOUL.md updated. Restart agent to apply.' });
+      } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+
+    // ─── Knowledge Graph Visualization ──────────────────────
+    this.app.get('/api/memory/graph', async (req, res) => {
+      try {
+        if (!this.qclaw.memory?.getGraph) return res.json({ nodes: [], edges: [] });
+        const graph = await this.qclaw.memory.getGraph();
+        res.json(graph);
+      } catch (err) { res.json({ nodes: [], edges: [], error: err.message }); }
+    });
+
+    this.app.post('/api/memory/remember', async (req, res) => {
+      try {
+        const { fact } = req.body;
+        if (!fact) return res.status(400).json({ error: 'fact required' });
+        if (this.qclaw.memory?.knowledge) {
+          this.qclaw.memory.knowledge.add('semantic', fact, { source: 'dashboard', confidence: 1.0 });
+          res.json({ ok: true });
+        } else {
+          res.status(500).json({ error: 'Knowledge store not initialized' });
+        }
+      } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+
+    this.app.get('/api/memory/export', async (req, res) => {
+      try {
+        const knowledge = this.qclaw.memory?.knowledge;
+        if (!knowledge) return res.json({ semantic: [], episodic: [], procedural: [] });
+        res.json({
+          semantic: knowledge.getByType('semantic', 500),
+          episodic: knowledge.getByType('episodic', 500),
+          procedural: knowledge.getByType('procedural', 500),
+          stats: knowledge.stats(),
+          exportedAt: new Date().toISOString(),
+        });
+      } catch (err) { res.json({ error: err.message }); }
+    });
+
+    // ─── Cognee Memory Search Proxy ──────────────────────────
+    this.app.post('/api/memory/cognee-search', async (req, res) => {
+      try {
+        const { query } = req.body;
+        if (!query) return res.status(400).json({ error: 'query required' });
+        const cogneeRes = await fetch('http://localhost:8000/api/v1/search', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query }),
+          signal: AbortSignal.timeout(10000),
+        });
+        const data = await cogneeRes.json();
+        res.json(data);
+      } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+
+    // ─── Live Canvas ──────────────────────────────────────────
+    this.app.post('/api/canvas/render', (req, res) => {
+      try {
+        const { format, title, content, id } = req.body;
+        if (!content) return res.status(400).json({ error: 'content required' });
+        const validFormats = ['html', 'markdown', 'mermaid', 'svg', 'image', 'text'];
+        const fmt = validFormats.includes(format) ? format : 'html';
+        this.broadcast({
+          type: 'canvas_render',
+          format: fmt,
+          title: title || 'Artifact',
+          content,
+          id: id || `canvas-${Date.now()}`,
+        });
+        res.json({ ok: true, format: fmt });
+      } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+
+    // ─── Voice Status ────────────────────────────────────────
+    this.app.get('/api/voice/status', async (req, res) => {
+      try {
+        const { VoiceEngine } = await import('../core/voice.js');
+        const voice = new VoiceEngine(this.qclaw.credentials);
+        const status = await voice.status();
+        res.json(status);
+      } catch { res.json({ stt: [], tts: [], ready: false }); }
+    });
+
+    // ─── Proactive Push ──────────────────────────────────────
+    this.app.post('/api/push', async (req, res) => {
+      try {
+        const { message } = req.body;
+        if (!message) return res.status(400).json({ error: 'message required' });
+        if (!this.qclaw.heartbeat?.pushToUser) {
+          return res.status(500).json({ error: 'Heartbeat not initialized' });
+        }
+        const sent = await this.qclaw.heartbeat.pushToUser(message, { source: 'dashboard' });
+        res.json({ ok: true, sent });
+      } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+
+    // ─── Scheduled Tasks ────────────────────────────────────
+    this.app.get('/api/scheduled', (req, res) => {
+      const tasks = this.qclaw.config.heartbeat?.scheduled || [];
+      res.json(tasks);
+    });
+
+    this.app.post('/api/scheduled', async (req, res) => {
+      try {
+        const { name, prompt, schedule, notify, agent, channel, userId } = req.body;
+        if (!prompt || !schedule) return res.status(400).json({ error: 'prompt and schedule required' });
+        if (!this.qclaw.config.heartbeat) this.qclaw.config.heartbeat = {};
+        if (!this.qclaw.config.heartbeat.scheduled) this.qclaw.config.heartbeat.scheduled = [];
+        const task = { name: name || prompt.slice(0, 30), prompt, schedule, notify: notify !== false, agent: agent || null, channel: channel || null, userId: userId || null };
+        this.qclaw.config.heartbeat.scheduled.push(task);
+        const { saveConfig } = await import('../core/config.js');
+        saveConfig(this.qclaw.config);
+        res.json({ ok: true, task, message: 'Task saved. Restart agent to activate.' });
+      } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+
+    this.app.delete('/api/scheduled/:index', async (req, res) => {
+      try {
+        const idx = parseInt(req.params.index);
+        const tasks = this.qclaw.config.heartbeat?.scheduled || [];
+        if (idx < 0 || idx >= tasks.length) return res.status(404).json({ error: 'Task not found' });
+        tasks.splice(idx, 1);
+        const { saveConfig } = await import('../core/config.js');
+        saveConfig(this.qclaw.config);
+        res.json({ ok: true, message: 'Task removed. Restart agent to apply.' });
+      } catch (err) { res.status(500).json({ error: err.message }); }
     });
 
   }

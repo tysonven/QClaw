@@ -172,6 +172,11 @@
     <div class="nav-sep"></div>
     <div class="nav-item" data-page="agents">🤖<span class="tip">Agents</span></div>
     <div class="nav-item" data-page="skills">🔧<span class="tip">Skills</span></div>
+    <div class="nav-item" data-page="tools">⚡<span class="tip">Tools</span></div>
+    <div class="nav-item" data-page="scheduled">⏰<span class="tip">Tasks</span></div>
+    <div class="nav-item" data-page="memory">🧠<span class="tip">Memory</span></div>
+    <div class="nav-sep"></div>
+    <div class="nav-item" data-page="secrets">🔑<span class="tip">API Keys</span></div>
     <div class="nav-sep"></div>
     <div class="nav-item" data-page="config">⚙️<span class="tip">Config</span></div>
     <div class="nav-item" data-page="logs">📋<span class="tip">Logs</span></div>
@@ -359,6 +364,81 @@
         <div class="log-viewer" id="log-viewer">Loading...</div>
       </div>
     </div>
+
+    <!-- TOOLS -->
+    <div class="page" id="page-tools">
+      <div class="page-scroll">
+        <div class="section-title">Built-in &amp; Connected Tools</div>
+        <div class="section-sub">Tools give your agent capabilities — shell, file access, web fetching, and more. All tool calls pass through the Trust Kernel.</div>
+        <div class="table-wrap"><table><thead><tr><th>Tool</th><th>Description</th><th>Source</th></tr></thead><tbody id="tools-table"></tbody></table></div>
+        <div class="section-title" style="margin-top:16px">Voice Status</div>
+        <div class="cards" id="voice-cards"></div>
+      </div>
+    </div>
+
+    <!-- SCHEDULED TASKS -->
+    <div class="page" id="page-scheduled">
+      <div class="page-scroll">
+        <div class="section-title">Scheduled Tasks <div class="section-actions"><button class="btn btn-sm" onclick="openModal('task-modal')">+ Add Task</button></div></div>
+        <div class="section-sub">Scheduled tasks run automatically. The agent processes the prompt and pushes results to connected channels. <b>Restart required</b> after changes.</div>
+        <div class="table-wrap"><table><thead><tr><th>Name</th><th>Prompt</th><th>Schedule</th><th>Channel</th><th></th></tr></thead><tbody id="sched-table"></tbody></table></div>
+      </div>
+    </div>
+
+    <!-- MEMORY -->
+    <div class="page" id="page-memory">
+      <div class="page-scroll">
+        <div class="section-title">Knowledge &amp; Memory <div class="section-actions"><button class="btn btn-sm" onclick="loadMemGraph()" title="Show graph">🕸️ Graph</button><button class="btn btn-sm" onclick="exportMemory()" title="Export">📥 Export</button></div></div>
+        <div class="section-sub">Memory works in 3 layers: <b>Vector</b> (TF-IDF), <b>Knowledge Store</b> (facts/preferences), <b>Knowledge Graph</b> (Cognee entity-relationships).</div>
+        <div class="cards" id="mem-cards"></div>
+        <div class="section-title">Remember / Forget</div>
+        <div style="display:flex;gap:6px;margin-bottom:14px"><input class="input" id="mem-add" placeholder="Teach something: 'User's favourite colour is purple'" style="flex:1"><button class="btn" onclick="rememberFact()">Remember</button></div>
+        <div class="section-title">Search</div>
+        <div style="display:flex;gap:6px;margin-bottom:14px"><input class="input" id="mem-q" placeholder="Search knowledge graph..." style="flex:1" onkeydown="if(event.key==='Enter')searchMem()"><button class="btn" onclick="searchMem()">Search</button></div>
+        <div id="mem-res" style="font-size:.8rem;color:var(--text-dim)"></div>
+        <div id="mem-graph" style="display:none;border:1px solid var(--border);border-radius:8px;height:400px;margin-top:14px;background:var(--bg);position:relative"><canvas id="graph-canvas" style="width:100%;height:100%"></canvas><button class="btn btn-sm" style="position:absolute;top:6px;right:6px" onclick="document.getElementById('mem-graph').style.display='none'">✕</button></div>
+      </div>
+    </div>
+
+    <!-- API KEYS / SECRETS -->
+    <div class="page" id="page-secrets">
+      <div class="page-scroll">
+        <div class="section-title">API Keys &amp; Secrets <div class="section-actions"><button class="btn btn-sm" onclick="openModal('key-modal')">+ Add Key</button></div></div>
+        <div class="section-sub">Keys are encrypted with <b>AES-256-GCM</b> in <code>~/.quantumclaw/secrets.enc</code>. They never leave your device.</div>
+        <div class="table-wrap"><table><thead><tr><th>Service</th><th>Key</th><th>Status</th><th></th></tr></thead><tbody id="sec-table"></tbody></table></div>
+      </div>
+    </div>
+
+    <!-- CANVAS PANE (in Chat) handled via JS -->
+  </div>
+
+  <!-- Task Modal -->
+  <div class="modal-bg" id="task-modal">
+    <div class="modal">
+      <h3>Add Scheduled Task</h3>
+      <div class="fg"><label>Name</label><input class="input" id="task-name" placeholder="e.g. morning-brief"></div>
+      <div class="fg"><label>Prompt</label><textarea class="input" id="task-prompt" placeholder="What should the agent do?" rows="3"></textarea></div>
+      <div class="fg"><label>Schedule</label><select class="input" id="task-sched"><option value="daily-at-08:00">Daily at 08:00</option><option value="daily-at-09:00">Daily at 09:00</option><option value="daily-at-18:00">Daily at 18:00</option><option value="every-hour">Every hour</option><option value="every-day">Every 24h</option></select></div>
+      <div class="fg"><label>Channel</label><select class="input" id="task-channel"><option value="">Dashboard only</option><option value="telegram">Telegram</option></select></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
+        <button class="btn btn-sm" onclick="closeModal('task-modal')">Cancel</button>
+        <button class="btn btn-sm" style="background:var(--accent);color:#fff" onclick="addTask()">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- API Key Modal -->
+  <div class="modal-bg" id="key-modal">
+    <div class="modal">
+      <h3>Add API Key</h3>
+      <div class="fg"><label>Service</label><select class="input" id="k-sel" onchange="document.getElementById('k-cw').style.display=this.value==='custom'?'block':'none'"><option value="anthropic_api_key">Anthropic (Claude)</option><option value="openai_api_key">OpenAI</option><option value="openrouter_api_key">OpenRouter</option><option value="groq_api_key">Groq</option><option value="google_api_key">Google AI</option><option value="xai_api_key">xAI (Grok)</option><option value="mistral_api_key">Mistral</option><option value="together_api_key">Together AI</option><option value="telegram_bot_token">Telegram</option><option value="discord_bot_token">Discord</option><option value="elevenlabs_api_key">ElevenLabs</option><option value="deepgram_api_key">Deepgram</option><option value="stripe_api_key">Stripe</option><option value="github_api_key">GitHub</option><option value="ghl_api_key">GoHighLevel</option><option value="ghl_location_id">GHL Location ID</option><option value="embedding_api_key">Embeddings</option><option value="cognee_token">Cognee</option><option value="cloudflare_tunnel_token">Cloudflare</option><option value="agex_private_key">AGEX Key</option><option value="custom">Custom...</option></select></div>
+      <div class="fg" id="k-cw" style="display:none"><label>Custom key name</label><input class="input" id="k-cn" placeholder="e.g. my_service_token"></div>
+      <div class="fg"><label>Value</label><input class="input" id="k-val" type="password" placeholder="Paste your key here"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
+        <button class="btn btn-sm" onclick="closeModal('key-modal')">Cancel</button>
+        <button class="btn btn-sm" style="background:var(--accent);color:#fff" onclick="doSaveKey()">Save</button>
+      </div>
+    </div>
   </div>
 
   <!-- Spawn Agent Modal -->
@@ -423,7 +503,8 @@ async function api(path, opts) {
 }
 
 /* ─── Navigation ──────────────────────────────────────── */
-const TITLES = { chat:'Chat', overview:'Overview', channels:'Channels', usage:'Usage & Costs', agents:'Agents', skills:'Skills', config:'Config', logs:'Logs' };
+const TITLES = { chat:'Chat', overview:'Overview', channels:'Channels', usage:'Usage & Costs', agents:'Agents', skills:'Skills', tools:'Tools', scheduled:'Scheduled Tasks', memory:'Memory', secrets:'API Keys', config:'Config', logs:'Logs' };
+const PAGE_LOADERS = { overview:loadOverview, channels:loadChannels, usage:loadUsage, agents:loadAgents, skills:loadSkills, tools:()=>{loadTools();loadVoiceStatus()}, scheduled:loadScheduled, memory:loadMem, secrets:loadSec, config:loadConfig, logs:loadLogs };
 document.querySelectorAll('.nav-item[data-page]').forEach(el => {
   el.addEventListener('click', () => {
     document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
@@ -432,13 +513,7 @@ document.querySelectorAll('.nav-item[data-page]').forEach(el => {
     const page = el.dataset.page;
     $('page-' + page).classList.add('active');
     $('topbar-title').textContent = TITLES[page] || page;
-    if (page === 'overview') loadOverview();
-    if (page === 'channels') loadChannels();
-    if (page === 'usage') loadUsage();
-    if (page === 'agents') loadAgents();
-    if (page === 'skills') loadSkills();
-    if (page === 'config') loadConfig();
-    if (page === 'logs') loadLogs();
+    if (PAGE_LOADERS[page]) PAGE_LOADERS[page]();
   });
 });
 
@@ -862,6 +937,136 @@ function card(label, value, sub) {
   return '<div class="card"><div class="card-label">' + label + '</div><div class="card-value">' + value + '</div>' + (sub ? '<div class="card-sub">' + sub + '</div>' : '') + '</div>';
 }
 function fmt(n) { return Number(n).toFixed(4); }
+
+/* ─── Tools Page ──────────────────────────────────────── */
+async function loadTools() {
+  try {
+    const r = await api('/api/tools'); const d = await r.json();
+    $('tools-table').innerHTML = (d||[]).map(t =>
+      '<tr><td><strong>' + esc(t.name) + '</strong></td><td style="font-size:.75rem;color:var(--text-dim)">' + esc(t.description||'') + '</td><td><span class="badge badge-' + (t.source==='built-in'?'green':'accent') + '">' + esc(t.source) + '</span></td></tr>'
+    ).join('') || '<tr><td colspan=3 style="color:var(--text-dim)">No tools registered</td></tr>';
+  } catch {}
+}
+async function loadVoiceStatus() {
+  try {
+    const r = await api('/api/voice/status'); const d = await r.json();
+    $('voice-cards').innerHTML = card('STT', d.stt?.length ? d.stt.join(', ') : 'None') + card('TTS', d.tts?.length ? d.tts.join(', ') : 'None') + card('Voice Ready', d.ready ? '✅ Yes' : '❌ No');
+  } catch {}
+}
+
+/* ─── Scheduled Tasks ─────────────────────────────────── */
+async function loadScheduled() {
+  try {
+    const r = await api('/api/scheduled'); const d = await r.json();
+    $('sched-table').innerHTML = (d||[]).map((t,i) =>
+      '<tr><td><strong>' + esc(t.name) + '</strong></td><td style="font-size:.75rem;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(t.prompt) + '</td><td><span class="badge badge-accent">' + esc(t.schedule) + '</span></td><td>' + (t.channel ? '📢 ' + esc(t.channel) : '🔇') + '</td><td><button class="btn btn-sm" style="color:var(--red)" onclick="deleteTask(' + i + ')">Remove</button></td></tr>'
+    ).join('') || '<tr><td colspan=5 style="color:var(--text-dim)">No scheduled tasks.</td></tr>';
+  } catch {}
+}
+async function addTask() {
+  const name = $('task-name').value.trim();
+  const prompt = $('task-prompt').value.trim();
+  const schedule = $('task-sched').value;
+  const channel = $('task-channel').value || null;
+  if (!prompt) { toast('Enter a prompt'); return; }
+  try {
+    const r = await api('/api/scheduled', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name,prompt,schedule,channel}) });
+    const d = await r.json();
+    if (d.ok) { toast('Task added — restart to activate'); closeModal('task-modal'); loadScheduled(); }
+    else toast(d.error || 'Failed');
+  } catch(e) { toast(e.message); }
+}
+async function deleteTask(idx) {
+  if (!confirm('Remove this task?')) return;
+  try {
+    const r = await api('/api/scheduled/' + idx, { method:'DELETE' });
+    if (r.ok) { toast('Task removed — restart to apply'); loadScheduled(); }
+  } catch(e) { toast(e.message); }
+}
+
+/* ─── Memory Page ─────────────────────────────────────── */
+async function loadMem() {
+  try {
+    const r = await api('/api/health'); const h = await r.json();
+    $('mem-cards').innerHTML = card('Graph', h.cognee ? 'Cognee' : 'Local', h.cognee ? 'Remote graph' : 'Vector + SQLite') + card('Vector', 'Active', 'TF-IDF similarity') + card('Knowledge', 'Active', 'Facts · preferences · episodic');
+  } catch {}
+}
+async function rememberFact() {
+  const fact = $('mem-add').value.trim();
+  if (!fact) { toast('Enter something to remember'); return; }
+  try {
+    const r = await api('/api/memory/remember', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({fact}) });
+    const d = await r.json();
+    if (d.ok) { toast('Remembered!'); $('mem-add').value = ''; loadMem(); }
+    else toast(d.error || 'Failed');
+  } catch(e) { toast(e.message); }
+}
+async function searchMem() {
+  const q = $('mem-q').value.trim();
+  if (!q) return;
+  const el = $('mem-res'); el.textContent = 'Searching...';
+  try {
+    const r = await api('/api/memory/search', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({query:q}) });
+    const d = await r.json();
+    const results = d.results || d;
+    if (!results?.length) { el.textContent = 'No results.'; return; }
+    el.innerHTML = (Array.isArray(results) ? results : []).map(x =>
+      '<div style="padding:6px;margin-bottom:6px;background:var(--bg-2);border-radius:5px;border:1px solid var(--border);font-size:.75rem">' + esc(x.content || x.text || JSON.stringify(x)) + '</div>'
+    ).join('');
+  } catch(e) { el.textContent = 'Error: ' + e.message; }
+}
+async function loadMemGraph() {
+  const el = $('mem-graph'); el.style.display = 'block';
+  try {
+    const r = await api('/api/memory/graph'); const d = await r.json();
+    const canvas = $('graph-canvas'); if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const W = canvas.parentElement.offsetWidth, H = canvas.parentElement.offsetHeight;
+    canvas.width = W; canvas.height = H;
+    const nodes = d.nodes || [], edges = d.edges || [];
+    if (!nodes.length) { ctx.fillStyle = '#666'; ctx.font = '14px Outfit'; ctx.textAlign = 'center'; ctx.fillText('No knowledge nodes yet', W/2, H/2); return; }
+    const colors = {semantic:'#9b59b6', episodic:'#3498db', procedural:'#2ecc71'};
+    nodes.forEach((n,i) => { const angle = (2*Math.PI*i)/nodes.length; n.x = W/2 + Math.cos(angle)*(Math.min(W,H)*0.35); n.y = H/2 + Math.sin(angle)*(Math.min(W,H)*0.35); });
+    ctx.clearRect(0,0,W,H);
+    edges.forEach(e => { const s = nodes.find(n=>n.id===e.source), t = nodes.find(n=>n.id===e.target); if(s&&t){ctx.strokeStyle='#444';ctx.lineWidth=0.5;ctx.beginPath();ctx.moveTo(s.x,s.y);ctx.lineTo(t.x,t.y);ctx.stroke()} });
+    nodes.forEach(n => { ctx.fillStyle=colors[n.type]||'#999';ctx.beginPath();ctx.arc(n.x,n.y,6,0,2*Math.PI);ctx.fill();ctx.fillStyle='#ccc';ctx.font='10px Outfit';ctx.textAlign='center';ctx.fillText(n.label.slice(0,25),n.x,n.y-10) });
+  } catch { el.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-dim)">Graph unavailable</div>'; }
+}
+async function exportMemory() {
+  try {
+    const r = await api('/api/memory/export'); const d = await r.json();
+    const blob = new Blob([JSON.stringify(d,null,2)], {type:'application/json'});
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+    a.download = 'quantumclaw-memory-' + new Date().toISOString().slice(0,10) + '.json'; a.click();
+    toast('Memory exported');
+  } catch(e) { toast(e.message); }
+}
+
+/* ─── API Keys / Secrets Page ─────────────────────────── */
+const KN={anthropic_api_key:'Anthropic',openai_api_key:'OpenAI',openrouter_api_key:'OpenRouter',groq_api_key:'Groq',google_api_key:'Google AI',xai_api_key:'xAI',mistral_api_key:'Mistral',together_api_key:'Together',telegram_bot_token:'Telegram',discord_bot_token:'Discord',elevenlabs_api_key:'ElevenLabs',deepgram_api_key:'Deepgram',stripe_api_key:'Stripe',github_api_key:'GitHub',ghl_api_key:'GoHighLevel',ghl_location_id:'GHL Location',embedding_api_key:'Embeddings',cognee_token:'Cognee',cloudflare_tunnel_token:'Cloudflare',agex_private_key:'AGEX'};
+const KO = Object.keys(KN);
+async function loadSec() {
+  try {
+    const r = await api('/api/secrets'); const data = await r.json();
+    const setKeys = new Set(Array.isArray(data) ? data.map(s => typeof s==='string'?s:s.key) : []);
+    const allKeys = [...KO]; if(Array.isArray(data)) data.forEach(s => { const k=typeof s==='string'?s:s.key; if(!allKeys.includes(k))allKeys.push(k); });
+    $('sec-table').innerHTML = allKeys.map(k => {
+      const has = setKeys.has(k);
+      return '<tr><td><strong>' + (KN[k]||k) + '</strong></td><td style="font-family:JetBrains Mono;font-size:.68rem;color:var(--text-dim)">' + esc(k) + '</td><td>' + (has ? '<span class="badge badge-green">Set</span>' : '<span class="badge" style="background:var(--bg-3);color:var(--text-xs)">Not set</span>') + '</td><td style="text-align:right">' + (has ? '<button class="btn btn-sm" style="color:var(--red)" onclick="delKey(\'' + k + '\')">Remove</button>' : '<button class="btn btn-sm" onclick="qKey(\'' + k + '\')">Add</button>') + '</td></tr>';
+    }).join('');
+  } catch(e) { $('sec-table').innerHTML = '<tr><td colspan=4 style="color:var(--red)">' + esc(e.message) + '</td></tr>'; }
+}
+function qKey(k) { $('k-sel').value = KO.includes(k) ? k : 'custom'; $('k-cw').style.display = KO.includes(k) ? 'none' : 'block'; if(!KO.includes(k)) $('k-cn').value = k; $('k-val').value = ''; openModal('key-modal'); }
+async function doSaveKey() {
+  let key = $('k-sel').value; if(key==='custom') key = $('k-cn').value.trim();
+  if(!key){toast('Select a service');return} const val=$('k-val').value.trim(); if(!val){toast('Enter a value');return}
+  try { const r=await api('/api/secrets',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key,value:val})}); if(r.ok){toast('Saved '+key);closeModal('key-modal');loadSec()}else toast((await r.json()).error||'Failed'); } catch(e){toast(e.message)}
+}
+async function delKey(k) { if(!confirm('Remove '+k+'?'))return; try{if((await api('/api/secrets/'+encodeURIComponent(k),{method:'DELETE'})).ok){toast('Removed');loadSec()}}catch{} }
+
+/* ─── Modal Helpers ───────────────────────────────────── */
+function openModal(id) { $(id).style.display = 'flex'; }
+function closeModal(id) { $(id).style.display = 'none'; }
 
 /* ─── Init ────────────────────────────────────────────── */
 connectWS();
