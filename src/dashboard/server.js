@@ -56,6 +56,9 @@ export class DashboardServer {
 
     this.app.use(express.json({ limit: '20mb' }));
 
+    // Serve agency character assets
+    this.app.use('/agency-assets', express.static(join(__dirname, 'agency-assets')));
+
     // API routes
     this._setupAPI();
 

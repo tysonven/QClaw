@@ -155,6 +155,25 @@
     .toast.ok{border-color:var(--green);color:var(--green)}.toast.err{border-color:var(--red);color:var(--red)}
     @keyframes toastIn{from{transform:translateY(20px);opacity:0}to{transform:translateY(0);opacity:1}}
 
+    /* Agency Room */
+    .agency-floor{flex:1;overflow-y:auto;background:#1a1035;background-image:
+      linear-gradient(rgba(255,255,255,.02) 1px,transparent 1px),
+      linear-gradient(90deg,rgba(255,255,255,.02) 1px,transparent 1px);
+      background-size:60px 60px;padding:40px 24px;display:flex;flex-direction:column;align-items:center;gap:32px}
+    .agency-row{display:flex;gap:24px;justify-content:center;flex-wrap:wrap}
+    .agency-row-center{justify-content:center}
+    .agency-desk{width:220px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.08);border-top:3px solid var(--agent-color);border-radius:12px;overflow:hidden;transition:transform .2s,box-shadow .2s}
+    .agency-desk:hover{transform:translateY(-4px);box-shadow:0 8px 32px rgba(0,0,0,.4)}
+    .desk-img-wrap{display:flex;justify-content:center;padding:16px 16px 0;background:linear-gradient(180deg,rgba(255,255,255,.03),transparent)}
+    .desk-img{height:200px;width:auto;object-fit:contain;mix-blend-mode:screen;filter:drop-shadow(0 4px 12px rgba(0,0,0,.5))}
+    .desk-surface{padding:16px;text-align:center;background:rgba(0,0,0,.2);border-top:1px solid rgba(255,255,255,.05)}
+    .desk-name{font-size:1.1rem;font-weight:700;letter-spacing:.08em;color:#fff}
+    .desk-role{font-size:.75rem;color:rgba(255,255,255,.5);margin:2px 0 10px}
+    .desk-pill{display:inline-block;font-size:.65rem;padding:2px 10px;border-radius:10px;font-weight:500;margin-bottom:12px}
+    .desk-btn{width:100%;padding:8px 0;border:none;border-radius:6px;cursor:pointer;font-family:Outfit;font-size:.8rem;font-weight:600;transition:filter .15s}
+    .desk-btn:hover{filter:brightness(1.15)}
+    @media(max-width:768px){.agency-desk{width:160px}.desk-img{height:140px}.desk-surface{padding:12px}}
+
     /* Responsive */
     @media(max-width:768px){.sidebar{width:48px}.thread-list{width:180px}.msg{max-width:90%}.cards{grid-template-columns:1fr 1fr}.config-key{min-width:120px}}
     @media(max-width:480px){.thread-list{display:none}.cards{grid-template-columns:1fr}}
@@ -175,6 +194,7 @@
     <div class="nav-item" data-page="tools">⚡<span class="tip">Tools</span></div>
     <div class="nav-item" data-page="scheduled">⏰<span class="tip">Tasks</span></div>
     <div class="nav-item" data-page="memory">🧠<span class="tip">Memory</span></div>
+    <div class="nav-item" data-page="agency">🎬<span class="tip">Agency</span></div>
     <div class="nav-sep"></div>
     <div class="nav-item" data-page="secrets">🔑<span class="tip">API Keys</span></div>
     <div class="nav-sep"></div>
@@ -409,6 +429,73 @@
       </div>
     </div>
 
+    <!-- Agency Room -->
+    <div class="page" id="page-agency">
+      <div class="agency-floor">
+        <div class="agency-row">
+          <div class="agency-desk" style="--agent-color:#e2c97e">
+            <div class="desk-img-wrap"><img src="/agency-assets/Rex.png" alt="Rex" class="desk-img"></div>
+            <div class="desk-surface">
+              <div class="desk-name">REX</div>
+              <div class="desk-role">Strategist</div>
+              <div class="desk-pill" style="background:#22c55e20;color:#22c55e">Ready</div>
+              <button class="desk-btn" style="background:#e2c97e;color:#1a1035" onclick="toast('Strategy builder coming soon','ok')">Build Strategy</button>
+            </div>
+          </div>
+          <div class="agency-desk" style="--agent-color:#60a5fa">
+            <div class="desk-img-wrap"><img src="/agency-assets/Scout.png" alt="Scout" class="desk-img"></div>
+            <div class="desk-surface">
+              <div class="desk-name">SCOUT</div>
+              <div class="desk-role">Researcher</div>
+              <div class="desk-pill" style="background:#22c55e20;color:#22c55e">Ready</div>
+              <button class="desk-btn" style="background:#60a5fa;color:#1a1035" onclick="openAgencyModal('scout')">Research Brand</button>
+            </div>
+          </div>
+          <div class="agency-desk" style="--agent-color:#f472b6">
+            <div class="desk-img-wrap"><img src="/agency-assets/Penny.png" alt="Penny" class="desk-img"></div>
+            <div class="desk-surface">
+              <div class="desk-name">PENNY</div>
+              <div class="desk-role">Copywriter</div>
+              <div class="desk-pill" style="background:#22c55e20;color:#22c55e">Ready</div>
+              <button class="desk-btn" style="background:#f472b6;color:#1a1035" onclick="openAgencyModal('penny')">Write Copy</button>
+            </div>
+          </div>
+        </div>
+        <div class="agency-row agency-row-center">
+          <div class="agency-desk" style="--agent-color:#a78bfa">
+            <div class="desk-img-wrap"><img src="/agency-assets/Frame.png" alt="Frame" class="desk-img"></div>
+            <div class="desk-surface">
+              <div class="desk-name">FRAME</div>
+              <div class="desk-role">Creative Director</div>
+              <div class="desk-pill" style="background:#22c55e20;color:#22c55e">Ready</div>
+              <button class="desk-btn" style="background:#a78bfa;color:#1a1035" onclick="openAgencyModal('frame')">Create Brief</button>
+            </div>
+          </div>
+          <div class="agency-desk" style="--agent-color:#34d399">
+            <div class="desk-img-wrap"><img src="/agency-assets/Ledger.png" alt="Ledger" class="desk-img"></div>
+            <div class="desk-surface">
+              <div class="desk-name">LEDGER</div>
+              <div class="desk-role">Media Buyer</div>
+              <div class="desk-pill" style="background:#22c55e20;color:#22c55e">Ready</div>
+              <button class="desk-btn" style="background:#34d399;color:#1a1035" onclick="toast('Send &quot;create ad&quot; to @tyson_quantumbot on Telegram to start','ok')">Create Ad</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Agency Modals -->
+    <div class="modal-bg" id="agency-modal" style="display:none">
+      <div class="modal" style="max-width:420px">
+        <h3 id="agency-modal-title"></h3>
+        <div id="agency-modal-fields"></div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
+          <button class="btn btn-sm" onclick="closeAgencyModal()">Cancel</button>
+          <button class="btn btn-sm btn-primary" id="agency-modal-submit">Send</button>
+        </div>
+      </div>
+    </div>
+
     <!-- CANVAS PANE (in Chat) handled via JS -->
   </div>
 
@@ -503,7 +590,7 @@ async function api(path, opts) {
 }
 
 /* ─── Navigation ──────────────────────────────────────── */
-const TITLES = { chat:'Chat', overview:'Overview', channels:'Channels', usage:'Usage & Costs', agents:'Agents', skills:'Skills', tools:'Tools', scheduled:'Scheduled Tasks', memory:'Memory', secrets:'API Keys', config:'Config', logs:'Logs' };
+const TITLES = { chat:'Chat', overview:'Overview', channels:'Channels', usage:'Usage & Costs', agents:'Agents', skills:'Skills', tools:'Tools', scheduled:'Scheduled Tasks', memory:'Memory', agency:'Ad Agency', secrets:'API Keys', config:'Config', logs:'Logs' };
 const PAGE_LOADERS = { overview:loadOverview, channels:loadChannels, usage:loadUsage, agents:loadAgents, skills:loadSkills, tools:()=>{loadTools();loadVoiceStatus()}, scheduled:loadScheduled, memory:loadMem, secrets:loadSec, config:loadConfig, logs:loadLogs };
 document.querySelectorAll('.nav-item[data-page]').forEach(el => {
   el.addEventListener('click', () => {
@@ -1067,6 +1154,64 @@ async function delKey(k) { if(!confirm('Remove '+k+'?'))return; try{if((await ap
 /* ─── Modal Helpers ───────────────────────────────────── */
 function openModal(id) { $(id).style.display = 'flex'; }
 function closeModal(id) { $(id).style.display = 'none'; }
+
+/* ─── Agency Room ─────────────────────────────────────── */
+const AGENCY_CONFIGS = {
+  scout: {
+    title: 'Research Brand — Scout',
+    fields: [{ id:'ag-brand', label:'Brand Name', placeholder:'e.g. Gymshark' }],
+    url: 'https://webhook.flowos.tech/webhook/competitor-research',
+    buildPayload: () => ({ chatId:1375806243, userId:1375806243, text:'research '+$('ag-brand').value.trim(), brand:$('ag-brand').value.trim() }),
+    name: 'Scout'
+  },
+  penny: {
+    title: 'Write Copy — Penny',
+    fields: [
+      { id:'ag-offer', label:'Offer', placeholder:'e.g. Free strategy call' },
+      { id:'ag-angle', label:'Angle', placeholder:'e.g. Pain point — overwhelm' },
+      { id:'ag-format', label:'Format', placeholder:'feed ad', value:'feed ad' },
+      { id:'ag-creator', label:'Creator', placeholder:'tyson or emma', value:'tyson' }
+    ],
+    url: 'https://webhook.flowos.tech/webhook/meta-ads-copy-agent',
+    buildPayload: () => ({ chatId:1375806243, userId:1375806243, offer:$('ag-offer').value.trim(), angle:$('ag-angle').value.trim(), platform:'Meta', format:$('ag-format').value.trim()||'feed ad', creator:$('ag-creator').value.trim()||'tyson' }),
+    name: 'Penny'
+  },
+  frame: {
+    title: 'Create Brief — Frame',
+    fields: [
+      { id:'ag-offer', label:'Offer', placeholder:'e.g. 6-week coaching program' },
+      { id:'ag-bformat', label:'Format', placeholder:'e.g. reel, story, feed', value:'reel' },
+      { id:'ag-angle', label:'Angle', placeholder:'e.g. transformation' },
+      { id:'ag-hook', label:'Hook Style', placeholder:'e.g. question, stat, bold claim' },
+      { id:'ag-creator', label:'Creator', placeholder:'tyson or emma', value:'tyson' }
+    ],
+    url: 'https://webhook.flowos.tech/webhook/meta-ads-creative-brief',
+    buildPayload: () => ({ chatId:1375806243, userId:1375806243, offer:$('ag-offer').value.trim(), format:$('ag-bformat').value.trim()||'reel', angle:$('ag-angle').value.trim(), hookStyle:$('ag-hook').value.trim(), creator:$('ag-creator').value.trim()||'tyson' }),
+    name: 'Frame'
+  }
+};
+let _agencyCurrent = null;
+function openAgencyModal(agent) {
+  const cfg = AGENCY_CONFIGS[agent]; if (!cfg) return;
+  _agencyCurrent = cfg;
+  $('agency-modal-title').textContent = cfg.title;
+  $('agency-modal-fields').innerHTML = cfg.fields.map(f =>
+    '<div class="fg"><label>'+f.label+'</label><input class="input" id="'+f.id+'" placeholder="'+f.placeholder+'" value="'+(f.value||'')+'"></div>'
+  ).join('');
+  $('agency-modal').style.display = 'flex';
+}
+function closeAgencyModal() { $('agency-modal').style.display = 'none'; _agencyCurrent = null; }
+$('agency-modal-submit').addEventListener('click', async () => {
+  if (!_agencyCurrent) return;
+  const btn = $('agency-modal-submit'); btn.disabled = true; btn.textContent = 'Sending...';
+  try {
+    const res = await fetch(_agencyCurrent.url, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(_agencyCurrent.buildPayload()) });
+    if (res.ok) toast(_agencyCurrent.name+' is on it! Check Telegram for results.','ok');
+    else toast('Error: '+res.statusText,'err');
+  } catch(e) { toast('Failed: '+e.message,'err'); }
+  btn.disabled = false; btn.textContent = 'Send';
+  closeAgencyModal();
+});
 
 /* ─── Init ────────────────────────────────────────────── */
 connectWS();
