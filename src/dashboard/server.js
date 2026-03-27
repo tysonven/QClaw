@@ -339,6 +339,7 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
       const isLocalhost = ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1";
       const isBrowser = (req.headers.accept || '').includes('text/html');
 
+      const isLocalhost = ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1";
       // Check auth lockout
       const lockout = this.authAttempts.get(ip);
       if (!isLocalhost && lockout?.lockedUntil && Date.now() < lockout.lockedUntil) {
