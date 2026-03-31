@@ -939,8 +939,8 @@ export class DashboardServer {
           }
           try {
             await uploadPromise;
-            const r2Url = `https://pub-${accountId}.r2.dev/${fileKey}`;
-            res.json({ r2FileKey: fileKey, r2Url });
+            const publicUrl = `https://pub-70c436931e9e4611a135e7405c596611.r2.dev/${fileKey}`;
+            res.json({ r2FileKey: fileKey, r2Url: publicUrl, publicUrl });
           } catch (err) {
             res.status(500).json({ error: 'R2 upload failed: ' + err.message });
           }

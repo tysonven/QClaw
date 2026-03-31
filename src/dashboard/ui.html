@@ -1343,7 +1343,7 @@ async function csStartUpload() {
     formData.append('file', _csFile);
     const uploadRes = await fetch(API('/api/content-studio/upload'), { method: 'POST', body: formData });
     if (!uploadRes.ok) { const err = await uploadRes.json().catch(() => ({})); throw new Error(err.error || 'Upload failed'); }
-    const { r2FileKey } = await uploadRes.json();
+    const { r2FileKey, publicUrl } = await uploadRes.json();
     csSetStep('cs-step-upload', 'done');
 
     // Step 2: Trigger pipeline
@@ -1354,6 +1354,7 @@ async function csStartUpload() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         r2FileKey,
+        r2Url: publicUrl,
         episodeTitle: title,
         episodeDescription: $('cs-description').value.trim() || '',
         chatId: 1375806243
