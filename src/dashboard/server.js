@@ -882,6 +882,80 @@ export class DashboardServer {
       } catch (err) { res.status(500).json({ error: err.message }); }
     });
 
+    // ─── Content Studio: R2 Upload ─────────────────────────────
+    this.app.post('/api/content-studio/upload', async (req, res) => {
+      try {
+        const { S3Client, PutObjectCommand } = await import('@aws-sdk/client-s3');
+        const { default: Busboy } = await import('busboy');
+
+        const envPath = join(process.env.HOME || '/root', '.quantumclaw', '.env');
+        const envVars = {};
+        try {
+          const envContent = (await import('fs')).readFileSync(envPath, 'utf-8');
+          for (const line of envContent.split('\n')) {
+            const match = line.match(/^([A-Z0-9_]+)=(.+)$/);
+            if (match) envVars[match[1]] = match[2];
+          }
+        } catch { return res.status(500).json({ error: 'Could not read R2 credentials' }); }
+
+        const accountId = envVars.R2_ACCOUNT_ID;
+        const accessKeyId = envVars.R2_ACCESS_KEY_ID;
+        const secretAccessKey = envVars.R2_SECRET_ACCESS_KEY;
+        const bucket = envVars.R2_BUCKET_NAME || 'emma-content-studio';
+
+        if (!accountId || !accessKeyId || !secretAccessKey) {
+          return res.status(500).json({ error: 'R2 credentials not configured in .env' });
+        }
+
+        const s3 = new S3Client({
+          region: 'auto',
+          endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
+          credentials: { accessKeyId, secretAccessKey }
+        });
+
+        const bb = Busboy({ headers: req.headers });
+        let fileKey = null;
+        let uploadPromise = null;
+
+        bb.on('file', (fieldname, stream, info) => {
+          const filename = info.filename.replace(/[^a-zA-Z0-9._-]/g, '_');
+          fileKey = `episodes/${Date.now()}-${filename}`;
+          const chunks = [];
+          stream.on('data', (chunk) => chunks.push(chunk));
+          stream.on('end', () => {
+            const body = Buffer.concat(chunks);
+            uploadPromise = s3.send(new PutObjectCommand({
+              Bucket: bucket,
+              Key: fileKey,
+              Body: body,
+              ContentType: info.mimeType || 'video/mp4'
+            }));
+          });
+        });
+
+        bb.on('finish', async () => {
+          if (!uploadPromise || !fileKey) {
+            return res.status(400).json({ error: 'No file received' });
+          }
+          try {
+            await uploadPromise;
+            const r2Url = `https://pub-${accountId}.r2.dev/${fileKey}`;
+            res.json({ r2FileKey: fileKey, r2Url });
+          } catch (err) {
+            res.status(500).json({ error: 'R2 upload failed: ' + err.message });
+          }
+        });
+
+        bb.on('error', (err) => {
+          res.status(500).json({ error: 'Upload parse error: ' + err.message });
+        });
+
+        req.pipe(bb);
+      } catch (err) {
+        res.status(500).json({ error: err.message });
+      }
+    });
+
     // ─── Voice Status ────────────────────────────────────────
     this.app.get('/api/voice/status', async (req, res) => {
       try {

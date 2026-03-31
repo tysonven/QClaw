@@ -195,6 +195,7 @@
     <div class="nav-item" data-page="scheduled">⏰<span class="tip">Tasks</span></div>
     <div class="nav-item" data-page="memory">🧠<span class="tip">Memory</span></div>
     <div class="nav-item" data-page="agency">🎬<span class="tip">Agency</span></div>
+    <div class="nav-item" data-page="content-studio">🎙️<span class="tip">Content Studio</span></div>
     <div class="nav-sep"></div>
     <div class="nav-item" data-page="secrets">🔑<span class="tip">API Keys</span></div>
     <div class="nav-sep"></div>
@@ -496,6 +497,80 @@
       </div>
     </div>
 
+    <!-- ═══ CONTENT STUDIO ═══ -->
+    <div class="page" id="page-content-studio">
+      <div class="page-scroll">
+        <div class="section-title" style="font-size:1.1rem">Content Studio — The Flow Lane with Emma Maidment</div>
+        <div class="section-sub">Upload an episode and automatically generate Buzzsprout, blog, Substack, and LinkedIn content.</div>
+
+        <!-- Upload zone -->
+        <div id="cs-dropzone" style="border:2px dashed var(--border-l);border-radius:12px;padding:48px 24px;text-align:center;cursor:pointer;transition:all .2s;margin-bottom:20px;background:var(--bg-2)">
+          <div style="font-size:2rem;margin-bottom:8px">🎙️</div>
+          <div style="font-size:.9rem;font-weight:500;color:var(--text)">Drop your episode file here</div>
+          <div style="font-size:.75rem;color:var(--text-dim);margin-top:4px">MP4, MP3, WAV, M4A — or click to browse</div>
+          <input type="file" id="cs-file-input" accept=".mp4,.mp3,.wav,.m4a,audio/*,video/mp4" hidden>
+          <div id="cs-file-name" style="margin-top:10px;font-size:.8rem;color:var(--accent-l);display:none"></div>
+        </div>
+
+        <!-- Inputs -->
+        <div style="display:flex;flex-direction:column;gap:12px;margin-bottom:20px">
+          <div>
+            <label style="font-size:.75rem;color:var(--text-dim);display:block;margin-bottom:4px">Episode Title</label>
+            <input class="input" id="cs-title" placeholder="e.g. Finding Flow in Chaos">
+          </div>
+          <div>
+            <label style="font-size:.75rem;color:var(--text-dim);display:block;margin-bottom:4px">Episode Description</label>
+            <textarea class="input" id="cs-description" rows="3" placeholder="Brief episode description..."></textarea>
+          </div>
+        </div>
+
+        <!-- Upload button -->
+        <button class="btn btn-primary" id="cs-upload-btn" style="padding:10px 24px;font-size:.9rem;width:100%;margin-bottom:24px" disabled>
+          Select a file to begin
+        </button>
+
+        <!-- Progress -->
+        <div id="cs-progress" style="display:none">
+          <div class="section-title" style="font-size:.9rem">Pipeline Progress</div>
+          <div style="background:var(--bg-2);border:1px solid var(--border);border-radius:10px;padding:16px">
+            <div class="cs-step" id="cs-step-upload" style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
+              <span class="cs-icon" style="font-size:1.1rem">⏳</span>
+              <span style="flex:1;font-size:.85rem">Uploading to R2</span>
+              <span class="cs-status badge" style="font-size:.65rem">waiting</span>
+            </div>
+            <div class="cs-step" id="cs-step-pipeline" style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
+              <span class="cs-icon" style="font-size:1.1rem">⏳</span>
+              <span style="flex:1;font-size:.85rem">Triggering Content Pipeline</span>
+              <span class="cs-status badge" style="font-size:.65rem">waiting</span>
+            </div>
+            <div class="cs-step" id="cs-step-buzzsprout" style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
+              <span class="cs-icon" style="font-size:1.1rem">🎙️</span>
+              <span style="flex:1;font-size:.85rem">Buzzsprout — Episode Upload</span>
+              <span class="cs-status badge" style="font-size:.65rem">queued</span>
+            </div>
+            <div class="cs-step" id="cs-step-blog" style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
+              <span class="cs-icon" style="font-size:1.1rem">📝</span>
+              <span style="flex:1;font-size:.85rem">WordPress — Blog Post Draft</span>
+              <span class="cs-status badge" style="font-size:.65rem">queued</span>
+            </div>
+            <div class="cs-step" id="cs-step-substack" style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
+              <span class="cs-icon" style="font-size:1.1rem">📧</span>
+              <span style="flex:1;font-size:.85rem">Substack — Newsletter Draft</span>
+              <span class="cs-status badge" style="font-size:.65rem">queued</span>
+            </div>
+            <div class="cs-step" id="cs-step-linkedin" style="display:flex;align-items:center;gap:10px;padding:8px 0">
+              <span class="cs-icon" style="font-size:1.1rem">💼</span>
+              <span style="flex:1;font-size:.85rem">LinkedIn — Post Draft</span>
+              <span class="cs-status badge" style="font-size:.65rem">queued</span>
+            </div>
+          </div>
+          <div id="cs-done-msg" style="display:none;margin-top:16px;padding:16px;background:var(--green-bg);border:1px solid #22c55e33;border-radius:10px;font-size:.85rem;color:var(--green)">
+            Pipeline triggered! Check Telegram for live updates as each step completes.
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- CANVAS PANE (in Chat) handled via JS -->
   </div>
 
@@ -592,8 +667,8 @@ async function api(path, opts) {
 }
 
 /* ─── Navigation ──────────────────────────────────────── */
-const TITLES = { chat:'Chat', overview:'Overview', channels:'Channels', usage:'Usage & Costs', agents:'Agents', skills:'Skills', tools:'Tools', scheduled:'Scheduled Tasks', memory:'Memory', agency:'Ad Agency', secrets:'API Keys', config:'Config', logs:'Logs' };
-const PAGE_LOADERS = { overview:loadOverview, channels:loadChannels, usage:loadUsage, agents:loadAgents, skills:loadSkills, tools:()=>{loadTools();loadVoiceStatus()}, scheduled:loadScheduled, memory:loadMem, secrets:loadSec, config:loadConfig, logs:loadLogs };
+const TITLES = { chat:'Chat', overview:'Overview', channels:'Channels', usage:'Usage & Costs', agents:'Agents', skills:'Skills', tools:'Tools', scheduled:'Scheduled Tasks', memory:'Memory', agency:'Ad Agency', 'content-studio':'Content Studio', secrets:'API Keys', config:'Config', logs:'Logs' };
+const PAGE_LOADERS = { overview:loadOverview, channels:loadChannels, usage:loadUsage, agents:loadAgents, skills:loadSkills, tools:()=>{loadTools();loadVoiceStatus()}, scheduled:loadScheduled, memory:loadMem, 'content-studio':initContentStudio, secrets:loadSec, config:loadConfig, logs:loadLogs };
 document.querySelectorAll('.nav-item[data-page]').forEach(el => {
   el.addEventListener('click', () => {
     document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
@@ -1214,6 +1289,91 @@ $('agency-modal-submit').addEventListener('click', async () => {
   btn.disabled = false; btn.textContent = 'Send';
   closeAgencyModal();
 });
+
+/* ─── Content Studio ─────────────────────────────────── */
+let _csFile = null;
+function initContentStudio() {
+  const dropzone = $('cs-dropzone');
+  const fileInput = $('cs-file-input');
+  const uploadBtn = $('cs-upload-btn');
+
+  dropzone.onclick = () => fileInput.click();
+  dropzone.ondragover = (e) => { e.preventDefault(); dropzone.style.borderColor = 'var(--accent)'; dropzone.style.background = 'var(--accent-bg)'; };
+  dropzone.ondragleave = () => { dropzone.style.borderColor = 'var(--border-l)'; dropzone.style.background = 'var(--bg-2)'; };
+  dropzone.ondrop = (e) => { e.preventDefault(); dropzone.style.borderColor = 'var(--border-l)'; dropzone.style.background = 'var(--bg-2)'; if (e.dataTransfer.files[0]) csSelectFile(e.dataTransfer.files[0]); };
+  fileInput.onchange = () => { if (fileInput.files[0]) csSelectFile(fileInput.files[0]); };
+}
+
+function csSelectFile(file) {
+  _csFile = file;
+  const nameEl = $('cs-file-name');
+  nameEl.textContent = file.name + ' (' + (file.size / 1048576).toFixed(1) + ' MB)';
+  nameEl.style.display = 'block';
+  const btn = $('cs-upload-btn');
+  btn.disabled = false;
+  btn.textContent = 'Upload & Process Episode';
+  btn.onclick = csStartUpload;
+}
+
+function csSetStep(stepId, status) {
+  const el = $(stepId);
+  if (!el) return;
+  const icon = el.querySelector('.cs-icon');
+  const badge = el.querySelector('.cs-status');
+  if (status === 'active') { icon.textContent = '⏳'; badge.textContent = 'in progress'; badge.className = 'cs-status badge badge-yellow'; }
+  else if (status === 'done') { icon.textContent = '✅'; badge.textContent = 'done'; badge.className = 'cs-status badge badge-green'; }
+  else if (status === 'error') { icon.textContent = '❌'; badge.textContent = 'error'; badge.className = 'cs-status badge badge-red'; }
+  else if (status === 'queued') { icon.textContent = '⏳'; badge.textContent = 'queued'; badge.className = 'cs-status badge'; }
+}
+
+async function csStartUpload() {
+  if (!_csFile) return;
+  const title = $('cs-title').value.trim();
+  if (!title) { toast('Episode title required', 'err'); return; }
+
+  const btn = $('cs-upload-btn');
+  btn.disabled = true;
+  btn.textContent = 'Uploading...';
+  $('cs-progress').style.display = 'block';
+  csSetStep('cs-step-upload', 'active');
+
+  try {
+    // Step 1: Upload to R2
+    const formData = new FormData();
+    formData.append('file', _csFile);
+    const uploadRes = await fetch(API('/api/content-studio/upload'), { method: 'POST', body: formData });
+    if (!uploadRes.ok) { const err = await uploadRes.json().catch(() => ({})); throw new Error(err.error || 'Upload failed'); }
+    const { r2FileKey } = await uploadRes.json();
+    csSetStep('cs-step-upload', 'done');
+
+    // Step 2: Trigger pipeline
+    csSetStep('cs-step-pipeline', 'active');
+    btn.textContent = 'Processing...';
+    const pipelineRes = await fetch('https://webhook.flowos.tech/webhook/content-studio-pipeline', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        r2FileKey,
+        episodeTitle: title,
+        episodeDescription: $('cs-description').value.trim() || '',
+        chatId: 1375806243
+      })
+    });
+    csSetStep('cs-step-pipeline', 'done');
+
+    // Mark remaining steps as queued (pipeline handles them async)
+    ['cs-step-buzzsprout', 'cs-step-blog', 'cs-step-substack', 'cs-step-linkedin'].forEach(s => csSetStep(s, 'queued'));
+
+    $('cs-done-msg').style.display = 'block';
+    btn.textContent = 'Done — Check Telegram';
+    toast('Content pipeline triggered!', 'ok');
+  } catch (err) {
+    csSetStep('cs-step-upload', 'error');
+    btn.textContent = 'Retry Upload';
+    btn.disabled = false;
+    toast('Error: ' + err.message, 'err');
+  }
+}
 
 /* ─── Init ────────────────────────────────────────────── */
 connectWS();
