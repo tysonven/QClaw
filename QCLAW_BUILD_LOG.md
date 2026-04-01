@@ -264,3 +264,48 @@ ssh qclaw "cd ~/QClaw && npm test"
 - [ ] Trading Room + Gym (Monte Carlo, Polymarket)
 - [ ] Wire Charlie memory to Cognee graph
 - [ ] SproutCode continued development
+
+---
+
+## Session: 1 April 2026 — Content Studio Phase 1
+
+### Infrastructure
+- Cloudflare R2 bucket: emma-content-studio
+- R2 public URL: https://pub-70c436931e9e4611a135e7405c596611.r2.dev
+- Supabase table: content_studio_jobs
+- n8n credentials created: AssemblyAI, WordPress FSC, Buzzsprout, Supabase FSC, Anthropic
+
+### n8n Workflow: Content Studio Pipeline (ID: Qf39NEOEgz2W0uls)
+- 20 nodes, active at /webhook/content-studio-pipeline
+- Webhook → Supabase job → Telegram notify → R2 URL → Buzzsprout → AssemblyAI → Extract highlights → Blog post → WordPress → Substack → LinkedIn → Update job → Telegram complete
+
+### Dashboard — Content Studio Page
+- New tab: microphone icon
+- Drag-and-drop upload zone (MP4, MP3, WAV, M4A)
+- server.js: POST /api/content-studio/upload (500MB limit)
+- server.js: GET /api/content-studio/jobs
+- Results Panel with 4 cards: Blog Post, Substack, LinkedIn, OpusClip Timestamps
+- Job History table with View Results
+- Nginx client_max_body_size 500M
+
+### Services Integrated
+- Cloudflare R2 (storage), Buzzsprout (podcast), AssemblyAI (transcription)
+- Claude Sonnet (blog + substack + linkedin generation)
+- WordPress REST API (draft posts), Telegram (notifications)
+
+### Tested End-to-End
+- Pipeline completed with real video upload (39.6MB MP4)
+- Blog post draft created in WordPress
+- All content cards loading in dashboard
+
+### Pending — Phase 2
+- YouTube OAuth (Emma Google account needed)
+- LinkedIn direct posting via API
+- Delete test Buzzsprout episodes and WordPress drafts
+- Charlie skill: content-studio.md routing
+
+### Key Technical Notes
+- AssemblyAI: use speech_models (array) not speech_model
+- Buzzsprout: audio_url must be publicly accessible
+- n8n runs in Docker: use n8n credentials not host .env
+- R2 upload must be server-side (credentials not exposed to browser)
