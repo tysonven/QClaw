@@ -913,7 +913,7 @@ export class DashboardServer {
           credentials: { accessKeyId, secretAccessKey }
         });
 
-        const bb = Busboy({ headers: req.headers });
+        const bb = Busboy({ headers: req.headers, limits: { fileSize: 500 * 1024 * 1024 } });
         let fileKey = null;
         let uploadPromise = null;
 
