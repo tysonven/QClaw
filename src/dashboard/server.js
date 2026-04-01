@@ -956,6 +956,30 @@ export class DashboardServer {
       }
     });
 
+    // ─── Content Studio: Jobs ─────────────────────────────────
+    this.app.get('/api/content-studio/jobs', async (req, res) => {
+      try {
+        const limit = Math.min(parseInt(req.query.limit) || 10, 50);
+        const anonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZkYWJ5Z21yb211cXR5c2l0b2RwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTk2NjI2OTQsImV4cCI6MjA3NTIzODY5NH0.6JJMkPXBufpLxlisH1ig32Xm8YM3p0jcXRlBzx5x8Dk';
+        const sbRes = await fetch(`https://fdabygmromuqtysitodp.supabase.co/rest/v1/content_studio_jobs?order=created_at.desc&limit=${limit}`, {
+          headers: { apikey: anonKey, Authorization: `Bearer ${anonKey}` }
+        });
+        res.json(await sbRes.json());
+      } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+
+    this.app.get('/api/content-studio/jobs/:id', async (req, res) => {
+      try {
+        const anonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZkYWJ5Z21yb211cXR5c2l0b2RwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTk2NjI2OTQsImV4cCI6MjA3NTIzODY5NH0.6JJMkPXBufpLxlisH1ig32Xm8YM3p0jcXRlBzx5x8Dk';
+        const sbRes = await fetch(`https://fdabygmromuqtysitodp.supabase.co/rest/v1/content_studio_jobs?id=eq.${encodeURIComponent(req.params.id)}`, {
+          headers: { apikey: anonKey, Authorization: `Bearer ${anonKey}` }
+        });
+        const rows = await sbRes.json();
+        if (!rows.length) return res.status(404).json({ error: 'Job not found' });
+        res.json(rows[0]);
+      } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+
     // ─── Voice Status ────────────────────────────────────────
     this.app.get('/api/voice/status', async (req, res) => {
       try {

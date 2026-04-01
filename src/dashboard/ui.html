@@ -568,6 +568,67 @@
             Pipeline triggered! Check Telegram for live updates as each step completes.
           </div>
         </div>
+
+        <!-- Results Panel -->
+        <div id="cs-results" style="display:none;margin-top:24px">
+          <div class="section-title" style="font-size:.9rem">Content Results</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+            <!-- Blog Post Card -->
+            <div style="background:var(--bg-2);border:1px solid var(--border);border-top:3px solid #3b82f6;border-radius:10px;padding:16px;display:flex;flex-direction:column">
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+                <span style="font-weight:600;font-size:.85rem">📝 Blog Post Draft</span>
+                <a id="cs-wp-link" href="#" target="_blank" style="display:none" class="badge badge-blue">Live in WordPress</a>
+              </div>
+              <textarea id="cs-blog-text" class="input input-mono" rows="8" style="flex:1;resize:vertical;font-size:.72rem;line-height:1.5;margin-bottom:10px" placeholder="Blog post will appear here..."></textarea>
+              <div style="display:flex;gap:6px">
+                <button class="btn btn-sm" onclick="csCopy('cs-blog-text')">Copy</button>
+                <a id="cs-wp-open" href="#" target="_blank" class="btn btn-sm" style="display:none;text-decoration:none">Open in WordPress</a>
+              </div>
+            </div>
+            <!-- Substack Card -->
+            <div style="background:var(--bg-2);border:1px solid var(--border);border-top:3px solid #f97316;border-radius:10px;padding:16px;display:flex;flex-direction:column">
+              <div style="font-weight:600;font-size:.85rem;margin-bottom:10px">📧 Substack Draft</div>
+              <textarea id="cs-substack-text" class="input input-mono" rows="8" style="flex:1;resize:vertical;font-size:.72rem;line-height:1.5;margin-bottom:10px" placeholder="Substack draft will appear here..."></textarea>
+              <div style="display:flex;gap:6px">
+                <button class="btn btn-sm" onclick="csCopy('cs-substack-text')">Copy</button>
+                <button class="btn btn-sm" onclick="csCopy('cs-substack-text');window.open('https://substack.com','_blank')">Copy &amp; Open Substack</button>
+              </div>
+            </div>
+            <!-- LinkedIn Card -->
+            <div style="background:var(--bg-2);border:1px solid var(--border);border-top:3px solid #0a66c2;border-radius:10px;padding:16px;display:flex;flex-direction:column">
+              <div style="font-weight:600;font-size:.85rem;margin-bottom:10px">💼 LinkedIn Post</div>
+              <textarea id="cs-linkedin-text" class="input input-mono" rows="8" style="flex:1;resize:vertical;font-size:.72rem;line-height:1.5;margin-bottom:10px" placeholder="LinkedIn post will appear here..."></textarea>
+              <div style="display:flex;gap:6px">
+                <button class="btn btn-sm" onclick="csCopy('cs-linkedin-text')">Copy</button>
+                <button class="btn btn-sm" id="cs-linkedin-post" onclick="csCopy('cs-linkedin-text');window.open('https://www.linkedin.com/post/new','_blank')">Copy &amp; Open LinkedIn</button>
+              </div>
+            </div>
+            <!-- OpusClip Card -->
+            <div style="background:var(--bg-2);border:1px solid var(--border);border-top:3px solid #a78bfa;border-radius:10px;padding:16px;display:flex;flex-direction:column">
+              <div style="font-weight:600;font-size:.85rem;margin-bottom:10px">🎬 OpusClip Timestamps</div>
+              <pre id="cs-clips-text" style="flex:1;font-family:'JetBrains Mono';font-size:.72rem;line-height:1.6;color:var(--text-dim);white-space:pre-wrap;margin-bottom:10px;min-height:80px">Timestamps will appear here...</pre>
+              <div style="margin-bottom:8px">
+                <label style="font-size:.7rem;color:var(--text-dim);display:block;margin-bottom:3px">YouTube URL</label>
+                <input class="input" id="cs-yt-url" placeholder="https://youtube.com/watch?v=..." style="font-size:.78rem">
+              </div>
+              <div style="display:flex;gap:6px">
+                <button class="btn btn-sm" onclick="csCopy(null,$('cs-clips-text').textContent)">Copy Timestamps</button>
+                <button class="btn btn-sm" onclick="csCopy(null,$('cs-clips-text').textContent);window.open('https://www.opus.pro','_blank')">Open OpusClip</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Job History -->
+        <div style="margin-top:32px">
+          <div class="section-title" style="font-size:.9rem">Job History</div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Episode</th><th>Date</th><th>Status</th><th></th></tr></thead>
+              <tbody id="cs-jobs-body"><tr><td colspan="4" style="color:var(--text-dim)">Loading...</td></tr></tbody>
+            </table>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -1292,16 +1353,17 @@ $('agency-modal-submit').addEventListener('click', async () => {
 
 /* ─── Content Studio ─────────────────────────────────── */
 let _csFile = null;
+let _csPollTimer = null;
+
 function initContentStudio() {
   const dropzone = $('cs-dropzone');
   const fileInput = $('cs-file-input');
-  const uploadBtn = $('cs-upload-btn');
-
   dropzone.onclick = () => fileInput.click();
   dropzone.ondragover = (e) => { e.preventDefault(); dropzone.style.borderColor = 'var(--accent)'; dropzone.style.background = 'var(--accent-bg)'; };
   dropzone.ondragleave = () => { dropzone.style.borderColor = 'var(--border-l)'; dropzone.style.background = 'var(--bg-2)'; };
   dropzone.ondrop = (e) => { e.preventDefault(); dropzone.style.borderColor = 'var(--border-l)'; dropzone.style.background = 'var(--bg-2)'; if (e.dataTransfer.files[0]) csSelectFile(e.dataTransfer.files[0]); };
   fileInput.onchange = () => { if (fileInput.files[0]) csSelectFile(fileInput.files[0]); };
+  csLoadJobs();
 }
 
 function csSelectFile(file) {
@@ -1326,6 +1388,48 @@ function csSetStep(stepId, status) {
   else if (status === 'queued') { icon.textContent = '⏳'; badge.textContent = 'queued'; badge.className = 'cs-status badge'; }
 }
 
+function csCopy(textareaId, rawText) {
+  const text = rawText || ($(textareaId) ? $(textareaId).value : '');
+  if (!text) { toast('Nothing to copy', 'err'); return; }
+  navigator.clipboard.writeText(text).then(() => toast('Copied!', 'ok')).catch(() => toast('Copy failed', 'err'));
+}
+
+function csShowResults(job) {
+  $('cs-results').style.display = 'block';
+  $('cs-blog-text').value = job.blog_post || '';
+  $('cs-substack-text').value = job.substack_draft || '';
+  $('cs-linkedin-text').value = job.linkedin_post || '';
+  $('cs-clips-text').textContent = job.highlight_timestamps || 'No highlights detected';
+  if (job.wordpress_post_url) {
+    $('cs-wp-link').href = job.wordpress_post_url;
+    $('cs-wp-link').style.display = 'inline-block';
+    $('cs-wp-open').href = job.wordpress_post_url;
+    $('cs-wp-open').style.display = 'inline-block';
+  } else {
+    $('cs-wp-link').style.display = 'none';
+    $('cs-wp-open').style.display = 'none';
+  }
+}
+
+function csStartPolling() {
+  if (_csPollTimer) clearInterval(_csPollTimer);
+  _csPollTimer = setInterval(async () => {
+    try {
+      const jobs = await (await fetch(API('/api/content-studio/jobs?limit=1'))).json();
+      if (!jobs.length) return;
+      const job = jobs[0];
+      if (job.status === 'completed') {
+        clearInterval(_csPollTimer);
+        _csPollTimer = null;
+        ['cs-step-buzzsprout','cs-step-blog','cs-step-substack','cs-step-linkedin'].forEach(s => csSetStep(s, 'done'));
+        csShowResults(job);
+        csLoadJobs();
+        toast('Content pipeline complete!', 'ok');
+      }
+    } catch { /* keep polling */ }
+  }, 5000);
+}
+
 async function csStartUpload() {
   if (!_csFile) return;
   const title = $('cs-title').value.trim();
@@ -1335,10 +1439,10 @@ async function csStartUpload() {
   btn.disabled = true;
   btn.textContent = 'Uploading...';
   $('cs-progress').style.display = 'block';
+  $('cs-results').style.display = 'none';
   csSetStep('cs-step-upload', 'active');
 
   try {
-    // Step 1: Upload to R2
     const formData = new FormData();
     formData.append('file', _csFile);
     const uploadRes = await fetch(API('/api/content-studio/upload'), { method: 'POST', body: formData });
@@ -1346,34 +1450,52 @@ async function csStartUpload() {
     const { r2FileKey, publicUrl } = await uploadRes.json();
     csSetStep('cs-step-upload', 'done');
 
-    // Step 2: Trigger pipeline
     csSetStep('cs-step-pipeline', 'active');
     btn.textContent = 'Processing...';
-    const pipelineRes = await fetch('https://webhook.flowos.tech/webhook/content-studio-pipeline', {
+    await fetch('https://webhook.flowos.tech/webhook/content-studio-pipeline', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        r2FileKey,
-        r2Url: publicUrl,
-        episodeTitle: title,
-        episodeDescription: $('cs-description').value.trim() || '',
-        chatId: 1375806243
-      })
+      body: JSON.stringify({ r2FileKey, r2Url: publicUrl, episodeTitle: title, episodeDescription: $('cs-description').value.trim() || '', chatId: 1375806243 })
     });
     csSetStep('cs-step-pipeline', 'done');
-
-    // Mark remaining steps as queued (pipeline handles them async)
-    ['cs-step-buzzsprout', 'cs-step-blog', 'cs-step-substack', 'cs-step-linkedin'].forEach(s => csSetStep(s, 'queued'));
+    ['cs-step-buzzsprout','cs-step-blog','cs-step-substack','cs-step-linkedin'].forEach(s => csSetStep(s, 'active'));
 
     $('cs-done-msg').style.display = 'block';
-    btn.textContent = 'Done — Check Telegram';
-    toast('Content pipeline triggered!', 'ok');
+    btn.textContent = 'Processing — polling for results...';
+    csStartPolling();
   } catch (err) {
     csSetStep('cs-step-upload', 'error');
     btn.textContent = 'Retry Upload';
     btn.disabled = false;
     toast('Error: ' + err.message, 'err');
   }
+}
+
+async function csLoadJobs() {
+  try {
+    const jobs = await (await fetch(API('/api/content-studio/jobs?limit=10'))).json();
+    if (!Array.isArray(jobs) || !jobs.length) {
+      $('cs-jobs-body').innerHTML = '<tr><td colspan="4" style="color:var(--text-dim)">No jobs yet</td></tr>';
+      return;
+    }
+    $('cs-jobs-body').innerHTML = jobs.map(j => {
+      const date = j.created_at ? new Date(j.created_at).toLocaleDateString('en-GB',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}) : '—';
+      const statusBadge = j.status === 'completed' ? '<span class="badge badge-green">completed</span>'
+        : j.status === 'processing' ? '<span class="badge badge-yellow">processing</span>'
+        : '<span class="badge">' + (j.status || 'unknown') + '</span>';
+      const viewBtn = j.status === 'completed' ? '<button class="btn btn-sm" onclick="csViewJob(\'' + j.id + '\')">View Results</button>' : '';
+      return '<tr><td style="font-weight:500">' + (j.episode_title || '—') + '</td><td style="font-size:.78rem;color:var(--text-dim)">' + date + '</td><td>' + statusBadge + '</td><td style="text-align:right">' + viewBtn + '</td></tr>';
+    }).join('');
+  } catch { $('cs-jobs-body').innerHTML = '<tr><td colspan="4" style="color:var(--text-dim)">Failed to load jobs</td></tr>'; }
+}
+
+async function csViewJob(id) {
+  try {
+    const job = await (await fetch(API('/api/content-studio/jobs/' + id))).json();
+    if (job.error) { toast(job.error, 'err'); return; }
+    csShowResults(job);
+    $('cs-results').scrollIntoView({ behavior: 'smooth' });
+  } catch (e) { toast('Failed to load job: ' + e.message, 'err'); }
 }
 
 /* ─── Init ────────────────────────────────────────────── */
