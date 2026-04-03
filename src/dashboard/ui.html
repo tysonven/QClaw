@@ -529,6 +529,42 @@
           Select a file to begin
         </button>
 
+        <!-- Episode Images (Optional) -->
+        <div style="margin-bottom:24px">
+          <div class="section-title" style="font-size:.9rem">Episode Images (Optional)</div>
+          <div class="section-sub" style="margin-bottom:12px">Upload for best results — images are resized automatically.</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+            <!-- Hero Image -->
+            <div>
+              <div id="cs-hero-dropzone" style="border:2px dashed var(--border-l);border-radius:10px;padding:32px 16px;text-align:center;cursor:pointer;background:var(--bg-2);transition:all .2s;position:relative;min-height:120px">
+                <div id="cs-hero-preview" style="display:none;width:100%;border-radius:8px;overflow:hidden"><img style="width:100%;display:block"></div>
+                <div id="cs-hero-placeholder">
+                  <div style="font-size:1.4rem;margin-bottom:6px">🖼️</div>
+                  <div style="font-size:.8rem;font-weight:500;color:var(--text)">Hero Image</div>
+                  <div style="font-size:.7rem;color:var(--text-dim);margin-top:2px">Blog, Substack, LinkedIn</div>
+                  <div style="font-size:.65rem;color:var(--text-dim);margin-top:4px">Ideal: 1200x628px · JPG/PNG</div>
+                </div>
+                <input type="file" id="cs-hero-input" accept=".jpg,.jpeg,.png,.webp,image/*" hidden>
+              </div>
+              <div id="cs-hero-status" style="font-size:.7rem;color:var(--text-dim);margin-top:6px;text-align:center"></div>
+            </div>
+            <!-- YouTube Thumbnail -->
+            <div>
+              <div id="cs-thumb-dropzone" style="border:2px dashed var(--border-l);border-radius:10px;padding:32px 16px;text-align:center;cursor:pointer;background:var(--bg-2);transition:all .2s;position:relative;min-height:120px">
+                <div id="cs-thumb-preview" style="display:none;width:100%;border-radius:8px;overflow:hidden"><img style="width:100%;display:block"></div>
+                <div id="cs-thumb-placeholder">
+                  <div style="font-size:1.4rem;margin-bottom:6px">🎬</div>
+                  <div style="font-size:.8rem;font-weight:500;color:var(--text)">YouTube Thumbnail</div>
+                  <div style="font-size:.7rem;color:var(--text-dim);margin-top:2px">Used for video thumbnail</div>
+                  <div style="font-size:.65rem;color:var(--text-dim);margin-top:4px">Ideal: 1280x720px · JPG/PNG</div>
+                </div>
+                <input type="file" id="cs-thumb-input" accept=".jpg,.jpeg,.png,.webp,image/*" hidden>
+              </div>
+              <div id="cs-thumb-status" style="font-size:.7rem;color:var(--text-dim);margin-top:6px;text-align:center"></div>
+            </div>
+          </div>
+        </div>
+
         <!-- Progress -->
         <div id="cs-progress" style="display:none">
           <div class="section-title" style="font-size:.9rem">Pipeline Progress</div>
@@ -616,6 +652,18 @@
                 <button class="btn btn-sm" onclick="csCopy(null,$('cs-clips-text').textContent);window.open('https://www.opus.pro','_blank')">Open OpusClip</button>
               </div>
             </div>
+          </div>
+
+          <!-- Social Clips -->
+          <div id="cs-clips-section" style="margin-top:24px">
+            <div style="font-weight:600;font-size:.9rem;margin-bottom:12px">🎬 Social Clips</div>
+            <div id="cs-clip-dropzone" style="border:2px dashed var(--border-l);border-radius:10px;padding:32px 16px;text-align:center;cursor:pointer;background:var(--bg-2);transition:all .2s;margin-bottom:16px">
+              <div style="font-size:1.4rem;margin-bottom:6px">📹</div>
+              <div style="font-size:.8rem;font-weight:500;color:var(--text)">Drop clip files here</div>
+              <div style="font-size:.7rem;color:var(--text-dim);margin-top:4px">MP4 clips from OpusClip or other tools — multiple files OK</div>
+              <input type="file" id="cs-clip-input" accept=".mp4,video/mp4" multiple hidden>
+            </div>
+            <div id="cs-clip-list" style="display:flex;flex-direction:column;gap:12px"></div>
           </div>
         </div>
 
@@ -1354,6 +1402,10 @@ $('agency-modal-submit').addEventListener('click', async () => {
 /* ─── Content Studio ─────────────────────────────────── */
 let _csFile = null;
 let _csPollTimer = null;
+let _csHeroUrl = null;
+let _csThumbUrl = null;
+let _csCurrentJobId = null;
+let _csClipSelections = null;
 
 function initContentStudio() {
   const dropzone = $('cs-dropzone');
@@ -1363,7 +1415,166 @@ function initContentStudio() {
   dropzone.ondragleave = () => { dropzone.style.borderColor = 'var(--border-l)'; dropzone.style.background = 'var(--bg-2)'; };
   dropzone.ondrop = (e) => { e.preventDefault(); dropzone.style.borderColor = 'var(--border-l)'; dropzone.style.background = 'var(--bg-2)'; if (e.dataTransfer.files[0]) csSelectFile(e.dataTransfer.files[0]); };
   fileInput.onchange = () => { if (fileInput.files[0]) csSelectFile(fileInput.files[0]); };
+
+  // Image upload dropzones
+  csInitImageDropzone('cs-hero-dropzone', 'cs-hero-input', 'cs-hero-preview', 'cs-hero-placeholder', 'cs-hero-status', 'hero');
+  csInitImageDropzone('cs-thumb-dropzone', 'cs-thumb-input', 'cs-thumb-preview', 'cs-thumb-placeholder', 'cs-thumb-status', 'thumbnail');
+
+  // Clip upload dropzone
+  const clipDrop = $('cs-clip-dropzone');
+  const clipInput = $('cs-clip-input');
+  clipDrop.onclick = () => clipInput.click();
+  clipDrop.ondragover = (e) => { e.preventDefault(); clipDrop.style.borderColor = 'var(--accent)'; clipDrop.style.background = 'var(--accent-bg)'; };
+  clipDrop.ondragleave = () => { clipDrop.style.borderColor = 'var(--border-l)'; clipDrop.style.background = 'var(--bg-2)'; };
+  clipDrop.ondrop = (e) => { e.preventDefault(); clipDrop.style.borderColor = 'var(--border-l)'; clipDrop.style.background = 'var(--bg-2)'; csAddClipFiles(e.dataTransfer.files); };
+  clipInput.onchange = () => { csAddClipFiles(clipInput.files); clipInput.value = ''; };
+
   csLoadJobs();
+}
+
+function csInitImageDropzone(dropId, inputId, previewId, placeholderId, statusId, imageType) {
+  const drop = $(dropId);
+  const input = $(inputId);
+  drop.onclick = () => input.click();
+  drop.ondragover = (e) => { e.preventDefault(); drop.style.borderColor = 'var(--accent)'; drop.style.background = 'var(--accent-bg)'; };
+  drop.ondragleave = () => { drop.style.borderColor = 'var(--border-l)'; drop.style.background = 'var(--bg-2)'; };
+  drop.ondrop = (e) => { e.preventDefault(); drop.style.borderColor = 'var(--border-l)'; drop.style.background = 'var(--bg-2)'; if (e.dataTransfer.files[0]) csUploadImage(e.dataTransfer.files[0], imageType, previewId, placeholderId, statusId); };
+  input.onchange = () => { if (input.files[0]) csUploadImage(input.files[0], imageType, previewId, placeholderId, statusId); };
+}
+
+async function csUploadImage(file, imageType, previewId, placeholderId, statusId) {
+  // Show preview immediately
+  const preview = $(previewId);
+  const placeholder = $(placeholderId);
+  const status = $(statusId);
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    preview.querySelector('img').src = e.target.result;
+    preview.style.display = 'block';
+    placeholder.style.display = 'none';
+  };
+  reader.readAsDataURL(file);
+  status.textContent = 'Uploading...';
+  status.style.color = 'var(--accent-l)';
+
+  // We need a jobId — use a temp one if pipeline hasn't started yet
+  const jobId = _csCurrentJobId || 'pending-' + Date.now();
+
+  try {
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('jobId', jobId);
+    fd.append('imageType', imageType);
+    const res = await fetch(API('/api/content-studio/upload-image'), { method: 'POST', body: fd });
+    if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.error || 'Upload failed'); }
+    const { url } = await res.json();
+    if (imageType === 'hero') _csHeroUrl = url;
+    else _csThumbUrl = url;
+    status.textContent = 'Uploaded ✓';
+    status.style.color = 'var(--green)';
+  } catch (err) {
+    status.textContent = 'Failed: ' + err.message;
+    status.style.color = 'var(--red)';
+  }
+}
+
+let _csClipCounter = 0;
+function csAddClipFiles(files) {
+  const list = $('cs-clip-list');
+  for (const file of files) {
+    if (!file.type.startsWith('video/')) continue;
+    const idx = _csClipCounter++;
+    const clipUrl = URL.createObjectURL(file);
+
+    // Try to match with clip_selections data
+    let prefillCaption = '';
+    let prefillHook = '';
+    if (_csClipSelections && _csClipSelections[idx]) {
+      const sel = _csClipSelections[idx];
+      prefillHook = sel.hook_title || '';
+      prefillCaption = (sel.start_time || '') + '-' + (sel.end_time || '') + ' ' + (sel.hook_title || '') + '\n' + (sel.caption_text || '');
+    }
+
+    const card = document.createElement('div');
+    card.style.cssText = 'background:var(--bg-2);border:1px solid var(--border);border-radius:10px;padding:16px;display:grid;grid-template-columns:180px 1fr;gap:16px;align-items:start';
+    card.innerHTML = `
+      <div style="border-radius:8px;overflow:hidden;background:#000">
+        <video src="${clipUrl}" style="width:100%;display:block" controls preload="metadata"></video>
+        <div style="font-size:.7rem;color:var(--text-dim);padding:4px 0;text-align:center">${file.name}</div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <textarea id="cs-clip-caption-${idx}" class="input" rows="3" style="font-size:.78rem;resize:vertical" placeholder="Caption for this clip...">${prefillCaption}</textarea>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <select id="cs-clip-platform-${idx}" class="input" style="font-size:.78rem;flex:1;min-width:120px">
+            <option value="instagram">Instagram</option>
+            <option value="tiktok">TikTok</option>
+            <option value="facebook">Facebook</option>
+            <option value="linkedin">LinkedIn</option>
+          </select>
+          <input type="datetime-local" id="cs-clip-schedule-${idx}" class="input" style="font-size:.78rem;flex:1;min-width:160px">
+        </div>
+        <button class="btn btn-sm btn-primary" onclick="csScheduleClip(${idx},'${clipUrl}')">Schedule via GHL</button>
+        <div id="cs-clip-status-${idx}" style="font-size:.7rem;color:var(--text-dim)"></div>
+      </div>
+    `;
+    list.appendChild(card);
+
+    // Upload clip to R2 in background
+    csUploadClipToR2(file, idx, clipUrl);
+  }
+}
+
+async function csUploadClipToR2(file, idx, blobUrl) {
+  const status = $('cs-clip-status-' + idx);
+  status.textContent = 'Uploading clip to R2...';
+  try {
+    const fd = new FormData();
+    fd.append('file', file);
+    const res = await fetch(API('/api/content-studio/upload'), { method: 'POST', body: fd });
+    if (!res.ok) throw new Error('Upload failed');
+    const { publicUrl } = await res.json();
+    // Store the R2 URL on the button for scheduling
+    const btn = status.previousElementSibling;
+    btn.setAttribute('data-r2-url', publicUrl);
+    status.textContent = 'Uploaded ✓';
+    status.style.color = 'var(--green)';
+  } catch (err) {
+    status.textContent = 'Upload failed — will retry on schedule';
+    status.style.color = 'var(--red)';
+  }
+}
+
+async function csScheduleClip(idx, blobUrl) {
+  const caption = $('cs-clip-caption-' + idx)?.value || '';
+  const platform = $('cs-clip-platform-' + idx)?.value || 'instagram';
+  const scheduledAt = $('cs-clip-schedule-' + idx)?.value || null;
+  const status = $('cs-clip-status-' + idx);
+  const btn = status.previousElementSibling;
+  const clipUrl = btn.getAttribute('data-r2-url') || blobUrl;
+
+  if (!_csCurrentJobId) { toast('No active job — upload an episode first', 'err'); return; }
+
+  btn.disabled = true;
+  btn.textContent = 'Scheduling...';
+  try {
+    const res = await fetch(API('/api/content-studio/schedule-clip'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ clipUrl, caption, platform, scheduledAt, jobId: _csCurrentJobId })
+    });
+    if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.error || 'Schedule failed'); }
+    btn.textContent = 'Scheduled ✓';
+    btn.className = 'btn btn-sm';
+    status.textContent = 'Saved — GHL integration coming soon';
+    status.style.color = 'var(--green)';
+    toast('Clip scheduled for ' + platform, 'ok');
+  } catch (err) {
+    btn.disabled = false;
+    btn.textContent = 'Schedule via GHL';
+    status.textContent = 'Error: ' + err.message;
+    status.style.color = 'var(--red)';
+    toast('Failed: ' + err.message, 'err');
+  }
 }
 
 function csSelectFile(file) {
@@ -1395,6 +1606,7 @@ function csCopy(textareaId, rawText) {
 }
 
 function csShowResults(job) {
+  _csCurrentJobId = job.id;
   $('cs-results').style.display = 'block';
   $('cs-blog-text').value = job.blog_post || '';
   $('cs-substack-text').value = job.substack_draft || '';
@@ -1409,6 +1621,16 @@ function csShowResults(job) {
     $('cs-wp-link').style.display = 'none';
     $('cs-wp-open').style.display = 'none';
   }
+  // Load clip selections if available
+  _csClipSelections = null;
+  if (job.clip_selections) {
+    try {
+      _csClipSelections = typeof job.clip_selections === 'string' ? JSON.parse(job.clip_selections) : job.clip_selections;
+    } catch {}
+  }
+  // Clear clip list for new results
+  $('cs-clip-list').innerHTML = '';
+  _csClipCounter = 0;
 }
 
 function csStartPolling() {
@@ -1452,10 +1674,13 @@ async function csStartUpload() {
 
     csSetStep('cs-step-pipeline', 'active');
     btn.textContent = 'Processing...';
+    const webhookPayload = { r2FileKey, r2Url: publicUrl, episodeTitle: title, episodeDescription: $('cs-description').value.trim() || '', chatId: 1375806243 };
+    if (_csHeroUrl) webhookPayload.heroImageUrl = _csHeroUrl;
+    if (_csThumbUrl) webhookPayload.thumbnailUrl = _csThumbUrl;
     await fetch('https://webhook.flowos.tech/webhook/content-studio-pipeline', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ r2FileKey, r2Url: publicUrl, episodeTitle: title, episodeDescription: $('cs-description').value.trim() || '', chatId: 1375806243 })
+      body: JSON.stringify(webhookPayload)
     });
     csSetStep('cs-step-pipeline', 'done');
     ['cs-step-buzzsprout','cs-step-blog','cs-step-substack','cs-step-linkedin'].forEach(s => csSetStep(s, 'active'));

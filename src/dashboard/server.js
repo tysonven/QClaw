@@ -956,6 +956,121 @@ export class DashboardServer {
       }
     });
 
+    // ─── Content Studio: Image Upload ──────────────────────────
+    this.app.post('/api/content-studio/upload-image', async (req, res) => {
+      try {
+        const { S3Client, PutObjectCommand } = await import('@aws-sdk/client-s3');
+        const { default: Busboy } = await import('busboy');
+        const { default: sharp } = await import('sharp');
+
+        const envPath = join(process.env.HOME || '/root', '.quantumclaw', '.env');
+        const envVars = {};
+        try {
+          const envContent = (await import('fs')).readFileSync(envPath, 'utf-8');
+          for (const line of envContent.split('\n')) {
+            const match = line.match(/^([A-Z0-9_]+)=(.+)$/);
+            if (match) envVars[match[1]] = match[2];
+          }
+        } catch { return res.status(500).json({ error: 'Could not read R2 credentials' }); }
+
+        const accountId = envVars.R2_ACCOUNT_ID;
+        const accessKeyId = envVars.R2_ACCESS_KEY_ID;
+        const secretAccessKey = envVars.R2_SECRET_ACCESS_KEY;
+        const bucket = envVars.R2_BUCKET_NAME || 'emma-content-studio';
+
+        if (!accountId || !accessKeyId || !secretAccessKey) {
+          return res.status(500).json({ error: 'R2 credentials not configured' });
+        }
+
+        const s3 = new S3Client({
+          region: 'auto',
+          endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
+          credentials: { accessKeyId, secretAccessKey }
+        });
+
+        const bb = Busboy({ headers: req.headers, limits: { fileSize: 20 * 1024 * 1024 } });
+        const fields = {};
+        let fileBuffer = null;
+
+        bb.on('field', (name, val) => { fields[name] = val; });
+        bb.on('file', (fieldname, stream) => {
+          const chunks = [];
+          stream.on('data', (chunk) => chunks.push(chunk));
+          stream.on('end', () => { fileBuffer = Buffer.concat(chunks); });
+        });
+
+        bb.on('finish', async () => {
+          if (!fileBuffer) return res.status(400).json({ error: 'No file received' });
+
+          const { jobId, imageType } = fields;
+          if (!jobId || !imageType) return res.status(400).json({ error: 'jobId and imageType required' });
+          if (!['hero', 'thumbnail'].includes(imageType)) return res.status(400).json({ error: 'imageType must be hero or thumbnail' });
+
+          try {
+            const dims = imageType === 'hero' ? { w: 1200, h: 628 } : { w: 1280, h: 720 };
+            const resized = await sharp(fileBuffer)
+              .resize(dims.w, dims.h, { fit: 'cover' })
+              .jpeg({ quality: 85 })
+              .toBuffer();
+
+            const fileKey = `episodes/${jobId}/${imageType}.jpg`;
+            await s3.send(new PutObjectCommand({
+              Bucket: bucket,
+              Key: fileKey,
+              Body: resized,
+              ContentType: 'image/jpeg'
+            }));
+
+            const publicUrl = `https://pub-70c436931e9e4611a135e7405c596611.r2.dev/${fileKey}`;
+
+            // Update Supabase job record
+            const anonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZkYWJ5Z21yb211cXR5c2l0b2RwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTk2NjI2OTQsImV4cCI6MjA3NTIzODY5NH0.6JJMkPXBufpLxlisH1ig32Xm8YM3p0jcXRlBzx5x8Dk';
+            const col = imageType === 'hero' ? 'hero_image_url' : 'thumbnail_url';
+            await fetch(`https://fdabygmromuqtysitodp.supabase.co/rest/v1/content_studio_jobs?id=eq.${encodeURIComponent(jobId)}`, {
+              method: 'PATCH',
+              headers: { apikey: anonKey, Authorization: `Bearer ${anonKey}`, 'Content-Type': 'application/json' },
+              body: JSON.stringify({ [col]: publicUrl })
+            });
+
+            res.json({ url: publicUrl });
+          } catch (err) {
+            res.status(500).json({ error: 'Image processing failed: ' + err.message });
+          }
+        });
+
+        bb.on('error', (err) => res.status(500).json({ error: 'Upload parse error: ' + err.message }));
+        req.pipe(bb);
+      } catch (err) {
+        res.status(500).json({ error: err.message });
+      }
+    });
+
+    // ─── Content Studio: Schedule Clip ──────────────────────────
+    this.app.post('/api/content-studio/schedule-clip', async (req, res) => {
+      try {
+        const { clipUrl, caption, platform, scheduledAt, jobId } = req.body;
+        if (!clipUrl || !platform || !jobId) {
+          return res.status(400).json({ error: 'clipUrl, platform, and jobId are required' });
+        }
+        const anonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZkYWJ5Z21yb211cXR5c2l0b2RwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTk2NjI2OTQsImV4cCI6MjA3NTIzODY5NH0.6JJMkPXBufpLxlisH1ig32Xm8YM3p0jcXRlBzx5x8Dk';
+        const sbRes = await fetch('https://fdabygmromuqtysitodp.supabase.co/rest/v1/social_clip_schedules', {
+          method: 'POST',
+          headers: {
+            apikey: anonKey,
+            Authorization: `Bearer ${anonKey}`,
+            'Content-Type': 'application/json',
+            'Prefer': 'return=representation'
+          },
+          body: JSON.stringify({ clip_url: clipUrl, caption: caption || '', platform, scheduled_at: scheduledAt || null, job_id: jobId })
+        });
+        const data = await sbRes.json();
+        if (!sbRes.ok) return res.status(sbRes.status).json({ error: data.message || 'Failed to save schedule' });
+        res.json({ ok: true, schedule: Array.isArray(data) ? data[0] : data });
+      } catch (err) {
+        res.status(500).json({ error: err.message });
+      }
+    });
+
     // ─── Content Studio: Jobs ─────────────────────────────────
     this.app.get('/api/content-studio/jobs', async (req, res) => {
       try {
