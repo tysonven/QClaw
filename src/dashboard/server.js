@@ -56,6 +56,13 @@ export class DashboardServer {
 
     this.app.use(express.json({ limit: '20mb' }));
 
+    // Rate limiting on sensitive endpoints
+    const { default: rateLimit } = await import('express-rate-limit');
+    this.app.use('/api/trading/simulate', rateLimit({ windowMs: 60000, max: 10, message: { error: 'Too many simulation requests' } }));
+    this.app.use('/api/content-studio/upload', rateLimit({ windowMs: 60000, max: 5, message: { error: 'Too many upload requests' } }));
+    this.app.use('/api/content-studio/upload-image', rateLimit({ windowMs: 60000, max: 10, message: { error: 'Too many image upload requests' } }));
+    this.app.use('/api/trading/execute', rateLimit({ windowMs: 60000, max: 5, message: { error: 'Too many trade requests' } }));
+
     // Serve agency character assets
     this.app.use('/agency-assets', express.static(join(__dirname, 'agency-assets')));
 
