@@ -339,3 +339,62 @@ ssh qclaw "cd ~/QClaw && npm test"
 - GHL Social Planner integration for scheduled clips
 - Auto-clipper: FFmpeg worker for automated clip generation from transcript timestamps
 - Delete test Buzzsprout episodes before Emma uses it
+
+---
+
+## Session: 4 April 2026 — Trading Room
+
+### Infrastructure
+- Monte Carlo worker: PM2 trading-worker, port 4001
+- Python Flask: ~/QClaw/src/trading/monte_carlo.py
+- yfinance for gold (GC=F) and BTC (BTC-USD) price data
+- Macro factors: DXY (DX-Y.NYB) and 10Y treasury yield (^TNX)
+- 10,000 GBM simulations, 95% confidence interval
+- Polymarket CLOB client: ~/QClaw/src/trading/execute_trade.py
+
+### n8n Workflows (all active)
+- Trading - Market Scanner (3YahxqOguET3pifj) — every 30 mins
+  - Simulates gold (k target) + BTC (k target, 90 days)
+  - Fetches Polymarket markets (100 markets, offset 500)
+  - Compares sim probability vs market odds, flags edge >25%
+  - Saves to trading_simulations, Telegram scan summary
+- Trading - Trade Executor (fq7spfyiNcpt8Mf7) — webhook /webhook/trading-execute
+  - Validates trading_config (trading_enabled, daily loss limit)
+  - Executes via port 4000 API, saves to trading_positions
+- Trading - Position Monitor (UYA0JppH7eqyI7fQ) — every 15 mins
+- Trading - Weekly Analyst (vjj2uBIPc07FpIxx) — Monday 9am
+
+### Dashboard — Trading Room Page (🎰)
+- Live simulations table (auto-refresh 60s)
+- Live positions table 
+- Config panel: trading toggle, max position, min edge, daily loss limit
+- Run Simulation panel: asset selector, target price, horizon input
+
+### Supabase Tables
+- trading_simulations, trading_positions, trading_config, 
+  trading_analyst_reports, trading_markets
+
+### Key Settings (trading_config)
+- trading_enabled: false (manual activation required)
+- max_position_usdc: 25
+- min_edge_threshold: 25
+- daily_loss_limit: 50
+
+### Polymarket Setup
+- Account: .94 USDC deposited
+- Private key and funder address stored in ~/.quantumclaw/.env on ssh qclaw
+- py-clob-client installed
+
+### Key Technical Notes
+- Polymarket Gamma API requires User-Agent header or returns 403
+- BTC k markets live at offset 500 in Gamma API
+- No gold/XAU price markets currently on Polymarket
+- n8n merge node v2.1 with append mode works; waitForAll with 3 inputs does not
+- All Supabase nodes use Supabase FSC credential (never hardcode keys)
+- Analyse Edge output[0] fans out to both Save Simulations and Notify Edge
+
+### Pending
+- Charlie trading.md skill file for conversational trading control
+- News sentiment overlay for macro adjustment
+- Oil as third asset when Polymarket markets appear
+- First live trade once edge >25% is detected
