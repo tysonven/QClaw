@@ -1098,24 +1098,14 @@ export class DashboardServer {
     // ─── Trading: Balance & PnL ───────────────────────────────
     this.app.get('/api/trading/balance', async (req, res) => {
       try {
-        const envPath = join(process.env.HOME || '/root', '.quantumclaw', '.env');
-        let walletAddress = '';
-        try {
-          const envContent = (await import('fs')).readFileSync(envPath, 'utf-8');
-          for (const line of envContent.split('\n')) {
-            const match = line.match(/^POLYMARKET_FUNDER_ADDRESS=(.+)$/);
-            if (match) walletAddress = match[1].trim();
-          }
-        } catch {}
+        const { execSync } = await import('child_process');
 
-        let portfolioValue = 0;
-        if (walletAddress) {
-          try {
-            const valueResp = await fetch(`https://data-api.polymarket.com/value?user=${walletAddress}`, { headers: { 'User-Agent': 'Mozilla/5.0' } });
-            const valueData = await valueResp.json();
-            portfolioValue = parseFloat(valueData?.portfolioValue ?? valueData?.value ?? 0) || 0;
-          } catch { portfolioValue = 0; }
-        }
+        let usdcBalance = 0;
+        try {
+          const result = execSync('python3 /root/QClaw/src/trading/get_balance.py', { timeout: 10000 }).toString();
+          const { balance } = JSON.parse(result);
+          usdcBalance = balance;
+        } catch { usdcBalance = 0; }
 
         const anonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZkYWJ5Z21yb211cXR5c2l0b2RwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTk2NjI2OTQsImV4cCI6MjA3NTIzODY5NH0.6JJMkPXBufpLxlisH1ig32Xm8YM3p0jcXRlBzx5x8Dk';
         const headers = { apikey: anonKey, Authorization: `Bearer ${anonKey}` };
@@ -1130,7 +1120,7 @@ export class DashboardServer {
         const realisedPnl = Array.isArray(closedRows) ? closedRows.reduce((sum, r) => sum + (parseFloat(r.pnl) || 0), 0) : 0;
         const openPositions = Array.isArray(openRows) ? openRows.length : 0;
 
-        res.json({ usdc_balance: Math.round(portfolioValue * 100) / 100, realised_pnl: Math.round(realisedPnl * 100) / 100, open_positions: openPositions });
+        res.json({ usdc_balance: Math.round(usdcBalance * 100) / 100, realised_pnl: Math.round(realisedPnl * 100) / 100, open_positions: openPositions });
       } catch (err) { res.status(500).json({ error: err.message }); }
     });
 
