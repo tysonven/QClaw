@@ -485,3 +485,40 @@ Now enforced in:
 - Charlie content-studio.md skill file
 - YouTube OAuth for Content Studio
 - Instagram Reels workflow Google Sheets 403 — separate chat
+
+---
+
+## Session: Apr 6, 2026 — Content Studio Phase 2 Completion
+
+### What Was Completed
+
+**Content Studio Pipeline (Qf39NEOEgz2W0uls) — PRODUCTION READY**
+
+Full end-to-end pipeline tested and confirmed working across all 30 nodes.
+
+**Fixes applied this session:**
+- Wait nodes: 5s before Substack, 3s before LinkedIn (rate limiting)
+- Model: Substack + LinkedIn on Haiku, Blog stays on Sonnet
+- Convert to HTML code node added between Blog Post and WordPress
+- All three prompts: first person as Emma Maidment, no em dashes, no hashtags
+- LinkedIn: Get LinkedIn Profile node removed; author hardcoded as urn:li:member:194094731
+- LinkedIn posting via Blotato (avoids n8n JSON parser issues with dotted keys)
+- YouTube Upload: inputDataFieldName fixed to data
+
+**Verified pipeline outputs:**
+- Buzzsprout upload, AssemblyAI transcription, Haiku clip selection
+- WordPress HTML draft, Substack draft, LinkedIn post via Blotato
+- YouTube unlisted upload, Supabase job record, Telegram start+complete notifications
+
+### Pending Next Session
+- Clean up test Buzzsprout episodes + WordPress drafts (post IDs 627-655)
+- n8n server root SSH disable (157.230.216.158)
+- Dashboard static token → session auth
+- Charlie skill files: content-studio.md, trading.md
+- YouTube auto-publish or Emma publishes manually
+
+### Key Config
+- Emma LinkedIn member ID: 194094731
+- Emma YouTube channel: UCvUdyddTC_Njz52NNotKQWw
+- Blotato API key: BLOTATO_API_KEY in ~/.quantumclaw/.env
+- Content Studio workflow: Qf39NEOEgz2W0uls
