@@ -220,12 +220,17 @@ def run_clip_job(job_id: str, req: ClipRequest):
                 capture_output=True,
             )
 
+            # Step 3b — Crop to 9:16 vertical
+            log.info(f"[{job_id}] Step 3b: Cropping clip {n} to 9:16")
+            vertical_clip = f"/tmp/{job_id}_vertical_{n}.mp4"
+            crop_to_vertical(raw_clip, vertical_clip)
+
             # Step 4 — Generate SRT and burn captions
             log.info(f"[{job_id}] Step 4: Burning captions on clip {n}")
             srt_path = f"/tmp/{job_id}_clip_{n}.srt"
             captioned_path = f"/tmp/{job_id}_captioned_{n}.mp4"
             generate_srt(req.transcript, start_ms, end_ms, srt_path, req.caption_style)
-            burn_captions(raw_clip, srt_path, captioned_path)
+            burn_captions(vertical_clip, srt_path, captioned_path)
 
             # Step 5 — Upload to R2
             log.info(f"[{job_id}] Step 5: Uploading clip {n} to R2")
@@ -373,6 +378,23 @@ def generate_srt(
             f.write(f"{e['text']}\n\n")
 
 
+def crop_to_vertical(input_path: str, output_path: str):
+    """Crop video to 9:16 vertical aspect ratio, centred."""
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-threads", "1",
+            "-i", input_path,
+            "-vf", "crop=min(iw\\,ih*9/16):min(ih\\,iw*16/9):(iw-min(iw\\,ih*9/16))/2:(ih-min(ih\\,iw*16/9))/2",
+            "-preset", "ultrafast",
+            "-c:a", "copy",
+            output_path,
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+
 def burn_captions(input_path: str, srt_path: str, output_path: str):
     """Burn SRT subtitles onto video using FFmpeg."""
     # Escape special chars in path for FFmpeg subtitle filter
@@ -385,7 +407,7 @@ def burn_captions(input_path: str, srt_path: str, output_path: str):
             "-i", input_path,
             "-vf",
             f"subtitles={escaped_srt}:force_style='FontName=Arial,FontSize=24,"
-            f"PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,Outline=2,Alignment=2'",
+            f"PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,Outline=2,Alignment=2,MarginV=80'",
             "-preset", "ultrafast",
             "-c:a", "copy",
             output_path,
