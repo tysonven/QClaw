@@ -554,7 +554,22 @@ Full end-to-end pipeline tested and confirmed working across all 30 nodes.
 - Test run confirmed: Gold 701, BTC 9134, WTI 11.66, Brent 08.11
   — 100 markets scanned, pipeline runs end-to-end
 
+### Dashboard — Session Auth (ec3aad0)
+- Login page at /login: minimal white form, matches flowos.tech aesthetic
+- POST /api/auth/login: validates token, issues httpOnly JWT cookie (24h expiry,
+  secure, sameSite=strict), redirects to /
+- GET /api/auth/logout: clears cookie, redirects to /login
+- Auth middleware priority: JWT cookie → Bearer header → ?token= query param
+- Browser requests without auth → redirect to /login
+- API requests without auth → 401 JSON
+- Logout button added to dashboard topbar (ui.html)
+- Bug fix: GET /api/config was mutating live config.dashboard.authToken to '***'
+  via shallow spread — destroyed token in memory after first read. Fixed with
+  deep copy of dashboard sub-object.
+- New deps: jsonwebtoken, cookie-parser
+- New env: DASHBOARD_SESSION_SECRET (32-byte hex, stored in ~/.quantumclaw/.env)
+- PR to upstream: QuantumClaw/QClaw#6
+
 ### Pending
 - n8n server root SSH disable (157.230.216.158)
-- Dashboard static token → session auth
 - YouTube auto-publish option for Emma
