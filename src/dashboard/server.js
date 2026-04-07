@@ -13,6 +13,8 @@ import { readFileSync, existsSync, readdirSync, unlinkSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { setupManusWebhook } from './webhook-manus.js';
+import jwt from 'jsonwebtoken';
+import cookieParser from 'cookie-parser';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -55,6 +57,16 @@ export class DashboardServer {
     this.AUTH_LOCKOUT_MS = 120000; // 2 minutes
 
     this.app.use(express.json({ limit: '20mb' }));
+    this.app.use(express.urlencoded({ extended: false }));
+    this.app.use(cookieParser());
+
+    // Session auth secret (for JWT cookie signing)
+    this.sessionSecret = process.env.DASHBOARD_SESSION_SECRET;
+    if (!this.sessionSecret) {
+      const { randomBytes } = await import('crypto');
+      this.sessionSecret = randomBytes(32).toString('hex');
+      log.warn('DASHBOARD_SESSION_SECRET not set — generated ephemeral secret (sessions won\'t persist across restarts)');
+    }
 
     // Rate limiting on sensitive endpoints
     const { default: rateLimit } = await import('express-rate-limit');
@@ -89,6 +101,78 @@ export class DashboardServer {
           res.redirect('/');
         }
       }
+    });
+
+    // Login page
+    this.app.get('/login', (req, res) => {
+      const error = req.query.error === '1';
+      res.send(`<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Dashboard — Login</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#fff;color:#1a1a1a;display:flex;align-items:center;justify-content:center;min-height:100vh}
+.card{width:100%;max-width:360px;padding:40px}
+h1{font-size:1.1rem;font-weight:600;margin-bottom:24px;letter-spacing:-.01em}
+.subtle{color:#888;font-size:.8rem;margin-bottom:20px}
+input[type=password]{width:100%;padding:10px 12px;border:1px solid #ddd;border-radius:6px;font-size:.9rem;outline:none;transition:border .15s}
+input[type=password]:focus{border-color:#333}
+button{width:100%;padding:10px;margin-top:12px;background:#1a1a1a;color:#fff;border:none;border-radius:6px;font-size:.9rem;cursor:pointer;transition:opacity .15s}
+button:hover{opacity:.85}
+.err{color:#d33;font-size:.8rem;margin-top:8px}
+</style></head><body>
+<div class="card">
+<h1>Agent Boardroom</h1>
+<p class="subtle">Enter your dashboard token to continue.</p>
+<form method="POST" action="/api/auth/login">
+<input type="password" name="password" placeholder="Token" autofocus required>
+<button type="submit">Sign in</button>
+${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
+</form></div></body></html>`);
+    });
+
+    // Login endpoint
+    this.app.post('/api/auth/login', (req, res) => {
+      const ip = req.ip || req.socket.remoteAddress;
+
+      // Check lockout
+      const lockout = this.authAttempts.get(ip);
+      if (lockout?.lockedUntil && Date.now() < lockout.lockedUntil) {
+        return res.redirect('/login?error=1');
+      }
+
+      const password = req.body?.password;
+      const authToken = this.config.dashboard?.authToken || process.env.DASHBOARD_AUTH_TOKEN;
+
+      if (password && authToken && password === authToken) {
+        // Success — issue JWT cookie
+        const token = jwt.sign({ authenticated: true }, this.sessionSecret, { expiresIn: '24h' });
+        res.cookie('dashboard_session', token, {
+          httpOnly: true,
+          secure: true,
+          sameSite: 'strict',
+          maxAge: 86400000, // 24h
+        });
+        this.authAttempts.delete(ip);
+        return res.redirect('/');
+      }
+
+      // Failed — track attempt
+      const attempts = this.authAttempts.get(ip) || { count: 0 };
+      attempts.count++;
+      if (attempts.count >= this.AUTH_MAX_ATTEMPTS) {
+        attempts.lockedUntil = Date.now() + this.AUTH_LOCKOUT_MS;
+        log.warn(`Dashboard login lockout: ${ip} (${this.AUTH_MAX_ATTEMPTS} failed attempts)`);
+      }
+      this.authAttempts.set(ip, attempts);
+      return res.redirect('/login?error=1');
+    });
+
+    // Logout endpoint
+    this.app.get('/api/auth/logout', (req, res) => {
+      res.clearCookie('dashboard_session');
+      res.redirect('/login');
     });
 
     // Web onboard: save config from the browser UI
@@ -246,13 +330,15 @@ export class DashboardServer {
     rateLimitCleanup.unref();
 
     this.app.use((req, res, next) => {
-      // Skip auth for HTML pages, health check, and PIN verify endpoint
-      if (req.path === '/' || req.path === '/onboard' || req.path === '/favicon.ico' || 
-          req.path === '/api/health' || req.path === '/api/auth/verify-pin') return next();
+      // Skip auth for public paths
+      const publicPaths = ['/', '/login', '/onboard', '/favicon.ico',
+        '/api/health', '/api/auth/verify-pin', '/api/auth/login', '/api/auth/logout'];
+      if (publicPaths.includes(req.path)) return next();
 
       const ip = req.ip || req.socket.remoteAddress;
-
       const isLocalhost = ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1";
+      const isBrowser = (req.headers.accept || '').includes('text/html');
+
       // Check auth lockout
       const lockout = this.authAttempts.get(ip);
       if (!isLocalhost && lockout?.lockedUntil && Date.now() < lockout.lockedUntil) {
@@ -260,12 +346,39 @@ export class DashboardServer {
         return res.status(429).json({ error: `Locked out. Try again in ${remaining} minutes.` });
       }
 
-      // Token auth
       const authToken = this.config.dashboard?.authToken || process.env.DASHBOARD_AUTH_TOKEN;
-      if (authToken) {
-        const provided = req.headers['authorization']?.replace('Bearer ', '') || req.query.token;
-        if (provided !== authToken) {
-          // Track failed attempt
+      let authenticated = false;
+
+      // Priority 1: JWT session cookie
+      const sessionCookie = req.cookies?.dashboard_session;
+      if (sessionCookie) {
+        try {
+          jwt.verify(sessionCookie, this.sessionSecret);
+          authenticated = true;
+        } catch {
+          // Cookie expired or invalid — clear it
+          res.clearCookie('dashboard_session');
+        }
+      }
+
+      // Priority 2: Bearer token header (API/programmatic access)
+      if (!authenticated && authToken) {
+        const bearer = req.headers['authorization']?.replace('Bearer ', '');
+        if (bearer && bearer === authToken) {
+          authenticated = true;
+        }
+      }
+
+      // Priority 3: ?token= query param (API/programmatic access)
+      if (!authenticated && authToken && req.query.token) {
+        if (req.query.token === authToken) {
+          authenticated = true;
+        }
+      }
+
+      if (!authenticated) {
+        if (!isLocalhost) {
+          // Track failed attempt for non-localhost
           const attempts = this.authAttempts.get(ip) || { count: 0 };
           attempts.count++;
           if (attempts.count >= this.AUTH_MAX_ATTEMPTS) {
@@ -273,20 +386,23 @@ export class DashboardServer {
             log.warn(`Dashboard auth lockout: ${ip} (${this.AUTH_MAX_ATTEMPTS} failed attempts)`);
           }
           this.authAttempts.set(ip, attempts);
-          return res.status(401).json({ error: 'Unauthorised' });
         }
-
-        // Token expiry check (skip for localhost connections)
-        const isLocal = ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
-        if (!isLocal && this.tokenCreatedAt && this.tokenExpiry) {
-          if (Date.now() - this.tokenCreatedAt > this.tokenExpiry) {
-            return res.status(401).json({ error: 'Token expired. Run: qclaw dashboard' });
-          }
-        }
-
-        // Reset failed attempts on success
-        this.authAttempts.delete(ip);
+        return isBrowser ? res.redirect('/login') : res.status(401).json({ error: 'Unauthorised' });
       }
+
+      // Token expiry check — only for auto-generated session tokens, not the static config authToken
+      // Skip for: cookie sessions, localhost, and when a persistent authToken is set in config
+      const isAutoToken = !this.config.dashboard?.authToken;
+      if (!sessionCookie && !isLocalhost && isAutoToken && this.tokenCreatedAt && this.tokenExpiry) {
+        if (Date.now() - this.tokenCreatedAt > this.tokenExpiry) {
+          return isBrowser
+            ? res.redirect('/login')
+            : res.status(401).json({ error: 'Token expired. Run: qclaw dashboard' });
+        }
+      }
+
+      // Reset failed attempts on success
+      this.authAttempts.delete(ip);
 
       // Rate limit check
       const now = Date.now();
@@ -632,8 +748,13 @@ export class DashboardServer {
     // ─── Config Management ──────────────────────────────────
     this.app.get('/api/config', (req, res) => {
       const { _dir, _file, ...safe } = this.qclaw.config;
-      if (safe.dashboard?.authToken) safe.dashboard.authToken = '***';
-      if (safe.dashboard?.pin) safe.dashboard.pin = '***';
+      // Deep-copy dashboard to avoid mutating the live config object
+      if (safe.dashboard) {
+        safe.dashboard = { ...safe.dashboard };
+        if (safe.dashboard.authToken) safe.dashboard.authToken = '***';
+        if (safe.dashboard.pin) safe.dashboard.pin = '***';
+        if (safe.dashboard.tunnelToken) safe.dashboard.tunnelToken = '***';
+      }
       res.json(safe);
     });
 
