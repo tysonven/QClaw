@@ -573,3 +573,40 @@ Full end-to-end pipeline tested and confirmed working across all 30 nodes.
 ### Pending
 - n8n server root SSH disable (157.230.216.158)
 - YouTube auto-publish option for Emma
+
+---
+
+## Session: Apr 7, 2026 — Clipper Microservice + Pipeline Completion
+
+### Clipper Microservice — BUILT & PRODUCTION READY
+- FastAPI service, port 4002, PM2: clipper-worker
+- Source: /root/QClaw/src/clipper/main.py
+- Supabase table: clip_jobs (id, status, video_url, transcript, clips, caption_style, etc.)
+- Pipeline: Claude Haiku segment selection → FFmpeg cut → 9:16 vertical crop
+  → SRT captions burned (word-by-word, Montserrat Bold, gold highlights, lower third)
+  → R2 upload → Supabase job record
+- Memory fix: -threads 1 -preset ultrafast, ffprobe duration guard (was OOM-killing at 681MB)
+- Caption style: accepts dict or JSON string (fixed 422 error from n8n)
+- Clip output: clips/{job_id}/clip_{n}.mp4 on R2
+- Charlie skill file: src/agents/skills/clipper.md
+
+### Content Studio Pipeline — FULLY PRODUCTION READY
+- Clipper wired in parallel with blog post branch
+- Merge Before Notify node: waits for both YouTube upload AND clips before firing Telegram
+- Telegram notification now includes all 5 clip URLs
+- AssemblyAI word_boost added: Maidment, Emma Maidment, Flowlane, Flow Lane
+- Save Clip URLs: PATCHes clip_job_id + clip_selections into content_studio_jobs
+- Supabase: clip_job_id column added to content_studio_jobs
+
+### Dashboard Session Auth — SHIPPED
+- /login page, JWT httpOnly cookie (24h), /logout endpoint
+- Auth middleware: cookie → Bearer → ?token= priority chain
+- Bug fix: /api/config shallow spread was destroying authToken in memory
+- PR #6 opened upstream to QuantumClaw/QClaw
+
+### Pending
+- Blotato subscription renewal (LinkedIn posting disabled until paid)
+- n8n server root SSH disable (157.230.216.158) — tonight
+- YouTube auto-publish option for Emma
+- Clipper Phase 2: face detection for rule-of-thirds reframing
+- Clipper productisation: own domain, API key auth, Stripe
