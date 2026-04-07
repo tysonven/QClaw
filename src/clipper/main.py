@@ -74,12 +74,6 @@ log = logging.getLogger("clipper")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 # ---------------------------------------------------------------------------
-# In-memory job store (fallback when Supabase table doesn't exist yet)
-# ---------------------------------------------------------------------------
-_jobs_lock = threading.Lock()
-_jobs: dict = {}
-
-# ---------------------------------------------------------------------------
 # Supabase helpers
 # ---------------------------------------------------------------------------
 
@@ -92,53 +86,25 @@ SUPA_HEADERS = {
 def supa_url(path: str = "") -> str:
     return f"{SUPABASE_URL}/rest/v1/clip_jobs{path}"
 
-def supa_insert(record: dict) -> dict:
+def db_insert(record: dict) -> dict:
     headers = {**SUPA_HEADERS, "Prefer": "return=representation"}
     r = httpx.post(supa_url(), headers=headers, json=record, timeout=30)
     r.raise_for_status()
     return r.json()[0]
 
-def supa_update(job_id: str, patch: dict) -> dict:
+def db_update(job_id: str, patch: dict) -> dict:
+    patch["updated_at"] = _now()
     headers = {**SUPA_HEADERS, "Prefer": "return=representation"}
     r = httpx.patch(supa_url(f"?id=eq.{job_id}"), headers=headers, json=patch, timeout=30)
     r.raise_for_status()
-    return r.json()[0] if r.json() else patch
+    rows = r.json()
+    return rows[0] if rows else patch
 
-def supa_get(job_id: str) -> Optional[dict]:
+def db_get(job_id: str) -> Optional[dict]:
     r = httpx.get(supa_url(f"?id=eq.{job_id}"), headers=SUPA_HEADERS, timeout=30)
     r.raise_for_status()
     rows = r.json()
     return rows[0] if rows else None
-
-# Wrapped versions that fall back to in-memory store
-def db_insert(record: dict):
-    with _jobs_lock:
-        _jobs[record["id"]] = {**record, "created_at": _now()}
-    try:
-        return supa_insert(record)
-    except Exception as e:
-        log.warning(f"Supabase insert failed (using in-memory): {e}")
-        return record
-
-def db_update(job_id: str, patch: dict):
-    with _jobs_lock:
-        if job_id in _jobs:
-            _jobs[job_id].update(patch)
-    try:
-        return supa_update(job_id, patch)
-    except Exception as e:
-        log.warning(f"Supabase update failed (using in-memory): {e}")
-        return patch
-
-def db_get(job_id: str) -> Optional[dict]:
-    try:
-        row = supa_get(job_id)
-        if row:
-            return row
-    except Exception as e:
-        log.warning(f"Supabase get failed (using in-memory): {e}")
-    with _jobs_lock:
-        return _jobs.get(job_id)
 
 # ---------------------------------------------------------------------------
 # FastAPI app
@@ -175,8 +141,9 @@ def create_clip_job(req: ClipRequest):
         "status": "queued",
         "episode_title": req.episode_title,
         "r2_file_key": req.r2_file_key,
+        "video_url": req.video_url or f"{R2_PUBLIC_BASE}/{req.r2_file_key}",
+        "transcript": req.transcript,
         "num_clips": req.num_clips,
-        "caption_style": req.caption_style,
     })
 
     # Launch background worker
@@ -201,7 +168,7 @@ def get_clip_job(job_id: str):
 def run_clip_job(job_id: str, req: ClipRequest):
     """Full clip pipeline — runs in a background thread."""
     try:
-        db_update(job_id, {"status": "processing", "updated_at": _now()})
+        db_update(job_id, {"status": "processing"})
 
         # Step 1 — Select segments with Claude
         log.info(f"[{job_id}] Step 1: Selecting segments with Claude")
@@ -271,7 +238,6 @@ def run_clip_job(job_id: str, req: ClipRequest):
         db_update(job_id, {
             "status": "complete",
             "clips": clips_result,
-            "updated_at": _now(),
         })
 
     except Exception as e:
@@ -280,7 +246,6 @@ def run_clip_job(job_id: str, req: ClipRequest):
             db_update(job_id, {
                 "status": "error",
                 "error_message": str(e),
-                "updated_at": _now(),
             })
         except Exception:
             pass
