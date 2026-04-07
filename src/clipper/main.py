@@ -14,13 +14,13 @@ import subprocess
 import threading
 import logging
 from datetime import datetime, timezone
-from typing import Optional, List
+from typing import Any, Optional, List
 
 import httpx
 import anthropic
 import boto3
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, validator
 
 # ---------------------------------------------------------------------------
 # Environment
@@ -119,7 +119,16 @@ class ClipRequest(BaseModel):
     episode_title: str
     transcript: List[dict]   # [{text, start, end, confidence}, ...]
     num_clips: int = 5
-    caption_style: Optional[str] = None  # None or "word_by_word"
+    caption_style: Optional[Any] = None
+
+    @validator("caption_style", pre=True)
+    def parse_caption_style(cls, v):
+        if isinstance(v, str):
+            try:
+                return json.loads(v)
+            except (json.JSONDecodeError, TypeError):
+                return v
+        return v
 
 
 class ClipResponse(BaseModel):
@@ -313,7 +322,7 @@ def generate_srt(
     start_ms: int,
     end_ms: int,
     srt_path: str,
-    caption_style: Optional[str] = None,
+    caption_style=None,
 ):
     """Generate an SRT file from transcript words within the clip range."""
 
@@ -329,7 +338,8 @@ def generate_srt(
     offset = start_ms
 
     entries = []
-    if caption_style == "word_by_word":
+    animation = caption_style.get("animation") if isinstance(caption_style, dict) else caption_style
+    if animation == "word_by_word":
         for i, w in enumerate(words):
             entries.append({
                 "index": i + 1,
