@@ -189,11 +189,18 @@ def run_clip_job(job_id: str, req: ClipRequest):
         input_path = f"/tmp/{job_id}_input.mp4"
         s3.download_file(R2_BUCKET_NAME, req.r2_file_key, input_path)
 
+        # Probe video duration to cap segment times
+        video_duration_ms = _get_video_duration_ms(input_path)
+        log.info(f"[{job_id}] Video duration: {video_duration_ms}ms")
+
         clips_result = []
 
         for n, seg in enumerate(segments):
             start_ms = seg["start_ms"]
-            end_ms = seg["end_ms"]
+            end_ms = min(seg["end_ms"], video_duration_ms)
+            if start_ms >= video_duration_ms:
+                log.warning(f"[{job_id}] Clip {n} start ({start_ms}ms) beyond video duration, skipping")
+                continue
             start_s = start_ms / 1000.0
             end_s = end_ms / 1000.0
 
@@ -374,10 +381,12 @@ def burn_captions(input_path: str, srt_path: str, output_path: str):
     subprocess.run(
         [
             "ffmpeg", "-y",
+            "-threads", "1",
             "-i", input_path,
             "-vf",
             f"subtitles={escaped_srt}:force_style='FontName=Arial,FontSize=24,"
             f"PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,Outline=2,Alignment=2'",
+            "-preset", "ultrafast",
             "-c:a", "copy",
             output_path,
         ],
@@ -389,6 +398,19 @@ def burn_captions(input_path: str, srt_path: str, output_path: str):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _get_video_duration_ms(path: str) -> int:
+    """Probe video duration in milliseconds using ffprobe."""
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", path],
+            capture_output=True, text=True, check=True,
+        )
+        return int(float(result.stdout.strip()) * 1000)
+    except Exception:
+        return 999999999  # fallback: don't cap
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
