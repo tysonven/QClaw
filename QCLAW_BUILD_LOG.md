@@ -2,7 +2,7 @@
 
 **Project:** QClaw — Self-hosted Claude agent runtime (Fork of QuantumClaw/QClaw)
 **Owner:** Tyson Venables / Flow OS
-**Last updated:** 26 March 2026
+**Last updated:** 8 April 2026
 **Repo:** https://github.com/tysonven/QClaw
 
 ---
@@ -644,3 +644,33 @@ Full end-to-end pipeline tested and confirmed working across all 30 nodes.
 - YouTube auto-publish option for Emma
 - Clipper Phase 2: face detection / rule of thirds
 - Charlie sub-task spawning (parent_task_id support in run-task.sh)
+
+---
+
+## Session: Apr 8, 2026 (evening) — Telegram Token Rotation + n8n Recovery
+
+### Security: Telegram Bot Token Rotated
+- GitGuardian alert received — old token revoked in BotFather
+- New token updated in /home/n8nadmin/n8n-project/.env on n8n server
+- Confirmed: no token value was ever committed to git repo
+- Added .env* to .gitignore to prevent future variants being committed
+
+### n8n Recovery
+- Charlie Task Handler lost during docker restart (NODE_FUNCTION_ALLOW_BUILTIN
+  change required container recreate)
+- Recreated: Charlie - Task Handler now at workflow ID dHoqL8Ph8kmFHwyx
+- n8n owner account reset and reconfigured (password reset via n8n CLI)
+- All workflows, credentials, and execution history preserved
+
+### Workflow Backups Added
+- All 6 QClaw workflows exported to /root/QClaw/n8n-workflows/
+- Committed 3601424, pushed to main
+- Update these exports after every workflow change
+
+### Infrastructure Hardening
+- Added postgres healthcheck to docker-compose.yml
+- n8n now waits for postgres condition: service_healthy before starting
+- Prevents workflow loss on future restarts
+
+### Updated Workflow IDs
+- Charlie - Task Handler: dHoqL8Ph8kmFHwyx (was a88zSrQfEy79v3oc)
