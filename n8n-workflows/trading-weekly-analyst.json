@@ -1,0 +1,560 @@
+{
+  "updatedAt": "2026-04-07T09:03:27.423Z",
+  "createdAt": "2026-04-03T11:49:23.927Z",
+  "id": "vjj2uBIPc07FpIxx",
+  "name": "Trading - Weekly Analyst",
+  "description": null,
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 9 * * 1"
+            }
+          ]
+        }
+      },
+      "id": "weekly-schedule",
+      "name": "Monday 9am",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://fdabygmromuqtysitodp.supabase.co/rest/v1/trading_positions?created_at=gte.{{ new Date(Date.now() - 7*86400000).toISOString() }}&order=created_at.desc",
+        "options": {},
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": ""
+            }
+          ]
+        }
+      },
+      "id": "fetch-week-trades",
+      "name": "Fetch Week Trades",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        470,
+        300
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "Nd2uuX5t9KEwbQPv",
+          "name": "Supabase FSC"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const trades = $input.first().json;\nconst arr = Array.isArray(trades) ? trades : [];\n\nconst closed = arr.filter(t => t.status === 'closed');\nconst wins = closed.filter(t => t.close_reason === 'take_profit');\nconst losses = closed.filter(t => t.close_reason === 'stop_loss');\n\nconst summary = {\n  total_trades: arr.length,\n  open: arr.filter(t => t.status === 'open').length,\n  closed: closed.length,\n  wins: wins.length,\n  losses: losses.length,\n  win_rate: closed.length > 0 ? (wins.length / closed.length * 100).toFixed(1) + '%' : 'N/A',\n  trades_detail: arr.map(t => ({\n    market: t.market_id,\n    direction: t.direction,\n    entry: t.entry_price,\n    current: t.current_price,\n    status: t.status,\n    reason: t.close_reason\n  }))\n};\n\nreturn [{ json: summary }];"
+      },
+      "id": "calculate-stats",
+      "name": "Calculate Stats",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        690,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 2048, messages: [{ role: 'user', content: 'You are a trading analyst reviewing Polymarket prediction market trades. Review this weekly trading data and provide:\\n\\n1. What the simulation got right/wrong\\n2. Which macro factors were most predictive\\n3. Recommended parameter adjustments (edge threshold, position size)\\n4. Markets to focus on next week\\n\\nTrading data:\\n' + JSON.stringify($json, null, 2) }] }) }}",
+        "options": {},
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth"
+      },
+      "id": "claude-analysis",
+      "name": "Claude Analysis",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        910,
+        300
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "eXhIwRbh7FBgb6O3",
+          "name": "Anthropic API 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://fdabygmromuqtysitodp.supabase.co/rest/v1/trading_analyst_reports",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": ""
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ report: $json.content[0].text, stats: $('Calculate Stats').first().json, week_ending: new Date().toISOString().split('T')[0] }) }}",
+        "options": {},
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth"
+      },
+      "id": "save-report",
+      "name": "Save Report",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1130,
+        300
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "Nd2uuX5t9KEwbQPv",
+          "name": "Supabase FSC"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendMessage",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ chat_id: 1375806243, text: '\ud83d\udcca Weekly Trading Report\\n\\nTrades: ' + $('Calculate Stats').first().json.total_trades + ' | Wins: ' + $('Calculate Stats').first().json.wins + ' | Win Rate: ' + $('Calculate Stats').first().json.win_rate + '\\n\\n' + $('Claude Analysis').first().json.content[0].text.substring(0, 3500) }) }}",
+        "options": {}
+      },
+      "id": "notify-report",
+      "name": "Send Report",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1350,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Monday 9am": {
+      "main": [
+        [
+          {
+            "node": "Fetch Week Trades",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Week Trades": {
+      "main": [
+        [
+          {
+            "node": "Calculate Stats",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Stats": {
+      "main": [
+        [
+          {
+            "node": "Claude Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claude Analysis": {
+      "main": [
+        [
+          {
+            "node": "Save Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Report": {
+      "main": [
+        [
+          {
+            "node": "Send Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": true
+  },
+  "staticData": {
+    "node:Monday 9am": {
+      "recurrenceRules": []
+    }
+  },
+  "meta": null,
+  "pinData": null,
+  "versionId": "32dc5a11-302b-4274-9a10-64277fbce56f",
+  "activeVersionId": "32dc5a11-302b-4274-9a10-64277fbce56f",
+  "versionCounter": 40,
+  "triggerCount": 1,
+  "shared": [
+    {
+      "updatedAt": "2026-04-03T11:49:23.927Z",
+      "createdAt": "2026-04-03T11:49:23.927Z",
+      "role": "workflow:owner",
+      "workflowId": "vjj2uBIPc07FpIxx",
+      "projectId": "KwpTDWcFWL3DfyW3",
+      "project": {
+        "updatedAt": "2026-04-08T10:02:58.912Z",
+        "createdAt": "2025-06-06T11:27:14.830Z",
+        "id": "KwpTDWcFWL3DfyW3",
+        "name": "Tyson Venables <tysonvenables@protonmail.com>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "b1512bca-25b8-4b8b-add0-b86540e5144d",
+        "projectRelations": [
+          {
+            "updatedAt": "2025-06-06T11:27:14.830Z",
+            "createdAt": "2025-06-06T11:27:14.830Z",
+            "userId": "b1512bca-25b8-4b8b-add0-b86540e5144d",
+            "projectId": "KwpTDWcFWL3DfyW3",
+            "user": {
+              "updatedAt": "2026-04-08T20:18:59.996Z",
+              "createdAt": "2025-06-06T11:27:13.858Z",
+              "id": "b1512bca-25b8-4b8b-add0-b86540e5144d",
+              "email": "tysonvenables@protonmail.com",
+              "firstName": "Tyson",
+              "lastName": "Venables",
+              "personalizationAnswers": {
+                "version": "v4",
+                "personalization_survey_submitted_at": "2025-06-06T11:42:52.454Z",
+                "personalization_survey_n8n_version": "1.95.3",
+                "companySize": "<20",
+                "companyType": "saas",
+                "role": "business-owner",
+                "reportedSource": "friend"
+              },
+              "settings": {
+                "userActivated": true,
+                "easyAIWorkflowOnboarded": true,
+                "firstSuccessfulWorkflowId": "WVXrFCjb8wO7RWRX",
+                "userActivatedAt": 1751062185356,
+                "npsSurvey": {
+                  "responded": true,
+                  "lastShownAt": 1769430963515
+                }
+              },
+              "disabled": false,
+              "mfaEnabled": false,
+              "lastActiveAt": "2026-04-08",
+              "isPending": false
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "tags": [],
+  "activeVersion": {
+    "updatedAt": "2026-04-07T09:03:27.425Z",
+    "createdAt": "2026-04-07T09:03:27.425Z",
+    "versionId": "32dc5a11-302b-4274-9a10-64277fbce56f",
+    "workflowId": "vjj2uBIPc07FpIxx",
+    "nodes": [
+      {
+        "parameters": {
+          "rule": {
+            "interval": [
+              {
+                "field": "cronExpression",
+                "expression": "0 9 * * 1"
+              }
+            ]
+          }
+        },
+        "id": "weekly-schedule",
+        "name": "Monday 9am",
+        "type": "n8n-nodes-base.scheduleTrigger",
+        "typeVersion": 1.2,
+        "position": [
+          250,
+          300
+        ]
+      },
+      {
+        "parameters": {
+          "method": "GET",
+          "url": "=https://fdabygmromuqtysitodp.supabase.co/rest/v1/trading_positions?created_at=gte.{{ new Date(Date.now() - 7*86400000).toISOString() }}&order=created_at.desc",
+          "options": {},
+          "authentication": "genericCredentialType",
+          "genericAuthType": "httpHeaderAuth",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "apikey",
+                "value": ""
+              }
+            ]
+          }
+        },
+        "id": "fetch-week-trades",
+        "name": "Fetch Week Trades",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          470,
+          300
+        ],
+        "credentials": {
+          "httpHeaderAuth": {
+            "id": "Nd2uuX5t9KEwbQPv",
+            "name": "Supabase FSC"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "jsCode": "const trades = $input.first().json;\nconst arr = Array.isArray(trades) ? trades : [];\n\nconst closed = arr.filter(t => t.status === 'closed');\nconst wins = closed.filter(t => t.close_reason === 'take_profit');\nconst losses = closed.filter(t => t.close_reason === 'stop_loss');\n\nconst summary = {\n  total_trades: arr.length,\n  open: arr.filter(t => t.status === 'open').length,\n  closed: closed.length,\n  wins: wins.length,\n  losses: losses.length,\n  win_rate: closed.length > 0 ? (wins.length / closed.length * 100).toFixed(1) + '%' : 'N/A',\n  trades_detail: arr.map(t => ({\n    market: t.market_id,\n    direction: t.direction,\n    entry: t.entry_price,\n    current: t.current_price,\n    status: t.status,\n    reason: t.close_reason\n  }))\n};\n\nreturn [{ json: summary }];"
+        },
+        "id": "calculate-stats",
+        "name": "Calculate Stats",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          690,
+          300
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "https://api.anthropic.com/v1/messages",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 2048, messages: [{ role: 'user', content: 'You are a trading analyst reviewing Polymarket prediction market trades. Review this weekly trading data and provide:\\n\\n1. What the simulation got right/wrong\\n2. Which macro factors were most predictive\\n3. Recommended parameter adjustments (edge threshold, position size)\\n4. Markets to focus on next week\\n\\nTrading data:\\n' + JSON.stringify($json, null, 2) }] }) }}",
+          "options": {},
+          "authentication": "genericCredentialType",
+          "genericAuthType": "httpHeaderAuth"
+        },
+        "id": "claude-analysis",
+        "name": "Claude Analysis",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          910,
+          300
+        ],
+        "credentials": {
+          "httpHeaderAuth": {
+            "id": "eXhIwRbh7FBgb6O3",
+            "name": "Anthropic API 2"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "https://fdabygmromuqtysitodp.supabase.co/rest/v1/trading_analyst_reports",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "apikey",
+                "value": ""
+              },
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify({ report: $json.content[0].text, stats: $('Calculate Stats').first().json, week_ending: new Date().toISOString().split('T')[0] }) }}",
+          "options": {},
+          "authentication": "genericCredentialType",
+          "genericAuthType": "httpHeaderAuth"
+        },
+        "id": "save-report",
+        "name": "Save Report",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          1130,
+          300
+        ],
+        "credentials": {
+          "httpHeaderAuth": {
+            "id": "Nd2uuX5t9KEwbQPv",
+            "name": "Supabase FSC"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendMessage",
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify({ chat_id: 1375806243, text: '\ud83d\udcca Weekly Trading Report\\n\\nTrades: ' + $('Calculate Stats').first().json.total_trades + ' | Wins: ' + $('Calculate Stats').first().json.wins + ' | Win Rate: ' + $('Calculate Stats').first().json.win_rate + '\\n\\n' + $('Claude Analysis').first().json.content[0].text.substring(0, 3500) }) }}",
+          "options": {}
+        },
+        "id": "notify-report",
+        "name": "Send Report",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          1350,
+          300
+        ]
+      }
+    ],
+    "connections": {
+      "Monday 9am": {
+        "main": [
+          [
+            {
+              "node": "Fetch Week Trades",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Fetch Week Trades": {
+        "main": [
+          [
+            {
+              "node": "Calculate Stats",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Calculate Stats": {
+        "main": [
+          [
+            {
+              "node": "Claude Analysis",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Claude Analysis": {
+        "main": [
+          [
+            {
+              "node": "Save Report",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Save Report": {
+        "main": [
+          [
+            {
+              "node": "Send Report",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "authors": "Tyson Venables",
+    "name": null,
+    "description": null,
+    "autosaved": false,
+    "workflowPublishHistory": [
+      {
+        "createdAt": "2026-04-07T09:03:27.481Z",
+        "id": 518,
+        "workflowId": "vjj2uBIPc07FpIxx",
+        "versionId": "32dc5a11-302b-4274-9a10-64277fbce56f",
+        "event": "activated",
+        "userId": "b1512bca-25b8-4b8b-add0-b86540e5144d"
+      },
+      {
+        "createdAt": "2026-04-07T09:03:27.811Z",
+        "id": 519,
+        "workflowId": "vjj2uBIPc07FpIxx",
+        "versionId": "32dc5a11-302b-4274-9a10-64277fbce56f",
+        "event": "activated",
+        "userId": "b1512bca-25b8-4b8b-add0-b86540e5144d"
+      },
+      {
+        "createdAt": "2026-04-07T09:03:35.636Z",
+        "id": 520,
+        "workflowId": "vjj2uBIPc07FpIxx",
+        "versionId": "32dc5a11-302b-4274-9a10-64277fbce56f",
+        "event": "activated",
+        "userId": "b1512bca-25b8-4b8b-add0-b86540e5144d"
+      }
+    ]
+  }
+}

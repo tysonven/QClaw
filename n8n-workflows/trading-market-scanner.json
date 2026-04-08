@@ -1,0 +1,1245 @@
+{
+  "updatedAt": "2026-04-07T09:47:24.700Z",
+  "createdAt": "2026-04-03T11:49:18.364Z",
+  "id": "3YahxqOguET3pifj",
+  "name": "Trading - Market Scanner",
+  "description": null,
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 */1 * * 1"
+            },
+            {
+              "field": "cronExpression",
+              "expression": "0 */2 * * 2-5"
+            },
+            {
+              "field": "cronExpression",
+              "expression": "0 */4 * * 0,6"
+            }
+          ]
+        }
+      },
+      "id": "scanner-schedule",
+      "name": "Smart Schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        256,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://138.68.138.214:4001/simulate",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"asset\":\"gold\",\"target\":99999,\"question\":\"price\",\"horizon_days\":1}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "get-gold-price",
+      "name": "Get Gold Price",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://138.68.138.214:4001/simulate",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"asset\":\"btc\",\"target\":999999,\"question\":\"price\",\"horizon_days\":1}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "get-btc-price",
+      "name": "Get BTC Price",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        352
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "append"
+      },
+      "id": "merge-prices",
+      "name": "Merge Prices",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2.1,
+      "position": [
+        704,
+        256
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const goldItem = $input.all().find(i => i.json.asset === 'gold');\nconst btcItem = $input.all().find(i => i.json.asset === 'btc');\nconst wtiItem = $input.all().find(i => i.json.asset === 'wti');\nconst brentItem = $input.all().find(i => i.json.asset === 'brent');\nconst goldPrice = goldItem?.json.current_price || 4700;\nconst btcPrice = btcItem?.json.current_price || 69000;\nconst wtiPrice = wtiItem?.json.current_price || 75;\nconst brentPrice = brentItem?.json.current_price || 78;\n\nconst targets = [\n  { asset: 'gold', label: 'short',  target: Math.round(goldPrice * 1.010), horizon: 14 },\n  { asset: 'gold', label: 'medium', target: Math.round(goldPrice * 1.025), horizon: 30 },\n  { asset: 'btc',  label: 'short',  target: Math.round(btcPrice  * 1.050), horizon: 14 },\n  { asset: 'btc',  label: 'medium', target: Math.round(btcPrice  * 1.100), horizon: 30 },\n  { asset: 'wti',   label: 'short',  target: +(wtiPrice   * 1.03).toFixed(2), horizon: 14 },\n  { asset: 'wti',   label: 'medium', target: +(wtiPrice   * 1.08).toFixed(2), horizon: 30 },\n  { asset: 'brent', label: 'short',  target: +(brentPrice * 1.03).toFixed(2), horizon: 14 },\n  { asset: 'brent', label: 'medium', target: +(brentPrice * 1.08).toFixed(2), horizon: 30 },\n];\nreturn targets.map(t => ({ json: t }));"
+      },
+      "id": "calc-targets",
+      "name": "Calculate Targets",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1360,
+        448
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://138.68.138.214:4001/simulate",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ asset: $json.asset, target: $json.target, question: 'Will ' + ($json.asset === 'gold' ? 'Gold' : $json.asset === 'btc' ? 'BTC' : $json.asset === 'wti' ? 'WTI Crude' : 'Brent Crude') + ' hit $' + $json.target.toLocaleString() + '?', horizon_days: $json.horizon }) }}",
+        "options": {
+          "timeout": 60000,
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 500
+            }
+          }
+        }
+      },
+      "id": "run-sims",
+      "name": "Run Simulations",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1584,
+        448
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const sims = $input.all().map(i => i.json);\nreturn [{ json: { sims } }];"
+      },
+      "id": "collect-sims",
+      "name": "Collect Sims",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1584,
+        592
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://gamma-api.polymarket.com/markets",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "closed",
+              "value": "false"
+            },
+            {
+              "name": "limit",
+              "value": "100"
+            },
+            {
+              "name": "offset",
+              "value": "0"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "Mozilla/5.0"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "fetch-polymarket",
+      "name": "Fetch Polymarket",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        640
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "append"
+      },
+      "id": "merge-all",
+      "name": "Merge All",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2.1,
+      "position": [
+        1808,
+        752
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const isWeekend = [0,6].includes(new Date().getDay());\nconst isMonday = new Date().getDay() === 1;\nconst edgeThreshold = isMonday ? 20 : 30;\n\nconst { sims: allSims } = $input.all().find(i => i.json.sims)?.json || { sims: [] };\n// Skip gold and oil sims on weekends\nconst sims = isWeekend \n  ? allSims.filter(s => s.asset === 'btc')\n  : allSims;\nconst markets = $input.all().filter(i => i.json.question && i.json.outcomePrices).map(i => i.json);\n\nconst results = [];\nfor (const sim of sims) {\n  for (const m of markets) {\n    const text = (m.question || '').toLowerCase();\n    const isAsset = \n      sim.asset === 'gold'  ? (text.includes('gold') || text.includes('xau')) :\n      sim.asset === 'btc'   ? (text.includes('btc') || text.includes('bitcoin')) :\n      sim.asset === 'wti'   ? (text.includes('wti') || text.includes('crude') || text.includes('oil') || text.includes('west texas')) :\n      sim.asset === 'brent' ? (text.includes('brent') || text.includes('crude') || text.includes('oil')) :\n      false;\n    \n    if (!isAsset) continue;\n    \n    // Check if market mentions a price in range of our target (\u00b15%)\n    const priceMatches = text.match(/\\$[\\d,]+k?/g) || [];\n    const marketPrices = priceMatches.map(p => {\n      const clean = p.replace(/[$,k]/g,'');\n      return p.includes('k') ? parseFloat(clean) * 1000 : parseFloat(clean);\n    });\n    \n    const inRange = marketPrices.some(p => \n      Math.abs(p - sim.target) / sim.target < 0.05\n    );\n    \n    if (!inRange && marketPrices.length > 0) continue;\n    if (marketPrices.length === 0 && !isAsset) continue;\n    \n    let yesPrice = null;\n    try {\n      const p = typeof m.outcomePrices==='string' ? JSON.parse(m.outcomePrices) : m.outcomePrices;\n      if (p?.[0]) yesPrice = parseFloat(p[0]);\n    } catch {}\n    \n    if (yesPrice === null) continue;\n    \n    const edge = Math.round((sim.probability - yesPrice) * 1000) / 10;\n    results.push({\n      market_id: m.id || m.conditionId,\n      question: m.question,\n      yes_price: yesPrice,\n      sim_probability: sim.probability,\n      edge,\n      asset: sim.asset,\n      target: sim.target,\n      label: sim.label,\n      horizon: sim.horizon,\n      volume: parseFloat(m.volume || 0),\n      current_price: sim.current_price,\n      end_date: m.endDate\n    });\n  }\n}\n\nconst highEdge = results.filter(r => r.edge > edgeThreshold && r.volume > 50000);\n\n// Clean sims for Supabase (only columns that exist in trading_simulations table)\nconst cleanSims = sims.map(s => ({\n  asset: s.asset,\n  probability: s.probability,\n  confidence_lower: s.confidence_lower,\n  confidence_upper: s.confidence_upper,\n  current_price: s.current_price,\n  macro_factors: s.macro_factors,\n  simulation_count: s.simulation_count || 1000\n}));\n\nreturn [{ json: { \n  results, \n  sims: cleanSims, \n  highEdge, \n  markets_scanned: markets.length,\n  scanned_at: new Date().toISOString(),\n  gold_price: allSims.find(s=>s.asset==='gold')?.current_price,\n  btc_price: allSims.find(s=>s.asset==='btc')?.current_price,\n  wti_price: allSims.find(s=>s.asset==='wti')?.current_price,\n  brent_price: allSims.find(s=>s.asset==='brent')?.current_price\n}}];"
+      },
+      "id": "analyse-edge",
+      "name": "Analyse Edge",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2032,
+        672
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://fdabygmromuqtysitodp.supabase.co/rest/v1/trading_simulations",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.sims) }}",
+        "options": {}
+      },
+      "id": "save-sims",
+      "name": "Save Simulations",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2256,
+        576
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "Nd2uuX5t9KEwbQPv",
+          "name": "Supabase FSC"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "edge-check",
+              "leftValue": "={{ $json.highEdge.length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "has-edge",
+      "name": "Has Edge?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2256,
+        784
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendMessage",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ chat_id: 1375806243, text: '\\ud83c\\udfaf Edge Found!\\n\\nGold: $' + ($json.gold_price || 'N/A') + ' | BTC: $' + ($json.btc_price ? $json.btc_price.toLocaleString() : 'N/A') + ' | WTI: $' + ($json.wti_price || 'N/A') + ' | Brent: $' + ($json.brent_price || 'N/A') + '\\n\\n' + $json.highEdge.map(h => h.asset.toUpperCase() + ' ' + h.label + ' ($' + h.target.toLocaleString() + ') \\u2014 ' + h.horizon + ' days\\nSim: ' + (h.sim_probability*100).toFixed(1) + '% | Market: ' + (h.yes_price*100).toFixed(1) + '% | Edge: ' + h.edge.toFixed(1) + '%\\nVolume: $' + (h.volume/1000000).toFixed(1) + 'M\\n' + h.question).join('\\n\\n'), parse_mode: 'HTML' }) }}",
+        "options": {}
+      },
+      "id": "notify-edge",
+      "name": "Notify Edge",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2480,
+        688
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://138.68.138.214:4001/simulate",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"asset\":\"wti\",\"target\":99999,\"question\":\"price\",\"horizon_days\":1}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "get-wti-price",
+      "name": "Get WTI Price",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        544
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://138.68.138.214:4001/simulate",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"asset\":\"brent\",\"target\":99999,\"question\":\"price\",\"horizon_days\":1}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "get-brent-price",
+      "name": "Get Brent Price",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        736
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "append"
+      },
+      "id": "merge-oil",
+      "name": "Merge Oil",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2.1,
+      "position": [
+        928,
+        448
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "append"
+      },
+      "id": "merge-all-prices",
+      "name": "Merge All Prices",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2.1,
+      "position": [
+        1136,
+        544
+      ]
+    }
+  ],
+  "connections": {
+    "Smart Schedule": {
+      "main": [
+        [
+          {
+            "node": "Get Gold Price",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Get BTC Price",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Get WTI Price",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Get Brent Price",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Fetch Polymarket",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Gold Price": {
+      "main": [
+        [
+          {
+            "node": "Merge Prices",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get BTC Price": {
+      "main": [
+        [
+          {
+            "node": "Merge Prices",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Prices": {
+      "main": [
+        [
+          {
+            "node": "Merge Oil",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get WTI Price": {
+      "main": [
+        [
+          {
+            "node": "Merge Oil",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Oil": {
+      "main": [
+        [
+          {
+            "node": "Merge All Prices",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Brent Price": {
+      "main": [
+        [
+          {
+            "node": "Merge All Prices",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge All Prices": {
+      "main": [
+        [
+          {
+            "node": "Calculate Targets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Targets": {
+      "main": [
+        [
+          {
+            "node": "Run Simulations",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Simulations": {
+      "main": [
+        [
+          {
+            "node": "Collect Sims",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Collect Sims": {
+      "main": [
+        [
+          {
+            "node": "Merge All",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Polymarket": {
+      "main": [
+        [
+          {
+            "node": "Merge All",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge All": {
+      "main": [
+        [
+          {
+            "node": "Analyse Edge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analyse Edge": {
+      "main": [
+        [
+          {
+            "node": "Save Simulations",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Has Edge?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Edge?": {
+      "main": [
+        [
+          {
+            "node": "Notify Edge",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": true
+  },
+  "staticData": {
+    "node:Every 30 Minutes": {
+      "recurrenceRules": []
+    },
+    "node:Smart Schedule": {
+      "recurrenceRules": []
+    }
+  },
+  "meta": null,
+  "pinData": {},
+  "versionId": "6f420225-21cd-47c5-91ae-7e99ebbf9bf2",
+  "activeVersionId": "6f420225-21cd-47c5-91ae-7e99ebbf9bf2",
+  "versionCounter": 190,
+  "triggerCount": 1,
+  "shared": [
+    {
+      "updatedAt": "2026-04-03T11:49:18.364Z",
+      "createdAt": "2026-04-03T11:49:18.364Z",
+      "role": "workflow:owner",
+      "workflowId": "3YahxqOguET3pifj",
+      "projectId": "KwpTDWcFWL3DfyW3",
+      "project": {
+        "updatedAt": "2026-04-08T10:02:58.912Z",
+        "createdAt": "2025-06-06T11:27:14.830Z",
+        "id": "KwpTDWcFWL3DfyW3",
+        "name": "Tyson Venables <tysonvenables@protonmail.com>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "b1512bca-25b8-4b8b-add0-b86540e5144d",
+        "projectRelations": [
+          {
+            "updatedAt": "2025-06-06T11:27:14.830Z",
+            "createdAt": "2025-06-06T11:27:14.830Z",
+            "userId": "b1512bca-25b8-4b8b-add0-b86540e5144d",
+            "projectId": "KwpTDWcFWL3DfyW3",
+            "user": {
+              "updatedAt": "2026-04-08T20:18:59.996Z",
+              "createdAt": "2025-06-06T11:27:13.858Z",
+              "id": "b1512bca-25b8-4b8b-add0-b86540e5144d",
+              "email": "tysonvenables@protonmail.com",
+              "firstName": "Tyson",
+              "lastName": "Venables",
+              "personalizationAnswers": {
+                "version": "v4",
+                "personalization_survey_submitted_at": "2025-06-06T11:42:52.454Z",
+                "personalization_survey_n8n_version": "1.95.3",
+                "companySize": "<20",
+                "companyType": "saas",
+                "role": "business-owner",
+                "reportedSource": "friend"
+              },
+              "settings": {
+                "userActivated": true,
+                "easyAIWorkflowOnboarded": true,
+                "firstSuccessfulWorkflowId": "WVXrFCjb8wO7RWRX",
+                "userActivatedAt": 1751062185356,
+                "npsSurvey": {
+                  "responded": true,
+                  "lastShownAt": 1769430963515
+                }
+              },
+              "disabled": false,
+              "mfaEnabled": false,
+              "lastActiveAt": "2026-04-08",
+              "isPending": false
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "tags": [],
+  "activeVersion": {
+    "updatedAt": "2026-04-07T09:34:18.682Z",
+    "createdAt": "2026-04-07T09:34:18.682Z",
+    "versionId": "6f420225-21cd-47c5-91ae-7e99ebbf9bf2",
+    "workflowId": "3YahxqOguET3pifj",
+    "nodes": [
+      {
+        "parameters": {
+          "rule": {
+            "interval": [
+              {
+                "field": "cronExpression",
+                "expression": "0 */1 * * 1"
+              },
+              {
+                "field": "cronExpression",
+                "expression": "0 */2 * * 2-5"
+              },
+              {
+                "field": "cronExpression",
+                "expression": "0 */4 * * 0,6"
+              }
+            ]
+          }
+        },
+        "id": "scanner-schedule",
+        "name": "Smart Schedule",
+        "type": "n8n-nodes-base.scheduleTrigger",
+        "typeVersion": 1.2,
+        "position": [
+          256,
+          304
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "http://138.68.138.214:4001/simulate",
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "{\"asset\":\"gold\",\"target\":99999,\"question\":\"price\",\"horizon_days\":1}",
+          "options": {
+            "timeout": 60000
+          }
+        },
+        "id": "get-gold-price",
+        "name": "Get Gold Price",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          480,
+          160
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "http://138.68.138.214:4001/simulate",
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "{\"asset\":\"btc\",\"target\":999999,\"question\":\"price\",\"horizon_days\":1}",
+          "options": {
+            "timeout": 60000
+          }
+        },
+        "id": "get-btc-price",
+        "name": "Get BTC Price",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          480,
+          352
+        ]
+      },
+      {
+        "parameters": {
+          "mode": "append"
+        },
+        "id": "merge-prices",
+        "name": "Merge Prices",
+        "type": "n8n-nodes-base.merge",
+        "typeVersion": 2.1,
+        "position": [
+          704,
+          256
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "const goldItem = $input.all().find(i => i.json.asset === 'gold');\nconst btcItem = $input.all().find(i => i.json.asset === 'btc');\nconst wtiItem = $input.all().find(i => i.json.asset === 'wti');\nconst brentItem = $input.all().find(i => i.json.asset === 'brent');\nconst goldPrice = goldItem?.json.current_price || 4700;\nconst btcPrice = btcItem?.json.current_price || 69000;\nconst wtiPrice = wtiItem?.json.current_price || 75;\nconst brentPrice = brentItem?.json.current_price || 78;\n\nconst targets = [\n  { asset: 'gold', label: 'short',  target: Math.round(goldPrice * 1.010), horizon: 14 },\n  { asset: 'gold', label: 'medium', target: Math.round(goldPrice * 1.025), horizon: 30 },\n  { asset: 'btc',  label: 'short',  target: Math.round(btcPrice  * 1.050), horizon: 14 },\n  { asset: 'btc',  label: 'medium', target: Math.round(btcPrice  * 1.100), horizon: 30 },\n  { asset: 'wti',   label: 'short',  target: +(wtiPrice   * 1.03).toFixed(2), horizon: 14 },\n  { asset: 'wti',   label: 'medium', target: +(wtiPrice   * 1.08).toFixed(2), horizon: 30 },\n  { asset: 'brent', label: 'short',  target: +(brentPrice * 1.03).toFixed(2), horizon: 14 },\n  { asset: 'brent', label: 'medium', target: +(brentPrice * 1.08).toFixed(2), horizon: 30 },\n];\nreturn targets.map(t => ({ json: t }));"
+        },
+        "id": "calc-targets",
+        "name": "Calculate Targets",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1360,
+          448
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "http://138.68.138.214:4001/simulate",
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify({ asset: $json.asset, target: $json.target, question: 'Will ' + ($json.asset === 'gold' ? 'Gold' : $json.asset === 'btc' ? 'BTC' : $json.asset === 'wti' ? 'WTI Crude' : 'Brent Crude') + ' hit $' + $json.target.toLocaleString() + '?', horizon_days: $json.horizon }) }}",
+          "options": {
+            "timeout": 60000,
+            "batching": {
+              "batch": {
+                "batchSize": 1,
+                "batchInterval": 500
+              }
+            }
+          }
+        },
+        "id": "run-sims",
+        "name": "Run Simulations",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          1584,
+          448
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "const sims = $input.all().map(i => i.json);\nreturn [{ json: { sims } }];"
+        },
+        "id": "collect-sims",
+        "name": "Collect Sims",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1584,
+          592
+        ]
+      },
+      {
+        "parameters": {
+          "url": "https://gamma-api.polymarket.com/markets",
+          "sendQuery": true,
+          "queryParameters": {
+            "parameters": [
+              {
+                "name": "closed",
+                "value": "false"
+              },
+              {
+                "name": "limit",
+                "value": "100"
+              },
+              {
+                "name": "offset",
+                "value": "0"
+              }
+            ]
+          },
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "User-Agent",
+                "value": "Mozilla/5.0"
+              }
+            ]
+          },
+          "options": {}
+        },
+        "id": "fetch-polymarket",
+        "name": "Fetch Polymarket",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          480,
+          640
+        ]
+      },
+      {
+        "parameters": {
+          "mode": "append"
+        },
+        "id": "merge-all",
+        "name": "Merge All",
+        "type": "n8n-nodes-base.merge",
+        "typeVersion": 2.1,
+        "position": [
+          1808,
+          752
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "const isWeekend = [0,6].includes(new Date().getDay());\nconst isMonday = new Date().getDay() === 1;\nconst edgeThreshold = isMonday ? 20 : 30;\n\nconst { sims: allSims } = $input.all().find(i => i.json.sims)?.json || { sims: [] };\n// Skip gold and oil sims on weekends\nconst sims = isWeekend \n  ? allSims.filter(s => s.asset === 'btc')\n  : allSims;\nconst markets = $input.all().filter(i => i.json.question && i.json.outcomePrices).map(i => i.json);\n\nconst results = [];\nfor (const sim of sims) {\n  for (const m of markets) {\n    const text = (m.question || '').toLowerCase();\n    const isAsset = \n      sim.asset === 'gold'  ? (text.includes('gold') || text.includes('xau')) :\n      sim.asset === 'btc'   ? (text.includes('btc') || text.includes('bitcoin')) :\n      sim.asset === 'wti'   ? (text.includes('wti') || text.includes('crude') || text.includes('oil') || text.includes('west texas')) :\n      sim.asset === 'brent' ? (text.includes('brent') || text.includes('crude') || text.includes('oil')) :\n      false;\n    \n    if (!isAsset) continue;\n    \n    // Check if market mentions a price in range of our target (\u00b15%)\n    const priceMatches = text.match(/\\$[\\d,]+k?/g) || [];\n    const marketPrices = priceMatches.map(p => {\n      const clean = p.replace(/[$,k]/g,'');\n      return p.includes('k') ? parseFloat(clean) * 1000 : parseFloat(clean);\n    });\n    \n    const inRange = marketPrices.some(p => \n      Math.abs(p - sim.target) / sim.target < 0.05\n    );\n    \n    if (!inRange && marketPrices.length > 0) continue;\n    if (marketPrices.length === 0 && !isAsset) continue;\n    \n    let yesPrice = null;\n    try {\n      const p = typeof m.outcomePrices==='string' ? JSON.parse(m.outcomePrices) : m.outcomePrices;\n      if (p?.[0]) yesPrice = parseFloat(p[0]);\n    } catch {}\n    \n    if (yesPrice === null) continue;\n    \n    const edge = Math.round((sim.probability - yesPrice) * 1000) / 10;\n    results.push({\n      market_id: m.id || m.conditionId,\n      question: m.question,\n      yes_price: yesPrice,\n      sim_probability: sim.probability,\n      edge,\n      asset: sim.asset,\n      target: sim.target,\n      label: sim.label,\n      horizon: sim.horizon,\n      volume: parseFloat(m.volume || 0),\n      current_price: sim.current_price,\n      end_date: m.endDate\n    });\n  }\n}\n\nconst highEdge = results.filter(r => r.edge > edgeThreshold && r.volume > 50000);\n\n// Clean sims for Supabase (only columns that exist in trading_simulations table)\nconst cleanSims = sims.map(s => ({\n  asset: s.asset,\n  probability: s.probability,\n  confidence_lower: s.confidence_lower,\n  confidence_upper: s.confidence_upper,\n  current_price: s.current_price,\n  macro_factors: s.macro_factors,\n  simulation_count: s.simulation_count || 1000\n}));\n\nreturn [{ json: { \n  results, \n  sims: cleanSims, \n  highEdge, \n  markets_scanned: markets.length,\n  scanned_at: new Date().toISOString(),\n  gold_price: allSims.find(s=>s.asset==='gold')?.current_price,\n  btc_price: allSims.find(s=>s.asset==='btc')?.current_price,\n  wti_price: allSims.find(s=>s.asset==='wti')?.current_price,\n  brent_price: allSims.find(s=>s.asset==='brent')?.current_price\n}}];"
+        },
+        "id": "analyse-edge",
+        "name": "Analyse Edge",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          2032,
+          672
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "https://fdabygmromuqtysitodp.supabase.co/rest/v1/trading_simulations",
+          "authentication": "genericCredentialType",
+          "genericAuthType": "httpHeaderAuth",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify($json.sims) }}",
+          "options": {}
+        },
+        "id": "save-sims",
+        "name": "Save Simulations",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          2256,
+          576
+        ],
+        "credentials": {
+          "httpHeaderAuth": {
+            "id": "Nd2uuX5t9KEwbQPv",
+            "name": "Supabase FSC"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "options": {
+              "caseSensitive": true,
+              "leftValue": "",
+              "typeValidation": "loose"
+            },
+            "conditions": [
+              {
+                "id": "edge-check",
+                "leftValue": "={{ $json.highEdge.length }}",
+                "rightValue": 0,
+                "operator": {
+                  "type": "number",
+                  "operation": "gt"
+                }
+              }
+            ],
+            "combinator": "and"
+          },
+          "options": {}
+        },
+        "id": "has-edge",
+        "name": "Has Edge?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2,
+        "position": [
+          2256,
+          784
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendMessage",
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify({ chat_id: 1375806243, text: '\\ud83c\\udfaf Edge Found!\\n\\nGold: $' + ($json.gold_price || 'N/A') + ' | BTC: $' + ($json.btc_price ? $json.btc_price.toLocaleString() : 'N/A') + ' | WTI: $' + ($json.wti_price || 'N/A') + ' | Brent: $' + ($json.brent_price || 'N/A') + '\\n\\n' + $json.highEdge.map(h => h.asset.toUpperCase() + ' ' + h.label + ' ($' + h.target.toLocaleString() + ') \\u2014 ' + h.horizon + ' days\\nSim: ' + (h.sim_probability*100).toFixed(1) + '% | Market: ' + (h.yes_price*100).toFixed(1) + '% | Edge: ' + h.edge.toFixed(1) + '%\\nVolume: $' + (h.volume/1000000).toFixed(1) + 'M\\n' + h.question).join('\\n\\n'), parse_mode: 'HTML' }) }}",
+          "options": {}
+        },
+        "id": "notify-edge",
+        "name": "Notify Edge",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          2480,
+          688
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "http://138.68.138.214:4001/simulate",
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "{\"asset\":\"wti\",\"target\":99999,\"question\":\"price\",\"horizon_days\":1}",
+          "options": {
+            "timeout": 60000
+          }
+        },
+        "id": "get-wti-price",
+        "name": "Get WTI Price",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          480,
+          544
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "http://138.68.138.214:4001/simulate",
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "{\"asset\":\"brent\",\"target\":99999,\"question\":\"price\",\"horizon_days\":1}",
+          "options": {
+            "timeout": 60000
+          }
+        },
+        "id": "get-brent-price",
+        "name": "Get Brent Price",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          480,
+          736
+        ]
+      },
+      {
+        "parameters": {
+          "mode": "append"
+        },
+        "id": "merge-oil",
+        "name": "Merge Oil",
+        "type": "n8n-nodes-base.merge",
+        "typeVersion": 2.1,
+        "position": [
+          928,
+          448
+        ]
+      },
+      {
+        "parameters": {
+          "mode": "append"
+        },
+        "id": "merge-all-prices",
+        "name": "Merge All Prices",
+        "type": "n8n-nodes-base.merge",
+        "typeVersion": 2.1,
+        "position": [
+          1136,
+          544
+        ]
+      }
+    ],
+    "connections": {
+      "Smart Schedule": {
+        "main": [
+          [
+            {
+              "node": "Get Gold Price",
+              "type": "main",
+              "index": 0
+            },
+            {
+              "node": "Get BTC Price",
+              "type": "main",
+              "index": 0
+            },
+            {
+              "node": "Get WTI Price",
+              "type": "main",
+              "index": 0
+            },
+            {
+              "node": "Get Brent Price",
+              "type": "main",
+              "index": 0
+            },
+            {
+              "node": "Fetch Polymarket",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Get Gold Price": {
+        "main": [
+          [
+            {
+              "node": "Merge Prices",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Get BTC Price": {
+        "main": [
+          [
+            {
+              "node": "Merge Prices",
+              "type": "main",
+              "index": 1
+            }
+          ]
+        ]
+      },
+      "Merge Prices": {
+        "main": [
+          [
+            {
+              "node": "Merge Oil",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Get WTI Price": {
+        "main": [
+          [
+            {
+              "node": "Merge Oil",
+              "type": "main",
+              "index": 1
+            }
+          ]
+        ]
+      },
+      "Merge Oil": {
+        "main": [
+          [
+            {
+              "node": "Merge All Prices",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Get Brent Price": {
+        "main": [
+          [
+            {
+              "node": "Merge All Prices",
+              "type": "main",
+              "index": 1
+            }
+          ]
+        ]
+      },
+      "Merge All Prices": {
+        "main": [
+          [
+            {
+              "node": "Calculate Targets",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Calculate Targets": {
+        "main": [
+          [
+            {
+              "node": "Run Simulations",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Run Simulations": {
+        "main": [
+          [
+            {
+              "node": "Collect Sims",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Collect Sims": {
+        "main": [
+          [
+            {
+              "node": "Merge All",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Fetch Polymarket": {
+        "main": [
+          [
+            {
+              "node": "Merge All",
+              "type": "main",
+              "index": 1
+            }
+          ]
+        ]
+      },
+      "Merge All": {
+        "main": [
+          [
+            {
+              "node": "Analyse Edge",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Analyse Edge": {
+        "main": [
+          [
+            {
+              "node": "Save Simulations",
+              "type": "main",
+              "index": 0
+            },
+            {
+              "node": "Has Edge?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Has Edge?": {
+        "main": [
+          [
+            {
+              "node": "Notify Edge",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          []
+        ]
+      }
+    },
+    "authors": "Tyson Venables",
+    "name": null,
+    "description": null,
+    "autosaved": false,
+    "workflowPublishHistory": [
+      {
+        "createdAt": "2026-04-07T09:47:25.100Z",
+        "id": 526,
+        "workflowId": "3YahxqOguET3pifj",
+        "versionId": "6f420225-21cd-47c5-91ae-7e99ebbf9bf2",
+        "event": "activated",
+        "userId": "b1512bca-25b8-4b8b-add0-b86540e5144d"
+      },
+      {
+        "createdAt": "2026-04-07T09:47:25.515Z",
+        "id": 527,
+        "workflowId": "3YahxqOguET3pifj",
+        "versionId": "6f420225-21cd-47c5-91ae-7e99ebbf9bf2",
+        "event": "activated",
+        "userId": "b1512bca-25b8-4b8b-add0-b86540e5144d"
+      },
+      {
+        "createdAt": "2026-04-07T09:34:18.815Z",
+        "id": 521,
+        "workflowId": "3YahxqOguET3pifj",
+        "versionId": "6f420225-21cd-47c5-91ae-7e99ebbf9bf2",
+        "event": "activated",
+        "userId": "b1512bca-25b8-4b8b-add0-b86540e5144d"
+      },
+      {
+        "createdAt": "2026-04-07T09:34:19.178Z",
+        "id": 522,
+        "workflowId": "3YahxqOguET3pifj",
+        "versionId": "6f420225-21cd-47c5-91ae-7e99ebbf9bf2",
+        "event": "activated",
+        "userId": "b1512bca-25b8-4b8b-add0-b86540e5144d"
+      },
+      {
+        "createdAt": "2026-04-07T09:36:27.366Z",
+        "id": 523,
+        "workflowId": "3YahxqOguET3pifj",
+        "versionId": "6f420225-21cd-47c5-91ae-7e99ebbf9bf2",
+        "event": "activated",
+        "userId": "b1512bca-25b8-4b8b-add0-b86540e5144d"
+      },
+      {
+        "createdAt": "2026-04-07T09:36:27.713Z",
+        "id": 524,
+        "workflowId": "3YahxqOguET3pifj",
+        "versionId": "6f420225-21cd-47c5-91ae-7e99ebbf9bf2",
+        "event": "deactivated",
+        "userId": "b1512bca-25b8-4b8b-add0-b86540e5144d"
+      },
+      {
+        "createdAt": "2026-04-07T09:36:29.096Z",
+        "id": 525,
+        "workflowId": "3YahxqOguET3pifj",
+        "versionId": "6f420225-21cd-47c5-91ae-7e99ebbf9bf2",
+        "event": "activated",
+        "userId": "b1512bca-25b8-4b8b-add0-b86540e5144d"
+      }
+    ]
+  }
+}
