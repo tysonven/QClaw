@@ -610,3 +610,37 @@ Full end-to-end pipeline tested and confirmed working across all 30 nodes.
 - YouTube auto-publish option for Emma
 - Clipper Phase 2: face detection for rule-of-thirds reframing
 - Clipper productisation: own domain, API key auth, Stripe
+
+---
+
+## Session: Apr 8, 2026 — Charlie Orchestration Loop
+
+### Charlie Task Queue — BUILT & LIVE
+- Supabase table: charlie_tasks (id, status, type, title, instructions,
+  assigned_to, priority, result, error_message, parent_task_id, metadata)
+- n8n workflow: Charlie - Task Handler (a88zSrQfEy79v3oc)
+  - Webhook: POST /webhook/charlie-tasks
+  - Commands: /task, /tasks, /done, /run
+  - /done supports: exact UUID, ID prefix, partial title match
+- Skill file: src/agents/skills/task-queue.md
+- Skill file: src/agents/skills/build.md
+
+### Claude Code CLI Integration — LIVE
+- Claude Code CLI installed globally on qclaw (v2.1.96)
+- run-task.sh: fetches task from Supabase, marks in_progress, 
+  runs Claude Code, saves result, marks completed/failed
+- charlie-watcher: PM2 process polling every 5s for queued tasks
+- Architecture: Telegram → n8n → queued → charlie-watcher → 
+  Claude Code → Supabase → Telegram
+
+### First Real Task Completed by Charlie
+- Task: Add swap space to qclaw droplet
+- Result: 2GB swap added, persisted in /etc/fstab
+- Before: 0 swap | After: 2GB swap active
+- Clipper OOM risk eliminated
+
+### Pending
+- n8n server root SSH disable (needs DO console fix or password reset)
+- YouTube auto-publish option for Emma
+- Clipper Phase 2: face detection / rule of thirds
+- Charlie sub-task spawning (parent_task_id support in run-task.sh)
