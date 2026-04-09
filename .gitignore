@@ -46,3 +46,6 @@ docker-data/
 *.bak[0-9]
 *.tmp
 *.pre-fix
+
+# Face detection model (too large for git, download on deploy)
+src/clipper/models/*.caffemodel

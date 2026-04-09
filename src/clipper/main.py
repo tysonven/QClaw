@@ -171,6 +171,114 @@ def get_clip_job(job_id: str):
 
 
 # ---------------------------------------------------------------------------
+# Face detection & smart crop (Phase 2)
+# ---------------------------------------------------------------------------
+
+def detect_face_position(video_path: str):
+    """
+    Sample frames from video, detect faces, return average face
+    center as (x_ratio, y_ratio) where values are 0.0-1.0
+    relative to frame dimensions.
+    Returns None if no face detected.
+    """
+    import cv2
+
+    model_dir = os.path.join(os.path.dirname(__file__), 'models')
+    prototxt = os.path.join(model_dir, 'deploy.prototxt')
+    caffemodel = os.path.join(model_dir, 'res10_300x300_ssd_iter_140000.caffemodel')
+
+    if not os.path.exists(prototxt) or not os.path.exists(caffemodel):
+        log.warning("Face detection model files not found, skipping")
+        return None
+
+    net = cv2.dnn.readNetFromCaffe(prototxt, caffemodel)
+
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        return None
+
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+    # Sample 1 frame per second, max 10 frames
+    sample_interval = max(1, int(fps))
+    sample_frames = list(range(0, min(total_frames, sample_interval * 10), sample_interval))
+
+    face_positions = []
+
+    for frame_num in sample_frames:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
+        ret, frame = cap.read()
+        if not ret:
+            continue
+
+        blob = cv2.dnn.blobFromImage(
+            cv2.resize(frame, (300, 300)), 1.0,
+            (300, 300), (104.0, 177.0, 123.0)
+        )
+        net.setInput(blob)
+        detections = net.forward()
+
+        best_conf = 0.5
+        best_face = None
+
+        for i in range(detections.shape[2]):
+            confidence = detections[0, 0, i, 2]
+            if confidence > best_conf:
+                best_conf = confidence
+                box = detections[0, 0, i, 3:7] * [
+                    frame_width, frame_height,
+                    frame_width, frame_height
+                ]
+                x1, y1, x2, y2 = box.astype(int)
+                best_face = (
+                    (x1 + x2) / 2 / frame_width,
+                    (y1 + y2) / 2 / frame_height
+                )
+
+        if best_face:
+            face_positions.append(best_face)
+
+    cap.release()
+    del net
+
+    if not face_positions:
+        return None
+
+    avg_x = sum(p[0] for p in face_positions) / len(face_positions)
+    avg_y = sum(p[1] for p in face_positions) / len(face_positions)
+    return (avg_x, avg_y)
+
+
+def get_smart_crop_filter(video_path: str) -> str:
+    """
+    Returns FFmpeg crop filter for 9:16 using face position.
+    Falls back to center crop if no face detected.
+    Face placed at upper third (rule of thirds).
+    """
+    face_pos = detect_face_position(video_path)
+
+    if face_pos is None:
+        log.info("No face detected, using center crop")
+        return "crop=ih*9/16:ih:(iw-ih*9/16)/2:0"
+
+    face_x_ratio, face_y_ratio = face_pos
+    log.info(f"Face detected at ({face_x_ratio:.2f}, {face_y_ratio:.2f}), applying smart crop")
+
+    # Horizontal: center crop on face x position
+    # Clamp to valid range so we don't go out of bounds
+    crop_x_expr = (
+        f"max(0, min(iw-ih*9/16, "
+        f"{face_x_ratio:.4f}*iw - ih*9/16/2))"
+    )
+
+    # Vertical: full height for 9:16, y=0
+    return f"crop=ih*9/16:ih:{crop_x_expr}:0"
+
+
+# ---------------------------------------------------------------------------
 # Background clip job
 # ---------------------------------------------------------------------------
 
@@ -220,10 +328,11 @@ def run_clip_job(job_id: str, req: ClipRequest):
                 capture_output=True,
             )
 
-            # Step 3b — Crop to 9:16 vertical
-            log.info(f"[{job_id}] Step 3b: Cropping clip {n} to 9:16")
+            # Step 3b — Smart crop to 9:16 vertical (face-aware)
+            log.info(f"[{job_id}] Step 3b: Smart cropping clip {n} to 9:16")
             vertical_clip = f"/tmp/{job_id}_vertical_{n}.mp4"
-            crop_to_vertical(raw_clip, vertical_clip)
+            smart_crop = get_smart_crop_filter(raw_clip)
+            crop_to_vertical(raw_clip, vertical_clip, smart_crop)
 
             # Step 4 — Generate SRT and burn captions
             log.info(f"[{job_id}] Step 4: Burning captions on clip {n}")
@@ -378,14 +487,16 @@ def generate_srt(
             f.write(f"{e['text']}\n\n")
 
 
-def crop_to_vertical(input_path: str, output_path: str):
-    """Crop video to 9:16 vertical aspect ratio, centred."""
+def crop_to_vertical(input_path: str, output_path: str, crop_filter: str = None):
+    """Crop video to 9:16 vertical aspect ratio using smart crop or centred fallback."""
+    if crop_filter is None:
+        crop_filter = "crop=min(iw\\,ih*9/16):min(ih\\,iw*16/9):(iw-min(iw\\,ih*9/16))/2:(ih-min(ih\\,iw*16/9))/2"
     subprocess.run(
         [
             "ffmpeg", "-y",
             "-threads", "1",
             "-i", input_path,
-            "-vf", "crop=min(iw\\,ih*9/16):min(ih\\,iw*16/9):(iw-min(iw\\,ih*9/16))/2:(ih-min(ih\\,iw*16/9))/2",
+            "-vf", crop_filter,
             "-preset", "ultrafast",
             "-c:a", "copy",
             output_path,
@@ -406,8 +517,9 @@ def burn_captions(input_path: str, srt_path: str, output_path: str):
             "-threads", "1",
             "-i", input_path,
             "-vf",
-            f"subtitles={escaped_srt}:force_style='FontName=Arial,FontSize=24,"
-            f"PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,Outline=2,Alignment=2,MarginV=80'",
+            f"subtitles={escaped_srt}:force_style='FontName=Montserrat Bold,FontSize=48,"
+            f"PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,Outline=2,"
+            f"Alignment=2,MarginV=180,MarginL=40,MarginR=40'",
             "-preset", "ultrafast",
             "-c:a", "copy",
             output_path,
