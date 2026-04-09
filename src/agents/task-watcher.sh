@@ -17,11 +17,11 @@ send_telegram() {
 echo "Task watcher started"
 
 while true; do
-  # Check for queued tasks
+  # Check for queued or pending tasks assigned to claude-code
   TASKS=$(curl -s \
     -H "Authorization: Bearer $SUPABASE_ANON_KEY" \
     -H "apikey: $SUPABASE_ANON_KEY" \
-    "$SUPABASE_URL/rest/v1/charlie_tasks?status=eq.queued&select=id,title&order=priority.asc,created_at.asc&limit=1")
+    "$SUPABASE_URL/rest/v1/charlie_tasks?status=in.(queued,pending)&assigned_to=eq.claude-code&select=id,title&order=priority.asc,created_at.asc&limit=1")
 
   TASK_ID=$(echo "$TASKS" | python3 -c 'import sys,json; t=json.load(sys.stdin); print(t[0]["id"]) if t else print("")' 2>/dev/null)
 
