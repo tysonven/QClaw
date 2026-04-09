@@ -674,3 +674,29 @@ Full end-to-end pipeline tested and confirmed working across all 30 nodes.
 
 ### Updated Workflow IDs
 - Charlie - Task Handler: dHoqL8Ph8kmFHwyx (was a88zSrQfEy79v3oc)
+
+## Session: Apr 9, 2026 — QA Agent Team + Stability Fixes
+
+### Superpowers + claude-mem installed on qclaw
+- Claude Code v2.1.96 now has Superpowers 5.0.7 and claude-mem 12.1.0
+- Available for all tasks run via run-task.sh
+
+### QA Agent System — LIVE
+- qa-runner.sh: reviews completed tasks against 5-point checklist
+- charlie-watcher updated to trigger QA async after task completion
+- qa_status + qa_result + qa_completed_at columns added to charlie_tasks
+- skill file: src/agents/skills/qa.md
+- Tested end-to-end: task completed, QA passed, Telegram notified
+
+### Task Watcher Resilience Fix
+- Watcher now polls for status in (queued, pending) where assigned_to = claude-code
+- Removes n8n as single point of failure for task execution
+- Direct Supabase task inserts now flow through without n8n involvement
+
+### PM2 Startup Persistence Fixed
+- systemd service pm2-root.service created and enabled
+- All 5 processes survive reboots: quantumclaw, trading-worker,
+  clipper-worker, charlie-watcher, agex-hub
+
+### Telegram Token Rotated + n8n Recovery (Apr 8 evening)
+- See previous build log entry
