@@ -700,3 +700,20 @@ Full end-to-end pipeline tested and confirmed working across all 30 nodes.
 
 ### Telegram Token Rotated + n8n Recovery (Apr 8 evening)
 - See previous build log entry
+
+---
+
+## Session: Apr 9, 2026 (continued) — Clipper Phase 2
+
+### Clipper Phase 2 — Face Detection + Platform-Safe Captions
+- opencv-python-headless 4.13.0 installed
+- OpenCV DNN face detector: deploy.prototxt (committed),
+  caffemodel (gitignored, README install instructions added)
+- detect_face_position(): samples 1fps max 10 frames, >50% confidence
+- get_smart_crop_filter(): face-centered 9:16 crop, center fallback
+- Platform-safe caption margins: MarginV=180, MarginL=40, MarginR=40
+  (clears Instagram Reels + TikTok UI buttons)
+- Montserrat Bold system font confirmed available
+- Tested: fallback path confirmed on title card, face detection will
+  activate on talking-head footage
+- Committed f89cf1e, pushed to main
