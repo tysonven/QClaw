@@ -177,6 +177,41 @@
     /* Responsive */
     @media(max-width:768px){.sidebar{width:48px}.thread-list{width:180px}.msg{max-width:90%}.cards{grid-template-columns:1fr 1fr}.config-key{min-width:120px}}
     @media(max-width:480px){.thread-list{display:none}.cards{grid-template-columns:1fr}}
+
+    /* ── Crete Marketing ───────────────────────────────── */
+    :root{--crete-olive:#5B6F3C;--crete-olive-l:#7a8e55;--crete-sand:#D4C5A9;--crete-stone:#8C7E6A;--crete-cream:#FAF8F4;--crete-charcoal:#2D2D2D}
+    .crete-filters{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px}
+    .crete-pill{padding:6px 14px;border-radius:999px;background:var(--bg-2);color:var(--text-dim);border:1px solid var(--border-l);cursor:pointer;font-size:.82rem;transition:all .15s;font-family:inherit}
+    .crete-pill:hover{color:var(--text);border-color:var(--crete-olive-l)}
+    .crete-pill.active{background:var(--crete-olive);color:var(--crete-cream);border-color:var(--crete-olive)}
+    .crete-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:14px;margin-top:10px}
+    .crete-card{background:var(--crete-cream);color:var(--crete-charcoal);border:1px solid var(--crete-sand);border-radius:10px;padding:16px;display:flex;flex-direction:column;gap:10px;box-shadow:0 1px 3px rgba(0,0,0,.3)}
+    .crete-card-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
+    .crete-badge{padding:3px 10px;border-radius:999px;font-size:.7rem;font-weight:600;text-transform:uppercase;letter-spacing:.03em}
+    .crete-badge.pending{background:#f6e6a8;color:#6b4a00}
+    .crete-badge.approved{background:var(--crete-olive);color:var(--crete-cream)}
+    .crete-badge.rejected{background:#e6b0a8;color:#6b1c00}
+    .crete-badge.published{background:#a8c8e6;color:#002b5b}
+    .crete-badge.failed{background:#555;color:#fff}
+    .crete-type{font-size:.7rem;color:var(--crete-stone);text-transform:uppercase;letter-spacing:.04em}
+    .crete-title{font-size:1rem;font-weight:600;color:var(--crete-charcoal);line-height:1.3;margin:0}
+    .crete-body{font-size:.85rem;color:#444;line-height:1.5;white-space:pre-wrap;word-break:break-word;max-height:4.5em;overflow:hidden;position:relative}
+    .crete-body.expanded{max-height:none}
+    .crete-body-toggle{font-size:.75rem;color:var(--crete-olive);cursor:pointer;background:none;border:none;padding:0;font-family:inherit;text-align:left}
+    .crete-meta{display:flex;flex-wrap:wrap;gap:10px;font-size:.72rem;color:var(--crete-stone)}
+    .crete-theme-tag{background:var(--crete-sand);color:var(--crete-charcoal);padding:2px 8px;border-radius:4px;font-size:.7rem}
+    .crete-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:4px}
+    .crete-btn{padding:6px 12px;border-radius:6px;border:1px solid var(--crete-stone);background:var(--crete-cream);color:var(--crete-charcoal);cursor:pointer;font-size:.78rem;font-family:inherit;transition:all .15s}
+    .crete-btn:hover{background:var(--crete-sand)}
+    .crete-btn.primary{background:var(--crete-olive);color:var(--crete-cream);border-color:var(--crete-olive)}
+    .crete-btn.primary:hover{background:var(--crete-olive-l);border-color:var(--crete-olive-l)}
+    .crete-btn.danger{border-color:#b04040;color:#b04040}
+    .crete-btn.danger:hover{background:#f3dada}
+    .crete-btn:disabled{opacity:.5;cursor:not-allowed}
+    .crete-editing input,.crete-editing textarea{width:100%;padding:6px 10px;border:1px solid var(--crete-sand);border-radius:6px;background:#fff;color:var(--crete-charcoal);font-family:inherit;font-size:.85rem;margin-bottom:6px;resize:vertical}
+    .crete-editing textarea{min-height:90px}
+    .crete-notes{width:100%;padding:6px 10px;border:1px solid var(--crete-sand);border-radius:6px;background:#fff;color:var(--crete-charcoal);font-family:inherit;font-size:.8rem;margin-top:6px}
+    .crete-empty{text-align:center;color:var(--text-dim);padding:40px 20px;font-size:.9rem}
   </style>
 </head>
 <body>
@@ -197,6 +232,7 @@
     <div class="nav-item" data-page="agency">🎬<span class="tip">Agency</span></div>
     <div class="nav-item" data-page="content-studio">🎙️<span class="tip">Content Studio</span></div>
     <div class="nav-item" data-page="trading">🎰<span class="tip">Trading Room</span></div>
+    <div class="nav-item" data-page="crete">🌿<span class="tip">Crete Marketing</span></div>
     <div class="nav-sep"></div>
     <div class="nav-item" data-page="secrets">🔑<span class="tip">API Keys</span></div>
     <div class="nav-sep"></div>
@@ -800,6 +836,23 @@
       </div>
     </div>
 
+    <!-- ═══ CRETE MARKETING ═══ -->
+    <div class="page" id="page-crete">
+      <div class="page-scroll">
+        <div class="section-title" style="font-size:1.1rem">Crete Marketing — Content Review Queue</div>
+        <div class="crete-filters" id="crete-filters">
+          <button class="crete-pill active" data-status="pending_review">Pending Review</button>
+          <button class="crete-pill" data-status="approved">Approved</button>
+          <button class="crete-pill" data-status="published">Published</button>
+          <button class="crete-pill" data-status="rejected">Rejected</button>
+          <button class="crete-pill" data-status="">All</button>
+        </div>
+        <div class="crete-grid" id="crete-grid">
+          <div class="crete-empty">Loading…</div>
+        </div>
+      </div>
+    </div>
+
     <!-- CANVAS PANE (in Chat) handled via JS -->
   </div>
 
@@ -896,8 +949,8 @@ async function api(path, opts) {
 }
 
 /* ─── Navigation ──────────────────────────────────────── */
-const TITLES = { chat:'Chat', overview:'Overview', channels:'Channels', usage:'Usage & Costs', agents:'Agents', skills:'Skills', tools:'Tools', scheduled:'Scheduled Tasks', memory:'Memory', agency:'Ad Agency', 'content-studio':'Content Studio', secrets:'API Keys', config:'Config', logs:'Logs' };
-const PAGE_LOADERS = { overview:loadOverview, channels:loadChannels, usage:loadUsage, agents:loadAgents, skills:loadSkills, tools:()=>{loadTools();loadVoiceStatus()}, scheduled:loadScheduled, memory:loadMem, 'content-studio':initContentStudio, trading:initTrading, secrets:loadSec, config:loadConfig, logs:loadLogs };
+const TITLES = { chat:'Chat', overview:'Overview', channels:'Channels', usage:'Usage & Costs', agents:'Agents', skills:'Skills', tools:'Tools', scheduled:'Scheduled Tasks', memory:'Memory', agency:'Ad Agency', 'content-studio':'Content Studio', trading:'Trading Room', crete:'Crete Marketing', secrets:'API Keys', config:'Config', logs:'Logs' };
+const PAGE_LOADERS = { overview:loadOverview, channels:loadChannels, usage:loadUsage, agents:loadAgents, skills:loadSkills, tools:()=>{loadTools();loadVoiceStatus()}, scheduled:loadScheduled, memory:loadMem, 'content-studio':initContentStudio, trading:initTrading, crete:initCrete, secrets:loadSec, config:loadConfig, logs:loadLogs };
 document.querySelectorAll('.nav-item[data-page]').forEach(el => {
   el.addEventListener('click', () => {
     document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
@@ -1985,6 +2038,162 @@ async function trLoadSimulations() {
         + '<td style="font-size:.72rem;color:var(--text-dim)">' + time + '</td></tr>';
     }).join('');
   } catch { $('tr-sims-body').innerHTML = '<tr><td colspan="6" style="color:var(--text-dim)">Failed to load</td></tr>'; }
+}
+
+/* ─── Crete Marketing ─────────────────────────────────── */
+const CRETE_TYPE_ICON = {
+  instagram_post: '📸', facebook_post: '📘', linkedin_post: '💼',
+  email_nurture: '✉️', email_newsletter: '📰', email_outreach: '📧',
+  blog_post: '📝'
+};
+let creteStatus = 'pending_review';
+let creteItems = [];
+const creteEsc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+async function creteFetch(path, opts = {}) {
+  const r = await fetch(API(path), {
+    ...opts,
+    headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) }
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+  return data;
+}
+
+function creteRenderCard(item) {
+  const icon = CRETE_TYPE_ICON[item.content_type] || '📄';
+  const badge = item.status.replace('_', '-');
+  const when = item.scheduled_for ? new Date(item.scheduled_for).toLocaleString() : 'unscheduled';
+  const theme = item.theme ? `<span class="crete-theme-tag">${creteEsc(item.theme)}</span>` : '';
+  const isPending = item.status === 'pending_review';
+  const canReject = ['pending_review', 'approved'].includes(item.status);
+  return `
+    <div class="crete-card" data-id="${item.id}">
+      <div class="crete-card-head">
+        <span class="crete-type">${icon} ${creteEsc(item.content_type)}</span>
+        <span class="crete-badge ${item.status === 'pending_review' ? 'pending' : item.status}">${creteEsc(badge)}</span>
+      </div>
+      <h4 class="crete-title" data-field="title">${creteEsc(item.title)}</h4>
+      <div class="crete-body" data-field="body">${creteEsc(item.body)}</div>
+      <button class="crete-body-toggle" onclick="creteToggleBody(this)">Show more</button>
+      <div class="crete-meta">
+        <span>📅 ${creteEsc(when)}</span>
+        <span>📡 ${creteEsc(item.platform)}</span>
+        ${theme}
+      </div>
+      ${item.cta ? `<div class="crete-meta"><span>CTA: ${creteEsc(item.cta)}</span></div>` : ''}
+      <div class="crete-actions">
+        ${isPending ? `<button class="crete-btn primary" onclick="creteApprove('${item.id}')">✓ Approve</button>` : ''}
+        ${canReject ? `<button class="crete-btn danger" onclick="creteRejectPrompt('${item.id}')">✗ Reject</button>` : ''}
+        ${isPending ? `<button class="crete-btn" onclick="creteEdit('${item.id}')">✎ Edit</button>` : ''}
+        ${item.status === 'rejected' ? `<button class="crete-btn" onclick="creteRegenerate('${item.id}')">↻ Regenerate</button>` : ''}
+      </div>
+    </div>`;
+}
+
+function creteToggleBody(btn) {
+  const body = btn.previousElementSibling;
+  const expanded = body.classList.toggle('expanded');
+  btn.textContent = expanded ? 'Show less' : 'Show more';
+}
+
+async function creteLoad() {
+  const grid = $('crete-grid');
+  grid.innerHTML = '<div class="crete-empty">Loading…</div>';
+  try {
+    const path = creteStatus
+      ? `/api/crete/content?status=${encodeURIComponent(creteStatus)}&limit=50`
+      : '/api/crete/content?limit=50';
+    const data = await creteFetch(path);
+    creteItems = data.items || [];
+    if (!creteItems.length) {
+      grid.innerHTML = `<div class="crete-empty">No ${creteStatus ? creteStatus.replace('_', ' ') : ''} items.</div>`;
+      return;
+    }
+    grid.innerHTML = creteItems.map(creteRenderCard).join('');
+  } catch (err) {
+    grid.innerHTML = `<div class="crete-empty">Failed to load: ${creteEsc(err.message)}</div>`;
+  }
+}
+
+async function creteApprove(id) {
+  try {
+    await creteFetch(`/api/crete/content/${id}/approve`, { method: 'PUT' });
+    toast('Approved — publish webhook fired', 'ok');
+    creteLoad();
+  } catch (err) { toast('Approve failed: ' + err.message, 'err'); }
+}
+
+function creteRejectPrompt(id) {
+  const notes = prompt('Reviewer notes (reason for rejection, optional):', '');
+  if (notes === null) return;
+  creteReject(id, notes);
+}
+
+async function creteReject(id, notes) {
+  try {
+    await creteFetch(`/api/crete/content/${id}/reject`, {
+      method: 'PUT',
+      body: JSON.stringify({ notes })
+    });
+    toast('Rejected — regenerate webhook fired', 'ok');
+    creteLoad();
+  } catch (err) { toast('Reject failed: ' + err.message, 'err'); }
+}
+
+async function creteRegenerate(id) {
+  const notes = prompt('Regeneration notes (optional):', '');
+  if (notes === null) return;
+  try {
+    await creteFetch(`/api/crete/content/regenerate/${id}`, {
+      method: 'POST',
+      body: JSON.stringify({ notes })
+    });
+    toast('Regenerate webhook fired', 'ok');
+    creteLoad();
+  } catch (err) { toast('Regenerate failed: ' + err.message, 'err'); }
+}
+
+function creteEdit(id) {
+  const item = creteItems.find(i => i.id === id);
+  if (!item) return;
+  const card = document.querySelector(`.crete-card[data-id="${id}"]`);
+  if (!card) return;
+  card.classList.add('crete-editing');
+  card.querySelector('[data-field="title"]').outerHTML =
+    `<input type="text" id="crete-edit-title-${id}" value="${creteEsc(item.title)}">`;
+  card.querySelector('[data-field="body"]').outerHTML =
+    `<textarea id="crete-edit-body-${id}">${creteEsc(item.body)}</textarea>`;
+  card.querySelector('.crete-body-toggle').remove();
+  const actions = card.querySelector('.crete-actions');
+  actions.innerHTML =
+    `<button class="crete-btn primary" onclick="creteSaveEdit('${id}')">Save</button>` +
+    `<button class="crete-btn" onclick="creteLoad()">Cancel</button>`;
+}
+
+async function creteSaveEdit(id) {
+  const title = document.getElementById(`crete-edit-title-${id}`).value;
+  const body = document.getElementById(`crete-edit-body-${id}`).value;
+  try {
+    await creteFetch(`/api/crete/content/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify({ title, body })
+    });
+    toast('Saved', 'ok');
+    creteLoad();
+  } catch (err) { toast('Save failed: ' + err.message, 'err'); }
+}
+
+function initCrete() {
+  document.querySelectorAll('#crete-filters .crete-pill').forEach(pill => {
+    pill.onclick = () => {
+      document.querySelectorAll('#crete-filters .crete-pill').forEach(p => p.classList.remove('active'));
+      pill.classList.add('active');
+      creteStatus = pill.dataset.status;
+      creteLoad();
+    };
+  });
+  creteLoad();
 }
 
 /* ─── Init ────────────────────────────────────────────── */

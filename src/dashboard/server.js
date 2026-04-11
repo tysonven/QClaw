@@ -1411,6 +1411,215 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
       } catch (err) { res.status(500).json({ error: err.message }); }
     });
 
+    // ─── Crete Marketing: Content Review Queue ───────────────
+    // Load Supabase config from /root/.quantumclaw/.env (dotenv is not
+    // auto-loaded at boot, so we parse it once here instead of hardcoding).
+    const creteEnv = (() => {
+      try {
+        const envFile = readFileSync('/root/.quantumclaw/.env', 'utf-8');
+        const out = {};
+        for (const line of envFile.split('\n')) {
+          const m = line.match(/^([A-Z_][A-Z0-9_]*)=(.*)$/);
+          if (m) out[m[1]] = m[2].trim().replace(/^["']|["']$/g, '');
+        }
+        return out;
+      } catch { return {}; }
+    })();
+    const CRETE_SUPABASE_URL = creteEnv.SUPABASE_URL || '';
+    const CRETE_SUPABASE_KEY = creteEnv.SUPABASE_ANON_KEY || '';
+    const CRETE_TABLE = `${CRETE_SUPABASE_URL}/rest/v1/crete_content_queue`;
+    const CRETE_N8N_BASE = 'https://webhook.flowos.tech/webhook';
+    if (!CRETE_SUPABASE_URL || !CRETE_SUPABASE_KEY) {
+      log.warn('[CRETE] SUPABASE_URL or SUPABASE_ANON_KEY missing in /root/.quantumclaw/.env — Crete routes will 500');
+    }
+
+    const creteHeaders = (extra = {}) => ({
+      apikey: CRETE_SUPABASE_KEY,
+      Authorization: `Bearer ${CRETE_SUPABASE_KEY}`,
+      'Content-Type': 'application/json',
+      ...extra
+    });
+
+    const CRETE_VALID_STATUSES = ['pending_review', 'approved', 'rejected', 'published', 'failed'];
+    const CRETE_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const creteValidUuid = (s) => typeof s === 'string' && CRETE_UUID_RE.test(s);
+    const creteConfigured = () => Boolean(CRETE_SUPABASE_URL && CRETE_SUPABASE_KEY);
+
+    // Fire-and-forget n8n webhook — never blocks the response, never throws.
+    const creteFireWebhook = (name, payload) => {
+      fetch(`${CRETE_N8N_BASE}/${name}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      }).then(r => {
+        if (!r.ok) log.warn(`[CRETE] n8n webhook ${name} returned ${r.status}`);
+      }).catch(err => {
+        log.warn(`[CRETE] n8n webhook ${name} failed: ${err.message}`);
+      });
+    };
+
+    // Telegram notify via the running qclaw telegram channel. Swallows errors.
+    const creteNotifyTelegram = async (text) => {
+      try {
+        const tg = this.qclaw.channels?.channels?.find(c => c.constructor.name.includes('Telegram'));
+        if (tg?.sendMessage) {
+          await tg.sendMessage(text, { parse_mode: 'Markdown' });
+        }
+      } catch (err) {
+        log.warn(`[CRETE] Telegram notify failed: ${err.message}`);
+      }
+    };
+
+    // GET /api/crete/content — list queue (filter by status, paginated)
+    this.app.get('/api/crete/content', async (req, res) => {
+      try {
+        if (!creteConfigured()) return res.status(500).json({ error: 'Supabase not configured' });
+        const limit = Math.min(Math.max(parseInt(req.query.limit) || 20, 1), 100);
+        const offset = Math.max(parseInt(req.query.offset) || 0, 0);
+        const params = new URLSearchParams({
+          order: 'generated_at.desc',
+          limit: String(limit),
+          offset: String(offset)
+        });
+        if (req.query.status && CRETE_VALID_STATUSES.includes(req.query.status)) {
+          params.set('status', `eq.${req.query.status}`);
+        }
+        const r = await fetch(`${CRETE_TABLE}?${params}`, { headers: creteHeaders() });
+        const data = await r.json();
+        if (!r.ok) return res.status(r.status).json({ error: data.message || 'Supabase error' });
+        res.json({ items: data, limit, offset });
+      } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+
+    // GET /api/crete/content/:id
+    this.app.get('/api/crete/content/:id', async (req, res) => {
+      try {
+        if (!creteConfigured()) return res.status(500).json({ error: 'Supabase not configured' });
+        if (!creteValidUuid(req.params.id)) return res.status(400).json({ error: 'Invalid id' });
+        const r = await fetch(`${CRETE_TABLE}?id=eq.${req.params.id}`, { headers: creteHeaders() });
+        const rows = await r.json();
+        if (!r.ok) return res.status(r.status).json({ error: rows.message || 'Supabase error' });
+        if (!Array.isArray(rows) || !rows.length) return res.status(404).json({ error: 'Not found' });
+        res.json(rows[0]);
+      } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+
+    // POST /api/crete/content — insert new item (used by generation cron + test seeding)
+    this.app.post('/api/crete/content', async (req, res) => {
+      try {
+        if (!creteConfigured()) return res.status(500).json({ error: 'Supabase not configured' });
+        const { content_type, platform, title, body, cta, media_url, theme, scheduled_for, generation_prompt, metadata } = req.body || {};
+        if (!content_type || !platform || !title || !body) {
+          return res.status(400).json({ error: 'content_type, platform, title, body are required' });
+        }
+        const row = {
+          status: 'pending_review',
+          content_type, platform, title, body,
+          cta: cta || null,
+          media_url: media_url || null,
+          theme: theme || null,
+          scheduled_for: scheduled_for || null,
+          generation_prompt: generation_prompt || null,
+          metadata: metadata || {}
+        };
+        const r = await fetch(CRETE_TABLE, {
+          method: 'POST',
+          headers: creteHeaders({ Prefer: 'return=representation' }),
+          body: JSON.stringify(row)
+        });
+        const data = await r.json();
+        if (!r.ok) return res.status(r.status).json({ error: data.message || 'Supabase error' });
+        const item = Array.isArray(data) ? data[0] : data;
+        creteNotifyTelegram(`🆕 *New Crete content for review*\n${item.title}\n_${item.content_type}_\nReview at agentboardroom.flowos.tech`);
+        res.json({ ok: true, item });
+      } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+
+    // PUT /api/crete/content/:id — edit fields before approval
+    this.app.put('/api/crete/content/:id', async (req, res) => {
+      try {
+        if (!creteConfigured()) return res.status(500).json({ error: 'Supabase not configured' });
+        if (!creteValidUuid(req.params.id)) return res.status(400).json({ error: 'Invalid id' });
+        const allowed = ['title', 'body', 'cta', 'media_url', 'theme', 'scheduled_for', 'metadata'];
+        const patch = {};
+        for (const k of allowed) if (k in (req.body || {})) patch[k] = req.body[k];
+        if (Object.keys(patch).length === 0) return res.status(400).json({ error: 'No editable fields provided' });
+        patch.updated_at = new Date().toISOString();
+        const r = await fetch(`${CRETE_TABLE}?id=eq.${req.params.id}`, {
+          method: 'PATCH',
+          headers: creteHeaders({ Prefer: 'return=representation' }),
+          body: JSON.stringify(patch)
+        });
+        const data = await r.json();
+        if (!r.ok) return res.status(r.status).json({ error: data.message || 'Supabase error' });
+        res.json({ ok: true, item: Array.isArray(data) ? data[0] : data });
+      } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+
+    // PUT /api/crete/content/:id/approve
+    this.app.put('/api/crete/content/:id/approve', async (req, res) => {
+      try {
+        if (!creteConfigured()) return res.status(500).json({ error: 'Supabase not configured' });
+        if (!creteValidUuid(req.params.id)) return res.status(400).json({ error: 'Invalid id' });
+        const now = new Date().toISOString();
+        const patch = { status: 'approved', reviewed_at: now, updated_at: now };
+        const r = await fetch(`${CRETE_TABLE}?id=eq.${req.params.id}`, {
+          method: 'PATCH',
+          headers: creteHeaders({ Prefer: 'return=representation' }),
+          body: JSON.stringify(patch)
+        });
+        const data = await r.json();
+        if (!r.ok) return res.status(r.status).json({ error: data.message || 'Supabase error' });
+        const item = Array.isArray(data) ? data[0] : data;
+        creteFireWebhook('crete-content-publish', { content_id: req.params.id, action: 'publish' });
+        res.json({ ok: true, item });
+      } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+
+    // PUT /api/crete/content/:id/reject
+    this.app.put('/api/crete/content/:id/reject', async (req, res) => {
+      try {
+        if (!creteConfigured()) return res.status(500).json({ error: 'Supabase not configured' });
+        if (!creteValidUuid(req.params.id)) return res.status(400).json({ error: 'Invalid id' });
+        const notes = typeof req.body?.notes === 'string' ? req.body.notes.slice(0, 2000) : '';
+        const now = new Date().toISOString();
+        const patch = { status: 'rejected', reviewer_notes: notes, reviewed_at: now, updated_at: now };
+        const r = await fetch(`${CRETE_TABLE}?id=eq.${req.params.id}`, {
+          method: 'PATCH',
+          headers: creteHeaders({ Prefer: 'return=representation' }),
+          body: JSON.stringify(patch)
+        });
+        const data = await r.json();
+        if (!r.ok) return res.status(r.status).json({ error: data.message || 'Supabase error' });
+        const item = Array.isArray(data) ? data[0] : data;
+        creteFireWebhook('crete-content-regenerate', { content_id: req.params.id, notes });
+        res.json({ ok: true, item });
+      } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+
+    // POST /api/crete/content/regenerate/:id
+    this.app.post('/api/crete/content/regenerate/:id', async (req, res) => {
+      try {
+        if (!creteConfigured()) return res.status(500).json({ error: 'Supabase not configured' });
+        if (!creteValidUuid(req.params.id)) return res.status(400).json({ error: 'Invalid id' });
+        const notes = typeof req.body?.notes === 'string' ? req.body.notes.slice(0, 2000) : '';
+        const patch = {
+          status: 'pending_review',
+          reviewer_notes: notes || null,
+          updated_at: new Date().toISOString()
+        };
+        const r = await fetch(`${CRETE_TABLE}?id=eq.${req.params.id}`, {
+          method: 'PATCH',
+          headers: creteHeaders({ Prefer: 'return=representation' }),
+          body: JSON.stringify(patch)
+        });
+        const data = await r.json();
+        if (!r.ok) return res.status(r.status).json({ error: data.message || 'Supabase error' });
+        creteFireWebhook('crete-content-regenerate', { content_id: req.params.id, notes });
+        res.json({ ok: true, item: Array.isArray(data) ? data[0] : data });
+      } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+
   }
 
   _setupWebSocket() {

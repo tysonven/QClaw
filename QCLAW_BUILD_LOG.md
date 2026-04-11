@@ -717,3 +717,81 @@ Full end-to-end pipeline tested and confirmed working across all 30 nodes.
 - Tested: fallback path confirmed on title card, face detection will
   activate on talking-head footage
 - Committed f89cf1e, pushed to main
+
+---
+
+## Session: Apr 11, 2026 — Crete Marketing Dashboard Tab
+
+### Crete Marketing — Content Review Queue
+- New Supabase table `crete_content_queue` (schema in
+  crete-qclaw-dashboard-spec.md): pending_review / approved /
+  rejected / published / failed. RLS enabled, permissive policy
+  matching existing QClaw tables (auth boundary is dashboard JWT).
+- Six new Express routes under `/api/crete/content` added inline
+  in src/dashboard/server.js `_setupAPI()`:
+    GET    /api/crete/content           list with status filter + pagination
+    GET    /api/crete/content/:id       single item
+    POST   /api/crete/content           insert (fires Telegram notify)
+    PUT    /api/crete/content/:id       edit title/body/cta/etc.
+    PUT    /api/crete/content/:id/approve   → fires publish webhook
+    PUT    /api/crete/content/:id/reject    → fires regenerate webhook
+    POST   /api/crete/content/regenerate/:id
+- Supabase URL + anon key read from /root/.quantumclaw/.env at
+  server boot (no hardcoded creds). UUID regex validation on all
+  :id params, status allowlist, limit/offset clamping, field
+  allowlist on PATCH, notes truncated to 2000 chars.
+- All routes inherit the existing global auth middleware (JWT
+  cookie / Bearer / ?token=). Confirmed 401 on unauth request.
+- New "Crete Marketing" tab in src/dashboard/ui.html (nav-item
+  🌿, page id `page-crete`). Filter pills, card grid, inline
+  edit, approve/reject/regenerate, prompt-based reject notes.
+  Brand palette: olive #5B6F3C, sand #D4C5A9, cream #FAF8F4,
+  charcoal #2D2D2D. All DB content HTML-escaped client-side.
+- Telegram notification on new pending_review insert via
+  qclaw.channels telegram channel (same pattern as
+  webhook-manus.js). Non-blocking — failures logged, not raised.
+- n8n webhooks `crete-content-publish` and `crete-content-regenerate`
+  fired async fire-and-forget. Workflows do not exist yet — 404s
+  on test runs are expected and only log.warn.
+- Backups before edit: server.js.bak + ui.html.bak in
+  /root/QClaw/src/dashboard/.
+- pm2 restart quantumclaw — clean boot, Dashboard ready at
+  http://localhost:4000.
+
+### Smoke test (end-to-end, Apr 11 06:51 UTC)
+- POST insert → UUID dbbb054d-... returned, Telegram fired
+- GET ?status=pending_review → count 1
+- GET /:id → row matches
+- PUT /:id/approve → status=approved, reviewed_at set,
+  publish webhook fired (404 expected)
+- 2nd insert → PUT /:id/reject with notes → status=rejected,
+  reviewer_notes saved, regenerate webhook fired (404 expected)
+- Invalid UUID → 400
+- No auth → 401
+- Final counts: 0 pending, 1 approved, 1 rejected
+
+### Outstanding (next session)
+- [ ] n8n workflow: crete-content-publish (reads approved row,
+      posts to platform API, updates status→published)
+- [ ] n8n workflow: crete-content-regenerate (re-runs Claude
+      with original prompt + reviewer notes, updates row,
+      resets status→pending_review)
+- [ ] n8n workflow: crete-content-generate cron (reads R2
+      content-calendar.json, generates upcoming content,
+      inserts to crete_content_queue)
+- [ ] R2: upload initial crete-projects/content-calendar.json
+- [ ] Manual cleanup of the 2 smoke-test rows when convenient
+- [ ] (optional) Replace hardcoded anon keys in content-studio/
+      trading routes with the same env-loading pattern used here
+
+### Security gate (7 Pillars)
+- Credentials: no hardcoded secrets; env-loaded at boot ✓
+- Input validation: UUID regex, status allowlist, field
+  allowlist, limit/offset clamping, notes truncation ✓
+- Auth: global JWT middleware gates all new routes ✓
+- XSS: creteEsc() on all DB fields rendered in HTML ✓
+- Injection: PostgREST only, no SQL concat, UUIDs pre-validated ✓
+- RLS: enabled on table, policy matches existing tables ✓
+- Error handling: try/catch on every route, external-system
+  failures swallowed with log.warn ✓
+
