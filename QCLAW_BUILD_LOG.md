@@ -795,3 +795,20 @@ Full end-to-end pipeline tested and confirmed working across all 30 nodes.
 - Error handling: try/catch on every route, external-system
   failures swallowed with log.warn ✓
 
+
+---
+
+## 2026-04-13 — GHL Marketing Automation
+- Added ghl-marketing.md skill file to /src/agents/skills/
+- Created Supabase table: marketing_drafts (with RLS)
+- Built 4 n8n workflows: Content Generator, Approval Handler, Publisher, Weekly Report
+- Distribution: Telegram approval flow, copy-paste-ready posts per platform
+- Cadence: Mon/Wed/Fri organic posts (pain-led/value-led/offer-led), weekly report Sunday 20:00 UTC
+- Content Generator: Claude Sonnet, rotates hooks to avoid repetition
+- Approval Handler: Telegram reply "go" approves, any other reply triggers regeneration with feedback
+- Publisher: Webhook-triggered, updates Supabase status to published, sends formatted posts to Telegram
+- Weekly Report: Claude Haiku summarises drafts generated/approved/rejected/published
+- GHL Social Planner API: deferred (copy-paste via Telegram until OAuth confirmed)
+- Security gate: PASSED (no hardcoded keys, RLS enabled, chat ID filter, credentials via n8n creds/env)
+- All workflow JSONs backed up to /root/QClaw/n8n-workflows/
+- No existing workflows, files, or processes were modified
