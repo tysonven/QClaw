@@ -18,6 +18,25 @@ Two additional workflows:
 - Trade Executor (fq7spfyiNcpt8Mf7) — webhook /webhook/trading-execute
 - Position Monitor (UYA0JppH7eqyI7fQ) — runs every 15 min
 
+## n8n Access
+
+To check any n8n workflow or execution, use the n8n MCP tool
+(available via Claude's tool access). n8n runs at
+https://webhook.flowos.tech — never localhost:5678 from this server.
+
+## Key n8n Workflow IDs
+
+- Content Studio: Qf39NEOEgz2W0uls
+- Charlie Task Handler: dHoqL8Ph8kmFHwyx
+- Instagram Reels: 44g7cbGz5osQ1pcBVhIoz
+- Trading Market Scanner: 3YahxqOguET3pifj
+- Trading Trade Executor: fq7spfyiNcpt8Mf7
+- Trading Position Monitor: UYA0JppH7eqyI7fQ
+- Trading Weekly Analyst: vjj2uBIPc07FpIxx
+- Crete Content Publish: zXKBjp3yjW2oR2Mj
+- Crete Content Regenerate: KKjw893zwzHwv1o6
+- Crete Content Generator: tnvXFYvODL1PrhJa
+
 ## Current Trading Config
 
 Stored in Supabase table: trading_config (key/value)
