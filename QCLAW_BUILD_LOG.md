@@ -812,3 +812,23 @@ Full end-to-end pipeline tested and confirmed working across all 30 nodes.
 - Security gate: PASSED (no hardcoded keys, RLS enabled, chat ID filter, credentials via n8n creds/env)
 - All workflow JSONs backed up to /root/QClaw/n8n-workflows/
 - No existing workflows, files, or processes were modified
+
+### Trading Market Scanner Redesign (Apr 14)
+- Flipped Polymarket matching logic: now fetches 600 markets from
+  Gamma API (3 pages x 200), identifies asset type + target price
+  from question text, runs Monte Carlo against each markets own
+  resolution criteria
+- Removed 7 nodes (price fetchers, old merges, old sims, old targets).
+  Flow: Schedule > 3xFetch > Merge > Analyse Edge (parse markets) >
+  Run Market Simulations (per-market) > Calculate Edge > Save/Notify
+- Sports false-positive exclusion (Golden Knights, Warriors, Oilers etc.)
+- Price regex handles 150k, 1m, 1b suffixes
+- Horizon cap widened to 180 days (Polymarket crypto markets run 80+ days)
+- Volume threshold lowered to 10k for calibration
+- Edge threshold: 20% (15% on Mondays)
+- First successful run found 1 BTC market: Will bitcoin hit 1m before
+  GTA VI - sim 0.02% vs market 48.85%, edge -48.8% (market is massively
+  overpriced for YES). Would signal a NO bet if that feature existed.
+- Note: Only 3 crypto price markets exist across 1800 Polymarket markets
+  currently. Zero gold/oil commodity price markets on the platform.
+  Scanner will pick up new markets as they appear.
