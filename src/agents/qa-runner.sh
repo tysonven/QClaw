@@ -11,11 +11,19 @@ if [ -z "$TASK_ID" ]; then
   exit 1
 fi
 
-# Load env vars (same pattern as task-watcher.sh)
-ANTHROPIC_API_KEY=$(grep ANTHROPIC_API_KEY /root/.quantumclaw/.env | cut -d= -f2)
-SUPABASE_URL=$(grep "^SUPABASE_URL" /root/.quantumclaw/.env | cut -d= -f2)
-SUPABASE_ANON_KEY=$(grep "^SUPABASE_ANON_KEY" /root/.quantumclaw/.env | cut -d= -f2)
-TG_TOKEN="8588434821:AAHFS3CUfnf7VTY3c1LYH7iKhUhq3cXIg0g"
+# Find env file (supports root and flowos user paths)
+ENV_FILE=""
+if [ -f "/root/.quantumclaw/.env" ]; then ENV_FILE="/root/.quantumclaw/.env"
+elif [ -f "$HOME/.quantumclaw/.env" ]; then ENV_FILE="$HOME/.quantumclaw/.env"
+elif [ -f "/home/flowos/.quantumclaw/.env" ]; then ENV_FILE="/home/flowos/.quantumclaw/.env"
+fi
+if [ -z "$ENV_FILE" ]; then echo "ERROR: .quantumclaw/.env not found"; exit 1; fi
+
+# Load env vars
+ANTHROPIC_API_KEY=$(grep ANTHROPIC_API_KEY "$ENV_FILE" | cut -d= -f2)
+SUPABASE_URL=$(grep "^SUPABASE_URL" "$ENV_FILE" | cut -d= -f2)
+SUPABASE_ANON_KEY=$(grep "^SUPABASE_ANON_KEY" "$ENV_FILE" | cut -d= -f2)
+TG_TOKEN=$(grep "^TELEGRAM_BOT_TOKEN" "$ENV_FILE" | cut -d= -f2)
 CHAT_ID=1375806243
 
 # Fetch completed task from Supabase

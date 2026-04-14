@@ -9,10 +9,18 @@ if [ -z "$TASK_ID" ]; then
   exit 1
 fi
 
+# Find env file (supports root and flowos user paths)
+ENV_FILE=""
+if [ -f "/root/.quantumclaw/.env" ]; then ENV_FILE="/root/.quantumclaw/.env"
+elif [ -f "$HOME/.quantumclaw/.env" ]; then ENV_FILE="$HOME/.quantumclaw/.env"
+elif [ -f "/home/flowos/.quantumclaw/.env" ]; then ENV_FILE="/home/flowos/.quantumclaw/.env"
+fi
+if [ -z "$ENV_FILE" ]; then echo "ERROR: .quantumclaw/.env not found"; exit 1; fi
+
 # Load only the vars we need
-ANTHROPIC_API_KEY=$(grep ANTHROPIC_API_KEY /root/.quantumclaw/.env | cut -d= -f2)
-SUPABASE_URL=$(grep "^SUPABASE_URL" /root/.quantumclaw/.env | cut -d= -f2)
-SUPABASE_ANON_KEY=$(grep "^SUPABASE_ANON_KEY" /root/.quantumclaw/.env | cut -d= -f2)
+ANTHROPIC_API_KEY=$(grep ANTHROPIC_API_KEY "$ENV_FILE" | cut -d= -f2)
+SUPABASE_URL=$(grep "^SUPABASE_URL" "$ENV_FILE" | cut -d= -f2)
+SUPABASE_ANON_KEY=$(grep "^SUPABASE_ANON_KEY" "$ENV_FILE" | cut -d= -f2)
 
 # Fetch task from Supabase
 TASK=$(curl -s \
