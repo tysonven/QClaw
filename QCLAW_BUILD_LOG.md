@@ -832,3 +832,55 @@ Full end-to-end pipeline tested and confirmed working across all 30 nodes.
 - Note: Only 3 crypto price markets exist across 1800 Polymarket markets
   currently. Zero gold/oil commodity price markets on the platform.
   Scanner will pick up new markets as they appear.
+
+---
+
+## Session: Apr 14, 2026 — Trading Room Fixes + Kalshi + Ops
+
+### Monte Carlo dt Bug Fixed
+- Changed dt = 1.0 / TRADING_DAYS_YEAR to dt = 1.0
+- mu/sigma are daily parameters so dt must be 1.0 day per step
+- Gold probability for realistic targets now 60-85% (was 5-12%)
+- Committed 19a2791
+
+### Polymarket Matching Logic Redesigned
+- Flipped from "generate target, find market" to "find market, simulate against it"
+- Fetches 600 Polymarket markets across 3 pages
+- Parses each market's resolution criteria (price + end date)
+- Runs Monte Carlo against those specific criteria
+- Volume threshold lowered to $10k, edge threshold 20% (was 30%)
+- Sports/entertainment exclusion regex added
+- Committed bf96118
+
+### Kalshi Integration Added
+- Added Kalshi as second market source (api.elections.kalshi.com)
+- Fetches 1,000 open markets, normalizes to Polymarket format
+- Total markets scanned per run: ~1,600 across both platforms
+- Source tracking added to edge notifications
+- Finding: Kalshi currently has no commodity/crypto price markets
+  (all sports + politics). Infrastructure ready for when they return.
+
+### Instagram Reels — Fixed Schedule
+- Changed from rolling every 5 hours to fixed times
+- Now posts at 21:00, 02:00, 07:00, 11:00 UTC (7am/12pm/5pm/9pm AEST)
+- Committed 9623509
+
+### Charlie Fixes
+- Fixed env path fallback in run-task.sh, qa-runner.sh, task-watcher.sh
+- Fixed hardcoded dead Telegram token — all scripts now read from .env
+- Fixed flowos user permissions via symlink to /root/.quantumclaw/.env
+- Updated trading.md skill: n8n via MCP not localhost, all 10 workflow IDs
+- Committed ff3da75, 9623509
+
+### R2 Large File Upload
+- Added upload-to-r2.sh and receive-and-upload.sh scripts
+- Supports files over 300MB (Cloudflare browser UI limit) via S3 API
+- First real episode (1.87GB) uploaded via SCP + script
+- TODO: Fix dashboard R2 uploader to support multipart for large files
+- Committed 0cc12c7
+
+### Pending
+- Dashboard R2 uploader multipart fix (files >100MB)
+- receive-and-upload.sh r2FileKey variable bug (prints empty in curl command)
+- Trading room: monitor for new gold/oil markets on Polymarket/Kalshi
+- n8n root SSH disable (parked)
