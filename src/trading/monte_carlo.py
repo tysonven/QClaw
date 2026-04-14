@@ -74,7 +74,7 @@ def run_simulation(asset, target, horizon_days=30):
     mu = float(np.mean(log_returns))
     sigma = float(np.std(log_returns))
 
-    dt = 1.0 / TRADING_DAYS_YEAR
+    dt = 1.0  # mu and sigma are daily, so dt=1 day per step
     steps = horizon_days
 
     # Generate Monte Carlo paths using GBM
