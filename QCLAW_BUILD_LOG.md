@@ -960,3 +960,77 @@ Full end-to-end pipeline tested and confirmed working across all 30 nodes.
 - Only 1 matched market total: BTC $1M (overpriced)
 - Infrastructure ready — will auto-trigger when commodity/crypto 
   price markets appear
+
+
+---
+
+## Session: Apr 11-17, 2026 -- Crete Projects Marketing Automation
+
+### Crete Marketing Dashboard Tab (Apr 11)
+- New "Crete Marketing" tab added to QClaw dashboard (ui.html, server.js)
+- 7 API routes under /api/crete/content (list, get, create, edit, approve, reject, regenerate)
+- Supabase table: crete_content_queue (RLS enabled, 3 indexes)
+- Filter pills (Pending Review, Approved, Published, Rejected, All)
+- Inline edit, approve/reject with notes, card grid layout
+- Telegram notification on new pending_review via qclaw.channels
+- Brand palette: Olive #5B6F3C, Sand #D4C5A9, Charcoal #2D2D2D, Cream #FAF8F4
+- Commits: 296b265, f9a05f8
+
+### n8n Workflows -- Content Pipeline (Apr 11-13)
+- Crete - Content Generator (tnvXFYvODL1PrhJa): daily 08:00 UTC cron, fetches R2 calendar, generates content via Claude API, inserts to Supabase
+- Crete - Content Publish (zXKBjp3yjW2oR2Mj): webhook, routes by platform to Facebook Graph API, Instagram Graph API (two-step), LinkedIn via Blotato, updates status
+- Crete - Content Regenerate (KKjw893zwzHwv1o6): webhook, appends reviewer notes to prompt, regenerates via Claude API, resets to pending_review
+- Content calendar stored in R2 at crete-projects/content-calendar.json (v1.2)
+- LinkedIn scheduled Tue/Thu only to avoid collision with Flow OS Mon/Wed/Fri posts
+
+### Charlie Skill: crete-marketing (Apr 11)
+- New skill file at src/agents/skills/crete-marketing.md
+- Charlie can now check crete_content_queue for pending items and report status
+
+### Brand Assets (Apr 16)
+- CP monogram logo with olive branch (SVG + PNG on R2)
+- Stacked wordmark "Crete / PROJECTS" (SVG + PNG on R2)
+- Facebook banner "Land. Village. Wellness." (SVG + PNG on R2)
+- Fonts: Cormorant Garamond + DM Sans installed on qclaw at /usr/share/fonts/truetype/custom/
+- Assets on R2 at crete-projects/brand/
+
+### Facebook & Instagram Pages (Apr 16)
+- Facebook Page: Crete Projects (username: creteprojects.gr, Page ID: 1151574668028295)
+- Instagram Business: @creteprojects (ID: 17841427777246522)
+- Linked via Meta Business Suite
+- Long-lived Page Access Token stored in n8n env (META_PAGE_ACCESS_TOKEN) and qclaw env
+
+### Instagram Image Generation System (Apr 17)
+- Text card generator: src/crete-marketing/generate-text-card.js (node-canvas, 1080x1080 branded PNGs)
+- Two styles: quote (centred) and editorial (left-aligned headline + body)
+- API endpoint: POST /api/crete/generate-image (auth-protected, rate-limited)
+- Stock photo library: 22 Unsplash photos across 4 themes (agriculture, village, wellness, lifestyle)
+- Photo library index: crete-projects/photos/library.json on R2
+- Generated images stored at crete-projects/images/{uuid}.png on R2
+- n8n Content Generator updated with Image Router, Generate Text Card, Merge Image URL nodes
+- Dashboard updated to display images in content cards
+- Commit: d31fc1a
+
+### LinkedIn Auto-Publish via Blotato (Apr 17)
+- Crete - Content Publish workflow updated with LinkedIn routing
+- Uses Blotato account 11109 (Tyson Venables personal profile)
+- Text-only LinkedIn posts, no image
+- Tested end-to-end: Blotato submission confirmed
+
+### GHL Email Sequences (Apr 11)
+- 5-email EOI nurture sequence (Emails 3-7) built in GHL
+- Trigger: tag eoi-pdf-sent, timing: Days 3, 7, 11, 16, 21
+- From: hello@creteprojects.com
+- Existing leads enrolled
+- FB retarget audience workflow added by Tyson
+
+### Supabase Schema Changes
+- crete_content_queue table created (migration: create_crete_content_queue)
+- Columns added: image_type, image_style, image_theme (migration: add_image_columns_to_crete_content_queue)
+
+### Security Notes
+- Meta Page Access Token stored in env only (n8n + qclaw), never hardcoded
+- QCLAW_API_TOKEN for n8n to qclaw image API auth
+- All new routes protected by existing dashboard JWT auth middleware
+- XSS: creteEsc() applied to all user-controlled content in dashboard
+- GitHub PAT in git remote URL flagged for rotation (not changed)
