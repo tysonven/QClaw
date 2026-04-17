@@ -935,3 +935,28 @@ Full end-to-end pipeline tested and confirmed working across all 30 nodes.
   - Centre-cropped to 1080x1080, uploaded to R2 at crete-projects/photos/{theme}/
   - Library index at crete-projects/photos/library.json
 - Security: no hardcoded credentials, input sanitised, R2 creds from env, auth required
+
+---
+
+## Session: Apr 17, 2026 — Trading Scanner Fixes
+
+### Kalshi Parse Fix
+- Root cause: Kalshi v2 API returns yes_bid in cents not dollars
+- Fix: changed yes_bid_dollars to yes_bid / 100
+- Result: 1,000 Kalshi markets now output correctly (was 1)
+- Total markets scanned per run: ~1,600 (600 Polymarket + 1,000 Kalshi)
+
+### NO Edge / Market Intelligence Tracking
+- Added noEdge detection: markets where yes_price > 20% but 
+  our sim is <30% of market price (overpriced markets)
+- Has Edge? now triggers on highEdge OR noEdge
+- Notify Edge sends market intelligence message when no YES edge
+  but overpriced markets detected
+- First detection: BTC "Will bitcoin hit $1m before GTA VI?" 
+  (market YES=49%, our sim=0%) — significant NO edge
+
+### Current Market Status
+- Zero tradeable YES edge opportunities on Polymarket or Kalshi
+- Only 1 matched market total: BTC $1M (overpriced)
+- Infrastructure ready — will auto-trigger when commodity/crypto 
+  price markets appear
