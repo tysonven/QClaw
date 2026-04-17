@@ -884,3 +884,39 @@ Full end-to-end pipeline tested and confirmed working across all 30 nodes.
 - receive-and-upload.sh r2FileKey variable bug (prints empty in curl command)
 - Trading room: monitor for new gold/oil markets on Polymarket/Kalshi
 - n8n root SSH disable (parked)
+
+---
+
+## Session: Apr 16, 2026 — Bug fixes + upstream sync
+
+### spawn_agent fixed (commit 5b12cee)
+- Root cause: handler registered as raw async function, not {fn, description, inputSchema}
+- Fixed: both spawn_agent and search_knowledge wrapped correctly
+- Charlie can now delegate to Claude Code directly
+
+### Flow OS ad account added
+- act_414785961683125 added to Meta Ads Optimisation Agent (lf955LDteJ512RQi)
+- Copy Agent and Creative Brief Agent have no hardcoded accounts (dynamic from webhook)
+
+### Playwright MCP installed
+- claude mcp add playwright npx @playwright/mcp@latest
+- Available for Claude Code browser automation and QA testing
+
+### Upstream sync (cherry-pick from QuantumClaw/QClaw)
+- c99dafb: CLEAN - fix: dashboard rate limiter lockout behind Nginx
+- c5a29d7: SKIPPED (conflict) - web_search + process + message tools
+- f4e3088: SKIPPED (conflict) - fix WSS EADDRINUSE crash
+- 510c409: SKIPPED (conflict) - fix EADDRINUSE, MCP workspace placeholder
+- 3be8d0b: SKIPPED (conflict) - fix security module imports
+- eeb8d14: SKIPPED (conflict) - skill tool HTTP execution engine
+- bb717d4: SKIPPED (conflict) - agent & team performance metrics
+- bcdb1a5: SKIPPED (conflict) - native multi-agent spawning
+- 7/8 conflicted due to diverged codebase. Only rate limiter fix applied.
+  Full upstream merge requires dedicated session to resolve conflicts.
+
+### Higgsfield skills noted in build.md roadmap
+- 15 Seedance 2.0 video skills for future integration
+
+### Content Studio fixes (Apr 14-15)
+- Fixed custom_spelling error in AssemblyAI node (two-word "to" field)
+- Fixed LinkedIn post: plain text only, no markdown, Buzzsprout URL appended

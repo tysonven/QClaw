@@ -68,3 +68,13 @@ When a build completes, send Telegram summary:
 - Commit hash
 - Any pending items
 - Link to build log
+
+## Roadmap / Potential Integrations
+
+### Higgsfield/Seedance 2.0 Video Skills
+- Repo: github.com/beshuaxian/higgsfield-seedance2-jineng
+- 15 Claude Code skills for AI video generation (cinematic, 3D CGI,
+  anime, e-commerce ads, music videos, real estate, etc.)
+- Use cases: SproutCode video features, Flow OS support bot demos,
+  Crete winery content creation
+- Install when ready: claude plugin install via marketplace
