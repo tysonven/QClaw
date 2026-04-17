@@ -214,91 +214,105 @@ class QuantumClaw {
 
       // Wire the search_knowledge built-in to the live memory graph
       if (this.tools._builtins.has('search_knowledge') && this.memory.graphQuery) {
-        const originalSearch = this.tools._builtins.get('search_knowledge');
-        this.tools._builtins.set('search_knowledge', async (args) => {
-          const graphResult = await this.memory.graphQuery(args.query || args.q || '');
-          if (graphResult.results?.length > 0) {
-            return graphResult.results.map(r => r.content || r).join('\n\n');
+        const originalEntry = this.tools._builtins.get('search_knowledge');
+        const originalFn = originalEntry?.fn || (typeof originalEntry === 'function' ? originalEntry : null);
+        this.tools._builtins.set('search_knowledge', {
+          description: originalEntry?.description || 'Search the knowledge graph for entities, relationships, and stored memories',
+          inputSchema: originalEntry?.inputSchema || { type: 'object', properties: { query: { type: 'string', description: 'Natural language search query' } }, required: ['query'] },
+          fn: async (args) => {
+            const graphResult = await this.memory.graphQuery(args.query || args.q || '');
+            if (graphResult.results?.length > 0) {
+              return graphResult.results.map(r => r.content || r).join('\n\n');
+            }
+            // Fall back to original built-in if no graph results
+            return originalFn ? await originalFn(args) : 'No knowledge found.';
           }
-          // Fall back to original built-in if no graph results
-          return originalSearch ? await originalSearch(args) : 'No knowledge found.';
         });
       }
 
       // Wire the spawn_agent built-in for agentic sub-agent creation
-      this.tools._builtins.set('spawn_agent', async (args) => {
-        const { name, role, model_tier, scopes } = args;
-        if (!name || !role) return 'Error: name and role are required';
+      this.tools._builtins.set('spawn_agent', {
+        description: 'Spawn a new sub-agent with a specific role and scoped permissions',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            name: { type: 'string', description: 'Unique name for the agent (lowercase, alphanumeric)' },
+            role: { type: 'string', description: 'Role description for the agent' },
+            model_tier: { type: 'string', enum: ['simple', 'standard', 'advanced'], description: 'Model tier (default: simple)' },
+            scopes: { type: 'array', items: { type: 'string' }, description: 'Permission scopes (e.g. chat, crm, code)' }
+          },
+          required: ['name', 'role']
+        },
+        fn: async (args) => {
+          const { name, role, model_tier, scopes } = args;
+          if (!name || !role) return 'Error: name and role are required';
 
-        try {
-          const { Agent } = await import('./agents/registry.js');
-          const { existsSync, mkdirSync, writeFileSync } = await import('fs');
-          const { join } = await import('path');
+          try {
+            const { Agent } = await import('./agents/registry.js');
+            const { existsSync, mkdirSync, writeFileSync } = await import('fs');
+            const { join } = await import('path');
 
-          const safeName = name.toLowerCase().replace(/[^a-z0-9_-]/g, '');
-          const agentDir = join(this.config._dir, 'workspace', 'agents', safeName);
-          mkdirSync(agentDir, { recursive: true });
+            const safeName = name.toLowerCase().replace(/[^a-z0-9_-]/g, '');
+            const agentDir = join(this.config._dir, 'workspace', 'agents', safeName);
+            mkdirSync(agentDir, { recursive: true });
 
-          // Generate SOUL.md
-          const soulContent = `# ${safeName}\n\nYou are **${safeName}**, a specialised sub-agent.\n\n## Role\n\n${role}\n\n## Rules\n\n- You are a ${model_tier || 'simple'}-tier agent — be token-efficient\n- Scoped access: ${(scopes || ['chat']).join(', ')}\n- Report to the primary agent\n`;
-          writeFileSync(join(agentDir, 'SOUL.md'), soulContent);
+            // Generate SOUL.md
+            const soulContent = `# ${safeName}\n\nYou are **${safeName}**, a specialised sub-agent.\n\n## Role\n\n${role}\n\n## Rules\n\n- You are a ${model_tier || 'simple'}-tier agent — be token-efficient\n- Scoped access: ${(scopes || ['chat']).join(', ')}\n- Report to the primary agent\n`;
+            writeFileSync(join(agentDir, 'SOUL.md'), soulContent);
 
-          // Generate child AID
-          let childAid = null;
-          if (this.credentials?.generateChildAID) {
-            try {
-              childAid = await this.credentials.generateChildAID(safeName, role, scopes || []);
-              writeFileSync(join(agentDir, 'aid.json'), JSON.stringify(childAid, null, 2));
-            } catch {}
-          }
-
-          // ── AGEX credential delegation ──
-          // Issue scoped, time-bounded envelopes instead of passing raw credentials.
-          // Determine which secret keys the child needs based on requested scopes.
-          const childRecipientId = childAid?.aid_id || safeName;
-          let scopedSecrets = this.credentials;
-
-          if (this.credentials?.issueEnvelope) {
-            try {
-              const keysForScopes = this._resolveKeysForScopes(scopes || ['chat']);
-              const envelopes = await this.credentials.issueEnvelopes(
-                keysForScopes,
-                childRecipientId,
-                3600 // 1 hour TTL for sub-agents
-              );
-              // Create a scoped proxy backed by envelopes + local secrets for provider keys
-              scopedSecrets = new ScopedSecretProxy(envelopes, this.secrets, safeName);
-              log.debug(`[AGEX] Issued ${envelopes.length} envelope(s) for sub-agent "${safeName}"`);
-              this.audit.log('system', 'credential_delegation', safeName, {
-                envelopes: envelopes.map(e => e.toJSON()),
-                recipientAid: childRecipientId,
-              });
-            } catch (err) {
-              log.debug(`Envelope issuance failed for ${safeName}: ${err.message} — using parent credentials`);
-              // Fall back to parent credentials — sub-agent still works
+            // Generate child AID
+            let childAid = null;
+            if (this.credentials?.generateChildAID) {
+              try {
+                childAid = await this.credentials.generateChildAID(safeName, role, scopes || []);
+                writeFileSync(join(agentDir, 'aid.json'), JSON.stringify(childAid, null, 2));
+              } catch {}
             }
+
+            // ── AGEX credential delegation ──
+            const childRecipientId = childAid?.aid_id || safeName;
+            let scopedSecrets = this.credentials;
+
+            if (this.credentials?.issueEnvelope) {
+              try {
+                const keysForScopes = this._resolveKeysForScopes(scopes || ['chat']);
+                const envelopes = await this.credentials.issueEnvelopes(
+                  keysForScopes,
+                  childRecipientId,
+                  3600 // 1 hour TTL for sub-agents
+                );
+                scopedSecrets = new ScopedSecretProxy(envelopes, this.secrets, safeName);
+                log.debug(`[AGEX] Issued ${envelopes.length} envelope(s) for sub-agent "${safeName}"`);
+                this.audit.log('system', 'credential_delegation', safeName, {
+                  envelopes: envelopes.map(e => e.toJSON()),
+                  recipientAid: childRecipientId,
+                });
+              } catch (err) {
+                log.debug(`Envelope issuance failed for ${safeName}: ${err.message} — using parent credentials`);
+              }
+            }
+
+            // Load into registry with scoped credentials
+            const agent = new Agent(safeName, agentDir, {
+              router: this.router, memory: this.memory,
+              audit: this.audit, toolExecutor: this.toolExecutor,
+              trustKernel: this.trustKernel,
+              secrets: scopedSecrets,
+              toolRegistry: this.tools,
+            });
+            await agent.load();
+            this.agents.agents.set(safeName, agent);
+
+            this.audit.log('system', 'agent_spawned', safeName, { role, scopes });
+
+            const aidInfo = childAid ? ` AID: ${childAid.aid_id.slice(0, 12)}..., Tier ${childAid.trust_tier}.` : '';
+            const envelopeInfo = scopedSecrets instanceof ScopedSecretProxy
+              ? ` Delegated ${scopedSecrets.activeEnvelopes().length} credential(s).`
+              : '';
+            return `Agent "${safeName}" spawned successfully.${aidInfo}${envelopeInfo} Role: ${role}. Scopes: ${(scopes || ['chat']).join(', ')}.`;
+          } catch (err) {
+            return `Failed to spawn agent: ${err.message}`;
           }
-
-          // Load into registry with scoped credentials
-          const agent = new Agent(safeName, agentDir, {
-            router: this.router, memory: this.memory,
-            audit: this.audit, toolExecutor: this.toolExecutor,
-            trustKernel: this.trustKernel,
-            secrets: scopedSecrets,
-            toolRegistry: this.tools,
-          });
-          await agent.load();
-          this.agents.agents.set(safeName, agent);
-
-          this.audit.log('system', 'agent_spawned', safeName, { role, scopes });
-
-          const aidInfo = childAid ? ` AID: ${childAid.aid_id.slice(0, 12)}..., Tier ${childAid.trust_tier}.` : '';
-          const envelopeInfo = scopedSecrets instanceof ScopedSecretProxy
-            ? ` Delegated ${scopedSecrets.activeEnvelopes().length} credential(s).`
-            : '';
-          return `Agent "${safeName}" spawned successfully.${aidInfo}${envelopeInfo} Role: ${role}. Scopes: ${(scopes || ['chat']).join(', ')}.`;
-        } catch (err) {
-          return `Failed to spawn agent: ${err.message}`;
         }
       });
 
