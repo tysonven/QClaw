@@ -30,6 +30,18 @@ export class DashboardServer {
   }
 
   async start() {
+    // Load .env for persistent secrets (session secret, auth token, R2 creds)
+    try {
+      const envPath = join(process.env.HOME || "/root", ".quantumclaw", ".env");
+      if (existsSync(envPath)) {
+        const envContent = readFileSync(envPath, "utf-8");
+        for (const line of envContent.split("\n")) {
+          const m = line.match(/^([A-Z][A-Z0-9_]+)=(.+)$/);
+          if (m && !process.env[m[1]]) process.env[m[1]] = m[2];
+        }
+      }
+    } catch {}
+
     const port = this.config.dashboard?.port || 3000;
     const isTermux = existsSync('/data/data/com.termux');
     // Desktop: localhost only. Mobile/Termux: bind all interfaces for tunnel
