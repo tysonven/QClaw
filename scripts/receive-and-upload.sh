@@ -40,5 +40,5 @@ echo "Public URL: https://pub-70c436931e9e4611a135e7405c596611.r2.dev/$R2_KEY"
 echo ""
 echo "Trigger Content Studio with:"
 echo "curl -X POST https://webhook.flowos.tech/webhook/content-studio-pipeline \\"
-echo "  -H Content-Type: application/json \\"
-echo "  -d {"chatId":1375806243,"episodeTitle":"The Flow Lane - Brand Positioning","episodeDescription":"Episode 5","r2FileKey":""}"
+echo '  -H "Content-Type: application/json" \'
+echo '  -d '"'"'{"chatId":1375806243,"episodeTitle":"The Flow Lane - Brand Positioning","episodeDescription":"Episode 5","r2FileKey":"'"$R2_KEY"'"}'"'"''
