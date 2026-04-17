@@ -612,6 +612,10 @@
               <span style="flex:1;font-size:.85rem">Uploading to R2</span>
               <span class="cs-status badge" style="font-size:.65rem">waiting</span>
             </div>
+            <div id="cs-upload-progress-wrap" style="display:none;padding:4px 0 8px 0;border-bottom:1px solid var(--border)">
+              <progress id="cs-upload-progress" value="0" max="100" style="width:100%;height:8px;border-radius:4px"></progress>
+              <div id="cs-upload-pct" style="font-size:.75rem;color:var(--text-dim);text-align:right;margin-top:2px">0%</div>
+            </div>
             <div class="cs-step" id="cs-step-pipeline" style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
               <span class="cs-icon" style="font-size:1.1rem">⏳</span>
               <span style="flex:1;font-size:.85rem">Triggering Content Pipeline</span>
@@ -1838,11 +1842,77 @@ async function csStartUpload() {
   csSetStep('cs-step-upload', 'active');
 
   try {
-    const formData = new FormData();
-    formData.append('file', _csFile);
-    const uploadRes = await fetch(API('/api/content-studio/upload'), { method: 'POST', body: formData });
-    if (!uploadRes.ok) { const err = await uploadRes.json().catch(() => ({})); throw new Error(err.error || 'Upload failed'); }
-    const { r2FileKey, publicUrl } = await uploadRes.json();
+    let r2FileKey, publicUrl;
+    const CHUNK_SIZE = 50 * 1024 * 1024; // 50MB chunks
+    const useMultipart = _csFile.size > CHUNK_SIZE;
+
+    if (useMultipart) {
+      // ── Multipart upload for large files ──
+      const progressWrap = $('cs-upload-progress-wrap');
+      const progressBar = $('cs-upload-progress');
+      const pctLabel = $('cs-upload-pct');
+      progressWrap.style.display = 'block';
+
+      // 1. Initiate
+      const initRes = await fetch(API('/api/upload/initiate'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filename: _csFile.name, contentType: _csFile.type || 'video/mp4', fileSize: _csFile.size })
+      });
+      if (!initRes.ok) { const err = await initRes.json().catch(() => ({})); throw new Error(err.error || 'Upload initiate failed'); }
+      const { uploadId, key } = await initRes.json();
+
+      // 2. Upload parts
+      const parts = [];
+      const totalParts = Math.ceil(_csFile.size / CHUNK_SIZE);
+
+      for (let i = 0; i < totalParts; i++) {
+        const start = i * CHUNK_SIZE;
+        const end = Math.min(start + CHUNK_SIZE, _csFile.size);
+        const chunk = _csFile.slice(start, end);
+        const buffer = await chunk.arrayBuffer();
+
+        const partRes = await fetch(API('/api/upload/part'), {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/octet-stream',
+            'x-upload-id': uploadId,
+            'x-upload-key': key,
+            'x-part-number': String(i + 1)
+          },
+          body: buffer
+        });
+        if (!partRes.ok) { const err = await partRes.json().catch(() => ({})); throw new Error(err.error || `Part ${i+1} upload failed`); }
+        const partData = await partRes.json();
+        parts.push({ ETag: partData.ETag, PartNumber: partData.partNumber });
+
+        const pct = Math.round((i + 1) / totalParts * 100);
+        progressBar.value = pct;
+        pctLabel.textContent = pct + '% (' + (i+1) + '/' + totalParts + ' parts)';
+        btn.textContent = 'Uploading... ' + pct + '%';
+      }
+
+      // 3. Complete
+      const completeRes = await fetch(API('/api/upload/complete'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ uploadId, key, parts })
+      });
+      if (!completeRes.ok) { const err = await completeRes.json().catch(() => ({})); throw new Error(err.error || 'Upload complete failed'); }
+      const result = await completeRes.json();
+      r2FileKey = result.r2FileKey;
+      publicUrl = result.publicUrl;
+      progressWrap.style.display = 'none';
+    } else {
+      // ── Simple upload for small files (existing behavior) ──
+      const formData = new FormData();
+      formData.append('file', _csFile);
+      const uploadRes = await fetch(API('/api/content-studio/upload'), { method: 'POST', body: formData });
+      if (!uploadRes.ok) { const err = await uploadRes.json().catch(() => ({})); throw new Error(err.error || 'Upload failed'); }
+      const result = await uploadRes.json();
+      r2FileKey = result.r2FileKey;
+      publicUrl = result.publicUrl;
+    }
     csSetStep('cs-step-upload', 'done');
 
     csSetStep('cs-step-pipeline', 'active');
@@ -2074,6 +2144,7 @@ function creteRenderCard(item) {
         <span class="crete-badge ${item.status === 'pending_review' ? 'pending' : item.status}">${creteEsc(badge)}</span>
       </div>
       <h4 class="crete-title" data-field="title">${creteEsc(item.title)}</h4>
+      ${item.media_url ? `<img src="${creteEsc(item.media_url)}" alt="Content image" style="max-width:100%; border-radius:8px; margin:12px 0;" loading="lazy">` : ''}
       <div class="crete-body" data-field="body">${creteEsc(item.body)}</div>
       <button class="crete-body-toggle" onclick="creteToggleBody(this)">Show more</button>
       <div class="crete-meta">

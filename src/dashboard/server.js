@@ -56,6 +56,7 @@ export class DashboardServer {
     this.AUTH_MAX_ATTEMPTS = 10;
     this.AUTH_LOCKOUT_MS = 120000; // 2 minutes
 
+    this.app.use('/api/upload/part', express.raw({ type: 'application/octet-stream', limit: '60mb' }));
     this.app.use(express.json({ limit: '20mb' }));
     this.app.use(express.urlencoded({ extended: false }));
     this.app.use(cookieParser());
@@ -71,6 +72,9 @@ export class DashboardServer {
     // Rate limiting on sensitive endpoints
     const { default: rateLimit } = await import('express-rate-limit');
     this.app.use('/api/trading/simulate', rateLimit({ windowMs: 60000, max: 10, message: { error: 'Too many simulation requests' } }));
+    this.app.use('/api/upload/initiate', rateLimit({ windowMs: 60000, max: 10, message: { error: 'Too many upload requests' } }));
+    this.app.use('/api/upload/part', rateLimit({ windowMs: 60000, max: 200, message: { error: 'Too many part uploads' } }));
+    this.app.use('/api/upload/complete', rateLimit({ windowMs: 60000, max: 10, message: { error: 'Too many upload requests' } }));
     this.app.use('/api/content-studio/upload', rateLimit({ windowMs: 60000, max: 5, message: { error: 'Too many upload requests' } }));
     this.app.use('/api/content-studio/upload-image', rateLimit({ windowMs: 60000, max: 10, message: { error: 'Too many image upload requests' } }));
     this.app.use("/api/crete/generate-image", rateLimit({ windowMs: 60000, max: 10, message: { error: "Too many image generation requests" } }));
@@ -1008,6 +1012,90 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
           id: id || `canvas-${Date.now()}`,
         });
         res.json({ ok: true, format: fmt });
+      } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+
+    // ─── Content Studio: R2 Multipart Upload (large files) ───────
+    // Helper: load R2 credentials from .env
+    const _loadR2Creds = async () => {
+      const envPath = join(process.env.HOME || '/root', '.quantumclaw', '.env');
+      const envVars = {};
+      const envContent = (await import('fs')).readFileSync(envPath, 'utf-8');
+      for (const line of envContent.split('\n')) {
+        const match = line.match(/^([A-Z0-9_]+)=(.+)$/);
+        if (match) envVars[match[1]] = match[2];
+      }
+      const accountId = envVars.R2_ACCOUNT_ID;
+      const accessKeyId = envVars.R2_ACCESS_KEY_ID;
+      const secretAccessKey = envVars.R2_SECRET_ACCESS_KEY;
+      const bucket = envVars.R2_BUCKET_NAME || 'emma-content-studio';
+      if (!accountId || !accessKeyId || !secretAccessKey) throw new Error('R2 credentials not configured');
+      const { S3Client } = await import('@aws-sdk/client-s3');
+      const s3 = new S3Client({
+        region: 'auto',
+        endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
+        credentials: { accessKeyId, secretAccessKey }
+      });
+      return { s3, bucket };
+    };
+
+    // 1. Initiate multipart upload
+    this.app.post('/api/upload/initiate', async (req, res) => {
+      try {
+        const { filename, contentType, fileSize } = req.body;
+        if (!filename) return res.status(400).json({ error: 'filename required' });
+        const safeName = filename.replace(/[^a-zA-Z0-9._-]/g, '_');
+        const key = `episodes/${Date.now()}-${safeName}`;
+        const { s3, bucket } = await _loadR2Creds();
+        const { CreateMultipartUploadCommand } = await import('@aws-sdk/client-s3');
+        const { UploadId } = await s3.send(new CreateMultipartUploadCommand({
+          Bucket: bucket,
+          Key: key,
+          ContentType: contentType || 'video/mp4'
+        }));
+        res.json({ uploadId: UploadId, key });
+      } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+
+    // 2. Upload a single part (receives raw binary with headers)
+    this.app.post('/api/upload/part', async (req, res) => {
+      try {
+        const uploadId = req.headers['x-upload-id'];
+        const key = req.headers['x-upload-key'];
+        const partNumber = parseInt(req.headers['x-part-number'], 10);
+        if (!uploadId || !key || !partNumber) {
+          return res.status(400).json({ error: 'x-upload-id, x-upload-key, x-part-number headers required' });
+        }
+        const { s3, bucket } = await _loadR2Creds();
+        const { UploadPartCommand } = await import('@aws-sdk/client-s3');
+        const { ETag } = await s3.send(new UploadPartCommand({
+          Bucket: bucket,
+          Key: key,
+          UploadId: uploadId,
+          PartNumber: partNumber,
+          Body: req.body
+        }));
+        res.json({ ETag, partNumber });
+      } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+
+    // 3. Complete multipart upload
+    this.app.post('/api/upload/complete', async (req, res) => {
+      try {
+        const { uploadId, key, parts } = req.body;
+        if (!uploadId || !key || !parts?.length) {
+          return res.status(400).json({ error: 'uploadId, key, and parts[] required' });
+        }
+        const { s3, bucket } = await _loadR2Creds();
+        const { CompleteMultipartUploadCommand } = await import('@aws-sdk/client-s3');
+        await s3.send(new CompleteMultipartUploadCommand({
+          Bucket: bucket,
+          Key: key,
+          UploadId: uploadId,
+          MultipartUpload: { Parts: parts.map(p => ({ ETag: p.ETag, PartNumber: p.PartNumber })) }
+        }));
+        const publicUrl = `https://pub-70c436931e9e4611a135e7405c596611.r2.dev/${key}`;
+        res.json({ publicUrl, r2FileKey: key });
       } catch (err) { res.status(500).json({ error: err.message }); }
     });
 
