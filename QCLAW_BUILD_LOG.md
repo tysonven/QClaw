@@ -920,3 +920,18 @@ Full end-to-end pipeline tested and confirmed working across all 30 nodes.
 ### Content Studio fixes (Apr 14-15)
 - Fixed custom_spelling error in AssemblyAI node (two-word "to" field)
 - Fixed LinkedIn post: plain text only, no markdown, Buzzsprout URL appended
+### Instagram Image Generation System (Apr 17)
+- Installed node-canvas with Cairo dependencies for server-side image rendering
+- Created src/crete-marketing/generate-text-card.js: branded 1080x1080 PNG generator
+  - Two styles: quote (centred italic serif text, decorative quotation marks) and editorial (headline + body, structured layout)
+  - Brand palette: cream background (#F5F0EB), olive green accents, Cormorant Garamond + DM Sans + Montserrat
+  - Olive branch decorative elements, gold dividers, CRETE PROJECTS footer
+- Added POST /api/crete/generate-image endpoint to dashboard server
+  - Validates style + required fields, generates PNG in memory, uploads to R2
+  - Returns public R2 URL at crete-projects/images/{uuid}.png
+  - Rate-limited (10/min), protected by existing auth middleware
+- Curated 22-photo stock library from Unsplash (all free for commercial use)
+  - 8 agriculture/land, 6 village/stone buildings, 4 wellness, 4 Crete landscape
+  - Centre-cropped to 1080x1080, uploaded to R2 at crete-projects/photos/{theme}/
+  - Library index at crete-projects/photos/library.json
+- Security: no hardcoded credentials, input sanitised, R2 creds from env, auth required

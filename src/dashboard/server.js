@@ -73,6 +73,7 @@ export class DashboardServer {
     this.app.use('/api/trading/simulate', rateLimit({ windowMs: 60000, max: 10, message: { error: 'Too many simulation requests' } }));
     this.app.use('/api/content-studio/upload', rateLimit({ windowMs: 60000, max: 5, message: { error: 'Too many upload requests' } }));
     this.app.use('/api/content-studio/upload-image', rateLimit({ windowMs: 60000, max: 10, message: { error: 'Too many image upload requests' } }));
+    this.app.use("/api/crete/generate-image", rateLimit({ windowMs: 60000, max: 10, message: { error: "Too many image generation requests" } }));
     this.app.use('/api/trading/execute', rateLimit({ windowMs: 60000, max: 5, message: { error: 'Too many trade requests' } }));
 
     // Serve agency character assets
@@ -1618,6 +1619,72 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
         creteFireWebhook('crete-content-regenerate', { content_id: req.params.id, notes });
         res.json({ ok: true, item: Array.isArray(data) ? data[0] : data });
       } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+
+    // POST /api/crete/generate-image
+    // Body: { style: "quote"|"editorial", text: "...", headline: "...", body: "..." }
+    // Returns: { success: true, url: "https://pub-...r2.dev/crete-projects/images/..." }
+    this.app.post('/api/crete/generate-image', async (req, res) => {
+      try {
+        const { style, text, headline, body: bodyText } = req.body || {};
+        if (!style || (style !== 'quote' && style !== 'editorial')) {
+          return res.status(400).json({ error: 'style must be "quote" or "editorial"' });
+        }
+        if (style === 'quote' && !text) {
+          return res.status(400).json({ error: 'text is required for quote style' });
+        }
+        if (style === 'editorial' && !headline) {
+          return res.status(400).json({ error: 'headline is required for editorial style' });
+        }
+
+        // Generate image
+        const { generateTextCard } = await import('../crete-marketing/generate-text-card.js');
+        const pngBuffer = await generateTextCard({ style, text, headline, body: bodyText });
+
+        // Upload to R2
+        const { S3Client, PutObjectCommand } = await import('@aws-sdk/client-s3');
+        const { randomUUID } = await import('crypto');
+
+        const envPath = join(process.env.HOME || '/root', '.quantumclaw', '.env');
+        const envVars = {};
+        try {
+          const envContent = readFileSync(envPath, 'utf-8');
+          for (const line of envContent.split('\n')) {
+            const match = line.match(/^([A-Z0-9_]+)=(.+)$/);
+            if (match) envVars[match[1]] = match[2];
+          }
+        } catch { return res.status(500).json({ error: 'Could not read R2 credentials' }); }
+
+        const accountId = envVars.R2_ACCOUNT_ID;
+        const accessKeyId = envVars.R2_ACCESS_KEY_ID;
+        const secretAccessKey = envVars.R2_SECRET_ACCESS_KEY;
+        const bucket = envVars.R2_BUCKET_NAME || 'emma-content-studio';
+
+        if (!accountId || !accessKeyId || !secretAccessKey) {
+          return res.status(500).json({ error: 'R2 credentials not configured' });
+        }
+
+        const s3 = new S3Client({
+          region: 'auto',
+          endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
+          credentials: { accessKeyId, secretAccessKey }
+        });
+
+        const fileKey = `crete-projects/images/${randomUUID()}.png`;
+        await s3.send(new PutObjectCommand({
+          Bucket: bucket,
+          Key: fileKey,
+          Body: pngBuffer,
+          ContentType: 'image/png'
+        }));
+
+        const publicUrl = `https://pub-70c436931e9e4611a135e7405c596611.r2.dev/${fileKey}`;
+        log.info(`[CRETE] Generated ${style} card → ${publicUrl}`);
+        res.json({ success: true, url: publicUrl, style, key: fileKey });
+      } catch (err) {
+        log.error(`[CRETE] generate-image error: ${err.message}`);
+        res.status(500).json({ error: err.message });
+      }
     });
 
   }
