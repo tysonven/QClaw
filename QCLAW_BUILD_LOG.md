@@ -1034,3 +1034,32 @@ Full end-to-end pipeline tested and confirmed working across all 30 nodes.
 - All new routes protected by existing dashboard JWT auth middleware
 - XSS: creteEsc() applied to all user-controlled content in dashboard
 - GitHub PAT in git remote URL flagged for rotation (not changed)
+
+## Session: Apr 17, 2026 — Final cleanup
+
+### Dashboard R2 Multipart Upload (commits 9b1e80f, 047f559)
+- Files >50MB use chunked multipart upload via S3 API
+- Files <=50MB use existing FormData upload
+- Progress bar with percentage + part counter
+- Chunks sent as raw binary (no base64 overhead)
+- Endpoints: /api/upload/initiate, /api/upload/part, /api/upload/complete
+- All auth-protected with rate limiting
+
+### Dashboard Session Secret Fixed (047f559)
+- Added dotenv loader at DashboardServer.start()
+- DASHBOARD_SESSION_SECRET now persists across PM2 restarts
+- tunnelUrl set to https://agentboardroom.flowos.tech in config.json
+
+### All active backlog items cleared
+- spawn_agent fixed (5b12cee)
+- Flow OS ad account added (d490788)
+- Playwright MCP installed (d490788)
+- Kalshi parse fix — yes_bid/100 (cents not dollars)
+- NO edge market intelligence tracking added
+- receive-and-upload.sh r2FileKey quoting bug fixed (83b92a4)
+- Morning Light WL checked — healthy, token fresh
+
+### Pending
+- Upstream full merge: bcdb1a5 (delegate_to), bb717d4 (metrics/leaderboard)
+- n8n root SSH disable (parked — DO console broken)
+- YouTube auto-publish (carparked — wait for Emma)
