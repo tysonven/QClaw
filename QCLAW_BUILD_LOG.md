@@ -1063,3 +1063,36 @@ Full end-to-end pipeline tested and confirmed working across all 30 nodes.
 - Upstream full merge: bcdb1a5 (delegate_to), bb717d4 (metrics/leaderboard)
 - n8n root SSH disable (parked — DO console broken)
 - YouTube auto-publish (carparked — wait for Emma)
+
+## Session: Apr 20, 2026 — Security Audit + Charlie Recovery
+
+### Charlie Recovery
+- Root cause: Anthropic credits exhausted Apr 18 — all LLM calls failing
+- Added credits exhaustion handler in executor.js — 6h cooldown 
+  Telegram notification instead of silent crash (cc7f37e)
+- Added heartbeat.js graceful degradation for credits errors
+- Fixed Charlie 401 on trading API — dashboard token updated in config
+- GitHub PAT rotated and updated in git remote
+
+### Vercel Security Audit (Vercel breach response)
+- Reviewed all 12 Vercel projects
+- gohighlevel_mcp: token rotated
+- fit-quiz-results: new scoped GHL JWT created
+- n8n-dashboard: n8n API key rotated to v2
+- flowos-ai-va, venables-finances, codesprout, triple-a-tracker: no keys
+- wellness-oauth: dormant, kept for reuse
+- wellness-oauth-fresh: kept as reusable WL OAuth connector for future clients
+
+### GHL Token Refresh Security Fix
+- Found hardcoded client_id, client_secret in HighLevel OAuth 
+  Token Refresh workflows
+- Moved credentials to n8n env vars (HL_LOCATION1_CLIENT_ID/SECRET)
+- Primary workflow (N3VF1VKlekDdhxGU): cleaned + left inactive (deprecated)
+- Sister workflow (02Dob9FCEkXZFDAs): fixed + stays active
+- Verified live execution — tokens refreshing correctly in Supabase
+
+### Pending
+- wellness-oauth-fresh: consider rebuilding as proper 
+  Flow OS GHL OAuth connector (documented, multi-tenant)
+- Upstream full merge: bcdb1a5 (delegate_to), bb717d4 (metrics)
+- Social media automation for SproutCode, Flow OS, FSC (parked)
