@@ -72,6 +72,51 @@ Call n8n:search_workflows to find it, then n8n:get_workflow_details to inspect i
 - LinkedIn direct posting via API
 - Nate (Prairie Rising) municipal comms build — warm lead, follow up
 
+## n8n Diagnostics
+
+n8n runs at https://webhook.flowos.tech — NEVER localhost from qclaw.
+n8n API: https://webhook.flowos.tech/api/v1/
+Credentials: N8N_API_KEY in /root/.quantumclaw/.env
+
+### CRITICAL RULES:
+1. NEVER say "I don't have access to that workflow"
+2. NEVER maintain or reference a static workflow list
+3. ALWAYS query n8n live to find and inspect workflows
+
+### Finding any workflow:
+source /root/.quantumclaw/.env && \
+curl -s "https://webhook.flowos.tech/api/v1/workflows?limit=200" \
+  -H "X-N8N-API-KEY: $N8N_API_KEY" | \
+  python3 -c "import sys,json; [print(w['id'],'|',w['name'],'|',('active' if w['active'] else 'INACTIVE')) for w in json.load(sys.stdin)['data']]"
+
+### Getting workflow details:
+source /root/.quantumclaw/.env && \
+curl -s "https://webhook.flowos.tech/api/v1/workflows/<WORKFLOW_ID>" \
+  -H "X-N8N-API-KEY: $N8N_API_KEY" | \
+  python3 -c "import sys,json; d=json.load(sys.stdin); print(d['name']); [print(' -',n['name'],'(',n['type'].split('.')[-1],')') for n in d['nodes']]"
+
+### Getting recent executions for a workflow:
+source /root/.quantumclaw/.env && \
+curl -s "https://webhook.flowos.tech/api/v1/executions?workflowId=<ID>&limit=5&status=error" \
+  -H "X-N8N-API-KEY: $N8N_API_KEY" | \
+  python3 -c "import sys,json; [print(e['id'],e['status'],e.get('startedAt','')[:19]) for e in json.load(sys.stdin)['data']]"
+
+### Diagnosing failures — map node types to likely causes:
+- httpRequest to api.anthropic.com → Anthropic credits exhausted
+- httpRequest to graph.facebook.com → IG_ACCESS_TOKEN expired
+- httpRequest to r2.dev → file missing or wrong path (404)
+- googleSheets node → Google OAuth expired
+- blotato node → Blotato API key invalid
+- postgres/httpRequest to supabase → DB credentials issue
+- scheduleTrigger not firing → workflow deactivated or n8n down
+
+### When a user reports a workflow issue:
+1. Run the find command above to locate the workflow by name/ID
+2. Run get details to inspect which nodes are involved
+3. Run recent executions with status=error to see failures
+4. Map failing node to likely cause from the list above
+5. Report specific findings — never give a generic response
+
 ## Session handoff protocol
 At the END of every session Charlie must:
 1. Run security gate checklist
