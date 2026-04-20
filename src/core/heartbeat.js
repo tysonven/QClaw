@@ -9,6 +9,7 @@
  */
 
 import { log } from '../core/logger.js';
+import { isAnthropicCreditsError } from '../tools/executor.js';
 
 // Discovery question templates — contextual, short, useful
 const LEARN_PROMPTS = [
@@ -186,7 +187,11 @@ export class Heartbeat {
         });
       }
     } catch (err) {
-      log.debug(`Heartbeat task failed: ${err.message}`);
+      if (isAnthropicCreditsError(err)) {
+        log.warn(`Heartbeat "${task.name || task.schedule}" skipped — Anthropic credits exhausted (owner notified)`);
+      } else {
+        log.debug(`Heartbeat task failed: ${err.message}`);
+      }
     }
   }
 

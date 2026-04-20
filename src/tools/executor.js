@@ -18,6 +18,38 @@ import { log } from '../core/logger.js';
 const MAX_TOOL_ITERATIONS = 100;  // Safety limit — increased for AGEX security implementation
 const TOOL_TIMEOUT = 30000;      // 30s per tool call
 
+const OWNER_TELEGRAM_CHAT_ID = 1375806243;
+const CREDITS_NOTIFY_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+let _lastCreditsNotifyAt = 0;
+
+export function isAnthropicCreditsError(err) {
+  return err?.code === 'ANTHROPIC_CREDITS_EXHAUSTED';
+}
+
+// Best-effort Telegram DM to the owner when Anthropic credits run out.
+// Rate-limited to one ping per cooldown window per process. Never throws.
+export async function notifyAnthropicCreditsExhausted() {
+  const now = Date.now();
+  if (now - _lastCreditsNotifyAt < CREDITS_NOTIFY_COOLDOWN_MS) return;
+  _lastCreditsNotifyAt = now;
+
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  if (!token) return;
+
+  try {
+    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: OWNER_TELEGRAM_CHAT_ID,
+        text: '⚠️ Charlie offline — Anthropic credits exhausted. Top up at console.anthropic.com to restore.',
+      }),
+    });
+  } catch {
+    // Notification is best-effort — swallow to avoid cascading failures.
+  }
+}
+
 export class ToolExecutor {
   constructor(router, toolRegistry, options = {}) {
     this.router = router;
@@ -248,8 +280,20 @@ export class ToolExecutor {
     });
 
     if (!res.ok) {
-      const err = await res.text();
-      throw new Error(`Anthropic ${res.status}: ${err}`);
+      const errText = await res.text();
+      if (res.status === 400) {
+        let parsed = null;
+        try { parsed = JSON.parse(errText); } catch { /* not JSON */ }
+        const apiErr = parsed?.error;
+        if (apiErr?.type === 'invalid_request_error' && /credit balance/i.test(apiErr.message || '')) {
+          log.warn('Anthropic credits exhausted — notifying owner, skipping call');
+          await notifyAnthropicCreditsExhausted();
+          const credErr = new Error('Anthropic credits exhausted');
+          credErr.code = 'ANTHROPIC_CREDITS_EXHAUSTED';
+          throw credErr;
+        }
+      }
+      throw new Error(`Anthropic ${res.status}: ${errText}`);
     }
 
     const data = await res.json();
