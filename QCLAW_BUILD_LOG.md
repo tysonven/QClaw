@@ -7,6 +7,14 @@
 
 ---
 
+## Build Log Rules
+
+- **NEVER commit literal tokens, API keys, passwords, or secrets to the build log.**
+- Reference them as `<stored in ~/.quantumclaw/.env>` or `<rotated — see secrets store>`.
+- If a token accidentally lands in a commit, rotate it immediately even if the repo is private — history is durable and hard to scrub.
+
+---
+
 ## Infrastructure
 
 | Component | Location | Details |
@@ -1096,3 +1104,72 @@ Full end-to-end pipeline tested and confirmed working across all 30 nodes.
   Flow OS GHL OAuth connector (documented, multi-tenant)
 - Upstream full merge: bcdb1a5 (delegate_to), bb717d4 (metrics)
 - Social media automation for SproutCode, Flow OS, FSC (parked)
+
+---
+
+## Session: Apr 20, 2026 — Full Day Build
+
+### Charlie Recovery (Anthropic credits exhaustion)
+- Root cause: Anthropic credits exhausted Apr 18–20 — all LLM calls failing
+- Added credits exhaustion handler in executor.js (commit cc7f37e)
+  - 6-hour cooldown Telegram notification instead of silent crash
+  - Tagged error code `ANTHROPIC_CREDITS_EXHAUSTED` for downstream handling
+- Added heartbeat.js graceful degradation for credits errors
+- Charlie restored after credits top-up
+
+### Dashboard Trading API 401 Fix
+- Dashboard auth token updated in Charlie config
+- New token: `<rotated — stored in ~/.quantumclaw/.env>`
+
+### GitHub PAT Rotated
+- Previous PAT expired, blocking git push from qclaw
+- New PAT rotated and updated in git remote URL
+- Flagged for future: move from plaintext URL to SSH auth or credential helper
+
+### Vercel Security Audit (Vercel breach response)
+Reviewed all 12 Vercel projects after Vercel security incident notification:
+- gohighlevel_mcp: token rotated
+- fit-quiz-results: new scoped GHL JWT created (fit-quiz labeled)
+- n8n-dashboard: n8n API key rotated to v2 query key
+- flowos-ai-va, venables-finances, codesprout, triple-a-tracker: no API keys
+- wellness-oauth: dormant, kept for reuse
+- wellness-oauth-fresh: kept as reusable WL OAuth connector for future clients
+- portfolio, crete-eoi, 1-ceo-dashboard: static/low risk
+
+### GHL Token Refresh Credentials Hardened
+- Found hardcoded client_id + client_secret in 2 n8n workflows
+- Moved credentials to n8n env vars (HL_LOCATION1_CLIENT_ID/SECRET)
+- Primary workflow (N3VF1VKlekDdhxGU): cleaned + left inactive (deprecated duplicate)
+- Sister workflow (02Dob9FCEkXZFDAs): fixed + remains active
+- Verified live execution — tokens refreshing correctly in Supabase
+
+### Charlie n8n Diagnosis — Permanent Fix (commit db6bc9c)
+Permanently solved Charlie's recurring "I don't have access to that workflow" issue:
+- Replaced static hardcoded workflow registry with dynamic n8n API queries
+- charlie-cto.md skill: added n8n Diagnostics section with live-query recipes
+- trading.md: removed static workflow ID list
+- New `/diagnose <workflow_id_or_name>` Telegram command
+  - Charlie auto-queries n8n for any workflow, live
+  - Claude Code executes the diagnosis and reports findings to Telegram
+  - E2E verified with `44g7cbGz5osQ1pcBVhIoz` — found Instagram media_publish 500 issue
+- Self-serve: new workflows automatically discoverable, no manual updates needed
+
+### Instagram Reels Workflow Status
+- Charlie's diagnosis flagged Instagram media_publish 500 on Apr 16 (transient)
+- Real current issue: post 271 missing from R2 (now uploaded by Tyson)
+- Workflow should resume on next scheduled cron run
+- Retry/wait fix parked until next failure confirms it's needed
+
+### Pending
+- wellness-oauth-fresh: consider rebuilding as proper Flow OS GHL OAuth connector
+  (documented, multi-tenant, safe for future clients)
+- Upstream full merge: bcdb1a5 (delegate_to), bb717d4 (metrics/leaderboard)
+- Social media automation for SproutCode, Flow OS, FSC
+  (awaiting brand kits + content topics from Tyson)
+- Enhance `/diagnose` to also check Slack #n8n-error for recent messages
+  (would have caught R2 404 pattern faster)
+- Move GitHub PAT from plaintext git remote URL to SSH auth
+
+### Parked
+- n8n root SSH disable (DO console broken, too risky)
+- YouTube auto-publish (carparked — wait for Emma to test pipeline)
