@@ -1721,6 +1721,105 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
       } catch (err) { res.status(500).json({ error: err.message }); }
     });
 
+    // ─── GHL Marketing: Content Review Queue ─────────────────
+    // Reads from marketing_drafts table. Same Supabase creds as Crete.
+    const GHL_TABLE = `${CRETE_SUPABASE_URL}/rest/v1/marketing_drafts`;
+    const GHL_VALID_STATUSES = ['pending_approval', 'approved', 'rejected', 'published', 'failed'];
+    const ghlConfigured = () => Boolean(CRETE_SUPABASE_URL && CRETE_SUPABASE_KEY);
+    const ghlFireWebhook = (name, payload) => {
+      fetch(`${CRETE_N8N_BASE}/${name}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      }).then(r => {
+        if (!r.ok) log.warn(`[GHL] n8n webhook ${name} returned ${r.status}`);
+      }).catch(err => {
+        log.warn(`[GHL] n8n webhook ${name} failed: ${err.message}`);
+      });
+    };
+
+    // GET /api/ghl/drafts — list marketing drafts (filter by status, paginated)
+    this.app.get('/api/ghl/drafts', async (req, res) => {
+      try {
+        if (!ghlConfigured()) return res.status(500).json({ error: 'Supabase not configured' });
+        const limit = Math.min(Math.max(parseInt(req.query.limit) || 20, 1), 100);
+        const offset = Math.max(parseInt(req.query.offset) || 0, 0);
+        const params = new URLSearchParams({
+          order: 'created_at.desc',
+          limit: String(limit),
+          offset: String(offset)
+        });
+        if (req.query.status && GHL_VALID_STATUSES.includes(req.query.status)) {
+          params.set('status', `eq.${req.query.status}`);
+        }
+        const r = await fetch(`${GHL_TABLE}?${params}`, { headers: creteHeaders() });
+        const data = await r.json();
+        if (!r.ok) return res.status(r.status).json({ error: data.message || 'Supabase error' });
+        res.json({ items: data, limit, offset });
+      } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+
+    // GET /api/ghl/drafts/:id
+    this.app.get('/api/ghl/drafts/:id', async (req, res) => {
+      try {
+        if (!ghlConfigured()) return res.status(500).json({ error: 'Supabase not configured' });
+        if (!creteValidUuid(req.params.id)) return res.status(400).json({ error: 'Invalid id' });
+        const r = await fetch(`${GHL_TABLE}?id=eq.${req.params.id}`, { headers: creteHeaders() });
+        const rows = await r.json();
+        if (!r.ok) return res.status(r.status).json({ error: rows.message || 'Supabase error' });
+        if (!Array.isArray(rows) || !rows.length) return res.status(404).json({ error: 'Not found' });
+        res.json(rows[0]);
+      } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+
+    // PUT /api/ghl/drafts/:id/approve
+    this.app.put('/api/ghl/drafts/:id/approve', async (req, res) => {
+      try {
+        if (!ghlConfigured()) return res.status(500).json({ error: 'Supabase not configured' });
+        if (!creteValidUuid(req.params.id)) return res.status(400).json({ error: 'Invalid id' });
+        const patch = { status: 'approved', updated_at: new Date().toISOString() };
+        const r = await fetch(`${GHL_TABLE}?id=eq.${req.params.id}`, {
+          method: 'PATCH',
+          headers: creteHeaders({ Prefer: 'return=representation' }),
+          body: JSON.stringify(patch)
+        });
+        const data = await r.json();
+        if (!r.ok) return res.status(r.status).json({ error: data.message || 'Supabase error' });
+        const item = Array.isArray(data) ? data[0] : data;
+        ghlFireWebhook('ghl-marketing-publish', { draftId: req.params.id });
+        res.json({ ok: true, item });
+      } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+
+    // PUT /api/ghl/drafts/:id/reject
+    this.app.put('/api/ghl/drafts/:id/reject', async (req, res) => {
+      try {
+        if (!ghlConfigured()) return res.status(500).json({ error: 'Supabase not configured' });
+        if (!creteValidUuid(req.params.id)) return res.status(400).json({ error: 'Invalid id' });
+        const feedback = typeof req.body?.feedback === 'string' ? req.body.feedback.slice(0, 2000) : '';
+        const patch = { status: 'rejected', feedback: feedback || null, updated_at: new Date().toISOString() };
+        const r = await fetch(`${GHL_TABLE}?id=eq.${req.params.id}`, {
+          method: 'PATCH',
+          headers: creteHeaders({ Prefer: 'return=representation' }),
+          body: JSON.stringify(patch)
+        });
+        const data = await r.json();
+        if (!r.ok) return res.status(r.status).json({ error: data.message || 'Supabase error' });
+        res.json({ ok: true, item: Array.isArray(data) ? data[0] : data });
+      } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+
+    // POST /api/ghl/drafts/:id/regenerate — fires Approval Handler regenerate path
+    this.app.post('/api/ghl/drafts/:id/regenerate', async (req, res) => {
+      try {
+        if (!ghlConfigured()) return res.status(500).json({ error: 'Supabase not configured' });
+        if (!creteValidUuid(req.params.id)) return res.status(400).json({ error: 'Invalid id' });
+        const feedback = typeof req.body?.feedback === 'string' ? req.body.feedback.slice(0, 2000) : '';
+        ghlFireWebhook('ghl-marketing-regenerate', { draftId: req.params.id, feedback });
+        res.json({ ok: true });
+      } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+
     // POST /api/crete/generate-image
     // Body: { style: "quote"|"editorial", text: "...", headline: "...", body: "..." }
     // Returns: { success: true, url: "https://pub-...r2.dev/crete-projects/images/..." }

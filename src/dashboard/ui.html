@@ -212,6 +212,48 @@
     .crete-editing textarea{min-height:90px}
     .crete-notes{width:100%;padding:6px 10px;border:1px solid var(--crete-sand);border-radius:6px;background:#fff;color:var(--crete-charcoal);font-family:inherit;font-size:.8rem;margin-top:6px}
     .crete-empty{text-align:center;color:var(--text-dim);padding:40px 20px;font-size:.9rem}
+    /* ── GHL Marketing ──────────────────────────────────── */
+    :root{--ghl-blue:#1a56db;--ghl-blue-l:#3b75e8;--ghl-slate:#1e293b;--ghl-mist:#e2e8f0;--ghl-cream:#f8fafc;--ghl-ink:#0f172a}
+    .ghl-filters{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px}
+    .ghl-pill{padding:6px 14px;border-radius:999px;background:var(--bg-2);color:var(--text-dim);border:1px solid var(--border-l);cursor:pointer;font-size:.82rem;transition:all .15s;font-family:inherit}
+    .ghl-pill:hover{color:var(--text);border-color:var(--ghl-blue-l)}
+    .ghl-pill.active{background:var(--ghl-blue);color:#fff;border-color:var(--ghl-blue)}
+    .ghl-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:14px;margin-top:10px}
+    .ghl-card{background:var(--ghl-cream);color:var(--ghl-ink);border:1px solid var(--ghl-mist);border-radius:10px;padding:16px;display:flex;flex-direction:column;gap:10px;box-shadow:0 1px 3px rgba(0,0,0,.3)}
+    .ghl-card-head{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
+    .ghl-type-badge{padding:3px 10px;border-radius:999px;font-size:.7rem;font-weight:600;text-transform:uppercase;letter-spacing:.03em;background:var(--ghl-mist);color:var(--ghl-slate)}
+    .ghl-type-badge.pain-led{background:#fde2e2;color:#8a1c1c}
+    .ghl-type-badge.value-led{background:#dbeafe;color:#1e3a8a}
+    .ghl-type-badge.offer-led{background:#fef3c7;color:#7c2d12}
+    .ghl-badge{padding:3px 10px;border-radius:999px;font-size:.7rem;font-weight:600;text-transform:uppercase;letter-spacing:.03em}
+    .ghl-badge.pending_approval{background:#f6e6a8;color:#6b4a00}
+    .ghl-badge.approved{background:var(--ghl-blue);color:#fff}
+    .ghl-badge.rejected{background:#e6b0a8;color:#6b1c00}
+    .ghl-badge.published{background:#a8c8e6;color:#002b5b}
+    .ghl-badge.failed{background:#555;color:#fff}
+    .ghl-meta{display:flex;flex-wrap:wrap;gap:10px;font-size:.72rem;color:#64748b}
+    .ghl-sections{display:flex;flex-direction:column;gap:6px;margin-top:4px}
+    .ghl-section{border:1px solid var(--ghl-mist);border-radius:6px;background:#fff}
+    .ghl-section-head{display:flex;align-items:center;justify-content:space-between;padding:8px 12px;cursor:pointer;font-size:.82rem;font-weight:600;color:var(--ghl-slate);user-select:none}
+    .ghl-section-head:hover{background:#f1f5f9}
+    .ghl-section-chev{font-size:.7rem;color:#64748b;transition:transform .15s}
+    .ghl-section.open .ghl-section-chev{transform:rotate(90deg)}
+    .ghl-section-body{display:none;padding:10px 12px;border-top:1px solid var(--ghl-mist);font-size:.85rem;color:#334155;line-height:1.5;white-space:pre-wrap;word-break:break-word}
+    .ghl-section.open .ghl-section-body{display:block}
+    .ghl-kv{display:flex;gap:8px;margin-bottom:6px}
+    .ghl-kv-k{font-size:.7rem;font-weight:700;text-transform:uppercase;color:#64748b;min-width:70px;letter-spacing:.04em}
+    .ghl-kv-v{font-size:.85rem;color:#334155;flex:1;white-space:pre-wrap;word-break:break-word}
+    .ghl-feedback{background:#fff7ed;border:1px solid #fed7aa;border-radius:6px;padding:10px 12px;font-size:.8rem;color:#7c2d12}
+    .ghl-feedback-label{font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px;color:#9a3412}
+    .ghl-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:4px}
+    .ghl-btn{padding:6px 12px;border-radius:6px;border:1px solid var(--ghl-mist);background:#fff;color:var(--ghl-ink);cursor:pointer;font-size:.78rem;font-family:inherit;transition:all .15s}
+    .ghl-btn:hover{background:var(--ghl-mist)}
+    .ghl-btn.primary{background:var(--ghl-blue);color:#fff;border-color:var(--ghl-blue)}
+    .ghl-btn.primary:hover{background:var(--ghl-blue-l);border-color:var(--ghl-blue-l)}
+    .ghl-btn.danger{border-color:#b04040;color:#b04040}
+    .ghl-btn.danger:hover{background:#fef2f2}
+    .ghl-btn:disabled{opacity:.5;cursor:not-allowed}
+    .ghl-empty{text-align:center;color:var(--text-dim);padding:40px 20px;font-size:.9rem}
   </style>
 </head>
 <body>
@@ -233,6 +275,7 @@
     <div class="nav-item" data-page="content-studio">🎙️<span class="tip">Content Studio</span></div>
     <div class="nav-item" data-page="trading">🎰<span class="tip">Trading Room</span></div>
     <div class="nav-item" data-page="crete">🌿<span class="tip">Crete Marketing</span></div>
+    <div class="nav-item" data-page="ghl">📣<span class="tip">GHL Marketing</span></div>
     <div class="nav-sep"></div>
     <div class="nav-item" data-page="secrets">🔑<span class="tip">API Keys</span></div>
     <div class="nav-sep"></div>
@@ -857,6 +900,22 @@
       </div>
     </div>
 
+    <div class="page" id="page-ghl">
+      <div class="page-scroll">
+        <div class="section-title" style="font-size:1.1rem">GHL Marketing — Content Review Queue</div>
+        <div class="ghl-filters" id="ghl-filters">
+          <button class="ghl-pill active" data-status="pending_approval">Pending Review</button>
+          <button class="ghl-pill" data-status="approved">Approved</button>
+          <button class="ghl-pill" data-status="published">Published</button>
+          <button class="ghl-pill" data-status="rejected">Rejected</button>
+          <button class="ghl-pill" data-status="">All</button>
+        </div>
+        <div class="ghl-grid" id="ghl-grid">
+          <div class="ghl-empty">Loading…</div>
+        </div>
+      </div>
+    </div>
+
     <!-- CANVAS PANE (in Chat) handled via JS -->
   </div>
 
@@ -953,8 +1012,8 @@ async function api(path, opts) {
 }
 
 /* ─── Navigation ──────────────────────────────────────── */
-const TITLES = { chat:'Chat', overview:'Overview', channels:'Channels', usage:'Usage & Costs', agents:'Agents', skills:'Skills', tools:'Tools', scheduled:'Scheduled Tasks', memory:'Memory', agency:'Ad Agency', 'content-studio':'Content Studio', trading:'Trading Room', crete:'Crete Marketing', secrets:'API Keys', config:'Config', logs:'Logs' };
-const PAGE_LOADERS = { overview:loadOverview, channels:loadChannels, usage:loadUsage, agents:loadAgents, skills:loadSkills, tools:()=>{loadTools();loadVoiceStatus()}, scheduled:loadScheduled, memory:loadMem, 'content-studio':initContentStudio, trading:initTrading, crete:initCrete, secrets:loadSec, config:loadConfig, logs:loadLogs };
+const TITLES = { chat:'Chat', overview:'Overview', channels:'Channels', usage:'Usage & Costs', agents:'Agents', skills:'Skills', tools:'Tools', scheduled:'Scheduled Tasks', memory:'Memory', agency:'Ad Agency', 'content-studio':'Content Studio', trading:'Trading Room', crete:'Crete Marketing', ghl:'GHL Marketing', secrets:'API Keys', config:'Config', logs:'Logs' };
+const PAGE_LOADERS = { overview:loadOverview, channels:loadChannels, usage:loadUsage, agents:loadAgents, skills:loadSkills, tools:()=>{loadTools();loadVoiceStatus()}, scheduled:loadScheduled, memory:loadMem, 'content-studio':initContentStudio, trading:initTrading, crete:initCrete, ghl:initGhl, secrets:loadSec, config:loadConfig, logs:loadLogs };
 document.querySelectorAll('.nav-item[data-page]').forEach(el => {
   el.addEventListener('click', () => {
     document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
@@ -2265,6 +2324,163 @@ function initCrete() {
     };
   });
   creteLoad();
+}
+
+/* ─── GHL Marketing ───────────────────────────────────── */
+let ghlStatus = 'pending_approval';
+let ghlItems = [];
+const ghlEsc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+async function ghlFetch(path, opts = {}) {
+  const r = await fetch(API(path), {
+    ...opts,
+    headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) }
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+  return data;
+}
+
+function ghlSection(title, bodyHtml) {
+  if (!bodyHtml) return '';
+  return `
+    <div class="ghl-section">
+      <div class="ghl-section-head" onclick="this.parentElement.classList.toggle('open')">
+        <span>${ghlEsc(title)}</span>
+        <span class="ghl-section-chev">▶</span>
+      </div>
+      <div class="ghl-section-body">${bodyHtml}</div>
+    </div>`;
+}
+
+function ghlRenderCard(item) {
+  const postType = item.post_type || 'value-led';
+  const typeClass = ['pain-led','value-led','offer-led'].includes(postType) ? postType : 'value-led';
+  const created = item.created_at ? new Date(item.created_at).toLocaleString() : '—';
+  const isPending = item.status === 'pending_approval';
+  const canReject = ['pending_approval', 'approved'].includes(item.status);
+  const statusBadge = `<span class="ghl-badge ${ghlEsc(item.status)}">${ghlEsc(item.status.replace('_', ' '))}</span>`;
+
+  const facebook = item.facebook_post ? ghlSection('📘 Facebook Post', ghlEsc(item.facebook_post)) : '';
+  const linkedin = item.linkedin_post ? ghlSection('💼 LinkedIn Post', ghlEsc(item.linkedin_post)) : '';
+
+  let instagram = '';
+  if (item.instagram_caption || item.instagram_hook_text) {
+    let ig = '';
+    if (item.instagram_hook_text) ig += `<div class="ghl-kv"><span class="ghl-kv-k">Hook</span><span class="ghl-kv-v">${ghlEsc(item.instagram_hook_text)}</span></div>`;
+    if (item.instagram_caption) ig += `<div class="ghl-kv"><span class="ghl-kv-k">Caption</span><span class="ghl-kv-v">${ghlEsc(item.instagram_caption)}</span></div>`;
+    instagram = ghlSection('📸 Instagram', ig);
+  }
+
+  let paidAd = '';
+  if (item.ad_headline || item.ad_body || item.ad_cta) {
+    let ad = '';
+    if (item.ad_headline) ad += `<div class="ghl-kv"><span class="ghl-kv-k">Headline</span><span class="ghl-kv-v">${ghlEsc(item.ad_headline)}</span></div>`;
+    if (item.ad_body) ad += `<div class="ghl-kv"><span class="ghl-kv-k">Body</span><span class="ghl-kv-v">${ghlEsc(item.ad_body)}</span></div>`;
+    if (item.ad_cta) ad += `<div class="ghl-kv"><span class="ghl-kv-k">CTA</span><span class="ghl-kv-v">${ghlEsc(item.ad_cta)}</span></div>`;
+    paidAd = ghlSection('💰 Paid Ad', ad);
+  }
+
+  const retargeting = item.retargeting_copy ? ghlSection('🎯 Retargeting Copy', ghlEsc(item.retargeting_copy)) : '';
+
+  const feedbackBlock = (item.status === 'rejected' && item.feedback)
+    ? `<div class="ghl-feedback"><div class="ghl-feedback-label">Reviewer feedback</div>${ghlEsc(item.feedback)}</div>`
+    : '';
+
+  return `
+    <div class="ghl-card" data-id="${item.id}">
+      <div class="ghl-card-head">
+        <span class="ghl-type-badge ${typeClass}">${ghlEsc(postType)}</span>
+        ${statusBadge}
+      </div>
+      <div class="ghl-meta">
+        <span>📅 ${ghlEsc(created)}</span>
+      </div>
+      <div class="ghl-sections">
+        ${facebook}${linkedin}${instagram}${paidAd}${retargeting}
+      </div>
+      ${feedbackBlock}
+      <div class="ghl-actions">
+        ${isPending ? `<button class="ghl-btn primary" onclick="ghlApprove('${item.id}')">✓ Approve</button>` : ''}
+        ${canReject ? `<button class="ghl-btn danger" onclick="ghlRejectPrompt('${item.id}')">✗ Reject</button>` : ''}
+        <button class="ghl-btn" onclick="ghlRegeneratePrompt('${item.id}')">↻ Regenerate</button>
+      </div>
+    </div>`;
+}
+
+async function ghlLoad() {
+  const grid = $('ghl-grid');
+  grid.innerHTML = '<div class="ghl-empty">Loading…</div>';
+  try {
+    const path = ghlStatus
+      ? `/api/ghl/drafts?status=${encodeURIComponent(ghlStatus)}&limit=50`
+      : '/api/ghl/drafts?limit=50';
+    const data = await ghlFetch(path);
+    ghlItems = data.items || [];
+    if (!ghlItems.length) {
+      grid.innerHTML = `<div class="ghl-empty">No ${ghlStatus ? ghlStatus.replace('_', ' ') : ''} drafts.</div>`;
+      return;
+    }
+    grid.innerHTML = ghlItems.map(ghlRenderCard).join('');
+  } catch (err) {
+    grid.innerHTML = `<div class="ghl-empty">Failed to load: ${ghlEsc(err.message)}</div>`;
+  }
+}
+
+async function ghlApprove(id) {
+  try {
+    await ghlFetch(`/api/ghl/drafts/${id}/approve`, { method: 'PUT' });
+    toast('Approved — Publisher triggered', 'ok');
+    ghlLoad();
+  } catch (err) { toast('Approve failed: ' + err.message, 'err'); }
+}
+
+function ghlRejectPrompt(id) {
+  const feedback = prompt('Reviewer feedback (reason for rejection):', '');
+  if (feedback === null) return;
+  ghlReject(id, feedback);
+}
+
+async function ghlReject(id, feedback) {
+  try {
+    await ghlFetch(`/api/ghl/drafts/${id}/reject`, {
+      method: 'PUT',
+      body: JSON.stringify({ feedback })
+    });
+    toast('Rejected — feedback saved', 'ok');
+    ghlLoad();
+  } catch (err) { toast('Reject failed: ' + err.message, 'err'); }
+}
+
+function ghlRegeneratePrompt(id) {
+  const item = ghlItems.find(i => i.id === id);
+  const existing = item && item.feedback ? item.feedback : '';
+  const feedback = prompt('Regeneration feedback (optional — context for Content Generator):', existing);
+  if (feedback === null) return;
+  ghlRegenerate(id, feedback);
+}
+
+async function ghlRegenerate(id, feedback) {
+  try {
+    await ghlFetch(`/api/ghl/drafts/${id}/regenerate`, {
+      method: 'POST',
+      body: JSON.stringify({ feedback })
+    });
+    toast('Regenerate triggered', 'ok');
+    ghlLoad();
+  } catch (err) { toast('Regenerate failed: ' + err.message, 'err'); }
+}
+
+function initGhl() {
+  document.querySelectorAll('#ghl-filters .ghl-pill').forEach(pill => {
+    pill.onclick = () => {
+      document.querySelectorAll('#ghl-filters .ghl-pill').forEach(p => p.classList.remove('active'));
+      pill.classList.add('active');
+      ghlStatus = pill.dataset.status;
+      ghlLoad();
+    };
+  });
+  ghlLoad();
 }
 
 /* ─── Init ────────────────────────────────────────────── */
