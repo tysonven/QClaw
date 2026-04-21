@@ -1176,13 +1176,69 @@ Permanently solved Charlie's recurring "I don't have access to that workflow" is
 
 ---
 
-## Session: Apr 21, 2026 — Sub-agent Spawning Unblocked
+## Session: Apr 21, 2026 — Charlie Architecture Fix
 
-### Sub-agent Spawning Auto-approved
-- spawn_agent was gated by approval system with 10-min timeout
-- Approval prompts never surfaced anywhere visible → silent expiry
-- Added to auto-approve list so Charlie can spawn sub-agents for complex
-  diagnostic tasks without blocking
-- Existing guardrails (credential protection, audit logs, credits handling)
-  still provide security coverage
-- 30s per-step timing instrumentation retained for future debugging
+### Split-Brain Skill Loading — RESOLVED (commit e47767d)
+Diagnosed via /diagnose task path still working while interactive Charlie
+path kept claiming "tools hardcoded to Market Scanner". Root cause was a
+fundamental architecture split:
+- Task queue path loads skills from git repo via symlinked charlie-cto.md
+- Interactive path loads skills from /root/.quantumclaw/workspace/agents/charlie/skills/
+  which had its own stale copies
+
+### Skills Dir Fully Symlinked
+- All 11 skill files now symlinked from workspace → /root/QClaw/src/agents/skills/
+- Moved to repo + symlinked: ads-agency.md, agent-coordination.md,
+  business-intelligence.md, ghl.md, n8n-router.md, qclaw-dev.md,
+  stripe.md, trading-api.md
+- content-studio.md existed in both, workspace version won (overwrote repo)
+- n8n-api.md rewritten from scratch
+- charlie-cto.md was already symlinked from yesterday
+- Backup: /root/.quantumclaw/workspace/agents/charlie/skills.backup-1776770419
+- End state: any git repo skill edit is instantly live in runtime
+
+### n8n Tools Fully Parameterised
+New tool surface (no workflow IDs baked into names):
+- get_workflows (list all)
+- get_workflows_id (get details by id)
+- get_executions_id
+- get_executions_workflowid_id
+- get_executions_workflowid_id_status_id
+Base URL: https://webhook.flowos.tech/api/v1 (was localhost:5678 — wrong host)
+
+### Generic Skill Executor Bug Fixed
+Found during restart testing — registry.js:1127 only substituted
+{{secrets.*}} placeholders, appending all other args as query string.
+Result: get_workflows_id with {id: "X"} hit /workflows/{{id}}?id=X (400 error).
+Fix: added pass to substitute {{k}} → args[k] and track consumed args
+to prevent double-append.
+
+### spawn_agent Approval Gate Auto-approved (commit b537573)
+Diagnosed: spawn_agent was dying after 10-minute silent timeouts.
+Root cause was NOT the gated-tool list — it was the approval-gate
+keyword scan tripping on role descriptions containing words like
+'send', 'publish', 'post'. Every sub-agent spawn needing these
+words expired without approval.
+
+Fix: added autoApproveTools list in src/security/approval-gate.js,
+seeded with spawn_agent. Short-circuits check() before the keyword
+scan. Debug logging via log.debug for traceability.
+
+Guardrails retained:
+- Credential scoping (AGEX envelopes with 1h TTL)
+- Audit log on every spawn
+- Rate limits (api_calls 200/hour)
+- Trust tier inheritance (sub-agents can't elevate past Tier 0)
+
+### Interactive Test Confirmed
+Telegram query: "What's the status of workflow 44g7cbGz5osQ1pcBVhIoz"
+Charlie now uses dynamic tools, returns full node-by-node breakdown,
+no more "I don't have access" responses. ~17s end-to-end for
+sub-agent spawning tasks.
+
+### Pending
+- wellness-oauth-fresh: rebuild as proper Flow OS GHL OAuth connector
+- Upstream full merge: bcdb1a5 (delegate_to), bb717d4 (metrics/leaderboard)
+- Social media automation for SproutCode, Flow OS, FSC
+- Enhance /diagnose to also check Slack #n8n-error channel
+- Move GitHub PAT from plaintext git remote URL to SSH auth
