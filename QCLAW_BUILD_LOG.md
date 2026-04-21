@@ -2,7 +2,7 @@
 
 **Project:** QClaw — Self-hosted Claude agent runtime (Fork of QuantumClaw/QClaw)
 **Owner:** Tyson Venables / Flow OS
-**Last updated:** 8 April 2026
+**Last updated:** 21 April 2026
 **Repo:** https://github.com/tysonven/QClaw
 
 ---
@@ -1242,3 +1242,60 @@ sub-agent spawning tasks.
 - Social media automation for SproutCode, Flow OS, FSC
 - Enhance /diagnose to also check Slack #n8n-error channel
 - Move GitHub PAT from plaintext git remote URL to SSH auth
+
+## 2026-04-21 — GHL Marketing Automation System
+
+### What was built
+- Full marketing automation for GHL Support Specialist (support.flowos.tech/ghl/landing)
+- Skill file: `ghl-marketing.md` deployed to `/root/QClaw/src/agents/skills/`
+- Supabase table: `marketing_drafts` with RLS, publish tracking columns, partial index
+- 4 n8n workflows:
+  - Content Generator (Awo65rdSe5BvDHtC) — Mon/Wed/Fri 07:00 UTC, Claude Sonnet, auto-assigns branded template images
+  - Approval Handler (ptHK2TZq5XppKOOg) — Telegram fallback + dashboard regenerate webhook
+  - Publisher (fonuRTyqepxdyIdf) — Posts to Facebook (Flow OS page), Instagram (Flow OS IG), LinkedIn (Blotato/Tyson) with branded images
+  - Scheduled Publisher (dHceOMijUOcnEowO) — 15-min cron, picks up approved drafts when scheduled_for <= now
+  - Weekly Report (jRiiOsWneQAtfVPD) — Sunday 20:00 UTC performance summary
+- Dashboard: GHL Marketing tab with Content Review Queue (Pending/Approved/Published/Rejected), Schedule/Post Now/Custom Time actions, template thumbnails
+- 4 branded post templates uploaded to R2 (pain-led, value-led, offer-led, story) with auto-rotation by post type
+- Calendar guardrails: max 1 post/day, LinkedIn 4-hour spacing, MWF auto-scheduling
+
+### Landing page conversion fixes
+- Hero headline/CTA updated (removed Flow OS branding for /ghl/landing route)
+- Server-side meta tag rewrite for social crawlers (og:title, og:image, og:url, twitter tags)
+- Added: trust bar, "How it works" section, FAQ accordion (6 questions), value comparison, Founders Offer pill in hero
+- Cache-busting headers for /ghl/landing (Cloudflare-CDN-Cache-Control: no-store)
+
+### Paid ads
+- Meta Pixel verified (927054375981982): PageView, Lead, InitiateCheckout, Purchase
+- 3 Canva ad creatives (primary feed, vertical story, retargeting)
+- Campaign structure: Conversion + Retargeting + Awareness
+- Custom audiences and automated rules created in Meta Ads Manager
+- Facebook Sharing Debugger verified with correct OG tags
+
+### Cleanup
+- Removed all Manus references from codebase (-1263 LOC, 9 files deleted, 7 edited)
+- Tightened CSP headers (removed manus.im, manus.computer from connect-src)
+- Weekly admin digest notification migrated from Manus to Telegram
+
+### Commits (ghl-support-bot repo, Railway auto-deploy)
+- b9ece5c — GHL landing SEO copy + CTA
+- 92fb14a — SSR meta rewrite (initial)
+- 8c5225c — Conversion polish (trust bar, FAQ, how-it-works, value line)
+- 4875606 — Manus cleanup
+- 05ab3ef — SSR root cause fix (req.originalUrl) + cache headers
+- 8889596 — GHL default image URL fix
+- b747c36 — Publisher + scheduled posting + dashboard actions
+- c6d56bf — Template images to R2 + image rotation in Content Generator
+
+### Commits (QClaw repo)
+- ghl-marketing.md skill file
+- n8n workflow backups (4 files)
+- Dashboard GHL Marketing tab (server.js + ui.html)
+
+### Security gate: PASSED
+- No hardcoded credentials
+- Supabase RLS enabled
+- Telegram handler restricted to Tyson's chat ID
+- All API keys via n8n credentials or env files
+- Webhook endpoints authenticated
+- All workflow JSONs backed up
