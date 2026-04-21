@@ -1299,3 +1299,98 @@ sub-agent spawning tasks.
 - All API keys via n8n credentials or env files
 - Webhook endpoints authenticated
 - All workflow JSONs backed up
+
+---
+
+## Session: Apr 22, 2026 — Charlie Phase 1 Session 1 (execution tools)
+
+### Problem solved
+Charlie's interactive path had no execution tools — every "do X" request
+ended with Charlie dumping shell commands for Tyson to paste. Pure
+diagnostic agent, no action capability.
+
+### shell_exec tool (src/tools/shell-exec.js)
+- qclaw-local command execution (quantumclaw PM2 runs as root)
+- Three safety tiers:
+  1. DENY_PATTERNS — hard-block, no approval path. Covers cat of .env /
+     .secrets / .ssh, pipe-to-shell (curl | sh), base64 exfil, source
+     .env, eval, echo .env, any write into .quantumclaw secrets files.
+  2. DESTRUCTIVE_PATTERNS — inline Telegram approval. Covers rm -rf,
+     sudo, kill, pm2 stop/delete/kill, systemctl stop/disable/mask,
+     chmod/chown on root paths, git force-push / hard-reset, docker
+     compose down, dd if=, redirects and tee writing outside /tmp
+     (both > and >>, including relative-path file creation).
+  3. /root/.quantumclaw touches — require approval even for reads, so
+     secrets-directory activity is surfaced.
+- pm2 restart / reload are NOT gated (recovery ops).
+- 60s default timeout, max 300s, SIGKILL on timeout.
+- Audit log per call: command, exit code, duration_ms, approved_inline
+  flag, stdout/stderr truncated to 500 chars.
+
+### n8n_workflow_update tool (src/tools/n8n-workflow-update.js)
+- Full GET → modify → PUT → re-activate cycle for
+  webhook.flowos.tech/api/v1 workflows.
+- Always requires inline approval (writes are high-risk).
+- Strips n8n read-only fields before PUT (updatedAt, createdAt, id,
+  shared, tags, versionId family, isArchived, meta, pinData,
+  staticData, description, active).
+- Preserves settings.availableInMCP so the MCP surface stays enabled.
+- Re-activates the workflow if it was active before the edit.
+- Accepts either `{ patch: {...} }` for shallow root merges or
+  `{ node_updates: [{node_name, parameter_path, new_value}] }` for
+  targeted edits. parameter_path supports dot + [N] notation.
+
+### Inline Telegram approval (no poller conflict)
+Telegram's single-consumer getUpdates rule meant the original spec
+(parallel poller) would have collided with the existing grammy bot.
+Redesign:
+- ApprovalGate.requestInlineApproval() reuses the existing
+  ExecApprovals promise system. ExecApprovals gained createPending()
+  which returns {id, promise} synchronously so the id can be embedded
+  in the Telegram prompt.
+- index.js wires a notifier that DMs the owner chat at boot — the
+  bot reference is resolved at call time via
+  channels._channelsByName.get('telegram').bot so the notifier
+  survives ChannelManager reinit.
+- channels/manager.js got:
+  - a new /deny command
+  - an inline reply handler that recognises "✅ {id}", "❌ {id}",
+    "approve {id}", "deny {id}", "yes {id}", "no {id}" from the
+    owner chat
+- ExecApprovals.approve()/deny() resolve the pending promise →
+  shell_exec / n8n_workflow_update continue.
+- 10-minute auto-deny still provided by ExecApprovals.
+- Executor got a longRunning tool flag — tools with longRunning:true
+  use an 11-minute ceiling instead of the default 30s TOOL_TIMEOUT so
+  approval waits don't trip the tool-level timeout.
+
+### Threat model note
+shell_exec exposes root code execution to Charlie's LLM. Mitigations:
+DENY_PATTERNS hard-block exfiltration vectors; DESTRUCTIVE_PATTERNS
+require Telegram approval; /root/.quantumclaw touches require
+approval; every call audit-logged with stdout/stderr truncation.
+Blast radius is still larger than pre-Phase-1; accepted trade-off for
+operational velocity.
+
+### Anti-pattern documentation
+charlie-cto.md gained an Execution Tools section with explicit
+"NEVER tell Tyson to paste commands" guidance. SSH to the n8n server
+is still unavailable — Phase 1 Session 2 will add ssh_exec; until
+then any task needing n8n-server shell access is routed via the task
+queue (`/diagnose`-style) rather than dumping SSH commands on Tyson.
+
+### Verified this session
+- Safe-path shell_exec: "pm2 status" — executes without approval,
+  returns parsed table.
+- DENY hard-block: "cat /root/.quantumclaw/.env | head -3" — refused
+  outright with pattern_matched reason.
+- Approval path: "ls /root/.quantumclaw/workspace/agents/charlie/skills/"
+  — creates pending approval, Telegram notifier sends the prompt
+  cleanly to the owner chat, Charlie waits for ✅ / ❌ reply. Final
+  owner-tap still required to verify resolve-on-reply path end-to-end.
+
+### Known follow-ups
+- SSH ops (ssh_exec) — Phase 1 Session 2
+- file_edit_remote — Phase 1 Session 2
+- Consider surfacing pending approvals on the dashboard as well as
+  Telegram (currently only CLI + Telegram).

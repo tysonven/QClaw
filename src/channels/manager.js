@@ -237,11 +237,54 @@ class TelegramChannel {
       this.approvals.approve(id, approver);
       
       await ctx.reply(`✅ Approved [${id}]: ${item.action}`);
-      
+
       log.info(`Approval ${id} granted by ${approver}`);
     });
 
+    this.bot.command('deny', async (ctx) => {
+      if (!allowedUsers.includes(ctx.from.id)) return;
+      const parts = ctx.message.text.split(/\s+/);
+      if (parts.length < 2) { await ctx.reply('Usage: /deny <id> [reason]'); return; }
+      const id = parseInt(parts[1], 10);
+      if (isNaN(id)) { await ctx.reply('Invalid approval ID.'); return; }
+      const reason = parts.slice(2).join(' ') || 'denied by owner';
+      const pending = this.approvals.pending();
+      const item = pending.find(p => p.id === id);
+      if (!item) { await ctx.reply(`No pending approval with ID ${id}.`); return; }
+      const denier = `telegram:${ctx.from.username || ctx.from.id}`;
+      this.approvals.deny(id, denier, reason);
+      await ctx.reply(`❌ Denied [${id}]: ${item.action}`);
+      log.info(`Approval ${id} denied by ${denier}: ${reason}`);
+    });
+
     this.bot.on('message:text', async (ctx) => {
+      // Inline approval replies — match before slash-command handling so plain
+      // "✅ 42" / "❌ 42" / "approve 42" / "deny 42" all work.
+      const approvalReply = ctx.message.text.trim().match(/^([✅❌]|approve|deny|yes|no)\s*#?(\d+)\s*(.*)$/i);
+      if (approvalReply && allowedUsers.includes(ctx.from.id)) {
+        const verb = approvalReply[1].toLowerCase();
+        const id = parseInt(approvalReply[2], 10);
+        const rest = approvalReply[3] || '';
+        const approve = verb === '✅' || verb === 'approve' || verb === 'yes';
+        const pending = this.approvals.pending();
+        const item = pending.find(p => p.id === id);
+        if (!item) {
+          await ctx.reply(`No pending approval with ID ${id}.`);
+          return;
+        }
+        const actor = `telegram:${ctx.from.username || ctx.from.id}`;
+        if (approve) {
+          this.approvals.approve(id, actor);
+          await ctx.reply(`✅ Approved [${id}]: ${item.action}`);
+          log.info(`Approval ${id} granted by ${actor} via inline reply`);
+        } else {
+          this.approvals.deny(id, actor, rest || 'denied by owner');
+          await ctx.reply(`❌ Denied [${id}]: ${item.action}`);
+          log.info(`Approval ${id} denied by ${actor} via inline reply`);
+        }
+        return;
+      }
+
       if (ctx.message.text.startsWith('/')) return;
 
       const userId = ctx.from.id;

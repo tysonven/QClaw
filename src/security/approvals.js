@@ -36,7 +36,14 @@ export class ExecApprovals {
     writeFileSync(this._jsonPath, JSON.stringify(this._data, null, 2));
   }
 
-  async request(agent, action, detail, riskLevel = 'medium') {
+  /**
+   * Create a pending approval and return both id (available synchronously
+   * to callers) and the promise that resolves on approve/deny/timeout.
+   * Use when the caller needs to include the id in an out-of-band prompt
+   * (e.g. Telegram "reply ✅ 42").
+   * @returns {Promise<{id: number, promise: Promise<{approved, id, reason?}>}>}
+   */
+  async createPending(agent, action, detail, riskLevel = 'medium') {
     let id;
     if (this._useJson) {
       if (!this._data) this._data = this._loadJson();
@@ -50,12 +57,18 @@ export class ExecApprovals {
 
     log.warn(`Approval needed: [${id}] ${agent} wants to ${action}`);
 
-    return new Promise((resolve, reject) => {
+    const promise = new Promise((resolve, reject) => {
       this.pendingCallbacks.set(id, { resolve, reject });
       setTimeout(() => {
         if (this.pendingCallbacks.has(id)) this.deny(id, 'system', 'Timed out after 10 minutes');
       }, 10 * 60 * 1000);
     });
+    return { id, promise };
+  }
+
+  async request(agent, action, detail, riskLevel = 'medium') {
+    const { promise } = await this.createPending(agent, action, detail, riskLevel);
+    return promise;
   }
 
   approve(id, by = 'owner') {

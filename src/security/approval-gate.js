@@ -11,6 +11,13 @@ export class ApprovalGate {
   constructor(approvals, config = {}) {
     this.approvals = approvals;
 
+    // Optional notifier for inline approval prompts. Signature:
+    //   async ({id, agent, tool, action, detail, riskLevel}) => void
+    // Wired to the Telegram bot in index.js once the bot is online so Tyson
+    // sees prompts on his phone. Replies of "✅ <id>" / "❌ <id>" from the
+    // owner chat resolve the pending approval via channels/manager.js.
+    this.notifier = config.notifier || null;
+
     // Tools that bypass every approval check (gated list AND keyword scan).
     // Use for tools whose args naturally contain gated keywords like "send"
     // or "publish" (e.g. spawn_agent role descriptions) but whose execution
@@ -115,6 +122,44 @@ export class ApprovalGate {
 
     const result = await this.approvals.request(agent, toolName, detail, riskLevel);
     return result;
+  }
+
+  /**
+   * Request inline approval — creates a pending approval record, fires the
+   * Telegram notifier if configured, and awaits the human decision (or 10-min
+   * auto-deny). Used by shell_exec and n8n_workflow_update.
+   *
+   * @param {Object} opts
+   * @param {string} opts.agent       — agent making the request (for audit)
+   * @param {string} opts.tool        — tool name (e.g. "shell_exec")
+   * @param {string} opts.action      — short one-liner shown in the prompt
+   * @param {string} opts.detail      — full text (truncated to 800 chars by caller)
+   * @param {string} opts.riskLevel   — 'low' | 'medium' | 'high' | 'critical'
+   * @returns {Promise<{approved: boolean, id: number, reason?: string}>}
+   */
+  async requestInlineApproval({ agent, tool, action, detail, riskLevel = 'medium' }) {
+    if (!this.approvals?.createPending) {
+      log.warn('requestInlineApproval: approvals subsystem unavailable — auto-deny');
+      return { approved: false, id: -1, reason: 'approvals unavailable' };
+    }
+
+    const { id, promise } = await this.approvals.createPending(agent, tool, detail || action, riskLevel);
+
+    if (this.notifier) {
+      try {
+        await this.notifier({ id, agent, tool, action, detail, riskLevel });
+      } catch (err) {
+        log.debug(`approval notifier failed (id=${id}): ${err.message}`);
+      }
+    } else {
+      log.warn(`No notifier wired — approval [${id}] will only be visible via dashboard/CLI`);
+    }
+
+    return promise;
+  }
+
+  setNotifier(fn) {
+    this.notifier = fn;
   }
 
   /**

@@ -117,6 +117,47 @@ curl -s "https://webhook.flowos.tech/api/v1/executions?workflowId=<ID>&limit=5&s
 4. Map failing node to likely cause from the list above
 5. Report specific findings — never give a generic response
 
+## Execution Tools
+
+Charlie now has real execution capability. Use these tools to DO things,
+not just diagnose.
+
+### shell_exec
+Runs a shell command on qclaw. Destructive ops or anything touching
+`/root/.quantumclaw` require inline Telegram approval; secret-exfiltration
+patterns are hard-denied. Use for:
+- Checking PM2 status, logs, restarting processes (`pm2 restart` and
+  `pm2 reload` do NOT require approval — they're recovery ops)
+- Running git commands in /root/QClaw
+- curl against APIs
+- File inspection (cat, ls, grep, find)
+- Running diagnostic scripts
+
+### n8n_workflow_update
+Updates an n8n workflow at https://webhook.flowos.tech. Strips read-only
+fields, preserves `availableInMCP`, re-activates if the workflow was
+active before. Always requires approval. Use for:
+- Fixing workflows Charlie has diagnosed
+- Adding, removing, or tweaking node parameters
+- Swapping credentials or URLs
+
+Input shapes:
+- `{ workflow_id, patch: {...} }` — shallow merge at workflow root
+- `{ workflow_id, node_updates: [{ node_name, parameter_path, new_value }] }`
+
+### ANTI-PATTERN — read this
+NEVER tell Tyson to paste commands. Ever.
+
+When he asks you to fix something:
+1. Diagnose using n8n get_workflows tools + shell_exec for reads
+2. Propose the fix in one sentence
+3. Execute using shell_exec or n8n_workflow_update
+4. Report the result
+
+If a task needs SSH to the n8n server (not available yet — Phase 1
+Session 2), create a Claude Code task silently via the task queue and
+report back. Never dump SSH commands on Tyson.
+
 ## Session handoff protocol
 At the END of every session Charlie must:
 1. Run security gate checklist

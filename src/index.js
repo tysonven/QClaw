@@ -27,6 +27,8 @@ import { DeliveryQueue } from './core/delivery-queue.js';
 import { CompletionCache } from './core/completion-cache.js';
 import { ExecApprovals } from './security/approvals.js';
 import { ApprovalGate } from './security/approval-gate.js';
+import { createShellExecTool } from './tools/shell-exec.js';
+import { createN8nWorkflowUpdateTool } from './tools/n8n-workflow-update.js';
 import { RateLimiter } from './security/rate-limiter.js';
 import { ContentQueue } from './security/content-queue.js';
 import { ScopedSecretProxy } from './security/scoped-secret-proxy.js';
@@ -339,6 +341,17 @@ class QuantumClaw {
       const approvalGate = new ApprovalGate(this.approvals, {
         gatedTools: this.config.tools?.requireApproval,
       });
+      // Expose for later wiring: Telegram notifier is attached after channels come up.
+      this.approvalGate = approvalGate;
+
+      // Register execution tools — shell_exec + n8n_workflow_update.
+      // Both declare longRunning so the executor waits up to 11 min for approval.
+      this.tools._builtins.set('shell_exec', createShellExecTool({
+        approvalGate, audit: this.audit, auditActor: 'charlie',
+      }));
+      this.tools._builtins.set('n8n_workflow_update', createN8nWorkflowUpdateTool({
+        approvalGate, audit: this.audit, auditActor: 'charlie',
+      }));
       const rateLimiter = new RateLimiter({
         _dir: workspaceDir,
         rateLimits: {
@@ -415,8 +428,41 @@ class QuantumClaw {
     try {
       this.channels = new ChannelManager(this.config, this.agents, this.credentials, this.approvals, this.deliveryQueue);
       await this.channels.startAll();
+
     } catch (err) {
       log.warn(`Channel startup failed: ${err.message} — dashboard still available`);
+    }
+
+    // Wire Telegram approval notifier — resolves this.channels.bot at call
+    // time so the bot reference from a successful ChannelManager.startAll()
+    // is always used regardless of when this block ran. Send failures are
+    // caught inside so a broken notifier never breaks the approval flow.
+    const ownerChatId = this.config.channels?.telegram?.ownerChatId || 1375806243;
+    if (this.approvalGate) {
+      this.approvalGate.setNotifier(async ({ id, agent, tool, action, detail, riskLevel }) => {
+        // ChannelManager is a manager over multiple channel instances; the
+        // grammy bot lives on the individual TelegramChannel accessible by name.
+        const tgChannel = this.channels?._channelsByName?.get('telegram');
+        const bot = tgChannel?.bot;
+        if (!bot?.api?.sendMessage) {
+          log.warn(`Approval notifier: Telegram bot unavailable (id=${id})`);
+          return;
+        }
+        const text =
+          `⚠️ Approval needed [${id}]\n` +
+          `Tool: ${tool}\n` +
+          `Agent: ${agent}\n` +
+          `Risk: ${riskLevel}\n` +
+          `Action: ${String(action || '').slice(0, 200)}\n` +
+          (detail ? `\nDetail:\n${String(detail).slice(0, 500)}\n` : '') +
+          `\nReply ✅ ${id} or ❌ ${id} — auto-denies after 10 min.`;
+        try {
+          await bot.api.sendMessage(ownerChatId, text);
+        } catch (err) {
+          log.warn(`Approval notifier: Telegram send failed (id=${id}): ${err.message}`);
+        }
+      });
+      log.info('Approval gate Telegram notifier wired');
     }
 
     // ── Layer 7: Dashboard (non-fatal but highly recommended) ──

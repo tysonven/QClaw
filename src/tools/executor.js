@@ -17,6 +17,7 @@ import { log } from '../core/logger.js';
 
 const MAX_TOOL_ITERATIONS = 100;  // Safety limit — increased for AGEX security implementation
 const TOOL_TIMEOUT = 30000;      // 30s per tool call
+const LONG_RUNNING_TOOL_TIMEOUT = 11 * 60 * 1000;  // 11 min — covers 10-min approval gate + buffer
 
 const OWNER_TELEGRAM_CHAT_ID = 1375806243;
 const CREDITS_NOTIFY_COOLDOWN_MS = 6 * 60 * 60 * 1000;
@@ -170,9 +171,14 @@ export class ToolExecutor {
             continue; // Skip actual execution
           }
 
+          // Tools that may wait on inline Telegram approval declare
+          // `longRunning: true` on their builtin definition. For those we use
+          // an 11-minute ceiling so the 10-min approval timeout can fire first.
+          const toolDef = this.tools._builtins?.get(call.name);
+          const toolTimeoutMs = toolDef?.longRunning ? LONG_RUNNING_TOOL_TIMEOUT : TOOL_TIMEOUT;
           const toolResult = await Promise.race([
             this.tools.executeTool(call.name, call.args),
-            new Promise((_, reject) => setTimeout(() => reject(new Error('Tool timeout')), TOOL_TIMEOUT))
+            new Promise((_, reject) => setTimeout(() => reject(new Error('Tool timeout')), toolTimeoutMs))
           ]);
 
           // AGEX: Consume rate limit after success
