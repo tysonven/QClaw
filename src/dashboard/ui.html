@@ -236,6 +236,10 @@
     .ghl-platform{padding:2px 8px;border-radius:4px;font-size:.68rem;font-weight:600;letter-spacing:.02em}
     .ghl-platform.ok{background:#dcfce7;color:#166534}
     .ghl-platform.err{background:#fee2e2;color:#991b1b;cursor:help}
+    .ghl-thumb{width:80px;height:80px;flex:0 0 80px;border-radius:8px;object-fit:cover;background:var(--ghl-mist);border:1px solid var(--ghl-mist);cursor:zoom-in;transition:transform .15s}
+    .ghl-thumb:hover{transform:scale(1.03)}
+    .ghl-card-top{display:flex;gap:12px;align-items:flex-start}
+    .ghl-card-top-main{flex:1;display:flex;flex-direction:column;gap:10px;min-width:0}
     .ghl-meta{display:flex;flex-wrap:wrap;gap:10px;font-size:.72rem;color:#64748b}
     .ghl-sections{display:flex;flex-direction:column;gap:6px;margin-top:4px}
     .ghl-section{border:1px solid var(--ghl-mist);border-radius:6px;background:#fff}
@@ -2416,17 +2420,26 @@ function ghlRenderCard(item) {
     if (okBadges || errBadges) publishLine = `<div class="ghl-meta ghl-platforms">${okBadges}${errBadges}</div>`;
   }
 
+  const thumb = item.image_url
+    ? `<img class="ghl-thumb" src="${ghlEsc(item.image_url)}" alt="template" loading="lazy" onclick="window.open('${ghlEsc(item.image_url)}','_blank')">`
+    : '';
+
   return `
     <div class="ghl-card" data-id="${item.id}">
-      <div class="ghl-card-head">
-        <span class="ghl-type-badge ${typeClass}">${ghlEsc(postType)}</span>
-        ${statusBadge}
+      <div class="ghl-card-top">
+        ${thumb}
+        <div class="ghl-card-top-main">
+          <div class="ghl-card-head">
+            <span class="ghl-type-badge ${typeClass}">${ghlEsc(postType)}</span>
+            ${statusBadge}
+          </div>
+          <div class="ghl-meta">
+            <span>📅 ${ghlEsc(created)}</span>
+            ${scheduledLine}
+          </div>
+          ${publishLine}
+        </div>
       </div>
-      <div class="ghl-meta">
-        <span>📅 ${ghlEsc(created)}</span>
-        ${scheduledLine}
-      </div>
-      ${publishLine}
       <div class="ghl-sections">
         ${facebook}${linkedin}${instagram}${paidAd}${retargeting}
       </div>
