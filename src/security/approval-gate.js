@@ -10,7 +10,16 @@ import { log } from '../core/logger.js';
 export class ApprovalGate {
   constructor(approvals, config = {}) {
     this.approvals = approvals;
-    
+
+    // Tools that bypass every approval check (gated list AND keyword scan).
+    // Use for tools whose args naturally contain gated keywords like "send"
+    // or "publish" (e.g. spawn_agent role descriptions) but whose execution
+    // is already covered by other guardrails — credential scoping, audit
+    // logs, rate limits. Adding a tool here is a deliberate security trade.
+    this.autoApproveTools = config.autoApproveTools || [
+      'spawn_agent',
+    ];
+
     // Tools that require approval before execution
     this.gatedTools = config.gatedTools || [
       'filesystem__write_file',
@@ -42,6 +51,12 @@ export class ApprovalGate {
    * @returns {Object} { requiresApproval: boolean, reason: string, riskLevel: string }
    */
   async check(toolName, toolArgs) {
+    // 0. Short-circuit for explicitly auto-approved tools — skips keyword scan too
+    if (this.autoApproveTools.includes(toolName)) {
+      log.debug(`Auto-approved: ${toolName}`);
+      return { requiresApproval: false };
+    }
+
     // 1. Check if tool is in gated list
     if (this.gatedTools.includes(toolName)) {
       const riskLevel = this.riskWeights[toolName] || 'medium';

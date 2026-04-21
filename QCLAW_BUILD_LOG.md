@@ -1173,3 +1173,16 @@ Permanently solved Charlie's recurring "I don't have access to that workflow" is
 ### Parked
 - n8n root SSH disable (DO console broken, too risky)
 - YouTube auto-publish (carparked — wait for Emma to test pipeline)
+
+---
+
+## Session: Apr 21, 2026 — Sub-agent Spawning Unblocked
+
+### Sub-agent Spawning Auto-approved
+- spawn_agent was gated by approval system with 10-min timeout
+- Approval prompts never surfaced anywhere visible → silent expiry
+- Added to auto-approve list so Charlie can spawn sub-agents for complex
+  diagnostic tasks without blocking
+- Existing guardrails (credential protection, audit logs, credits handling)
+  still provide security coverage
+- 30s per-step timing instrumentation retained for future debugging
