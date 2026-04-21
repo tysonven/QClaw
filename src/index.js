@@ -247,6 +247,12 @@ class QuantumClaw {
           const { name, role, model_tier, scopes } = args;
           if (!name || !role) return 'Error: name and role are required';
 
+          const spawnStart = Date.now();
+          const withDeadline = (label, promise, ms) => Promise.race([
+            promise,
+            new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)),
+          ]);
+
           try {
             const { Agent } = await import('./agents/registry.js');
             const { existsSync, mkdirSync, writeFileSync } = await import('fs');
@@ -254,19 +260,28 @@ class QuantumClaw {
 
             const safeName = name.toLowerCase().replace(/[^a-z0-9_-]/g, '');
             const agentDir = join(this.config._dir, 'workspace', 'agents', safeName);
-            mkdirSync(agentDir, { recursive: true });
 
-            // Generate SOUL.md
+            const tSetup = Date.now();
+            mkdirSync(agentDir, { recursive: true });
             const soulContent = `# ${safeName}\n\nYou are **${safeName}**, a specialised sub-agent.\n\n## Role\n\n${role}\n\n## Rules\n\n- You are a ${model_tier || 'simple'}-tier agent — be token-efficient\n- Scoped access: ${(scopes || ['chat']).join(', ')}\n- Report to the primary agent\n`;
             writeFileSync(join(agentDir, 'SOUL.md'), soulContent);
+            log.debug(`[spawn_agent:${safeName}] setup (mkdir+SOUL) ${Date.now() - tSetup}ms`);
 
-            // Generate child AID
+            // Generate child AID — 5s deadline to avoid hanging the whole spawn
             let childAid = null;
             if (this.credentials?.generateChildAID) {
+              const tAid = Date.now();
               try {
-                childAid = await this.credentials.generateChildAID(safeName, role, scopes || []);
+                childAid = await withDeadline(
+                  'generateChildAID',
+                  this.credentials.generateChildAID(safeName, role, scopes || []),
+                  5000
+                );
                 writeFileSync(join(agentDir, 'aid.json'), JSON.stringify(childAid, null, 2));
-              } catch {}
+                log.debug(`[spawn_agent:${safeName}] generateChildAID ${Date.now() - tAid}ms`);
+              } catch (err) {
+                log.debug(`[spawn_agent:${safeName}] generateChildAID failed after ${Date.now() - tAid}ms: ${err.message} — continuing without child AID`);
+              }
             }
 
             // ── AGEX credential delegation ──
@@ -274,25 +289,27 @@ class QuantumClaw {
             let scopedSecrets = this.credentials;
 
             if (this.credentials?.issueEnvelope) {
+              const tEnv = Date.now();
               try {
                 const keysForScopes = this._resolveKeysForScopes(scopes || ['chat']);
-                const envelopes = await this.credentials.issueEnvelopes(
-                  keysForScopes,
-                  childRecipientId,
-                  3600 // 1 hour TTL for sub-agents
+                const envelopes = await withDeadline(
+                  'issueEnvelopes',
+                  this.credentials.issueEnvelopes(keysForScopes, childRecipientId, 3600),
+                  5000
                 );
                 scopedSecrets = new ScopedSecretProxy(envelopes, this.secrets, safeName);
-                log.debug(`[AGEX] Issued ${envelopes.length} envelope(s) for sub-agent "${safeName}"`);
+                log.debug(`[spawn_agent:${safeName}] issueEnvelopes (${envelopes.length}) ${Date.now() - tEnv}ms`);
                 this.audit.log('system', 'credential_delegation', safeName, {
                   envelopes: envelopes.map(e => e.toJSON()),
                   recipientAid: childRecipientId,
                 });
               } catch (err) {
-                log.debug(`Envelope issuance failed for ${safeName}: ${err.message} — using parent credentials`);
+                log.debug(`[spawn_agent:${safeName}] issueEnvelopes failed after ${Date.now() - tEnv}ms: ${err.message} — using parent credentials`);
               }
             }
 
             // Load into registry with scoped credentials
+            const tLoad = Date.now();
             const agent = new Agent(safeName, agentDir, {
               router: this.router, memory: this.memory,
               audit: this.audit, toolExecutor: this.toolExecutor,
@@ -302,6 +319,7 @@ class QuantumClaw {
             });
             await agent.load();
             this.agents.agents.set(safeName, agent);
+            log.debug(`[spawn_agent:${safeName}] agent.load() ${Date.now() - tLoad}ms (total ${Date.now() - spawnStart}ms)`);
 
             this.audit.log('system', 'agent_spawned', safeName, { role, scopes });
 

@@ -1136,6 +1136,17 @@ export class ToolRegistry {
           url = url.replace(match[0], (val || '').trim());
         }
 
+        // Resolve {{param}} placeholders from args (path- or query-string position).
+        // Consumed args are tracked so they aren't re-appended as a query string below.
+        const consumedArgs = new Set();
+        for (const [k, v] of Object.entries(args || {})) {
+          const needle = `{{${k}}}`;
+          if (url.includes(needle)) {
+            url = url.split(needle).join(encodeURIComponent(v));
+            consumedArgs.add(k);
+          }
+        }
+
         const headers = {};
 
         // Resolve all headers — replace {{secrets.key}} with actual secret values
@@ -1162,6 +1173,7 @@ export class ToolRegistry {
           const existingUrl = new URL(url, 'http://placeholder');
           const extra = {};
           for (const [k, v] of Object.entries(args)) {
+            if (consumedArgs.has(k)) continue;
             if (!existingUrl.searchParams.has(k)) extra[k] = v;
           }
           if (Object.keys(extra).length > 0) {
