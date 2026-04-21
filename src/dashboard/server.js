@@ -1772,22 +1772,118 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
       } catch (err) { res.status(500).json({ error: err.message }); }
     });
 
-    // PUT /api/ghl/drafts/:id/approve
+    // ── Scheduling helpers ──────────────────────────────────
+    // MWF calendar: 07:30 UTC on Mon/Wed/Fri. One draft per day max.
+    // nextMwfSlot() walks forward up to 30 days and returns the first
+    // slot without an existing approved-or-published draft on that date.
+    const GHL_MWF_DAYS = [1, 3, 5]; // Mon=1, Wed=3, Fri=5
+    const GHL_SLOT_HOUR_UTC = 7;
+    const GHL_SLOT_MIN_UTC = 30;
+
+    async function ghlSlotTaken(dateISO) {
+      // dateISO is YYYY-MM-DD. Check for any approved/published draft whose
+      // scheduled_for or published_at falls inside this UTC day.
+      const dayStart = `${dateISO}T00:00:00.000Z`;
+      const dayEnd   = `${dateISO}T23:59:59.999Z`;
+      const q = new URLSearchParams({
+        'or': `(status.eq.approved,status.eq.published,status.eq.partially_published)`,
+        'scheduled_for': `gte.${dayStart}`,
+        'select': 'id,scheduled_for,status'
+      });
+      q.append('scheduled_for', `lte.${dayEnd}`);
+      const r = await fetch(`${GHL_TABLE}?${q}`, { headers: creteHeaders() });
+      if (!r.ok) return false; // fail open — don't block on transient errors
+      const rows = await r.json();
+      return Array.isArray(rows) && rows.length > 0;
+    }
+
+    async function ghlNextMwfSlot(excludeId = null) {
+      const now = new Date();
+      for (let i = 0; i < 30; i++) {
+        const d = new Date(Date.UTC(
+          now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + i,
+          GHL_SLOT_HOUR_UTC, GHL_SLOT_MIN_UTC, 0, 0
+        ));
+        if (d <= now) continue;
+        if (!GHL_MWF_DAYS.includes(d.getUTCDay())) continue;
+        const dateISO = d.toISOString().slice(0, 10);
+        if (await ghlSlotTaken(dateISO)) continue;
+        return d.toISOString();
+      }
+      throw new Error('No available MWF slot within 30 days');
+    }
+
+    async function ghlPatchDraft(id, patch, res) {
+      const r = await fetch(`${GHL_TABLE}?id=eq.${id}`, {
+        method: 'PATCH',
+        headers: creteHeaders({ Prefer: 'return=representation' }),
+        body: JSON.stringify(patch)
+      });
+      const data = await r.json();
+      if (!r.ok) { res.status(r.status).json({ error: data.message || 'Supabase error' }); return null; }
+      return Array.isArray(data) ? data[0] : data;
+    }
+
+    // PUT /api/ghl/drafts/:id/schedule — auto-pick next MWF slot
+    this.app.put('/api/ghl/drafts/:id/schedule', async (req, res) => {
+      try {
+        if (!ghlConfigured()) return res.status(500).json({ error: 'Supabase not configured' });
+        if (!creteValidUuid(req.params.id)) return res.status(400).json({ error: 'Invalid id' });
+        let slot;
+        try { slot = await ghlNextMwfSlot(req.params.id); }
+        catch (e) { return res.status(409).json({ error: e.message }); }
+        const patch = { status: 'approved', scheduled_for: slot, updated_at: new Date().toISOString() };
+        const item = await ghlPatchDraft(req.params.id, patch, res);
+        if (!item) return;
+        res.json({ ok: true, item, scheduled_for: slot });
+      } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+
+    // PUT /api/ghl/drafts/:id/post-now — publish immediately
+    this.app.put('/api/ghl/drafts/:id/post-now', async (req, res) => {
+      try {
+        if (!ghlConfigured()) return res.status(500).json({ error: 'Supabase not configured' });
+        if (!creteValidUuid(req.params.id)) return res.status(400).json({ error: 'Invalid id' });
+        const now = new Date().toISOString();
+        const patch = { status: 'approved', scheduled_for: now, updated_at: now };
+        const item = await ghlPatchDraft(req.params.id, patch, res);
+        if (!item) return;
+        ghlFireWebhook('ghl-marketing-publish', { draftId: req.params.id });
+        res.json({ ok: true, item });
+      } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+
+    // PUT /api/ghl/drafts/:id/schedule-custom — user-picked datetime
+    // Body: { scheduled_for: ISO8601 string }
+    this.app.put('/api/ghl/drafts/:id/schedule-custom', async (req, res) => {
+      try {
+        if (!ghlConfigured()) return res.status(500).json({ error: 'Supabase not configured' });
+        if (!creteValidUuid(req.params.id)) return res.status(400).json({ error: 'Invalid id' });
+        const iso = req.body?.scheduled_for;
+        if (typeof iso !== 'string') return res.status(400).json({ error: 'scheduled_for required' });
+        const when = new Date(iso);
+        if (isNaN(when.getTime())) return res.status(400).json({ error: 'Invalid date' });
+        if (when <= new Date()) return res.status(400).json({ error: 'scheduled_for must be in the future' });
+        const patch = { status: 'approved', scheduled_for: when.toISOString(), updated_at: new Date().toISOString() };
+        const item = await ghlPatchDraft(req.params.id, patch, res);
+        if (!item) return;
+        res.json({ ok: true, item, scheduled_for: when.toISOString() });
+      } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+
+    // PUT /api/ghl/drafts/:id/approve — legacy alias: now equivalent to /schedule
+    // Kept for backward compatibility (e.g. Telegram "go" reply path).
     this.app.put('/api/ghl/drafts/:id/approve', async (req, res) => {
       try {
         if (!ghlConfigured()) return res.status(500).json({ error: 'Supabase not configured' });
         if (!creteValidUuid(req.params.id)) return res.status(400).json({ error: 'Invalid id' });
-        const patch = { status: 'approved', updated_at: new Date().toISOString() };
-        const r = await fetch(`${GHL_TABLE}?id=eq.${req.params.id}`, {
-          method: 'PATCH',
-          headers: creteHeaders({ Prefer: 'return=representation' }),
-          body: JSON.stringify(patch)
-        });
-        const data = await r.json();
-        if (!r.ok) return res.status(r.status).json({ error: data.message || 'Supabase error' });
-        const item = Array.isArray(data) ? data[0] : data;
-        ghlFireWebhook('ghl-marketing-publish', { draftId: req.params.id });
-        res.json({ ok: true, item });
+        let slot;
+        try { slot = await ghlNextMwfSlot(req.params.id); }
+        catch (e) { return res.status(409).json({ error: e.message }); }
+        const patch = { status: 'approved', scheduled_for: slot, updated_at: new Date().toISOString() };
+        const item = await ghlPatchDraft(req.params.id, patch, res);
+        if (!item) return;
+        res.json({ ok: true, item, scheduled_for: slot });
       } catch (err) { res.status(500).json({ error: err.message }); }
     });
 

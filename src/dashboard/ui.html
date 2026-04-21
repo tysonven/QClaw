@@ -230,7 +230,12 @@
     .ghl-badge.approved{background:var(--ghl-blue);color:#fff}
     .ghl-badge.rejected{background:#e6b0a8;color:#6b1c00}
     .ghl-badge.published{background:#a8c8e6;color:#002b5b}
+    .ghl-badge.partially_published{background:#fde68a;color:#78350f}
     .ghl-badge.failed{background:#555;color:#fff}
+    .ghl-platforms{gap:6px}
+    .ghl-platform{padding:2px 8px;border-radius:4px;font-size:.68rem;font-weight:600;letter-spacing:.02em}
+    .ghl-platform.ok{background:#dcfce7;color:#166534}
+    .ghl-platform.err{background:#fee2e2;color:#991b1b;cursor:help}
     .ghl-meta{display:flex;flex-wrap:wrap;gap:10px;font-size:.72rem;color:#64748b}
     .ghl-sections{display:flex;flex-direction:column;gap:6px;margin-top:4px}
     .ghl-section{border:1px solid var(--ghl-mist);border-radius:6px;background:#fff}
@@ -2353,6 +2358,13 @@ function ghlSection(title, bodyHtml) {
     </div>`;
 }
 
+function ghlFmtDate(iso) {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return null;
+  return d.toLocaleString([], { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+}
+
 function ghlRenderCard(item) {
   const postType = item.post_type || 'value-led';
   const typeClass = ['pain-led','value-led','offer-led'].includes(postType) ? postType : 'value-led';
@@ -2387,6 +2399,23 @@ function ghlRenderCard(item) {
     ? `<div class="ghl-feedback"><div class="ghl-feedback-label">Reviewer feedback</div>${ghlEsc(item.feedback)}</div>`
     : '';
 
+  // Scheduled-for line (approved drafts awaiting publish).
+  const scheduledLine = (item.status === 'approved' && item.scheduled_for)
+    ? `<span>🗓️ scheduled: ${ghlEsc(ghlFmtDate(item.scheduled_for) || item.scheduled_for)}</span>`
+    : '';
+
+  // Per-platform success/failure badges (published / partially_published).
+  let publishLine = '';
+  if (['published', 'partially_published'].includes(item.status)) {
+    const ok = Array.isArray(item.published_platforms) ? item.published_platforms : [];
+    const errs = item.publish_errors && typeof item.publish_errors === 'object' ? item.publish_errors : {};
+    const okBadges = ok.map(p => `<span class="ghl-platform ok">✓ ${ghlEsc(p)}</span>`).join('');
+    const errBadges = Object.entries(errs).map(([p, m]) =>
+      `<span class="ghl-platform err" title="${ghlEsc(String(m))}">✗ ${ghlEsc(p)}</span>`
+    ).join('');
+    if (okBadges || errBadges) publishLine = `<div class="ghl-meta ghl-platforms">${okBadges}${errBadges}</div>`;
+  }
+
   return `
     <div class="ghl-card" data-id="${item.id}">
       <div class="ghl-card-head">
@@ -2395,13 +2424,18 @@ function ghlRenderCard(item) {
       </div>
       <div class="ghl-meta">
         <span>📅 ${ghlEsc(created)}</span>
+        ${scheduledLine}
       </div>
+      ${publishLine}
       <div class="ghl-sections">
         ${facebook}${linkedin}${instagram}${paidAd}${retargeting}
       </div>
       ${feedbackBlock}
       <div class="ghl-actions">
-        ${isPending ? `<button class="ghl-btn primary" onclick="ghlApprove('${item.id}')">✓ Approve</button>` : ''}
+        ${isPending ? `<button class="ghl-btn primary" onclick="ghlSchedule('${item.id}')">📅 Schedule</button>` : ''}
+        ${isPending ? `<button class="ghl-btn" onclick="ghlPostNow('${item.id}')">⚡ Post Now</button>` : ''}
+        ${isPending ? `<button class="ghl-btn" onclick="ghlCustomSchedule('${item.id}')">🕐 Custom</button>` : ''}
+        ${item.status === 'approved' ? `<button class="ghl-btn" onclick="ghlPostNow('${item.id}')">⚡ Publish Now</button>` : ''}
         ${canReject ? `<button class="ghl-btn danger" onclick="ghlRejectPrompt('${item.id}')">✗ Reject</button>` : ''}
         <button class="ghl-btn" onclick="ghlRegeneratePrompt('${item.id}')">↻ Regenerate</button>
       </div>
@@ -2427,12 +2461,43 @@ async function ghlLoad() {
   }
 }
 
-async function ghlApprove(id) {
+async function ghlSchedule(id) {
   try {
-    await ghlFetch(`/api/ghl/drafts/${id}/approve`, { method: 'PUT' });
-    toast('Approved — Publisher triggered', 'ok');
+    const r = await ghlFetch(`/api/ghl/drafts/${id}/schedule`, { method: 'PUT' });
+    const when = r.scheduled_for ? ghlFmtDate(r.scheduled_for) : 'next MWF slot';
+    toast(`Scheduled for ${when}`, 'ok');
     ghlLoad();
-  } catch (err) { toast('Approve failed: ' + err.message, 'err'); }
+  } catch (err) { toast('Schedule failed: ' + err.message, 'err'); }
+}
+
+async function ghlPostNow(id) {
+  if (!confirm('Publish this draft to Facebook, Instagram, and LinkedIn right now?')) return;
+  try {
+    await ghlFetch(`/api/ghl/drafts/${id}/post-now`, { method: 'PUT' });
+    toast('Publisher triggered', 'ok');
+    ghlLoad();
+  } catch (err) { toast('Post Now failed: ' + err.message, 'err'); }
+}
+
+async function ghlCustomSchedule(id) {
+  // Default suggestion: tomorrow 07:30 UTC local equivalent, formatted for datetime-local input.
+  const now = new Date();
+  const tomorrow = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 7, 30, 0));
+  const pad = (n) => String(n).padStart(2, '0');
+  const local = new Date(tomorrow.getTime() - tomorrow.getTimezoneOffset() * 60000);
+  const suggestion = `${local.getUTCFullYear()}-${pad(local.getUTCMonth()+1)}-${pad(local.getUTCDate())}T${pad(local.getUTCHours())}:${pad(local.getUTCMinutes())}`;
+  const input = prompt('Schedule for (local time, e.g. 2026-04-22T07:30):', suggestion);
+  if (input === null) return;
+  const when = new Date(input);
+  if (isNaN(when.getTime())) { toast('Invalid date', 'err'); return; }
+  try {
+    await ghlFetch(`/api/ghl/drafts/${id}/schedule-custom`, {
+      method: 'PUT',
+      body: JSON.stringify({ scheduled_for: when.toISOString() })
+    });
+    toast(`Scheduled for ${ghlFmtDate(when.toISOString())}`, 'ok');
+    ghlLoad();
+  } catch (err) { toast('Custom schedule failed: ' + err.message, 'err'); }
 }
 
 function ghlRejectPrompt(id) {
