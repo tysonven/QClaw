@@ -1043,6 +1043,13 @@ Full end-to-end pipeline tested and confirmed working across all 30 nodes.
 - XSS: creteEsc() applied to all user-controlled content in dashboard
 - GitHub PAT in git remote URL flagged for rotation (not changed)
 
+### Bug Fixes (Apr 22)
+- Content Generator: stock photo selection now implemented (was previously stubbed as "future feature")
+- Content Generator: Select Random Photo node reads row from Image Router, not Fetch Photo Library response
+- Dashboard: approve handler checks scheduled_for date — future-dated approvals sit at "approved" without triggering publish
+- New workflow: Crete - Scheduled Publisher (9kTWhh9PlxMpyMlp) — hourly cron picks up approved content when scheduled_for <= now
+- Photo library themes aligned: agriculture/village/wellness/lifestyle (was Land Sourcing/Village Restoration/Health & Wellness/Crete General)
+
 ## Session: Apr 17, 2026 — Final cleanup
 
 ### Dashboard R2 Multipart Upload (commits 9b1e80f, 047f559)

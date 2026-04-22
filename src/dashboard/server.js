@@ -1672,8 +1672,12 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
         const data = await r.json();
         if (!r.ok) return res.status(r.status).json({ error: data.message || 'Supabase error' });
         const item = Array.isArray(data) ? data[0] : data;
-        creteFireWebhook('crete-content-publish', { content_id: req.params.id, action: 'publish' });
-        res.json({ ok: true, item });
+        const scheduledFor = item && item.scheduled_for ? new Date(item.scheduled_for) : null;
+        const dueNow = !scheduledFor || isNaN(scheduledFor.getTime()) || scheduledFor.getTime() <= Date.now();
+        if (dueNow) {
+          creteFireWebhook('crete-content-publish', { content_id: req.params.id, action: 'publish' });
+        }
+        res.json({ ok: true, item, scheduled: !dueNow });
       } catch (err) { res.status(500).json({ error: err.message }); }
     });
 
