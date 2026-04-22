@@ -40,7 +40,7 @@ When writing instructions for Claude Code, always include:
 ## 7 Pillars Checklist
 
 Every build task must address all 7 pillars before marking complete.
-Reference: ~/QClaw/src/agents/skills/architecture-pillars.md
+Reference: /root/QClaw/src/agents/skills/architecture-pillars.md
 
 ## Build Task Types
 

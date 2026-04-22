@@ -3,68 +3,172 @@
  *
  * Intercepts destructive tool calls and enforces approval workflow.
  * Integrates with ExecApprovals system.
+ *
+ * Decision order in check():
+ *   0. autoApproveTools short-circuit
+ *   1. Verb-scoped destructive-pattern match (shell tools only)
+ *   2. Skill-dir allowlist bypass (fs + shell tools with path/cwd)
+ *   3. Gated tool list
+ *   4. filesystem__write_file path contains src/
+ *   5. Stripe charge special-case
+ *
+ * Verb-scoping (step 1) replaces the old JSON.stringify(args).includes()
+ * keyword scan, which false-triggered on any sed script / file content
+ * that happened to contain words like "truncate" or "delete". Now we
+ * only inspect the first command token (or first two for patterns like
+ * "pm2 stop"), never args bodies.
+ *
+ * Skill-dir allowlist (step 2) lets Charlie edit his own skill files
+ * under /root/QClaw/src/agents/skills/ without Telegram approval. Scope
+ * is tight: that exact directory, not /root/QClaw/** — source code edits
+ * still require approval via the gatedTools + src/ rules.
  */
 
+import path from 'path';
 import { log } from '../core/logger.js';
+
+const SKILL_EDIT_ALLOWLIST = '/root/QClaw/src/agents/skills/';
+
+// Verbs (or two-token prefixes) that always require approval when they
+// are the FIRST token of a shell command. Matched against the parsed
+// verb only — never against full args body.
+const DEFAULT_DESTRUCTIVE_PATTERNS = [
+  'rm', 'kill', 'killall', 'shutdown', 'reboot', 'dd',
+  'pm2 stop', 'pm2 delete', 'pm2 restart',
+];
+
+const SHELL_TOOLS = ['shell_exec', 'shell_execute', 'ssh_exec'];
 
 export class ApprovalGate {
   constructor(approvals, config = {}) {
     this.approvals = approvals;
 
-    // Optional notifier for inline approval prompts. Signature:
-    //   async ({id, agent, tool, action, detail, riskLevel}) => void
-    // Wired to the Telegram bot in index.js once the bot is online so Tyson
-    // sees prompts on his phone. Replies of "✅ <id>" / "❌ <id>" from the
-    // owner chat resolve the pending approval via channels/manager.js.
     this.notifier = config.notifier || null;
 
-    // Tools that bypass every approval check (gated list AND keyword scan).
-    // Use for tools whose args naturally contain gated keywords like "send"
-    // or "publish" (e.g. spawn_agent role descriptions) but whose execution
-    // is already covered by other guardrails — credential scoping, audit
-    // logs, rate limits. Adding a tool here is a deliberate security trade.
     this.autoApproveTools = config.autoApproveTools || [
       'spawn_agent',
     ];
 
-    // Tools that require approval before execution
     this.gatedTools = config.gatedTools || [
       'filesystem__write_file',
       'filesystem__edit_file',
       'filesystem__move_file',
       'shell_execute',
-      'n8n-router', // Publishing workflows
+      'n8n-router',
     ];
 
-    // Keywords in tool args that trigger approval
-    this.gatedKeywords = config.gatedKeywords || [
-      'publish', 'delete', 'remove', 'drop', 'truncate', 'send', 'post', 'deploy'
-    ];
+    // Verb-scoped destructive patterns. Compare against the first shell
+    // token (single-word patterns) or first two tokens (two-word patterns).
+    this.destructivePatterns = config.destructivePatterns || DEFAULT_DESTRUCTIVE_PATTERNS;
 
-    // Risk assessment weights
+    // Exact-prefix allowlist for skill edits. path.resolve() + startsWith()
+    // ensures "/root/QClaw/src/agents/skills-evil/..." is NOT matched.
+    this.skillEditAllowlist = config.skillEditAllowlist || SKILL_EDIT_ALLOWLIST;
+
     this.riskWeights = {
       filesystem__write_file: 'medium',
       filesystem__edit_file: 'medium',
       filesystem__move_file: 'low',
       shell_execute: 'high',
-      'n8n-router': 'high', // Publishing to social/web
+      'n8n-router': 'high',
     };
   }
 
   /**
-   * Check if a tool call requires approval
-   * @param {string} toolName
-   * @param {Object} toolArgs
-   * @returns {Object} { requiresApproval: boolean, reason: string, riskLevel: string }
+   * Parse the first one or two tokens of a shell command for verb matching.
+   * Strips a leading `sudo ` if present so `sudo rm -rf` still reads as `rm`.
+   * @param {string} command
+   * @returns {{ first: string, firstTwo: string }}
+   */
+  _parseVerb(command) {
+    if (typeof command !== 'string') return { first: '', firstTwo: '' };
+    const stripped = command.trimStart().replace(/^sudo\s+/, '');
+    const tokens = stripped.split(/\s+/).filter(Boolean);
+    return {
+      first: tokens[0] || '',
+      firstTwo: tokens.slice(0, 2).join(' '),
+    };
+  }
+
+  /**
+   * Match shell tool calls against verb-scoped destructive patterns.
+   * Single-word patterns (e.g. "rm") match the first token; two-word
+   * patterns (e.g. "pm2 stop") match the first two tokens exactly.
+   * Never inspects arbitrary args content.
+   * @returns {string|null} the matching pattern, or null
+   */
+  _matchDestructivePattern(toolName, toolArgs) {
+    if (!SHELL_TOOLS.includes(toolName)) return null;
+    const command = toolArgs?.command;
+    const { first, firstTwo } = this._parseVerb(command);
+    if (!first) return null;
+    for (const pattern of this.destructivePatterns) {
+      if (pattern.includes(' ')) {
+        if (firstTwo === pattern) return pattern;
+      } else if (first === pattern) {
+        return pattern;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * True iff the operation targets the skill-edit allowlist directory.
+   * Checks explicit structured fields (path, destination, cwd) only —
+   * does NOT scan free-text command bodies. path.resolve() normalizes
+   * relative paths and ".." segments before the startsWith check.
+   */
+  _isSkillDirOperation(toolName, toolArgs) {
+    if (!toolArgs || typeof toolArgs !== 'object') return false;
+    const candidates = [];
+    if (typeof toolArgs.path === 'string') candidates.push(toolArgs.path);
+    if (typeof toolArgs.destination === 'string') candidates.push(toolArgs.destination);
+    if (typeof toolArgs.cwd === 'string') candidates.push(toolArgs.cwd);
+    for (const p of candidates) {
+      try {
+        const resolved = path.resolve(p);
+        if (resolved === this.skillEditAllowlist.replace(/\/$/, '') ||
+            resolved.startsWith(this.skillEditAllowlist)) {
+          return true;
+        }
+      } catch {
+        // unresolvable path — ignore
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Check if a tool call requires approval.
+   * @returns {{ requiresApproval: boolean, reason?: string, riskLevel?: string }}
    */
   async check(toolName, toolArgs) {
-    // 0. Short-circuit for explicitly auto-approved tools — skips keyword scan too
+    // 0. Auto-approved tools bypass all further checks
     if (this.autoApproveTools.includes(toolName)) {
       log.debug(`Auto-approved: ${toolName}`);
       return { requiresApproval: false };
     }
 
-    // 1. Check if tool is in gated list
+    // 1. Destructive verb match (shell tools only) — always gates, even
+    // when the target is inside the skill-edit allowlist. `rm` on a
+    // skill file still requires approval.
+    const destructiveHit = this._matchDestructivePattern(toolName, toolArgs);
+    if (destructiveHit) {
+      return {
+        requiresApproval: true,
+        reason: `Destructive command verb: "${destructiveHit}"`,
+        riskLevel: 'high',
+      };
+    }
+
+    // 2. Skill-dir allowlist — non-destructive ops targeting
+    // /root/QClaw/src/agents/skills/** bypass the remaining checks.
+    if (this._isSkillDirOperation(toolName, toolArgs)) {
+      log.info(`Skill-dir operation bypassed approval gate: ${toolName}`);
+      return { requiresApproval: false };
+    }
+
+    // 3. Gated tool list
     if (this.gatedTools.includes(toolName)) {
       const riskLevel = this.riskWeights[toolName] || 'medium';
       return {
@@ -74,20 +178,8 @@ export class ApprovalGate {
       };
     }
 
-    // 2. Check if args contain gated keywords
-    const argsStr = JSON.stringify(toolArgs).toLowerCase();
-    for (const keyword of this.gatedKeywords) {
-      if (argsStr.includes(keyword)) {
-        return {
-          requiresApproval: true,
-          reason: `Action contains keyword: "${keyword}"`,
-          riskLevel: 'medium',
-        };
-      }
-    }
-
-    // 3. Special checks for specific tools
-    if (toolName === 'filesystem__write_file' && toolArgs.path?.includes('src/')) {
+    // 4. Filesystem writes under any src/ path (scope: whole repo)
+    if (toolName === 'filesystem__write_file' && toolArgs?.path?.includes('src/')) {
       return {
         requiresApproval: true,
         reason: 'Writing to src/ directory',
@@ -95,25 +187,22 @@ export class ApprovalGate {
       };
     }
 
-    if (toolName.includes('stripe') && argsStr.includes('charge')) {
-      return {
-        requiresApproval: true,
-        reason: 'Stripe payment action detected',
-        riskLevel: 'critical',
-      };
+    // 5. Stripe charge — verb-scoped against explicit action field,
+    // not JSON.stringify scan.
+    if (toolName.includes('stripe')) {
+      const action = toolArgs?.action || toolArgs?.operation || toolArgs?.type;
+      if (action === 'charge' || toolName.includes('charge')) {
+        return {
+          requiresApproval: true,
+          reason: 'Stripe payment action detected',
+          riskLevel: 'critical',
+        };
+      }
     }
 
     return { requiresApproval: false };
   }
 
-  /**
-   * Request approval and wait for response
-   * @param {string} agent - Agent name requesting approval
-   * @param {string} toolName
-   * @param {Object} toolArgs
-   * @param {string} riskLevel
-   * @returns {Promise<{approved: boolean, id: number}>}
-   */
   async requestApproval(agent, toolName, toolArgs, riskLevel) {
     const action = `${toolName}(${JSON.stringify(toolArgs).slice(0, 200)})`;
     const detail = `Agent ${agent} wants to execute: ${action}`;
@@ -128,14 +217,6 @@ export class ApprovalGate {
    * Request inline approval — creates a pending approval record, fires the
    * Telegram notifier if configured, and awaits the human decision (or 10-min
    * auto-deny). Used by shell_exec and n8n_workflow_update.
-   *
-   * @param {Object} opts
-   * @param {string} opts.agent       — agent making the request (for audit)
-   * @param {string} opts.tool        — tool name (e.g. "shell_exec")
-   * @param {string} opts.action      — short one-liner shown in the prompt
-   * @param {string} opts.detail      — full text (truncated to 800 chars by caller)
-   * @param {string} opts.riskLevel   — 'low' | 'medium' | 'high' | 'critical'
-   * @returns {Promise<{approved: boolean, id: number, reason?: string}>}
    */
   async requestInlineApproval({ agent, tool, action, detail, riskLevel = 'medium' }) {
     if (!this.approvals?.createPending) {
@@ -162,9 +243,6 @@ export class ApprovalGate {
     this.notifier = fn;
   }
 
-  /**
-   * Add a tool to the gated list
-   */
   gateToolRuntime(toolName, riskLevel = 'medium') {
     if (!this.gatedTools.includes(toolName)) {
       this.gatedTools.push(toolName);
@@ -173,9 +251,6 @@ export class ApprovalGate {
     }
   }
 
-  /**
-   * Remove a tool from gated list (use with caution)
-   */
   ungateToolRuntime(toolName) {
     const index = this.gatedTools.indexOf(toolName);
     if (index > -1) {

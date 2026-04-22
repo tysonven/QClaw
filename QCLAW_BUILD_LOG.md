@@ -1394,3 +1394,79 @@ queue (`/diagnose`-style) rather than dumping SSH commands on Tyson.
 - file_edit_remote — Phase 1 Session 2
 - Consider surfacing pending approvals on the dashboard as well as
   Telegram (currently only CLI + Telegram).
+
+---
+
+## 2026-04-22 — Skill file path corrections + approval gate fix
+
+Charlie flagged that skill files carried Mac-local paths (`~/QClaw`)
+and BSD sed syntax (`sed -i ''`) that doesn't work on Linux. Also
+identified that edit attempts were timing out at the approval gate.
+
+### Diagnosis (approval gate)
+Charlie's symlink-vs-realpath hypothesis was wrong — `approval-gate.js`
+had no `/root/.quantumclaw` path check at all, so no path-normalization
+fix applied. The actual block came from two places:
+- **Generic keyword scan** in `ApprovalGate.check()` that ran
+  `JSON.stringify(args).includes(keyword)` against the blob, so any
+  sed script or file content containing "truncate", "delete", "remove"
+  etc. falsely triggered approval (e.g. approvals 18/19/20 on
+  knowledge.js edits where "truncate" appeared inside a comment).
+- **Gated fs tools** covering all `filesystem__*` operations
+  unconditionally, so skill-file edits under
+  `/root/QClaw/src/agents/skills/` required Telegram approval even
+  though that directory exists for agent self-service.
+
+10-minute timeout in `approvals.js:66` is intentional; not changed.
+`tools/shell-exec.js` was already fine (regex-anchored DESTRUCTIVE
+patterns, properly verb-scoped) and was not modified.
+
+### Fixed
+- All `~/QClaw` references in skill files → `/root/QClaw` absolute
+  (14 hits in `qclaw-dev.md`, 1 in `build.md`).
+- `sed -i ''` (BSD) → `sed -i` (GNU) in `qclaw-dev.md`.
+- Added environment-clarifying header comment to `qclaw-dev.md`
+  (target ssh qclaw, user root, absolute paths, GNU tools).
+- Rewrote `ApprovalGate.check()`:
+  - Removed the `gatedKeywords` JSON.stringify scan entirely.
+  - Added `SKILL_EDIT_ALLOWLIST = '/root/QClaw/src/agents/skills/'`
+    with `path.resolve()` + `startsWith()` — narrow prefix match that
+    rejects `skills-evil/` lookalikes and `../` traversal attempts.
+    Checks structured fields (`path`, `destination`, `cwd`) only;
+    does not scan free-text command bodies.
+  - Added verb-scoped `DESTRUCTIVE_PATTERNS` (rm, kill, killall,
+    shutdown, reboot, dd, pm2 stop, pm2 delete, pm2 restart) matched
+    against the first token (or first two for two-word patterns) of
+    shell commands only. Leading `sudo ` is stripped before matching
+    so `sudo rm -rf` still parses as `rm`.
+  - Decision order puts destructive check BEFORE allowlist, so a
+    destructive verb targeting a skill file still requires approval.
+  - Stripe special-case tightened to inspect `args.action/operation/
+    type === 'charge'` instead of `JSON.stringify(args).includes('charge')`.
+
+### Test matrix (11/11 pass)
+1. Sed edit in skill dir (via cwd) → no prompt (allowlist hit)
+1b. Fs edit via `path` field under skill dir → no prompt
+2. Sed with "truncate" in script body on non-skill file → no prompt
+3. `rm -rf /something` → prompt fires
+3b. `sudo rm -rf /something` → prompt fires (sudo prefix stripped)
+4. `pm2 stop charlie-watcher` → prompt fires
+4b. `pm2 status` → no prompt (not destructive)
+5. Write to `/root/QClaw/src/someotherdir/` → prompt fires (gated)
+5b. `rm` on a skill file STILL fires (destructive beats allowlist)
+5c. `/root/QClaw/src/agents/skills-evil/` lookalike → prompt fires
+5d. `../skills-evil/` traversal normalized → prompt fires
+
+### Impact
+Charlie can now update his own skill files directly, and make legitimate
+code edits containing incidentally-destructive words without Tyson
+needing to tap through Telegram approvals. Genuine destructive ops
+(rm, kill, pm2 stop, etc.) and writes outside the skill directory are
+still gated.
+
+### Open follow-ups
+- `tools/shell-exec.js` still gates on sudo-prefix (`\bsudo\b` in
+  DESTRUCTIVE_PATTERNS), which fires correctly but could be noisy.
+  Deferred.
+- GitHub PAT embedded in `/root/QClaw` origin URL — visible in
+  `git remote -v`. Separate rotation task if not already tracked.

@@ -1,16 +1,23 @@
+# qclaw-dev skill
+#
+# Target: ssh qclaw (138.68.138.214), NOT local Mac
+# User: root (PM2, config, and .quantumclaw all owned by root)
+# Repo: /root/QClaw (absolute paths only — no ~ or $HOME)
+# Syntax: Linux/GNU tools (sed -i without empty '' argument)
+
 # QClaw Development
 
 ## Purpose
 Direct access to read, edit, and manage files in the QClaw repository for debugging and development.
 
 ## Repository
-Path: ~/QClaw
+Path: /root/QClaw
 Git: Yes
 
 ## Capabilities
 
 ### File Operations
-- Read any file in ~/QClaw
+- Read any file in /root/QClaw
 - Edit files (with backup)
 - Create new files
 - Compare file versions
@@ -30,32 +37,32 @@ Git: Yes
 ## Allowed Commands
 bash
 # File operations
-cat ~/QClaw/path/to/file
-grep -n "pattern" ~/QClaw/path/to/file
-sed -n 'X,Yp' ~/QClaw/path/to/file
-wc -l ~/QClaw/path/to/file
-ls -lah ~/QClaw/path
+cat /root/QClaw/path/to/file
+grep -n "pattern" /root/QClaw/path/to/file
+sed -n 'X,Yp' /root/QClaw/path/to/file
+wc -l /root/QClaw/path/to/file
+ls -lah /root/QClaw/path
 
 # Backups
-cp ~/QClaw/src/file ~/QClaw/src/file.backup.$(date +%s)
+cp /root/QClaw/src/file /root/QClaw/src/file.backup.$(date +%s)
 
-# Editing (via sed/cat/echo)
-sed -i '' 'command' ~/QClaw/path/to/file
-cat > ~/QClaw/path/to/file << 'ENDFILE'
+# Editing (via sed/cat/echo) — GNU sed, no empty '' arg
+sed -i 'command' /root/QClaw/path/to/file
+cat > /root/QClaw/path/to/file << 'ENDFILE'
 ...
 ENDFILE
 
 # Git operations
-cd ~/QClaw && git status
-cd ~/QClaw && git diff path/to/file
-cd ~/QClaw && git log --oneline -10
+cd /root/QClaw && git status
+cd /root/QClaw && git diff path/to/file
+cd /root/QClaw && git log --oneline -10
 
 # PM2 operations
 pm2 restart quantumclaw
 pm2 logs quantumclaw --lines 50 --nostream
 pm2 status
 ## Permissions
-- file: [~/QClaw/**, ~/.quantumclaw/**]
+- file: [/root/QClaw/**, /root/.quantumclaw/**]
 - shell: [cat, grep, sed, cp, mv, ls, wc, git, pm2, node, npm]
 - http: none
 
