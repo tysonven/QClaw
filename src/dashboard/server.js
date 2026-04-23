@@ -1922,7 +1922,7 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
 
     // POST /api/crete/generate-image
     // Body: { style: "quote"|"editorial", text: "...", headline: "...", body: "..." }
-    // Returns: { success: true, url: "https://pub-...r2.dev/crete-projects/images/..." }
+    // Returns: { success: true, url: "https://media.creteprojects.com/images/..." }
     this.app.post('/api/crete/generate-image', async (req, res) => {
       try {
         const { style, text, headline, body: bodyText } = req.body || {};
@@ -1957,7 +1957,8 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
         const accountId = envVars.R2_ACCOUNT_ID;
         const accessKeyId = envVars.R2_ACCESS_KEY_ID;
         const secretAccessKey = envVars.R2_SECRET_ACCESS_KEY;
-        const bucket = envVars.R2_BUCKET_NAME || 'emma-content-studio';
+        const bucket = envVars.CRETE_R2_BUCKET_NAME || 'crete-projects';
+        const publicBase = (envVars.CRETE_R2_PUBLIC_URL || 'https://media.creteprojects.com').replace(/\/+$/, '');
 
         if (!accountId || !accessKeyId || !secretAccessKey) {
           return res.status(500).json({ error: 'R2 credentials not configured' });
@@ -1969,7 +1970,7 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
           credentials: { accessKeyId, secretAccessKey }
         });
 
-        const fileKey = `crete-projects/images/${randomUUID()}.png`;
+        const fileKey = `images/${randomUUID()}.png`;
         await s3.send(new PutObjectCommand({
           Bucket: bucket,
           Key: fileKey,
@@ -1977,7 +1978,7 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
           ContentType: 'image/png'
         }));
 
-        const publicUrl = `https://pub-70c436931e9e4611a135e7405c596611.r2.dev/${fileKey}`;
+        const publicUrl = `${publicBase}/${fileKey}`;
         log.info(`[CRETE] Generated ${style} card → ${publicUrl}`);
         res.json({ success: true, url: publicUrl, style, key: fileKey });
       } catch (err) {
