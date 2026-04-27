@@ -1668,3 +1668,79 @@ note, and falls back to Telegram if GHL sync fails.
   for a non-Kylie client) should clone this workflow, change the path
   (`/intake-<client>`), the tag set (drop `kylie-content-build`, add
   client-specific), and CORS origin if hosting at a different subdomain.
+
+---
+
+## 2026-04-27 — Session close: intake shipped, security pass, drift triage
+
+End-of-session summary. The intake-kylie build entry above covers the
+feature work. This entry covers the post-build hardening pass and a drift
+triage list for next session.
+
+### Recap
+- **Kylie intake form**, FSC client #1 of the reusable intake module:
+  built, deployed, tested (4/4 tests pass), JSON backup committed at
+  `n8n-workflows/intake-kylie-content-system.json`. Live workflow id
+  `qOwJhClx5BnOeycf`, webhook
+  `https://webhook.flowos.tech/webhook/intake-kylie`. See the previous
+  entry for architecture and decisions.
+- **Security pass**: `~/.quantumclaw/.env` perms tightened from 644 to
+  600. New FSC keys added (`GHL_FSC_LOCATION_ID`, `GHL_FSC_USER_ID`,
+  `GHL_FSC_NOTIFY_CONTACT_ID`, `NOTIFY_EMAIL`). FSC PIT remains in the
+  n8n credential vault only (`FSC GHL pit`, id `TK2wBgy9ZtKLf8UG`). Test
+  contacts created during testing were deleted from FSC GHL.
+- **charlie_n8n_key incident remediated**:
+  - `git log --all --full-history -- charlie_n8n_key` confirmed the key
+    was never committed (untracked only)
+  - Moved from `/root/QClaw/charlie_n8n_key` to
+    `/root/.ssh/charlie/charlie_n8n_key`, perms 600, owner root:root
+  - Duplicate copy at `/home/flowos/charlie_n8n_key` shredded with
+    `shred -u` after grep across `/root/QClaw/`, `/etc/`, `/home/flowos/`
+    confirmed zero references
+  - SSH from qclaw to n8n host (`n8nadmin@157.230.216.158`) verified
+    working from the new path
+  - `.gitignore` hardened with private-key patterns: `*.pem`, `*.key`,
+    `*_key`, `*_rsa`, `*_ed25519`, `id_*`, `**/charlie_n8n_key`
+- **Skill doc**: `src/agents/skills/ghl.md` gained a
+  "Notification email pattern (out of GHL)" section so future-Charlie
+  doesn't re-derive the contactId-required workaround.
+- **Roadmap**: added `n8n env consolidation` as the first priority,
+  flagged as a prerequisite for new client intakes (so we don't keep
+  hardcoding location/user/contact IDs into each cloned workflow).
+
+### Security gate (final)
+- [x] No hardcoded secrets in workflow JSON or repo
+- [x] No private keys in the repo or in git history
+- [x] `.env` perms 600
+- [x] Webhook CORS restricted, honeypot active, rate limit active
+- [x] Workflow `availableInMCP: false` for the public intake webhook
+- [x] All 4 functional tests pass; test data cleaned up
+
+### Pre-existing drift (not touched this session, for separate triage)
+Listed so next session can decide what to do with each:
+
+- `src/agents/skills/n8n-api.md` — 1+/1- line. Trivial doc tweak adding
+  `?limit=200` to a GET endpoint example. File last touched 2026-04-23,
+  so this drifted somewhere in the last 4 days.
+- `src/trading/monte_carlo.py` — 2+/0- lines. Last touched 2026-04-25.
+  Has a sibling `.backup.1777144066` file from the same modtime,
+  suggesting an automated edit pass.
+- `yarn.lock` — 14+/1- lines, modtime 2026-04-27 12:42 UTC (today).
+  Indicates a `yarn install` ran during this session window without a
+  paired `package.json` change being staged. Worth confirming nothing
+  got orphaned.
+- Untracked: `scripts/migrate-r2.mjs`, `scripts/update-library.mjs`,
+  `src/crete-marketing/curate-photos.mjs` — all from Apr 17–23,
+  pre-session WIP.
+- Untracked backups: `src/agents/skills/n8n-api.md.backup.1776933191`,
+  `src/trading/monte_carlo.py.backup.1777144066` — these will be
+  swallowed by the existing `*.backup` gitignore pattern only if the
+  automated tooling renames them; current names don't match the
+  pattern. Either delete them or add `*.backup.[0-9]*` to gitignore.
+
+### Commits this session (origin/main)
+- `88aa45d docs: update build log [2026-04-27]` — Kylie intake build
+- `7dc1820 security: gitignore private keys, move charlie_n8n_key out of repo`
+- (this commit) — session close summary
+
+origin/main HEAD before this commit: `7dc182051551b0e54c8b2f6c00c761ae3b6c77f2`.
