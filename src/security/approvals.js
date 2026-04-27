@@ -71,28 +71,77 @@ export class ExecApprovals {
     return promise;
   }
 
-  approve(id, by = 'owner') {
+  _readRow(id) {
     if (this._useJson) {
-      const item = this._data?.items?.find(i => i.id === id && i.status === 'pending');
-      if (item) { item.status = 'approved'; item.resolved = new Date().toISOString(); item.resolved_by = by; this._saveJson(); }
+      if (!this._data) this._data = this._loadJson();
+      return this._data.items.find(i => i.id === id) || null;
+    }
+    return this.db.prepare('SELECT id, status FROM approvals WHERE id = ?').get(id) || null;
+  }
+
+  approve(id, by = 'owner') {
+    const row = this._readRow(id);
+    if (!row) {
+      const err = new Error('not found');
+      err.code = 'NOT_FOUND';
+      throw err;
+    }
+    if (row.status !== 'pending') {
+      return { alreadyResolved: true, status: row.status };
+    }
+
+    if (this._useJson) {
+      const item = this._data.items.find(i => i.id === id);
+      item.status = 'approved';
+      item.resolved = new Date().toISOString();
+      item.resolved_by = by;
+      this._saveJson();
     } else {
       this.db.prepare('UPDATE approvals SET status = \'approved\', resolved = datetime(\'now\'), resolved_by = ? WHERE id = ? AND status = \'pending\'').run(by, id);
     }
+
     const cb = this.pendingCallbacks.get(id);
-    if (cb) { cb.resolve({ approved: true, id }); this.pendingCallbacks.delete(id); }
+    if (cb) {
+      cb.resolve({ approved: true, id });
+      this.pendingCallbacks.delete(id);
+    } else {
+      log.warn(`Approval ${id} resolved=approved by=${by} but no in-memory callback (process restart?). Original requester will not be unblocked.`);
+    }
     log.success(`Approved: [${id}]`);
+    return { alreadyResolved: false };
   }
 
   deny(id, by = 'owner', reason = '') {
+    const row = this._readRow(id);
+    if (!row) {
+      const err = new Error('not found');
+      err.code = 'NOT_FOUND';
+      throw err;
+    }
+    if (row.status !== 'pending') {
+      return { alreadyResolved: true, status: row.status };
+    }
+
     if (this._useJson) {
-      const item = this._data?.items?.find(i => i.id === id && i.status === 'pending');
-      if (item) { item.status = 'denied'; item.resolved = new Date().toISOString(); item.resolved_by = by; item.reason = reason; this._saveJson(); }
+      const item = this._data.items.find(i => i.id === id);
+      item.status = 'denied';
+      item.resolved = new Date().toISOString();
+      item.resolved_by = by;
+      item.reason = reason;
+      this._saveJson();
     } else {
       this.db.prepare('UPDATE approvals SET status = \'denied\', resolved = datetime(\'now\'), resolved_by = ?, reason = ? WHERE id = ? AND status = \'pending\'').run(by, reason, id);
     }
+
     const cb = this.pendingCallbacks.get(id);
-    if (cb) { cb.resolve({ approved: false, id, reason }); this.pendingCallbacks.delete(id); }
+    if (cb) {
+      cb.resolve({ approved: false, id, reason });
+      this.pendingCallbacks.delete(id);
+    } else {
+      log.warn(`Approval ${id} resolved=denied by=${by} but no in-memory callback (process restart?). Original requester will not be unblocked.`);
+    }
     log.info(`Denied: [${id}] ${reason}`);
+    return { alreadyResolved: false };
   }
 
   pending() {
