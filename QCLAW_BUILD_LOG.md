@@ -1552,3 +1552,118 @@ gate will still time out approvals until the concurrency fix lands.
   on the Mac.
 - Plaintext credentials in local `~/.quantumclaw/config.json`
   (`dashboard.authToken`, `dashboard.pin`, `dashboard.tunnelToken`).
+
+---
+
+## 2026-04-27 — Flow OS Intake System: Kylie content build
+
+First module of a reusable Flow States Collective (FSC) client intake
+system. Static intake form on Vercel POSTs to a public n8n webhook, which
+emails Tyson via GHL, syncs the submitter to GHL as a contact with a
+note, and falls back to Telegram if GHL sync fails.
+
+### Architecture
+- Webhook: `POST https://webhook.flowos.tech/webhook/intake-kylie`,
+  CORS restricted to `https://intake.flowstatescollective.com`
+- Honeypot: `body.rawData.website` non-empty short-circuits to silent 200
+  before any GHL call (no contact, no email, no log noise)
+- Rate limit: per-IP 3 hits / 60s window via `getWorkflowStaticData`,
+  4th and beyond return 429 (no body) without any GHL or email work
+- Format: builds markdown note body and HTML email body from
+  `responses[]`; HTML escape everywhere
+- GHL email: POST `/conversations/messages` (type=Email) to a fixed
+  internal notify contact, same pattern as `GHL Changelog Emails`
+- GHL sync: `/contacts/search/duplicate` then either add note to existing
+  or create contact (tags `intake-completed`, `kylie-content-build`,
+  `fsc-client`, source `intake.flowstatescollective.com`) and add note
+- Error fallback: any non-2xx from a GHL node fires a Telegram alert to
+  chat `1375806243` so we know GHL sync broke even though the form still
+  got a 200
+
+### What got created
+- n8n workflow `intake-kylie-content-system` (id `qOwJhClx5BnOeycf`,
+  active, `availableInMCP: false`, 17 nodes)
+- JSON backup committed at
+  `n8n-workflows/intake-kylie-content-system.json`
+- New `.env` keys in `~/.quantumclaw/.env` (perms tightened from 644 to
+  600 in this session): `GHL_FSC_LOCATION_ID`, `GHL_FSC_USER_ID`,
+  `GHL_FSC_NOTIFY_CONTACT_ID`, `NOTIFY_EMAIL`. The qclaw `.env` is the
+  source of truth; the values are also referenced in the workflow.
+
+### Credential decisions
+- Reused existing n8n credential `FSC GHL pit` (id `TK2wBgy9ZtKLf8UG`,
+  httpHeaderAuth) for all GHL HTTP nodes. The brief had asked for a new
+  `GHL Flow States Collective PIT`; on inspection the live credential
+  was already named `FSC GHL pit` and scoped to the FSC location,
+  so creating a duplicate would have been churn.
+- The four FSC `.env` values above (locationId, userId, notify
+  contactId, notify email) are NOT secrets, just public IDs and an
+  email. n8n on its host (157.230.216.158) does not currently load
+  the qclaw `.env`, and adding them to the n8n container env would
+  require a Docker restart that would interrupt active production
+  workflows. Compromise: hardcode the four IDs in the workflow JSON
+  and document in this entry. The PIT (the only real secret) stays in
+  the n8n credential vault. Future improvement: migrate n8n to an
+  `env_file` and consolidate.
+- Also bootstrapped `tyson@flowstatescollective.com` as an FSC GHL
+  contact for the operator-notify path (already existed: id
+  `SbPJpeihuGK3RT6bspyq`). GHL conversations API requires a contactId
+  to send email; that contact is the recipient.
+
+### Tests run
+1. Happy path: `{success:true}` 200, contact created, note added,
+   email queued via GHL conversations
+2. Honeypot: filled `rawData.website` returns 200 silent, only
+   3 nodes execute (no GHL, no email)
+3. CORS: server returns fixed
+   `Access-Control-Allow-Origin: https://intake.flowstatescollective.com`
+   regardless of request origin, so non-allowed origins are rejected
+   client-side
+4. Rate limit: submissions 1-3 within 60s succeed with full GHL flow,
+   4th+ returns HTTP 429 with no body and skips GHL entirely
+
+7 test contacts deleted from FSC GHL after testing.
+
+### Security gate
+- [x] No hardcoded secrets in the workflow JSON. The PIT lives only in
+      the n8n credential vault. The four FSC IDs are public, not secret.
+- [x] `~/.quantumclaw/.env` permissions are 600 (was 644 before this
+      session, fixed)
+- [x] Webhook CORS restricted to `https://intake.flowstatescollective.com`
+- [x] Honeypot routes filled-honeypot submissions to silent 200 with no
+      GHL/email side effects
+- [x] Rate limit caps at 3/60s per IP, returns 429 silently
+- [x] Workflow `availableInMCP: false` (public webhook, not for agent use)
+- [x] Activated only after all 4 tests passed
+
+### 7 Pillars
+1. Frontend — form is on Vercel; handled in form-build session, not here
+2. Backend — n8n workflow validates honeypot first, rate-limits, then
+   processes. All HTTP nodes have `neverError: True`/
+   `onError: continueRegularOutput` so a single GHL failure cannot crash
+   the request path
+3. Databases — n/a (no DB writes; static data is workflow-scoped)
+4. Authentication — webhook is intentionally public (form endpoint);
+   protection is honeypot + rate limit + CORS at the n8n layer; GHL PIT
+   in n8n credential vault
+5. Payments — n/a
+6. Security — no hardcoded credentials, CORS restricted, rate limit in
+   place, `.env` perms 600
+7. Infrastructure — n8n workflow is JSON-backed in the repo; can be
+   re-imported via the public API if the n8n host is reset
+
+### Known limitations / deferred
+- The four FSC `.env` keys live on qclaw but are not yet consumed by
+  the n8n host; they're mirrored in `.env` for docs/source-of-truth and
+  the actual values are inlined in the workflow JSON. The right long-
+  term fix is to switch n8n's docker-compose to load an env_file and
+  drop the inline values.
+- The notify email path uses GHL's conversations endpoint and so the
+  email comes from `tyson@flowstatescollective.com` to itself via the
+  internal notify contact. Functional; if the brand voice eventually
+  matters for these internal alerts we can switch to a dedicated
+  transactional sender.
+- Reusable intake module: this is workflow #1. The next intake (e.g.
+  for a non-Kylie client) should clone this workflow, change the path
+  (`/intake-<client>`), the tag set (drop `kylie-content-build`, add
+  client-specific), and CORS origin if hosting at a different subdomain.
