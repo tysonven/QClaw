@@ -22,3 +22,6 @@ POST /notes/ - Create note
 - Always check for duplicate contacts before creating (search by email/phone)
 - Location-Id header is required for all requests
 - Use British English in notes/communications
+
+## Notification email pattern (out of GHL)
+GHL has no transactional send-to-arbitrary-address endpoint. POST /conversations/messages with type=Email requires a contactId; the email is sent to that contact's email. To send notifications out of GHL, we maintain an internal-use contact for the recipient (Tyson at FSC) and use its id. Stored as GHL_FSC_NOTIFY_CONTACT_ID. Same pattern for new locations: create or look up a contact for the operator's email, save the id.

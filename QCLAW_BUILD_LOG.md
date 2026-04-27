@@ -177,6 +177,7 @@ https://fsc.app.clientclub.net/communities/groups/flow-states-collective/home?in
 - [x] Copy Agent — brand-aware + UTMs + Telegram working
 - [x] Creative Brief Agent — brand-aware prompts
 - [x] Ad Creation Agent — copy library + audience/targeting fixed
+- [ ] **n8n env consolidation (prerequisite for new client intakes)**: switch n8n docker-compose to load env_file from ~/.quantumclaw/.env on the n8n host, then refactor hardcoded IDs in workflows (intake-kylie-content-system, GHL Changelog Emails, others) to reference env vars. Single source of truth across qclaw and n8n containers.
 - [ ] Verify morning brief fires at 8am Athens time
 - [ ] Test Ad Creation Agent end-to-end via Telegram
 - [ ] Test Competitor Research Agent
