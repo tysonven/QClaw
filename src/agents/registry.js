@@ -10,6 +10,32 @@ import { join } from 'path';
 import { log } from '../core/logger.js';
 import { parseSkill, skillToTools, executeSkillTool } from './skill-parser.js';
 
+// Per-agent serialization for the conversation read-modify-write in process().
+// Two concurrent process() calls for the same agent would otherwise read the
+// same history snapshot, run the LLM in parallel, then both append turns —
+// the second LLM never sees the first turn, and the DB log interleaves out
+// of order. The mutex re-establishes the serialization that grammY's default
+// (sequential) middleware used to provide before we switched to runner.
+// Reflex-tier responses skip this lock (no history I/O).
+const _agentLocks = new Map();
+
+async function _withAgentLock(name, fn) {
+  while (_agentLocks.has(name)) {
+    await _agentLocks.get(name);
+  }
+  let release;
+  const lock = new Promise((r) => { release = r; });
+  _agentLocks.set(name, lock);
+  try {
+    return await fn();
+  } finally {
+    _agentLocks.delete(name);
+    release();
+  }
+}
+
+export { _withAgentLock as __agentLockForTests };
+
 export class AgentRegistry {
   constructor(config, services) {
     this.config = config;
@@ -235,6 +261,19 @@ export class Agent {
         model: null
       };
     }
+
+    // Non-reflex path: serialize per-agent so concurrent calls don't read
+    // the same history snapshot, parallel-LLM, then write interleaved turns.
+    return _withAgentLock(this.name, () =>
+      this._processNonReflex(message, context, route, textMessage)
+    );
+  }
+
+  // Held under per-agent lock by process(). Body unchanged from the original
+  // post-reflex section; extracted only so the lock wrap doesn't reindent the
+  // whole method. See _withAgentLock at the top of this file for rationale.
+  async _processNonReflex(message, context, route, textMessage) {
+    const { router, memory, audit } = this.services;
 
     // Build context — now uses structured knowledge + selective history
     const graphContext = route.extendedContext
