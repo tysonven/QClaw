@@ -1477,3 +1477,78 @@ still gated.
   Deferred.
 - GitHub PAT embedded in `/root/QClaw` origin URL — visible in
   `git remote -v`. Separate rotation task if not already tracked.
+
+---
+
+## 2026-04-27 — Approval gate: orphan-callback safety
+
+Small defensive change to `ExecApprovals.approve/deny`. On process restart
+the in-memory `pendingCallbacks` Map empties; previously the SQL row update
+ran but the resolution call site silently no-op'd. Now:
+- Read the row first; throw `Error('not found')` for nonexistent ids.
+- Return `{alreadyResolved:true,status}` for rows already approved/denied
+  (instead of running a second UPDATE that does nothing because of the
+  `WHERE status='pending'` clause — same outcome, but the call site now
+  knows what happened).
+- When `pendingCallbacks.get(id)` is empty, log a warning instead of
+  silently dropping the resolution. Row still updates correctly.
+
+The original requester's Promise stays unresolved on the orphan path
+— a full DB-backed callback queue is a larger architectural change,
+out of scope for this PR.
+
+### Origin of this PR — and what it isn't
+
+Started as a fix for "approval gate timing out every approval since
+2026-04-22" after I diagnosed the bug as a missing emoji parser. That
+diagnosis was wrong — `b08d64b` (2026-04-21) already added the
+`/^([✅❌]|approve|deny|yes|no)\s*#?(\d+)\s*(.*)$/i` parser inside
+`bot.on('message:text')`, line 263 of channels/manager.js. The parser
+works correctly (verified against the diagnostic input matrix).
+
+The actual headline bug is **handler concurrency**: `bot.on('message:text')`
+runs `await agent.process(text)` synchronously, which blocks grammY's
+update loop. When Charlie's chat handler stalls (Cognee reconnect storms,
+slow tool calls, etc.) the user's emoji-reply sits undelivered until the
+previous chat completes — by which time the 10-minute timeout has already
+denied the row. Production logs for [37] show a 13-minute silence between
+the previous chat completion (09:41:16) and the next (09:54:17), with the
+[37] timeout firing at 09:54:13 inside that gap.
+
+`pm2 logs quantumclaw --lines 5000` confirms exactly **1 successful
+approval** (`[7] granted by telegram:tysonven via inline reply` at
+21:23:34) against ~49 timeouts — consistent with messages occasionally
+arriving while the chat handler is between calls.
+
+Headline-bug fix (extract `approvalReply` to a `bot.hears()` registered
+before `bot.on('message:text')`, or fire-and-forget the agent call) is
+tracked separately. This PR only ships the small defensive change; the
+gate will still time out approvals until the concurrency fix lands.
+
+### Changes
+- `src/security/approvals.js` — orphan-callback safety + return shape.
+- `tests/approvals.test.js` — 13 cases (happy path, already-resolved,
+  not-found, orphan-callback for both approve and deny). JSON fallback
+  path so no SQLite dep.
+
+### Test results
+- `node tests/approvals.test.js` → 13/13 pass
+- `node tests/smoke.test.js` → 21/22 (pre-existing local `jsonwebtoken`
+  module-not-found, unrelated)
+
+### Deferred to other sessions
+- Real headline fix: handler concurrency / approval reply pre-empting
+  long chat handler.
+- Cognee reconnect storms (probable amplifier of the concurrency bug).
+- QClaw on `qclaw` is under root's PM2 (not raw node — diagnostic
+  correction). `flowos` user has its own empty PM2 instance, which is
+  what threw me earlier.
+- `charlie-watcher` PM2 entry exists (id 4, runs
+  `bash src/agents/task-watcher.sh`) — name is real, role is task-queue
+  watching, not Telegram listening.
+- `/root/QClaw` has 1 unpushed commit (`26fe992`) and 3 WIP files
+  (`monte_carlo.py`, `n8n-api.md`, `yarn.lock`) — Pillar 7 drift, parked.
+- Local Mac PM2 zombie entry `quantumclaw` (PID 1381) — `pm2 delete`
+  on the Mac.
+- Plaintext credentials in local `~/.quantumclaw/config.json`
+  (`dashboard.authToken`, `dashboard.pin`, `dashboard.tunnelToken`).
