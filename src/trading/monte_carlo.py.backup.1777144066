@@ -15,8 +15,6 @@ TICKERS = {
     "btc": "BTC-USD",
     "wti": "CL=F",
     "brent": "BZ=F",
-    "silver": "SI=F",
-    "eth": "ETH-USD",
 }
 MACRO_TICKERS = {
     "dxy": "DX-Y.NYB",

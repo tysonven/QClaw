@@ -5,7 +5,7 @@ Base URL: https://webhook.flowos.tech/api/v1
 Header: X-N8N-API-KEY: {{secrets.n8n_api_key}}
 
 ## Endpoints
-GET /workflows?limit=200 - List all n8n workflows (find any workflow by scanning this list)
+GET /workflows - List all n8n workflows (find any workflow by scanning this list)
 GET /workflows/{{id}} - Get details of one workflow by ID (nodes, connections, active state)
 GET /executions/{{id}} - Get full details of a single execution (error messages, node outputs)
 GET /executions?workflowId={{workflow_id}} - List recent executions for a workflow
