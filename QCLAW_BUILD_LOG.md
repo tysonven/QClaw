@@ -1883,3 +1883,88 @@ rather than re-speccing from scratch.
 - [x] availableInMCP === true verified post-PUT
 - [x] Supabase update scoped to single row by primary key
 - [x] No stack traces exposed via Telegram errors
+
+---
+
+## 2026-04-28 — Approval gate: unify request paths so notifier always fires
+
+The actual root cause of the production approval-gate failures.
+
+`src/tools/executor.js` calls `approvalGate.requestApproval(...)` for
+every tier-classified tool call inside `agent.process()`.
+`requestApproval` delegated straight to `approvals.request()` and
+**bypassed the notifier entirely**. Only `requestInlineApproval` (used by
+`shell_exec` and `n8n_workflow_update` directly) ever fired the
+notifier.
+
+Result: every executor-driven approval created a row, logged
+`⏸️  Approval required: …`, then sat invisible until the 10-min timeout
+denied it. No Telegram prompt was ever sent for those — which is why
+the logs showed `Approval needed: [N]` but no `Telegram send failed`,
+no `Telegram bot unavailable`, no `No notifier wired` warnings: the
+notifier code was never reached on that path. The PR #3 raw-fetch
+workaround for `bot.api.sendMessage` was real but addressed a
+*separate* silent-drop in the notifier transport, not the missing
+notifier dispatch on the executor path.
+
+### Change — single file
+
+`src/security/approval-gate.js` `requestApproval`:
+- Replace its body (which did `approvals.request(...)` directly) with
+  a delegation to `requestInlineApproval`. Same payload shape — `agent`,
+  `tool`, `action`, `detail`, `riskLevel`. Single approval-creation
+  code path. Single notifier dispatch.
+- Existing `log.warn('⏸️  Approval required: …')` line kept so log
+  format stays consistent with previous output.
+
+### Tests
+
+- `node tests/smoke.test.js` → 22/22
+- `node tests/approvals.test.js` → 13/13
+- `node tests/approval-gate-notifier.test.js` → **13/13** new
+  - notifier fires exactly once on `requestApproval`
+  - payload contains agent / tool / numeric id / riskLevel / action /
+    detail with the right shape
+  - works without a notifier (warns, still resolves)
+  - notifier-throws path is non-fatal (approval resolves regardless)
+  - `requestInlineApproval` (existing callers: `shell_exec`,
+    `n8n_workflow_update`) still fires the notifier — sanity check on
+    the shared code path
+
+### Deploy
+
+Branch off `origin/main` (`5a5b546`). Single-file change to
+`src/security/approval-gate.js` plus one new test file. No new deps.
+
+```
+ssh qclaw
+sudo git -C /root/QClaw fetch origin
+sudo git -C /root/QClaw merge --no-ff origin/fix/approval-gate-unify
+sudo pm2 restart quantumclaw
+sudo pm2 logs quantumclaw --lines 30
+```
+
+PR #2 (concurrency) and PR #3 (raw-fetch) are already on prod's local
+`main`. This PR layers on top — no conflicts expected on
+`approval-gate.js` (PR #2 didn't touch it; PR #3 didn't touch it).
+
+### Why earlier PRs missed this
+
+Both #2 and #3 were correct as far as they went, but neither path was
+the failing one in production:
+- #2 fixed the `bot.hears` reply parser and the agent concurrency
+  hazard. Needed for once approvals start arriving via Telegram.
+- #3 worked around the `bot.api.sendMessage` silent drop in runner
+  context. Needed for the notifier transport to actually reach
+  Telegram.
+- This PR fixes the *missing* notifier dispatch on the executor path.
+
+The three are independent and stack: the executor's approval row now
+fires the notifier (this PR) → the notifier sends via raw fetch (#3) →
+the user's `✅ <id>` reply arrives via concurrent middleware (#2) →
+the row resolves.
+
+### Out of scope (unchanged)
+
+- Root-cause investigation of why `bot.api.sendMessage` silently drops
+  in runner context. Tracked separately; PR #3's workaround stays.
