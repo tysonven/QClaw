@@ -99,7 +99,9 @@ main()
   .then(() => {
     console.log(`\n${passed} passed, ${failed} failed`);
     rmSync(dir, { recursive: true, force: true });
-    if (failed > 0) process.exit(1);
+    // Each request() arms a 10-min setTimeout that keeps the event loop
+    // alive. Exit explicitly so the test process terminates promptly.
+    process.exit(failed > 0 ? 1 : 0);
   })
   .catch((err) => {
     console.error('unexpected:', err);
