@@ -11,6 +11,9 @@ import math
 app = Flask(__name__)
 
 TICKERS = {
+    "sol": "SOL-USD",
+    "xrp": "XRP-USD",
+    "natgas": "NG=F",
     "gold": "GC=F",
     "btc": "BTC-USD",
     "wti": "CL=F",
