@@ -2388,3 +2388,32 @@ P2 (config cleanup):
   finalise and write Substack/LinkedIn/YouTube URLs. Risk:
   clipper-worker may serve in-memory state over DB on its
   `/clip/<id>` GET; needs verification before any patch.
+
+---
+
+## Session — 28 April 2026
+
+### Completed
+
+#### Trading Room — yarn.lock & dependency cleanup
+- Resolved yarn.lock conflicts that were blocking clean installs
+- Trading worker dependencies reconciled; `agex-hub`, `trading-worker`, and `charlie-watcher` all confirmed stable in PM2
+- Market scanner (`3YahxqOguET3pifj`) extended from ~50 to ~400 Polymarket markets
+- Added Silver and ETH to market scanner asset coverage
+- Scanner confirmed live and running every 30 mins; Telegram alerts firing correctly
+- Note: Polymarket currently has limited gold/silver/oil price-target markets — scanner will catch them when they open
+
+#### Meta Ads Report — Split by Account (workflow `lf955LDteJ512RQi`)
+- **Problem:** Emma Maidment and Flow OS ad account data was being merged into a single combined report, producing incorrect aggregated figures
+- **Root cause:** `Process & Score Insights` node dropped account identity when merging insights; single Telegram message sent for all accounts combined
+- **Fix:** Rewrote `Process & Score Insights` to preserve `account_id` and `account_name` on every row, group by account, and sort each account's ad sets independently
+- Rewrote `Format Report` to produce **one Telegram message per account** (3 messages total: Flow States Retreats, Emma Maidment Business, Flow OS)
+- Each message includes: spend, leads, avg CPL, top performers, needs-attention ad sets — all scoped to that account only
+- Workflow re-activated; `availableInMCP` preserved
+- Tomorrow's 9am report will deliver three separate Telegram messages
+
+### Pending (carried forward)
+- All P0/P1/P2 items from previous session remain open (see above)
+- Flow States Collective ad account (`act_464237024205104`) label in workflow still reads "Flow States Retreats" — sticky note also needs updating. Low priority cosmetic fix.
+- Confirm tomorrow's report fires correctly and figures match individual account dashboards
+
