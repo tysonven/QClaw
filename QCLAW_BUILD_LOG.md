@@ -2119,3 +2119,68 @@ the row resolves.
 
 - Root-cause investigation of why `bot.api.sendMessage` silently drops
   in runner context. Tracked separately; PR #3's workaround stays.
+
+---
+
+## 2026-04-28 — Approval gate fix journey: closeout
+
+End-of-day summary. Approval `[50]` resolved successfully end-to-end via
+Telegram smoke test, confirming the gate is working. Three PRs were
+needed because the failure had three independent contributing causes —
+each PR addressed one, and only the combination unblocks the path.
+
+### Root cause
+
+`requestApproval` and `requestInlineApproval` were two parallel
+approval-creation code paths in `src/security/approval-gate.js`, and
+**only the inline one had the notifier wired**. The executor
+(`src/tools/executor.js`) — which gates every tier-classified tool call
+inside `agent.process()` — used `requestApproval`, the no-notifier
+path. Direct callers (`shell_exec`, `n8n_workflow_update`) used
+`requestInlineApproval`, which did fire the notifier. So most of
+production's "Approval needed: [N]" log lines were created on a path
+that never sent a Telegram prompt at all.
+
+### Three PRs, three fixes (all merged into `origin/main`)
+
+| PR | Branch | Fix | Why needed |
+|---|---|---|---|
+| **#2** `732876b` | `fix/approval-gate-concurrency` | `bot.hears(APPROVAL_REPLY_RE)` registered before `bot.on('message:text')` via `@grammyjs/runner`'s concurrent middleware; per-agent async mutex around `agent.process()`'s history read-modify-write. | Once approvals start arriving via Telegram, the inbound `✅ <id>` reply needs to be parseable while a prior chat handler is mid-`agent.process()`. Without this, replies queue behind a slow chat. Concurrent dispatch added a separate hazard (concurrent history reads → interleaved DB writes), which the mutex fixes. |
+| **#3** `ede5dec` | `fix/notifier-raw-fetch` | Replace `bot.api.sendMessage(ownerChatId, text)` in the notifier callback with raw `fetch()` to `https://api.telegram.org/bot${token}/sendMessage`. Token cached at wire time; refresh on 401; 10 s `AbortSignal.timeout`. | `bot.api.sendMessage` from inside the runner-managed process was returning without error and without delivery — silent drop. Independent verification (curl, one-shot `new Bot(token).api.sendMessage`) confirmed the env, token, network path, chat id, and grammy library all worked outside the running process. Workaround scope is the single notifier callback; bot's API client unchanged for chat replies. Runner-context root cause still under investigation. |
+| **#4** `7d471c6` | `fix/approval-gate-unify` | `requestApproval` delegates to `requestInlineApproval` instead of calling `approvals.request` directly. Single approval-creation path; single notifier dispatch. | The actual root cause. Without this, executor-driven approvals (the production majority) created rows that timed out silently — the notifier was never invoked for them at all. PRs #2 and #3 only had effect once this PR routed those approvals through the notifier in the first place. |
+
+### How the three stack at runtime
+
+For an approval-gated tool call inside Charlie's chat reply:
+
+1. Tier-classified tool call hits `executor.runTool` → `approvalGate.requestApproval(...)`
+2. **(PR #4)** `requestApproval` delegates to `requestInlineApproval`, creating the row AND firing the notifier.
+3. **(PR #3)** Notifier sends via raw `fetch` to Telegram's HTTP API → Tyson sees `⚠️ Approval needed [N] …` within seconds.
+4. Tyson replies `✅ N`.
+5. **(PR #2)** `bot.hears(APPROVAL_REPLY_RE)` matches the reply concurrently with the still-running `agent.process()` (no head-of-line blocking under runner middleware) → calls `approvals.approve(N)`.
+6. The original `agent.process` await resolves with `{approved:true}` → tool executes → Charlie's reply continues → done.
+
+### Confirmed working today
+
+- Approval `[50]` resolved successfully end-to-end via Telegram smoke
+  test.
+- Boot logs on prod show all three changes loaded:
+  `Telegram: ready (2 users)` and
+  `Approval gate Telegram notifier wired (raw fetch)`.
+
+### Open follow-ups (deferred to future sessions)
+
+- **Root-cause: `bot.api.sendMessage` silent-drop in `@grammyjs/runner`
+  context.** PR #3's raw-fetch workaround sticks until this is
+  understood. Suspected interaction between the runner's update-fetch
+  loop and the bot's outbound API client (connection-pool state,
+  transformer chain, AbortSignal handling).
+- **`/root/QClaw` ↔ `origin/main` graph divergence.** Functionally in
+  sync: the only file-content diff is 3 cosmetic lines in
+  `QCLAW_BUILD_LOG.md` (extra `---` separator from how an earlier
+  merge resolved). Different commit graphs (prod has local merge
+  commits; origin has GitHub PR merge commits). Not blocking;
+  reconciles next time the build log is touched.
+- **Pre-existing WIP on prod** (parked, untouched in this session):
+  `M yarn.lock` (drift) and `?? scripts/upload-ep66.mjs` (new
+  one-shot). Neither affects the approval-gate path.
