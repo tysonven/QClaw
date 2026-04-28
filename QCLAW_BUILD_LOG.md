@@ -1886,6 +1886,157 @@ rather than re-speccing from scratch.
 
 ---
 
+---
+
+## 2026-04-27 — Approval gate concurrency fix
+
+Fixes the deterministic deadlock-by-origin documented in the prior audit:
+when an approval was requested from inside a tool call inside
+`bot.on('message:text')`'s `await agent.process(...)` chain, the user's
+`✅ <id>` reply could not be processed because the same handler instance
+that owns the reply parser was the one awaiting the approval Promise.
+Production data: ~25 timeouts vs 1 success (`[7]`) over 5 days, with the
+single success originating from a heartbeat task — i.e., outside the
+chat handler's await chain.
+
+### Changes
+
+`src/channels/manager.js`
+- New dependency `@grammyjs/runner@2.0.3`.
+- Inline approval-reply branch removed from `bot.on('message:text')` and
+  re-registered as a top-level `bot.hears(APPROVAL_REPLY_RE, …)` placed
+  before `message:text`. Under the runner's concurrent middleware, emoji
+  replies dispatch in parallel with any in-flight `agent.process()`.
+- `bot.start({drop_pending_updates:true})` replaced with
+  `run(bot, { runner: { fetch: { allowed_updates: ['message','callback_query'] } } })`.
+  `drop_pending_updates` is still applied via the existing
+  `deleteWebhook({drop_pending_updates:true})`.
+- `stop()` now calls `_runner.stop()`.
+- `handleApprovalReply` extracted as an exported function so it can be
+  unit-tested without spinning up a real Bot. The `bot.hears` callback
+  is a one-line wrapper.
+
+`src/agents/registry.js`
+- Concurrent dispatch would let two `agent.process()` calls for the
+  same agent run in parallel — both reading the same history snapshot,
+  running separate LLM calls, then writing interleaved turns. (Audit §3
+  conversation-history hazard.)
+- Added a module-level mutex (Map<agentName, Promise>) and a
+  `_withAgentLock(name, fn)` helper. Reflex-tier responses skip the lock
+  (no history I/O). Everything from `graphQuery` through the second
+  `addMessage` is held under the lock, restoring the same serialization
+  grammY's default sequential middleware used to provide.
+- Body extracted to `_processNonReflex(message, context, route, textMessage)`
+  so the lock wrap doesn't reindent ~165 lines. No logic change.
+- Mutex exported as `__agentLockForTests` for the concurrency test only.
+
+The existing `/approve <id>` and `/deny <id>` slash commands are
+untouched. All other handlers (audited as concurrency-safe) are now
+running through the runner.
+
+### Tests
+
+- `node tests/smoke.test.js` → 22/22
+- `node tests/approvals.test.js` → 13/13 (added `process.exit(failed?1:0)`
+  so it doesn't hang on armed 10-min timeouts)
+- `node tests/approval-parser-handler.test.js` → **29/29** new — full
+  regex input matrix plus handler behaviour (authorized success,
+  already-resolved, unauthorized silent ignore, nonexistent id, deny
+  aliases, deny-with-tail-as-reason)
+- `node tests/agent-mutex.test.js` → **7/7** new — same-key
+  serialization, history consistency under concurrency, different-key
+  parallel execution, lock release on throw, post-throw reacquire
+
+### Deploy
+
+PM2 still owns the process (root's PM2, id 2 `quantumclaw`):
+```
+ssh qclaw
+sudo git -C /root/QClaw fetch origin
+sudo git -C /root/QClaw merge --no-ff origin/fix/approval-gate-concurrency
+sudo pm2 restart quantumclaw
+sudo pm2 logs quantumclaw --lines 30
+```
+
+Tyson runs the manual smoke from Telegram once deployed. The headline
+`[37]`-class failure should disappear: emoji replies resolve approvals
+even while a chat handler is mid-`agent.process()`.
+---
+
+## 2026-04-28 — Approval notifier: bypass `bot.api.sendMessage` (raw fetch workaround)
+
+Workaround for a silent-drop on the outbound approval notifier path:
+`bot.api.sendMessage` from inside the `@grammyjs/runner`-managed process
+returned without error and without delivery. No "Telegram send failed"
+log line ever fired (catch never hit). Independent verification:
+- `curl https://api.telegram.org/bot$TOKEN/sendMessage` → delivered.
+- `new Bot(token).api.sendMessage(...)` from a one-shot script under
+  `/root/QClaw` (same node_modules, same `.env`) → delivered (msg id
+  `2843`).
+- The same call from inside the long-running QClaw process → no error,
+  no delivery.
+
+Root cause is suspected to be an interaction between the runner's
+update-fetch loop and the bot's outbound API client (possibly an
+internal queue / abort signal / connection-pool state). **Tracked as
+a separate investigation; not addressed in this PR.**
+
+### Change
+
+`src/index.js` notifier callback:
+- Replace `await bot.api.sendMessage(ownerChatId, text)` with a raw
+  `fetch('https://api.telegram.org/bot${token}/sendMessage', …)` POST.
+- Cache the bot token at notifier-wire time (one `secrets.get` call at
+  boot, not per-notification).
+- On HTTP 401, refresh the token from `secrets.get` once and retry —
+  so a BotFather rotation while the process is running doesn't
+  permanently wedge the notifier.
+- 10 s `AbortSignal.timeout` so a network stall can't hold up the
+  approval flow indefinitely.
+- Keep the `tgChannel` availability check as a fast-fail (channel never
+  came up → don't try to send), but the actual send no longer depends
+  on the bot reference.
+- Surface non-OK responses via `log.warn` with status + first 200 chars
+  of the body, so future failures are visible (this was the missing
+  signal that made the silent-drop hard to diagnose).
+
+The bot's own API client is still used for everything else (chat
+replies via `bot.on('message:text')`, `bot.command(...)` responses,
+the inline `bot.hears` approval-reply parser added in PR #2). The
+workaround is scoped to the single notifier callback.
+
+### Tests
+
+- `node tests/smoke.test.js` → 22/22
+- `node tests/approvals.test.js` → 13/13
+- Manual smoke (post-deploy, run by Tyson):
+  - [ ] Trigger an approval from Telegram (or via Charlie tool call).
+        Confirm `⚠️ Approval needed [N] …` arrives at chat
+        `1375806243` within 5 s.
+  - [ ] Reply `✅ <id>`. Confirm row resolves to `approved` and the
+        original tool action proceeds.
+  - [ ] Trigger another, wait 10 min without replying — confirm the
+        timeout still fires.
+
+### Branch / PR
+
+- `fix/notifier-raw-fetch`, off `origin/main` (`5a5b546`).
+- Single-file change to `src/index.js`. No new dependencies.
+- Deploy via `git merge --no-ff origin/fix/notifier-raw-fetch` onto
+  `/root/QClaw`'s local `main` (which already carries the concurrency
+  fix from PR #2). No conflicts expected — PR #2's changes are in
+  `src/channels/manager.js` + `src/agents/registry.js`, this PR only
+  touches `src/index.js`. After merge, `pm2 restart quantumclaw`.
+
+### Out of scope (deferred)
+
+- Root-cause analysis of why `bot.api.sendMessage` silently drops in
+  runner context. Separate investigation; not blocking the gate fix.
+- The previous Telegram-side 429/502 storm on the prior process
+  (PID 2230128) — already cleared by the post-rotation restart;
+  unrelated to this PR.
+---
+
 ## 2026-04-28 — Approval gate: unify request paths so notifier always fires
 
 The actual root cause of the production approval-gate failures.

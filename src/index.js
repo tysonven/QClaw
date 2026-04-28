@@ -433,21 +433,34 @@ class QuantumClaw {
       log.warn(`Channel startup failed: ${err.message} — dashboard still available`);
     }
 
-    // Wire Telegram approval notifier — resolves this.channels.bot at call
-    // time so the bot reference from a successful ChannelManager.startAll()
-    // is always used regardless of when this block ran. Send failures are
-    // caught inside so a broken notifier never breaks the approval flow.
+    // Wire Telegram approval notifier. Bypasses bot.api.sendMessage and hits
+    // Telegram's HTTP API directly — bot.api.sendMessage was observed to
+    // silently drop messages when called from inside the @grammyjs/runner-
+    // managed process (no error, no delivery; see 2026-04-28 build log).
+    // Root cause of the bot.api drop is tracked separately; this is a
+    // workaround that guarantees delivery via raw fetch.
     const ownerChatId = this.config.channels?.telegram?.ownerChatId || 1375806243;
     if (this.approvalGate) {
+      // Cache the token at wire time for perf, but allow refresh on 401 so a
+      // BotFather rotation while the process is running doesn't permanently
+      // wedge the notifier.
+      let cachedToken = (await this.secrets.get('telegram_bot_token'))?.trim() || null;
+      const refreshToken = async () => {
+        const t = (await this.secrets.get('telegram_bot_token'))?.trim();
+        if (t) cachedToken = t;
+        return cachedToken;
+      };
+
       this.approvalGate.setNotifier(async ({ id, agent, tool, action, detail, riskLevel }) => {
-        // ChannelManager is a manager over multiple channel instances; the
-        // grammy bot lives on the individual TelegramChannel accessible by name.
+        // Fast-fail if the channel never came up at all — keeps the message
+        // out of a state where it would be sent to a token-less bot. We don't
+        // depend on tgChannel.bot for the actual send.
         const tgChannel = this.channels?._channelsByName?.get('telegram');
-        const bot = tgChannel?.bot;
-        if (!bot?.api?.sendMessage) {
-          log.warn(`Approval notifier: Telegram bot unavailable (id=${id})`);
+        if (!tgChannel) {
+          log.warn(`Approval notifier: Telegram channel unavailable (id=${id})`);
           return;
         }
+
         const text =
           `⚠️ Approval needed [${id}]\n` +
           `Tool: ${tool}\n` +
@@ -456,13 +469,40 @@ class QuantumClaw {
           `Action: ${String(action || '').slice(0, 200)}\n` +
           (detail ? `\nDetail:\n${String(detail).slice(0, 500)}\n` : '') +
           `\nReply ✅ ${id} or ❌ ${id} — auto-denies after 10 min.`;
+
+        const send = (token) =>
+          fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: ownerChatId, text }),
+            signal: AbortSignal.timeout(10000),
+          });
+
         try {
-          await bot.api.sendMessage(ownerChatId, text);
+          let token = cachedToken || (await refreshToken());
+          if (!token) {
+            log.warn(`Approval notifier: no bot token available (id=${id})`);
+            return;
+          }
+          let res = await send(token);
+          // Token rotation reload: a 401 from Telegram strongly implies the
+          // cached token is stale. Refresh once and retry; if the same value
+          // comes back, don't loop.
+          if (res.status === 401) {
+            const fresh = await refreshToken();
+            if (fresh && fresh !== token) {
+              res = await send(fresh);
+            }
+          }
+          if (!res.ok) {
+            const body = await res.text().catch(() => '');
+            log.warn(`Approval notifier: Telegram send failed (id=${id}, status=${res.status}): ${body.slice(0, 200)}`);
+          }
         } catch (err) {
-          log.warn(`Approval notifier: Telegram send failed (id=${id}): ${err.message}`);
+          log.warn(`Approval notifier: Telegram send error (id=${id}): ${err.message}`);
         }
       });
-      log.info('Approval gate Telegram notifier wired');
+      log.info('Approval gate Telegram notifier wired (raw fetch)');
     }
 
     // ── Layer 7: Dashboard (non-fatal but highly recommended) ──
