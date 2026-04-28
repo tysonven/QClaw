@@ -2116,3 +2116,275 @@ the row resolves.
 
 - Root-cause investigation of why `bot.api.sendMessage` silently drops
   in runner context. Tracked separately; PR #3's workaround stays.
+
+---
+
+## 2026-04-28 — Content Studio EP66 first live run; n8n Telegram token fix
+
+First end-to-end attempt at shipping a podcast episode through the
+`Qf39NEOEgz2W0uls` "Content Studio Pipeline" workflow. The dashboard
+`/api/content-studio/upload` route had failed earlier in the day
+(~17:00 UTC, suspected dashboard restart mid-stream — separate issue,
+not investigated this session). EP66 was bypassed via CLI: file
+uploaded directly to R2, webhook fired manually with the same payload
+shape the dashboard would build.
+
+### Recon (Phase 1)
+
+- R2 multipart-uploads listing on `emma-content-studio` returned `[]`
+  — no orphan from the 17:00 failure (the dashboard busboy path
+  doesn't use multipart for the single-shot upload, so a mid-stream
+  restart leaves no R2-side trace).
+- `scripts/upload-to-r2.sh` and `scripts/receive-and-upload.sh` both
+  depend on `/home/flowos/.local/bin/aws`, which is broken on qclaw —
+  `ModuleNotFoundError: No module named 'awscli'`. Documented but
+  not fixed this session.
+- Commit `83b92a4` (r2FileKey-interpolation fix in
+  `receive-and-upload.sh` curl example) confirmed on `main`.
+- EP05 in the bucket: `theflowlane-ep05-Brand_Positioning.mp4`. EP66
+  key conventionalised to
+  `theflowlane-ep66-Mothering_In_Business.mp4` to match — kebab +
+  lowercase prefix, underscored title segment.
+- n8n workflow `Qf39NEOEgz2W0uls` payload shape verified via MCP:
+  webhook expects camelCase `r2FileKey`, `episodeTitle`,
+  `episodeDescription`, optional `chatId`, `r2Url`. No
+  episode-number field — episode 66 lives only in the title prefix.
+
+### Upload — `scripts/upload-to-r2-multipart.mjs`
+
+50-line node multipart uploader as fallback when the awscli shim is
+broken. Uses the `@aws-sdk/client-s3` already in `node_modules`
+(no new deps). Reads R2 creds from `/root/.quantumclaw/.env`. 16 MB
+parts, 4 concurrent workers. Aborts the multipart upload on any
+error to avoid orphans.
+
+The 2.42 GB EP66 file was scp'd from laptop to qclaw `/tmp`, then
+uploaded:
+
+```
+ssh qclaw 'sudo node /root/QClaw/scripts/upload-to-r2-multipart.mjs \
+  /tmp/theflowlane-ep66-Mothering_In_Business.mp4 \
+  episodes/theflowlane-ep66-Mothering_In_Business.mp4'
+```
+
+R2 ETag `8af99de9e6e11428778216dee9c25a14-145` (145 parts). Public
+URL `https://pub-70c436931e9e4611a135e7405c596611.r2.dev/episodes/theflowlane-ep66-Mothering_In_Business.mp4`.
+
+Promoted to canonical large-file uploader for future episodes — the
+script is generic, not EP66-specific.
+
+### First webhook fire — failed at Notify Start (T+1.2s)
+
+curl to `https://webhook.flowos.tech/webhook/content-studio-pipeline`
+returned HTTP 200 / 0 bytes in 1.6s (Cloudflare tunnel buffer
+artefact). n8n executions API revealed the real cause:
+
+```
+n8n execution 718765:
+  Webhook Trigger:    OK    (1ms)
+  Create Job Record:  OK    (908ms)
+  Notify Start:       error (318ms)
+    NodeApiError 401 — Authorization failed - please check your credentials
+```
+
+Notify Start calls
+`https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendMessage`.
+Telegram replied 401 → token unset, empty, or wrong on the n8n
+container.
+
+### Token diagnosis
+
+- qclaw `/root/.quantumclaw/.env` `TELEGRAM_BOT_TOKEN`: `getMe`
+  returns `{ok:true, @tyson_quantumbot, id 8588434821}`. Working.
+- n8n `/home/n8nadmin/n8n-project/.env` line 15: set, length 46.
+  Same length as qclaw's.
+- sha256 first-8-char comparison:
+  - qclaw: `5520af11…`
+  - n8n .env (current + 3 historical backups going back to Apr 21):
+    `acfc03ae…`
+  - n8n container env: `acfc03ae…`
+- `getMe` against the n8n token directly: 401 Unauthorized.
+
+Two completely different bot tokens, both 46 chars (the format is
+`<10-12 digit bot id>:<33-35 char auth>`, always 46). n8n had been
+holding a dead token since at least Apr 21 — all 4 .env backups
+have the same `acfc03ae…` hash. The workflow `updatedAt` is
+`2026-04-14T21:13Z`; EP05 ran Apr 14 20:39, before that change —
+likely the change introduced the `$env.TELEGRAM_BOT_TOKEN`
+reference and EP66 is the first time anyone tried to fire the
+workflow since.
+
+### Fix — replace n8n token, recreate container
+
+Token pulled from qclaw via stdin pipeline directly into a sed -i
+replacement on n8n's .env (never echoed in either direction):
+
+```
+ssh qclaw 'sudo grep "^TELEGRAM_BOT_TOKEN=" /root/.quantumclaw/.env | cut -d= -f2-' | \
+ssh n8n 'NEW=$(cat); sed -i.bak.20260428-pretoken \
+  "s|^TELEGRAM_BOT_TOKEN=.*|TELEGRAM_BOT_TOKEN=${NEW}|" \
+  /home/n8nadmin/n8n-project/.env'
+```
+
+Pre-edit backup written to `.env.bak.20260428-pretoken`. Perms
+preserved 600 / `n8nadmin:n8nadmin`. Then on n8n:
+
+```
+cd /home/n8nadmin/n8n-project && docker compose up -d
+```
+
+(`up -d` rather than `restart` is required — restart re-signals the
+existing container and does not pick up env_file changes.)
+Recreated only the n8n service; postgres + flowos-overlay untouched.
+Container `starting → healthy` in ~20s. Container env sha256 now
+`5520af11…`. n8n editor reachable. `getMe` from n8n side now
+returns `tyson_quantumbot`.
+
+### Re-fire — Phase 3
+
+Orphan `content_studio_jobs` row from the failed first run deleted
+via PostgREST DELETE (anon role has DELETE permission on the table —
+`SUPABASE_SERVICE_KEY` is not present in qclaw .env, but anon
+worked). Webhook re-fired from qclaw using the same
+`/tmp/ep66-payload.json` from the first attempt.
+
+New job `219ad102-6767-40ab-ba39-1e71aa9debce`, fired
+`2026-04-28T17:05:22Z`.
+
+Stages cleared (verified via Supabase row updates and clipper-worker
+logs):
+
+```
+T+0s     Webhook Trigger
+T+1s     Create Job Record
+T<100s   Notify Start (Telegram)            — Phase 2 fix confirmed
+T<100s   Generate R2 Presigned URL
+T<100s   Upload to Buzzsprout                — episode id 19091555
+T<100s   Save Buzzsprout ID
+T~100s   Send to AssemblyAI / Wait / Poll    — transcribed cleanly,
+                                              5,681 words captured
+T<166s   Extract Highlights / Select Clip Segments / Parse
+T+166s   Generate Blog Post / Convert to HTML / Post to WordPress
+                                              — post id 675, draft
+T+166s   Save WordPress URL
+T+288s   Generate Clips                      — clipper job
+                                              aa9be7f0-a424-42d9-9338-
+                                              f56b67416602
+```
+
+Then deadlock at clipper.
+
+### Clipper deadlock — out-of-scope to fix tonight
+
+Clipper job `aa9be7f0` errored on the first vertical-crop step.
+ffmpeg invocation:
+
+```
+ffmpeg -y -threads 1 -i /tmp/aa9be7f0…_clip_0.mp4 \
+  -vf 'crop=ih*9/16:ih:max(0, min(iw-ih*9/16, 0.3919*iw - ih*9/16/2)):0' \
+  -preset ultrafast -c:a copy /tmp/aa9be7f0…_vertical_0.mp4
+```
+
+Returned exit status 8 (ffmpeg "Conversion failed"). Likely
+audio-codec compatibility with `-c:a copy` for this source's
+encoding; would resolve with re-encoding (`-c:a aac -b:a 128k`) or
+by skipping vertical processing. AssemblyAI transcript completed
+cleanly, so video download + transcription are not implicated.
+
+Workflow "Clip Done?" IF only branches on `status == "complete"`
+(true → Save Clip URLs, false → Wait 10s Retry). No error branch.
+Clipper returns `status: "error"` indefinitely → infinite poll.
+Pipeline cannot finalise — Update Job Record, Notify Complete,
+Respond to Webhook all unreached.
+
+### Persisted vs lost
+
+Persisted (survives the deadlock, written before the clipper
+branch):
+
+- Buzzsprout EP66 draft (id 19091555, unpublished)
+- WordPress draft (post id 675)
+- LinkedIn post via Blotato — likely published; the parallel branch
+  reaches Blotato before YouTube and before the deadlock point.
+  Not confirmed in Supabase (`linkedin_post_url` writes only at the
+  final Update Job Record).
+- YouTube unlisted upload — likely complete; same parallel branch.
+  Not confirmed in Supabase (same writeback constraint).
+
+Lost if the runaway execution is stopped without harvest:
+
+- Substack draft text (held in n8n runtime memory only)
+- LinkedIn post URL (returned by Blotato but only persisted at the
+  final node)
+- YouTube video ID (returned by upload but only persisted at the
+  final node)
+
+### Phase 1 finding correction
+
+Phase 1 recon claimed PM2 was empty on qclaw. That was `pm2 list`
+run as user `flowos`, which has its own empty PM2 daemon.
+Production processes are managed by root's PM2: `sudo pm2 list`
+shows `agex-hub`, `charlie-watcher`, `clipper-worker`,
+`quantumclaw`, `trading-worker` all online. The dashboard
+"not under PM2" framing earlier today was based on the same
+wrong-user query. Documented as a session-incident gotcha.
+
+### Backlog from this session
+
+P0 (next session, EP66 unblock):
+
+- Stop the runaway n8n execution still polling clipper. Currently
+  spinning at ~6 req/min against `clipper-worker:4002/clip/aa9be7f0`
+  and won't self-resolve.
+- Investigate clipper-worker ffmpeg vertical-crop+`-c:a copy`
+  failure on EP66's source. Reproduce manually if `_clip_0.mp4`
+  still in `/tmp`; otherwise re-trigger with debug logging.
+- Patch workflow `Qf39NEOEgz2W0uls`: add error branch on
+  "Clip Done?" → Update Job Record (with empty clips +
+  error_message). Stops infinite polls on all future clipper
+  failures, generic to the workflow not specific to EP66.
+
+P1 (workflow / config hygiene):
+
+- Refactor `$env.TELEGRAM_BOT_TOKEN` references in
+  `Qf39NEOEgz2W0uls` to n8n credential store (Telegram credential
+  type). Removes the env-var-on-host-not-on-container failure mode
+  entirely.
+- Diff the Apr 14 21:13 workflow update against its prior version
+  to confirm it's the change that introduced
+  `$env.TELEGRAM_BOT_TOKEN`, and audit other workflows for the
+  same pattern.
+- Move `N8N_ENCRYPTION_KEY` and `POSTGRES_PASSWORD` out of the
+  tracked `docker-compose.yml` into the env_file. Both are in git
+  history; rotate after move. The git-history exposure is the
+  larger concern.
+
+P2 (config cleanup):
+
+- Dedupe `FLOWOS_META_PAGE_ACCESS_TOKEN` (appears twice) in
+  `/home/n8nadmin/n8n-project/.env`.
+- Delete `/home/n8nadmin/n8n-project/.docker-compose.yml.swp`
+  vim-swap leftover from Sep 2025.
+- Confirm via BotFather (using the working `5520af11…` token's
+  bot) that no zombie bot remains for the `acfc03ae…` token.
+- Add `SUPABASE_SERVICE_KEY` to qclaw `/root/.quantumclaw/.env`
+  for proper service-role DELETEs. Anon role currently has DELETE
+  on `content_studio_jobs` — broader than typical, worth auditing
+  RLS on that table.
+- Fix awscli on qclaw (`pip install --user awscli` for flowos), or
+  formally retire `scripts/upload-to-r2.sh` /
+  `scripts/receive-and-upload.sh` in favour of
+  `upload-to-r2-multipart.mjs`.
+
+### Out of scope (deferred)
+
+- Dashboard PM2 enrolment / 17:00 UTC dashboard upload root cause:
+  the dashboard is in fact PM2-managed (id 2 under root's PM2,
+  restart count visible in the `↺` column). Whether the 17:00
+  failure was a restart mid-stream or a different cause was not
+  investigated this session.
+- Ship-completion harvest: deciding whether to manually patch
+  `clip_jobs.aa9be7f0` to `status='complete'` to let the workflow
+  finalise and write Substack/LinkedIn/YouTube URLs. Risk:
+  clipper-worker may serve in-memory state over DB on its
+  `/clip/<id>` GET; needs verification before any patch.
