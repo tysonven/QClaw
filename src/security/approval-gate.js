@@ -209,8 +209,19 @@ export class ApprovalGate {
 
     log.warn(`⏸️  Approval required: ${action}`);
 
-    const result = await this.approvals.request(agent, toolName, detail, riskLevel);
-    return result;
+    // Delegate to requestInlineApproval so the notifier always fires —
+    // there should be one approval-creation code path, not two.
+    // Pre-fix: this path called approvals.request() directly and bypassed
+    // the notifier, so executor-driven approvals (the path used by
+    // tier-classified tool calls in agent.process()) timed out silently
+    // with no Telegram prompt ever sent.
+    return this.requestInlineApproval({
+      agent,
+      tool: toolName,
+      action,
+      detail,
+      riskLevel,
+    });
   }
 
   /**
