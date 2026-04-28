@@ -1745,6 +1745,147 @@ Listed so next session can decide what to do with each:
 
 origin/main HEAD before this commit: `7dc182051551b0e54c8b2f6c00c761ae3b6c77f2`.
 
+## 2026-04-27 — GHL Marketing R2 migration + IG path hardening
+
+Completed:
+- Migrated marketing templates from emma-content-studio (PNG) to
+  flowos-content (JPEG) for proper bucket separation
+- Updated Publisher (fonuRTyqepxdyIdf): Patches A/B/C — image format
+  guard in Prepare, IG Eligible IF gate, error precedence flip in
+  Compute Final
+- Updated Content Generator (Awo65rdSe5BvDHtC): literal swap to new
+  R2 prefix + .jpg extension
+- Set GHL_DEFAULT_IMAGE_URL env var on n8n droplet
+- Re-enabled availableInMCP=true on both workflows post-PUT (verified
+  by re-GET)
+- Refreshed JSON dumps in n8n-workflows/
+- Supabase migration: zero rows in active statuses (no-op as expected)
+
+Verified working:
+- Publisher smoke test surfaced TRUE upstream Meta error
+  (9004/2207052) instead of misleading "creation_id required" —
+  error precedence flip working as designed
+- Content Generator dry-run produced draft with new R2 prefix + .jpg
+- FB and LinkedIn publish paths functioning end-to-end
+
+Pending (next session priorities):
+1. IG fetch failure (Meta 9004/2207052) — likely IG-FB account
+   linkage, IG-specific token scope decay, or IG fetcher edge issue
+   with *.r2.dev. Quick diagnostics: /debug_token,
+   /me/accounts?fields=instagram_business_account, swap to non-R2
+   control image. Test draft 82294451 reserved for this.
+2. LinkedIn 4h guard didn't fire despite 11:00 UTC LI post — verify
+   published_platforms and published_at stamping on draft a78794b6.
+3. Bind media.flowos.tech to flowos-content R2 — something else is
+   currently on that hostname.
+4. Audit src/dashboard/server.js upload destination — likely should
+   move to flowos-content/ for same architectural reason
+   marketing-templates moved.
+
+Architecture decision: emma-content-studio holds Emma's
+personal-brand and content-pipeline assets only. flowos-content holds
+Flow OS marketing/brand/agent assets. Future Flow OS infra defaults
+to flowos-content unless there's a specific reason otherwise.
+
+### Security gate (this session)
+- [x] No hardcoded credentials added (R2 dev URL is a public-read
+      hostname; no keys in repo or workflow JSON)
+- [x] `/root/.quantumclaw/.env` perms remain 600;
+      `/home/n8nadmin/n8n-project/.env` perms remain 600
+- [x] No new webhooks introduced — existing
+      `webhook/ghl-marketing-publish` path unchanged
+- [x] Supabase RLS unchanged — only data UPDATE/INSERT on existing
+      `marketing_drafts` table; no schema changes
+- [x] `availableInMCP: true` confirmed via re-GET on both Publisher
+      (fonuRTyqepxdyIdf) and Content Generator (Awo65rdSe5BvDHtC)
+- [x] No financial features touched
+- [x] No stack traces or secrets in error messages exposed to
+      Telegram (Compute Final emits `errors.{platform} = msg`,
+      msg sourced from API `error.message` strings only)
+
+### Reserved test artifacts
+- Supabase `marketing_drafts` row `82294451-3adc-4852-8ab0-3cd285664b91`
+  (status=partially_published, feedback tagged) — reserved for
+  next-session IG fetch failure diagnosis. Do not delete.
+
+
+## 2026-04-27 (afternoon) — IG path: pivot to Blotato
+
+**Issue:** After morning's R2 migration, IG still failed with Meta 9004.
+
+**Diagnosis:** Cloudflare-fronted URLs (both `pub-*.r2.dev` and
+`media.flowos.tech`) are blocked by IG's fetcher. Confirmed via
+controls — Wikipedia and GitHub raw both work, both Cloudflare URLs
+fail. Bot Fight Mode off, no Workers Routes, no UA-based blocking.
+Cause is in Cloudflare's edge security vs IG's fetcher specifically.
+
+**Resolution:** Route IG via Blotato (account 27064, `flow_os_`).
+Blotato uploads bytes to Meta directly, bypassing the Cloudflare
+block. Already a dependency in this workflow for LinkedIn; Crete
+workflow proves the IG path.
+
+- **Removed**: `IG Eligible?`, `IG Create Container`, `IG Wait For Ready`,
+  `IG Publish` (all 4 IG-direct nodes from morning's hardening)
+- **Added**: `IG Post (Blotato)` — single node
+- **Updated**: Compute Final IG block, Prepare (dropped
+  `ig_eligible` flag)
+
+**Net:** workflow simpler (4 IG nodes → 1), bypasses
+Cloudflare-vs-Meta entirely.
+
+**Deferred investigation:** Cloudflare-vs-Meta-fetcher block on
+`media.flowos.tech`. Worth fixing eventually if we ever want direct
+Graph API for IG, but Blotato is fine for now.
+
+### Patch: Compute Final IG block (Blotato success detection)
+
+**Bug:** Architect's spec checked `igB.id || igB.submissionId ||
+igB.success || igB.status`, but Blotato actually returns
+`postSubmissionId`. None matched, fell to error else-branch despite
+IG having posted successfully. Row `c21b3192` was labeled
+`partially_published` incorrectly.
+
+**Fix:** Mirrored the LinkedIn pattern (`if (li && !li.error)`) which
+was proven correct by the same execution. One-line semantics:
+truthy node response without an error field = success.
+
+**Lesson logged:** when adapting a known-working pattern, mirror it
+rather than re-speccing from scratch.
+
+**Manually corrected:** row `c21b3192-8fb9-4d34-a79d-155f7c5055a9`
+`status → published`, `published_platforms → all three`,
+`publish_errors → null`.
+
+### Pending (next session priorities, updated)
+
+1. ~~IG fetch failure~~ — **RESOLVED** via Blotato pivot
+2. LinkedIn 4h guard didn't fire on draft `a78794b6` — verify
+   `published_platforms` and `published_at` stamping logic
+3. ~~Bind media.flowos.tech to flowos-content R2~~ — **DONE today**
+4. Cloudflare-vs-Meta-fetcher diagnosis (deferred from above)
+5. Audit `src/dashboard/server.js` upload destination — likely
+   should move to `flowos-content/`
+6. Clean up duplicate `FLOWOS_META_PAGE_ACCESS_TOKEN` line in
+   `/home/n8nadmin/n8n-project/.env` (one empty, one populated —
+   docker-compose takes the last but it's a latent bug)
+
+### Reserved test artifacts
+
+- Supabase `marketing_drafts` row
+  `82294451-3adc-4852-8ab0-3cd285664b91` (morning smoke test, kept
+  for Cloudflare-vs-Meta-fetcher diagnosis next session — see #4)
+- Supabase `marketing_drafts` row
+  `c21b3192-8fb9-4d34-a79d-155f7c5055a9` (afternoon Blotato smoke
+  test, manually corrected to `published`)
+
+### Security gate (this session)
+- [x] No new credentials, webhooks, or financial features
+- [x] availableInMCP === true verified post-PUT
+- [x] Supabase update scoped to single row by primary key
+- [x] No stack traces exposed via Telegram errors
+
+---
+
 ---
 
 ## 2026-04-27 — Approval gate concurrency fix
