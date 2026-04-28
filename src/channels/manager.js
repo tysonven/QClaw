@@ -5,7 +5,52 @@
  * Each channel is a simple adapter: receive messages → agent → send response.
  */
 
+import { run } from '@grammyjs/runner';
 import { log } from '../core/logger.js';
+
+// Anchored at start of message. Matches "✅ 37", "✅37", "✅ 37 thanks",
+// "approve 37", "yes 37", and the deny variants. Trailing chars after the
+// id are kept on the message text (handler reads them as the deny reason).
+export const APPROVAL_REPLY_RE = /^([✅❌]|approve|deny|yes|no)\s*#?(\d+)/i;
+
+// Extracted so it's directly testable without spinning up a Bot. The bot.hears
+// callback is a thin wrapper that calls this with the approvals subsystem
+// from the channel instance.
+export async function handleApprovalReply(ctx, { allowedUsers, approvals }) {
+  if (!allowedUsers.includes(ctx.from.id)) return;
+  const verb = ctx.match[1].toLowerCase();
+  const id = parseInt(ctx.match[2], 10);
+  const isApprove = verb === '✅' || verb === 'approve' || verb === 'yes';
+  const actor = `telegram:${ctx.from.username || ctx.from.id}`;
+  const tail = ctx.message.text.slice(ctx.match[0].length).trim();
+
+  try {
+    if (isApprove) {
+      const result = approvals.approve(id, actor);
+      if (result?.alreadyResolved) {
+        await ctx.reply(`⚠️ Approval [${id}] was already ${result.status}.`);
+      } else {
+        await ctx.reply(`✅ Approved [${id}].`);
+        log.info(`Approval ${id} granted by ${actor} via inline reply`);
+      }
+    } else {
+      const reason = tail || 'denied by owner';
+      const result = approvals.deny(id, actor, reason);
+      if (result?.alreadyResolved) {
+        await ctx.reply(`⚠️ Approval [${id}] was already ${result.status}.`);
+      } else {
+        await ctx.reply(`❌ Denied [${id}].`);
+        log.info(`Approval ${id} denied by ${actor} via inline reply: ${reason}`);
+      }
+    }
+  } catch (e) {
+    if (e.code === 'NOT_FOUND') {
+      await ctx.reply(`No pending approval with ID ${id}.`);
+    } else {
+      await ctx.reply(`⚠️ Couldn't ${isApprove ? 'approve' : 'deny'} [${id}]: ${e.message}`);
+    }
+  }
+}
 
 export class ChannelManager {
   constructor(config, agents, secrets, approvals, deliveryQueue) {
@@ -99,6 +144,7 @@ class TelegramChannel {
     this.secrets = secrets;
     this.approvals = approvals;
     this.bot = null;
+    this._runner = null;
     this.pendingPairings = new Map();
   }
 
@@ -257,34 +303,16 @@ class TelegramChannel {
       log.info(`Approval ${id} denied by ${denier}: ${reason}`);
     });
 
-    this.bot.on('message:text', async (ctx) => {
-      // Inline approval replies — match before slash-command handling so plain
-      // "✅ 42" / "❌ 42" / "approve 42" / "deny 42" all work.
-      const approvalReply = ctx.message.text.trim().match(/^([✅❌]|approve|deny|yes|no)\s*#?(\d+)\s*(.*)$/i);
-      if (approvalReply && allowedUsers.includes(ctx.from.id)) {
-        const verb = approvalReply[1].toLowerCase();
-        const id = parseInt(approvalReply[2], 10);
-        const rest = approvalReply[3] || '';
-        const approve = verb === '✅' || verb === 'approve' || verb === 'yes';
-        const pending = this.approvals.pending();
-        const item = pending.find(p => p.id === id);
-        if (!item) {
-          await ctx.reply(`No pending approval with ID ${id}.`);
-          return;
-        }
-        const actor = `telegram:${ctx.from.username || ctx.from.id}`;
-        if (approve) {
-          this.approvals.approve(id, actor);
-          await ctx.reply(`✅ Approved [${id}]: ${item.action}`);
-          log.info(`Approval ${id} granted by ${actor} via inline reply`);
-        } else {
-          this.approvals.deny(id, actor, rest || 'denied by owner');
-          await ctx.reply(`❌ Denied [${id}]: ${item.action}`);
-          log.info(`Approval ${id} denied by ${actor} via inline reply`);
-        }
-        return;
-      }
+    // Inline approval replies. Registered as bot.hears (separate handler from
+    // message:text) so the runner can dispatch concurrently — emoji replies
+    // are not blocked by an in-flight agent.process() call inside message:text.
+    // See QCLAW_BUILD_LOG.md (2026-04-27 concurrency fix) for the deadlock
+    // this addresses. handleApprovalReply is exported for unit tests.
+    this.bot.hears(APPROVAL_REPLY_RE, (ctx) =>
+      handleApprovalReply(ctx, { allowedUsers, approvals: this.approvals })
+    );
 
+    this.bot.on('message:text', async (ctx) => {
       if (ctx.message.text.startsWith('/')) return;
 
       const userId = ctx.from.id;
@@ -387,19 +415,24 @@ await ctx.reply(
       await this.bot.api.deleteWebhook({ drop_pending_updates: true });
     } catch {}
 
-    this.bot.start({
-      drop_pending_updates: true,
-      onStart: () => {
-        if (allowedUsers.length === 0) {
-          log.info('Telegram: send /start to your bot to begin pairing');
-        } else {
-          log.success(`Telegram: ready (${allowedUsers.length} user${allowedUsers.length === 1 ? '' : 's'})`);
-        }
+    // Use @grammyjs/runner so middleware dispatches concurrently — required so
+    // bot.hears (approval-reply parser) is not blocked by a long-running
+    // agent.process() in bot.on('message:text'). drop_pending_updates is
+    // already handled by deleteWebhook above, so it isn't needed here.
+    try {
+      this._runner = run(this.bot, {
+        runner: { fetch: { allowed_updates: ['message', 'callback_query'] } },
+      });
+      if (allowedUsers.length === 0) {
+        log.info('Telegram: send /start to your bot to begin pairing');
+      } else {
+        log.success(`Telegram: ready (${allowedUsers.length} user${allowedUsers.length === 1 ? '' : 's'})`);
       }
-    }).catch(err => {
+    } catch (err) {
       log.error(`Telegram polling error: ${err.message}`);
       this.bot = null;
-    });
+      this._runner = null;
+    }
   }
   _chunkMessage(text, maxLen) {
     if (text.length <= maxLen) return [text];
@@ -468,8 +501,13 @@ await ctx.reply(
   }
 
   async stop() {
-    if (this.bot) {
-      await this.bot.stop();
+    if (this._runner) {
+      try {
+        await this._runner.stop();
+      } catch (err) {
+        log.debug(`Runner stop error: ${err.message}`);
+      }
+      this._runner = null;
     }
   }
 }

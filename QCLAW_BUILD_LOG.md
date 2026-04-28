@@ -1886,6 +1886,83 @@ rather than re-speccing from scratch.
 
 ---
 
+---
+
+## 2026-04-27 — Approval gate concurrency fix
+
+Fixes the deterministic deadlock-by-origin documented in the prior audit:
+when an approval was requested from inside a tool call inside
+`bot.on('message:text')`'s `await agent.process(...)` chain, the user's
+`✅ <id>` reply could not be processed because the same handler instance
+that owns the reply parser was the one awaiting the approval Promise.
+Production data: ~25 timeouts vs 1 success (`[7]`) over 5 days, with the
+single success originating from a heartbeat task — i.e., outside the
+chat handler's await chain.
+
+### Changes
+
+`src/channels/manager.js`
+- New dependency `@grammyjs/runner@2.0.3`.
+- Inline approval-reply branch removed from `bot.on('message:text')` and
+  re-registered as a top-level `bot.hears(APPROVAL_REPLY_RE, …)` placed
+  before `message:text`. Under the runner's concurrent middleware, emoji
+  replies dispatch in parallel with any in-flight `agent.process()`.
+- `bot.start({drop_pending_updates:true})` replaced with
+  `run(bot, { runner: { fetch: { allowed_updates: ['message','callback_query'] } } })`.
+  `drop_pending_updates` is still applied via the existing
+  `deleteWebhook({drop_pending_updates:true})`.
+- `stop()` now calls `_runner.stop()`.
+- `handleApprovalReply` extracted as an exported function so it can be
+  unit-tested without spinning up a real Bot. The `bot.hears` callback
+  is a one-line wrapper.
+
+`src/agents/registry.js`
+- Concurrent dispatch would let two `agent.process()` calls for the
+  same agent run in parallel — both reading the same history snapshot,
+  running separate LLM calls, then writing interleaved turns. (Audit §3
+  conversation-history hazard.)
+- Added a module-level mutex (Map<agentName, Promise>) and a
+  `_withAgentLock(name, fn)` helper. Reflex-tier responses skip the lock
+  (no history I/O). Everything from `graphQuery` through the second
+  `addMessage` is held under the lock, restoring the same serialization
+  grammY's default sequential middleware used to provide.
+- Body extracted to `_processNonReflex(message, context, route, textMessage)`
+  so the lock wrap doesn't reindent ~165 lines. No logic change.
+- Mutex exported as `__agentLockForTests` for the concurrency test only.
+
+The existing `/approve <id>` and `/deny <id>` slash commands are
+untouched. All other handlers (audited as concurrency-safe) are now
+running through the runner.
+
+### Tests
+
+- `node tests/smoke.test.js` → 22/22
+- `node tests/approvals.test.js` → 13/13 (added `process.exit(failed?1:0)`
+  so it doesn't hang on armed 10-min timeouts)
+- `node tests/approval-parser-handler.test.js` → **29/29** new — full
+  regex input matrix plus handler behaviour (authorized success,
+  already-resolved, unauthorized silent ignore, nonexistent id, deny
+  aliases, deny-with-tail-as-reason)
+- `node tests/agent-mutex.test.js` → **7/7** new — same-key
+  serialization, history consistency under concurrency, different-key
+  parallel execution, lock release on throw, post-throw reacquire
+
+### Deploy
+
+PM2 still owns the process (root's PM2, id 2 `quantumclaw`):
+```
+ssh qclaw
+sudo git -C /root/QClaw fetch origin
+sudo git -C /root/QClaw merge --no-ff origin/fix/approval-gate-concurrency
+sudo pm2 restart quantumclaw
+sudo pm2 logs quantumclaw --lines 30
+```
+
+Tyson runs the manual smoke from Telegram once deployed. The headline
+`[37]`-class failure should disappear: emoji replies resolve approvals
+even while a chat handler is mid-`agent.process()`.
+---
+
 ## 2026-04-28 — Approval notifier: bypass `bot.api.sendMessage` (raw fetch workaround)
 
 Workaround for a silent-drop on the outbound approval notifier path:
