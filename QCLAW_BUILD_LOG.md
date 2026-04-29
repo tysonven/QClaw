@@ -2482,3 +2482,68 @@ P2 (config cleanup):
 - Flow States Collective ad account (`act_464237024205104`) label in workflow still reads "Flow States Retreats" — sticky note also needs updating. Low priority cosmetic fix.
 - Confirm tomorrow's report fires correctly and figures match individual account dashboards
 
+
+---
+
+## Session — 29 April 2026
+
+### Completed
+
+#### Content Studio — Force JPEG output from FAL Gemini (workflow `kJ2EdkOeEAwVbMwU`)
+- **Workflow:** Infographic Social Media Machine V2 - Flow Os
+- **Problem:** Instagram Graph API was rejecting generated images. FAL Gemini was returning PNG by default; Meta's Graph API for IG/TikTok image upload is JPEG-only per Meta docs.
+- **Fix:** Added `output_format: 'jpeg'` to the FAL Gemini request body on node `a4db370c-7eb7-4977-8082-4b863cdc9ee6` ("Generate Image - Variation 1"), field `parameters.jsonBody`.
+- **Before:** `={{ JSON.stringify({ prompt: $json.variation1Prompt, aspect_ratio: '4:5' }) }}`
+- **After:**  `={{ JSON.stringify({ prompt: $json.variation1Prompt, aspect_ratio: '4:5', output_format: 'jpeg' }) }}`
+- `settings.availableInMCP` re-asserted to `true` on PUT (n8n public API resets it otherwise — known issue).
+- PUT returned HTTP 200; `updatedAt` advanced from `2026-04-29T12:21:03.986Z` to `2026-04-29T14:13:42.202Z`.
+- **Rollback artefact:** `/root/QClaw/n8n-workflows/kJ2EdkOeEAwVbMwU.before-jpeg-fix.json` (pre-patch GET response, 107024 bytes).
+- **Post-patch artefact:** `/root/QClaw/n8n-workflows/kJ2EdkOeEAwVbMwU.json` (full patched workflow).
+- Semantic diff between pre/post is exactly the two expected lines (one jsonBody removed, one added). No other nodes, settings, or connections changed.
+- Workflow execution NOT triggered — manual test in n8n UI pending.
+
+### Pending (carried forward)
+- All P0/P1/P2 items from previous sessions remain open.
+
+### Infrastructure note
+- Added `N8N_BASE_URL` to `/root/.quantumclaw/.env` (was missing; only `N8N_API_KEY` and `N8N_SSH_KEY` present prior). Perms confirmed `600`. Value not logged.
+- `.env` line 11 emits a `command not found` warning when sourced via `set -a; source ...; set +a` — a value contains an unquoted shell metacharacter. Worked around by extracting needed vars via `grep`/`cut` instead of sourcing. Worth fixing properly in a future hygiene pass.
+
+---
+
+## Session — 29 April 2026 — Meta Ads Optimisation Agent (workflow lf955LDteJ512RQi)
+
+**Completed:**
+- Rotated to long-lived Graph API token; stored as Header Auth credential
+  (id: bJDoAH6FBEUyRbJK), removed from query params on Fetch nodes
+- Fixed Fetch Ad Insights auth (genericCredentialType + httpHeaderAuth,
+  credential attached); confirmed Bearer header injection working
+- Removed Fetch Campaigns node entirely — was dead weight causing dual-fire
+  of Process & Score (resulted in 2 Telegram messages + 2 Opus calls per run)
+- Rewrote Process & Score Insights to correlate adsets back to source
+  account via pairedItem + $('Split Accounts'); added belt-and-braces block
+  ensuring all 3 accounts appear even when one has 0 active adsets
+- Rewrote Build Opt Analysis Request prompt to mandate per-account sections
+  and Telegram-safe Markdown (no ## headers, no pipe tables); bumped
+  max_tokens 1500 → 2000
+- Rewrote Format Report to consume AI markdown from upstream Anthropic node
+  (was previously ignoring the AI output entirely)
+- Verified end-to-end: single Telegram message, 3 account sections
+  (Emma Maidment Business 4 adsets, Flow OS 2 adsets, Flow States Retreats
+  0 adsets), cross-account priorities footer
+
+**Pending (carparked for next session):**
+- Sticky note on workflow still references "60-day expiry" — update to
+  reflect long-lived token
+- Log Report (Optional) Airtable node still points at literal
+  "AIRTABLE_BASE_ID" placeholder — disabled but should be wired to Supabase
+  or removed
+
+**7 Pillars gate:**
+- ✅ P4 Auth — token in n8n credential store, Bearer header injection,
+  no credentials in workflow JSON
+- ✅ P6 Security — token out of query string + workflow JSON, no
+  hardcoded secrets, credential file permissions verified 600
+- ✅ P7 Infra — workflow JSON backed up to n8n-workflows/ in this commit
+- N/A P1 Frontend, P2 Backend, P3 Database, P5 Payments — no changes in
+  these areas this session

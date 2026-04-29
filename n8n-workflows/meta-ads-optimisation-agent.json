@@ -1,5 +1,5 @@
 {
-  "updatedAt": "2026-04-28T19:05:08.964Z",
+  "updatedAt": "2026-04-29T14:04:22.580Z",
   "createdAt": "2026-03-17T08:46:51.652Z",
   "id": "lf955LDteJ512RQi",
   "name": "Meta Ads Optimisation Agent",
@@ -55,38 +55,9 @@
     },
     {
       "parameters": {
-        "url": "=https://graph.facebook.com/v21.0/{{ $json.account_id }}/campaigns",
-        "sendQuery": true,
-        "queryParameters": {
-          "parameters": [
-            {
-              "name": "fields",
-              "value": "id,name,status,objective,daily_budget,lifetime_budget"
-            },
-            {
-              "name": "access_token",
-              "value": "EAANYcLJWFW8BQ1AGHWZCl7gKpCWPjO7vjClVMO5EMNKPXXZBAzUVSugGY9K194SBUtfCVFj4NRDVvS94lyASry3P2f1vPFWwcyZAQLOVSmt4hHHz7EGqwN9ZCWWtwPqw9gYCYwLw7hWFIlJ7YN2zYhq7BBzt3kb8odunCPnePEy7wKgLoyl8g1CWzzspXRZCaEFJvaH3VNlcvLE5ZC"
-            },
-            {
-              "name": "limit",
-              "value": "50"
-            }
-          ]
-        },
-        "options": {}
-      },
-      "id": "fetch-campaigns",
-      "name": "Fetch Campaigns",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        912,
-        304
-      ]
-    },
-    {
-      "parameters": {
         "url": "=https://graph.facebook.com/v21.0/{{ $json.account_id }}/insights",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
         "sendQuery": true,
         "queryParameters": {
           "parameters": [
@@ -103,10 +74,6 @@
               "value": "={ \"since\": \"{{ $json.since }}\", \"until\": \"{{ $json.until }}\" }"
             },
             {
-              "name": "access_token",
-              "value": "EAANYcLJWFW8BQ1AGHWZCl7gKpCWPjO7vjClVMO5EMNKPXXZBAzUVSugGY9K194SBUtfCVFj4NRDVvS94lyASry3P2f1vPFWwcyZAQLOVSmt4hHHz7EGqwN9ZCWWtwPqw9gYCYwLw7hWFIlJ7YN2zYhq7BBzt3kb8odunCPnePEy7wKgLoyl8g1CWzzspXRZCaEFJvaH3VNlcvLE5ZC"
-            },
-            {
               "name": "limit",
               "value": "100"
             }
@@ -119,34 +86,40 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        912,
-        480
-      ]
+        896,
+        352
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "bJDoAH6FBEUyRbJK",
+          "name": "Meta Ads - FlowStates AdsAgent"
+        }
+      }
     },
     {
       "parameters": {
-        "jsCode": "// Merge campaign list and insights data \u2014 preserve account identity\nconst allItems = $input.all();\n\nconst insights = [];\nfor (const item of allItems) {\n  const data = item.json.data || [];\n  const accountId = item.json.account_id || '';\n  const accountName = item.json.account_name || '';\n  for (const row of data) {\n    insights.push({ ...row, account_id: accountId, account_name: accountName });\n  }\n}\n\nif (insights.length === 0) {\n  return [{ json: { accounts: [], total_adsets: 0 } }];\n}\n\n// Score each adset\nconst scored = insights.map(row => {\n  const spend = parseFloat(row.spend || 0);\n  const clicks = parseInt(row.clicks || 0);\n  const impressions = parseInt(row.impressions || 0);\n  const ctr = parseFloat(row.ctr || 0);\n  const cpc = parseFloat(row.cpc || 0);\n  const cpm = parseFloat(row.cpm || 0);\n  const frequency = parseFloat(row.frequency || 0);\n\n  const actions = row.actions || [];\n  const leads = actions.find(a => a.action_type === 'lead' || a.action_type === 'offsite_conversion.fb_pixel_lead');\n  const leadCount = leads ? parseInt(leads.value) : 0;\n  const cpl = leadCount > 0 ? (spend / leadCount).toFixed(2) : null;\n\n  let score = 5;\n  if (ctr > 2) score += 2;\n  else if (ctr > 1) score += 1;\n  if (cpc < 1) score += 1;\n  if (frequency > 4) score -= 2;\n  if (frequency > 6) score -= 1;\n  if (leadCount > 0) score += 2;\n  score = Math.max(1, Math.min(10, score));\n\n  return {\n    account_id: row.account_id,\n    account_name: row.account_name,\n    campaign: row.campaign_name,\n    adset: row.adset_name,\n    spend: spend.toFixed(2),\n    impressions,\n    clicks,\n    ctr: ctr.toFixed(2) + '%',\n    cpc: cpc ? '$' + cpc.toFixed(2) : 'N/A',\n    cpm: cpm ? '$' + cpm.toFixed(2) : 'N/A',\n    frequency: frequency.toFixed(1),\n    leads: leadCount,\n    cpl: cpl ? '$' + cpl : 'N/A',\n    performance_score: score,\n    recommendation: score >= 7 ? 'SCALE' : score >= 5 ? 'MONITOR' : 'PAUSE OR REWORK'\n  };\n});\n\n// Group by account\nconst accountMap = {};\nfor (const row of scored) {\n  if (!accountMap[row.account_id]) {\n    accountMap[row.account_id] = { account_name: row.account_name, adsets: [] };\n  }\n  accountMap[row.account_id].adsets.push(row);\n}\n\n// Sort each account's adsets by performance score\nfor (const acc of Object.values(accountMap)) {\n  acc.adsets.sort((a, b) => b.performance_score - a.performance_score);\n}\n\nconst accounts = Object.values(accountMap);\nreturn [{ json: { accounts, total_adsets: scored.length } }];"
+        "jsCode": "// Build account lookup from upstream Split Accounts\nconst splitItems = $('Split Accounts').all();\nconst accountByIndex = {};\nsplitItems.forEach((item, idx) => {\n  accountByIndex[idx] = {\n    account_id: item.json.account_id,\n    account_name: item.json.account_name\n  };\n});\n\nconst insights = [];\nfor (const item of $input.all()) {\n  const data = item.json.data || [];\n  if (data.length === 0) continue;\n\n  // Skip campaign-list responses — only score insights rows\n  if (data[0].impressions === undefined) continue;\n\n  // Resolve which account this batch belongs to via pairedItem\n  const pi = Array.isArray(item.pairedItem) ? item.pairedItem[0] : item.pairedItem;\n  const pairedIdx = pi?.item ?? 0;\n  const acc = accountByIndex[pairedIdx] || { account_id: '', account_name: 'Unknown' };\n\n  for (const row of data) {\n    insights.push({ ...row, account_id: acc.account_id, account_name: acc.account_name });\n  }\n}\n\nif (insights.length === 0) {\n  return [{ json: { accounts: [], total_adsets: 0 } }];\n}\n\n// Score each adset\nconst scored = insights.map(row => {\n  const spend = parseFloat(row.spend || 0);\n  const clicks = parseInt(row.clicks || 0);\n  const impressions = parseInt(row.impressions || 0);\n  const ctr = parseFloat(row.ctr || 0);\n  const cpc = parseFloat(row.cpc || 0);\n  const cpm = parseFloat(row.cpm || 0);\n  const frequency = parseFloat(row.frequency || 0);\n\n  const actions = row.actions || [];\n  const leads = actions.find(a => a.action_type === 'lead' || a.action_type === 'offsite_conversion.fb_pixel_lead');\n  const leadCount = leads ? parseInt(leads.value) : 0;\n  const cpl = leadCount > 0 ? (spend / leadCount).toFixed(2) : null;\n\n  let score = 5;\n  if (ctr > 2) score += 2;\n  else if (ctr > 1) score += 1;\n  if (cpc < 1) score += 1;\n  if (frequency > 4) score -= 2;\n  if (frequency > 6) score -= 1;\n  if (leadCount > 0) score += 2;\n  score = Math.max(1, Math.min(10, score));\n\n  return {\n    account_id: row.account_id,\n    account_name: row.account_name,\n    campaign: row.campaign_name,\n    adset: row.adset_name,\n    spend: spend.toFixed(2),\n    impressions, clicks,\n    ctr: ctr.toFixed(2) + '%',\n    cpc: cpc ? '$' + cpc.toFixed(2) : 'N/A',\n    cpm: cpm ? '$' + cpm.toFixed(2) : 'N/A',\n    frequency: frequency.toFixed(1),\n    leads: leadCount,\n    cpl: cpl ? '$' + cpl : 'N/A',\n    performance_score: score,\n    recommendation: score >= 7 ? 'SCALE' : score >= 5 ? 'MONITOR' : 'PAUSE OR REWORK'\n  };\n});\n\n// Group by account\nconst accountMap = {};\nfor (const row of scored) {\n  if (!accountMap[row.account_id]) {\n    accountMap[row.account_id] = { account_name: row.account_name, adsets: [] };\n  }\n  accountMap[row.account_id].adsets.push(row);\n}\nfor (const acc of Object.values(accountMap)) {\n  acc.adsets.sort((a, b) => b.performance_score - a.performance_score);\n}\n// Ensure all three accounts appear, even with zero data\nfor (const item of $('Split Accounts').all()) {\n  const id = item.json.account_id;\n  if (!accountMap[id]) {\n    accountMap[id] = { account_name: item.json.account_name, adsets: [] };\n  }\n}\n\nreturn [{ json: { accounts: Object.values(accountMap), total_adsets: scored.length } }];"
       },
       "id": "process-insights",
       "name": "Process & Score Insights",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1120,
-        400
+        1088,
+        384
       ]
     },
     {
       "parameters": {
-        "jsCode": "// Format three separate Telegram messages \u2014 one per account\nconst { accounts } = $input.first().json;\nconst today = new Date().toLocaleDateString('en-AU', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });\n\nconst messages = [];\n\nfor (const acc of accounts) {\n  const { account_name, adsets } = acc;\n\n  const totalSpend = adsets.reduce((s, a) => s + parseFloat(a.spend), 0).toFixed(2);\n  const totalLeads = adsets.reduce((s, a) => s + a.leads, 0);\n  const avgCPL = totalLeads > 0 ? (parseFloat(totalSpend) / totalLeads).toFixed(2) : 'N/A';\n\n  const top = adsets.slice(0, 3);\n  const concerns = adsets.filter(a => a.performance_score < 5 || a.leads === 0);\n\n  let msg = `\ud83d\udcca *${account_name} \u2014 Meta Ads Report*\\n_${today}_\\n\\n`;\n  msg += `\ud83d\udcb0 *Overview*\\n`;\n  msg += `\u2022 Spend: $${totalSpend}\\n`;\n  msg += `\u2022 Leads: ${totalLeads}\\n`;\n  msg += `\u2022 Avg CPL: ${totalLeads > 0 ? '$' + avgCPL : 'N/A'}\\n`;\n  msg += `\u2022 Active Ad Sets: ${adsets.length}\\n\\n`;\n\n  msg += `\ud83c\udfc6 *Top Performers*\\n`;\n  for (const [i, a] of top.entries()) {\n    msg += `${i + 1}. ${a.adset}\\n`;\n    msg += `   CPL: ${a.cpl} | CTR: ${a.ctr} | Leads: ${a.leads} | Score: ${a.performance_score}/10\\n`;\n  }\n\n  if (concerns.length > 0) {\n    msg += `\\n\u26a0\ufe0f *Needs Attention*\\n`;\n    for (const a of concerns.slice(0, 3)) {\n      msg += `\u2022 ${a.adset} \u2014 ${a.recommendation} (Score: ${a.performance_score}/10, Leads: ${a.leads})\\n`;\n    }\n  }\n\n  msg += `\\n_This message was sent automatically with n8n_`;\n\n  // Telegram 4096 char limit\n  const maxLen = 3800;\n  messages.push({\n    account_name,\n    report_telegram: msg.length > maxLen ? msg.substring(0, maxLen) + '\\n_[truncated]_' : msg\n  });\n}\n\n// Return one item per account so downstream can send separately\nreturn messages.map(m => ({ json: m }));"
+        "jsCode": "const aiResponse = $input.first().json;\nconst aiText = aiResponse?.content?.[0]?.text || '';\nconst { accounts, total_adsets } = $('Process & Score Insights').first().json;\nconst today = new Date().toLocaleDateString('en-AU', {\n  weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'\n});\n\nconst accountList = accounts\n  .map(a => `• ${a.account_name} — ${a.adsets.length} adsets`)\n  .join('\\n');\n\nlet msg = `📊 *Meta Ads Optimisation Report*\\n_${today}_\\n\\n`;\nmsg += `${accountList}\\n`;\nmsg += `*Total active adsets:* ${total_adsets}\\n`;\nmsg += `━━━━━━━━━━━━━━━━\\n\\n`;\nmsg += aiText;\n\nconst maxLen = 4000;\nif (msg.length > maxLen) msg = msg.substring(0, maxLen) + '\\n_[truncated]_';\n\nreturn [{ json: { report_telegram: msg } }];"
       },
       "id": "format-report",
       "name": "Format Report",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1568,
-        400
+        1728,
+        384
       ]
     },
     {
@@ -162,8 +135,8 @@
       "type": "n8n-nodes-base.telegram",
       "typeVersion": 1.2,
       "position": [
-        1776,
-        160
+        1936,
+        144
       ],
       "webhookId": "e50a5032-20a0-4a9d-b6b9-9fe4dcde2ff4",
       "credentials": {
@@ -197,14 +170,14 @@
       "type": "n8n-nodes-base.airtable",
       "typeVersion": 2.1,
       "position": [
-        1792,
-        512
+        1952,
+        496
       ],
       "disabled": true
     },
     {
       "parameters": {
-        "content": "## Meta Ads Optimisation Agent\n\n**Runs:** Daily at 9am\n**Accounts:** Flow States Retreats + Emma Maidment Business\n**Output:** Email report to Tyson with scored recommendations\n\n**Token:** 60-day expiry \u2014 set a reminder to refresh before expiry date\n\n**To update the token:** Edit the 'Fetch Campaigns' and 'Fetch Ad Insights' nodes and replace the access_token query parameter value.",
+        "content": "## Meta Ads Optimisation Agent\n\n**Runs:** Daily at 9am\n**Accounts:** Flow States Retreats + Emma Maidment Business\n**Output:** Email report to Tyson with scored recommendations\n\n**Token:** 60-day expiry — set a reminder to refresh before expiry date\n\n**To update the token:** Edit the 'Fetch Campaigns' and 'Fetch Ad Insights' nodes and replace the access_token query parameter value.",
         "height": 220,
         "width": 380
       },
@@ -229,8 +202,8 @@
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2,
       "position": [
-        -240,
-        0
+        240,
+        528
       ],
       "webhookId": "meta-ads-opt-trigger-001"
     },
@@ -245,32 +218,24 @@
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
       "position": [
-        -240,
-        208
+        464,
+        528
       ]
     },
     {
+      "parameters": {
+        "jsCode": "// Build Anthropic API request — per-account sections\nconst items = $input.all();\nconst insightsData = items.map(item => item.json);\n\nconst systemPrompt = `You are a Meta Ads performance analyst writing a daily Telegram report for an operator managing multiple Meta ad accounts.\n\nSTRUCTURE (mandatory):\n- Produce ONE report with a SEPARATE SECTION for EACH account in the data\n- Each account section MUST contain:\n  • Account name as a *bold heading*\n  • Overview metrics: spend, leads, avg CPL, active adsets\n  • Top performer(s): name, key stats, why it's working\n  • Concerns: any adsets scoring below 7 or with 0 leads\n  • Account-specific recommendations (1-3 tactical actions)\n- If an account has zero active adsets, still include its section with a brief note (\"No active delivery — recommend reactivating top historical performers\" or similar)\n- End with a \"*Cross-account priorities*\" section: the top 3 actions across all accounts, ranked by impact\n- Separate accounts with a horizontal divider line: ━━━━━━━━━━━━━━━━\n\nTELEGRAM MARKDOWN RULES (parse_mode=Markdown — strict):\n- USE: *bold*, _italic_, hyphen lists\n- DO NOT USE: # or ## headers (they render as literal text), pipe tables (| col | col |), ** double-asterisks, or HTML\n- For section headers, use *Bold Text* on its own line\n- For tabular data, use bullet lists not pipe tables\n- Use emoji sparingly: 📊 for headers, ✅ for wins, ⚠️ for concerns, 💰 for spend recs\n\nLENGTH: Under 3500 characters total. Be specific and tactical, not generic.`;\n\nconst userMessage = `Analyse this Meta Ads data (already grouped by account) and produce the per-account report:\\n\\n${JSON.stringify(insightsData, null, 2)}`;\n\nreturn [{\n  json: {\n    model: \"claude-opus-4-5\",\n    max_tokens: 2000,\n    system: systemPrompt,\n    messages: [{ role: \"user\", content: userMessage }],\n    insightsData: insightsData\n  }\n}];"
+      },
       "id": "build-opt-request-001",
       "name": "Build Opt Analysis Request",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1144,
-        400
-      ],
-      "parameters": {
-        "jsCode": "// Build Anthropic API request for optimisation analysis\nconst items = $input.all();\nconst insightsData = items.map(item => item.json);\n\nconst systemPrompt = `You are a Meta Ads performance analyst. Analyse the provided campaign data and deliver a concise, actionable optimisation report. Focus on: top performing campaigns, underperformers, budget recommendations, and 3-5 specific action items. Use clear headings and bullet points. Keep it under 3000 characters for Telegram delivery.`;\n\nconst userMessage = `Analyse this Meta Ads performance data and provide optimisation recommendations:\\n\\n${JSON.stringify(insightsData, null, 2)}`;\n\nreturn [{\n  json: {\n    model: \"claude-opus-4-5\",\n    max_tokens: 1500,\n    system: systemPrompt,\n    messages: [{ role: \"user\", content: userMessage }],\n    insightsData: insightsData\n  }\n}];"
-      }
+        1296,
+        384
+      ]
     },
     {
-      "id": "http-opt-anthropic-001",
-      "name": "AI Optimisation Analysis",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        1344,
-        400
-      ],
       "parameters": {
         "method": "POST",
         "url": "https://api.anthropic.com/v1/messages",
@@ -286,10 +251,18 @@
           ]
         },
         "sendBody": true,
-        "contentType": "json",
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ model: $json.model, max_tokens: $json.max_tokens, system: $json.system, messages: $json.messages }) }}"
+        "jsonBody": "={{ JSON.stringify({ model: $json.model, max_tokens: $json.max_tokens, system: $json.system, messages: $json.messages }) }}",
+        "options": {}
       },
+      "id": "http-opt-anthropic-001",
+      "name": "AI Optimisation Analysis",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1504,
+        384
+      ],
       "credentials": {
         "anthropicApi": {
           "id": "eXhIwRbh7FBgb6O3",
@@ -325,23 +298,7 @@
       "main": [
         [
           {
-            "node": "Fetch Campaigns",
-            "type": "main",
-            "index": 0
-          },
-          {
             "node": "Fetch Ad Insights",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Fetch Campaigns": {
-      "main": [
-        [
-          {
-            "node": "Process & Score Insights",
             "type": "main",
             "index": 0
           }
@@ -442,9 +399,9 @@
   },
   "meta": null,
   "pinData": {},
-  "versionId": "67e4620e-f4b7-4252-9953-cd5f069459d5",
-  "activeVersionId": "67e4620e-f4b7-4252-9953-cd5f069459d5",
-  "versionCounter": 107,
+  "versionId": "c4a5e14b-aa5d-4f9f-99b2-96fece5227bb",
+  "activeVersionId": "51cd5e10-be82-4737-b76c-48fe53409c9b",
+  "versionCounter": 166,
   "triggerCount": 2,
   "shared": [
     {
@@ -469,7 +426,7 @@
             "userId": "b1512bca-25b8-4b8b-add0-b86540e5144d",
             "projectId": "KwpTDWcFWL3DfyW3",
             "user": {
-              "updatedAt": "2026-04-28T17:03:57.360Z",
+              "updatedAt": "2026-04-29T04:36:17.564Z",
               "createdAt": "2025-06-06T11:27:13.858Z",
               "id": "b1512bca-25b8-4b8b-add0-b86540e5144d",
               "email": "tysonvenables@protonmail.com",
@@ -496,7 +453,7 @@
               },
               "disabled": false,
               "mfaEnabled": false,
-              "lastActiveAt": "2026-04-28",
+              "lastActiveAt": "2026-04-29",
               "isPending": false
             }
           }
@@ -506,9 +463,9 @@
   ],
   "tags": [],
   "activeVersion": {
-    "updatedAt": "2026-04-28T19:05:08.970Z",
-    "createdAt": "2026-04-28T19:05:08.970Z",
-    "versionId": "67e4620e-f4b7-4252-9953-cd5f069459d5",
+    "updatedAt": "2026-04-29T13:54:40.555Z",
+    "createdAt": "2026-04-29T13:53:39.576Z",
+    "versionId": "51cd5e10-be82-4737-b76c-48fe53409c9b",
     "workflowId": "lf955LDteJ512RQi",
     "nodes": [
       {
@@ -559,38 +516,9 @@
       },
       {
         "parameters": {
-          "url": "=https://graph.facebook.com/v21.0/{{ $json.account_id }}/campaigns",
-          "sendQuery": true,
-          "queryParameters": {
-            "parameters": [
-              {
-                "name": "fields",
-                "value": "id,name,status,objective,daily_budget,lifetime_budget"
-              },
-              {
-                "name": "access_token",
-                "value": "EAANYcLJWFW8BQ1AGHWZCl7gKpCWPjO7vjClVMO5EMNKPXXZBAzUVSugGY9K194SBUtfCVFj4NRDVvS94lyASry3P2f1vPFWwcyZAQLOVSmt4hHHz7EGqwN9ZCWWtwPqw9gYCYwLw7hWFIlJ7YN2zYhq7BBzt3kb8odunCPnePEy7wKgLoyl8g1CWzzspXRZCaEFJvaH3VNlcvLE5ZC"
-              },
-              {
-                "name": "limit",
-                "value": "50"
-              }
-            ]
-          },
-          "options": {}
-        },
-        "id": "fetch-campaigns",
-        "name": "Fetch Campaigns",
-        "type": "n8n-nodes-base.httpRequest",
-        "typeVersion": 4.2,
-        "position": [
-          912,
-          304
-        ]
-      },
-      {
-        "parameters": {
           "url": "=https://graph.facebook.com/v21.0/{{ $json.account_id }}/insights",
+          "authentication": "genericCredentialType",
+          "genericAuthType": "httpHeaderAuth",
           "sendQuery": true,
           "queryParameters": {
             "parameters": [
@@ -607,10 +535,6 @@
                 "value": "={ \"since\": \"{{ $json.since }}\", \"until\": \"{{ $json.until }}\" }"
               },
               {
-                "name": "access_token",
-                "value": "EAANYcLJWFW8BQ1AGHWZCl7gKpCWPjO7vjClVMO5EMNKPXXZBAzUVSugGY9K194SBUtfCVFj4NRDVvS94lyASry3P2f1vPFWwcyZAQLOVSmt4hHHz7EGqwN9ZCWWtwPqw9gYCYwLw7hWFIlJ7YN2zYhq7BBzt3kb8odunCPnePEy7wKgLoyl8g1CWzzspXRZCaEFJvaH3VNlcvLE5ZC"
-              },
-              {
                 "name": "limit",
                 "value": "100"
               }
@@ -623,34 +547,40 @@
         "type": "n8n-nodes-base.httpRequest",
         "typeVersion": 4.2,
         "position": [
-          912,
-          480
-        ]
+          896,
+          352
+        ],
+        "credentials": {
+          "httpHeaderAuth": {
+            "id": "bJDoAH6FBEUyRbJK",
+            "name": "Meta Ads - FlowStates AdsAgent"
+          }
+        }
       },
       {
         "parameters": {
-          "jsCode": "// Merge campaign list and insights data \u2014 preserve account identity\nconst allItems = $input.all();\n\nconst insights = [];\nfor (const item of allItems) {\n  const data = item.json.data || [];\n  const accountId = item.json.account_id || '';\n  const accountName = item.json.account_name || '';\n  for (const row of data) {\n    insights.push({ ...row, account_id: accountId, account_name: accountName });\n  }\n}\n\nif (insights.length === 0) {\n  return [{ json: { accounts: [], total_adsets: 0 } }];\n}\n\n// Score each adset\nconst scored = insights.map(row => {\n  const spend = parseFloat(row.spend || 0);\n  const clicks = parseInt(row.clicks || 0);\n  const impressions = parseInt(row.impressions || 0);\n  const ctr = parseFloat(row.ctr || 0);\n  const cpc = parseFloat(row.cpc || 0);\n  const cpm = parseFloat(row.cpm || 0);\n  const frequency = parseFloat(row.frequency || 0);\n\n  const actions = row.actions || [];\n  const leads = actions.find(a => a.action_type === 'lead' || a.action_type === 'offsite_conversion.fb_pixel_lead');\n  const leadCount = leads ? parseInt(leads.value) : 0;\n  const cpl = leadCount > 0 ? (spend / leadCount).toFixed(2) : null;\n\n  let score = 5;\n  if (ctr > 2) score += 2;\n  else if (ctr > 1) score += 1;\n  if (cpc < 1) score += 1;\n  if (frequency > 4) score -= 2;\n  if (frequency > 6) score -= 1;\n  if (leadCount > 0) score += 2;\n  score = Math.max(1, Math.min(10, score));\n\n  return {\n    account_id: row.account_id,\n    account_name: row.account_name,\n    campaign: row.campaign_name,\n    adset: row.adset_name,\n    spend: spend.toFixed(2),\n    impressions,\n    clicks,\n    ctr: ctr.toFixed(2) + '%',\n    cpc: cpc ? '$' + cpc.toFixed(2) : 'N/A',\n    cpm: cpm ? '$' + cpm.toFixed(2) : 'N/A',\n    frequency: frequency.toFixed(1),\n    leads: leadCount,\n    cpl: cpl ? '$' + cpl : 'N/A',\n    performance_score: score,\n    recommendation: score >= 7 ? 'SCALE' : score >= 5 ? 'MONITOR' : 'PAUSE OR REWORK'\n  };\n});\n\n// Group by account\nconst accountMap = {};\nfor (const row of scored) {\n  if (!accountMap[row.account_id]) {\n    accountMap[row.account_id] = { account_name: row.account_name, adsets: [] };\n  }\n  accountMap[row.account_id].adsets.push(row);\n}\n\n// Sort each account's adsets by performance score\nfor (const acc of Object.values(accountMap)) {\n  acc.adsets.sort((a, b) => b.performance_score - a.performance_score);\n}\n\nconst accounts = Object.values(accountMap);\nreturn [{ json: { accounts, total_adsets: scored.length } }];"
+          "jsCode": "// Build account lookup from upstream Split Accounts\nconst splitItems = $('Split Accounts').all();\nconst accountByIndex = {};\nsplitItems.forEach((item, idx) => {\n  accountByIndex[idx] = {\n    account_id: item.json.account_id,\n    account_name: item.json.account_name\n  };\n});\n\nconst insights = [];\nfor (const item of $input.all()) {\n  const data = item.json.data || [];\n  if (data.length === 0) continue;\n\n  // Skip campaign-list responses — only score insights rows\n  if (data[0].impressions === undefined) continue;\n\n  // Resolve which account this batch belongs to via pairedItem\n  const pi = Array.isArray(item.pairedItem) ? item.pairedItem[0] : item.pairedItem;\n  const pairedIdx = pi?.item ?? 0;\n  const acc = accountByIndex[pairedIdx] || { account_id: '', account_name: 'Unknown' };\n\n  for (const row of data) {\n    insights.push({ ...row, account_id: acc.account_id, account_name: acc.account_name });\n  }\n}\n\nif (insights.length === 0) {\n  return [{ json: { accounts: [], total_adsets: 0 } }];\n}\n\n// Score each adset\nconst scored = insights.map(row => {\n  const spend = parseFloat(row.spend || 0);\n  const clicks = parseInt(row.clicks || 0);\n  const impressions = parseInt(row.impressions || 0);\n  const ctr = parseFloat(row.ctr || 0);\n  const cpc = parseFloat(row.cpc || 0);\n  const cpm = parseFloat(row.cpm || 0);\n  const frequency = parseFloat(row.frequency || 0);\n\n  const actions = row.actions || [];\n  const leads = actions.find(a => a.action_type === 'lead' || a.action_type === 'offsite_conversion.fb_pixel_lead');\n  const leadCount = leads ? parseInt(leads.value) : 0;\n  const cpl = leadCount > 0 ? (spend / leadCount).toFixed(2) : null;\n\n  let score = 5;\n  if (ctr > 2) score += 2;\n  else if (ctr > 1) score += 1;\n  if (cpc < 1) score += 1;\n  if (frequency > 4) score -= 2;\n  if (frequency > 6) score -= 1;\n  if (leadCount > 0) score += 2;\n  score = Math.max(1, Math.min(10, score));\n\n  return {\n    account_id: row.account_id,\n    account_name: row.account_name,\n    campaign: row.campaign_name,\n    adset: row.adset_name,\n    spend: spend.toFixed(2),\n    impressions, clicks,\n    ctr: ctr.toFixed(2) + '%',\n    cpc: cpc ? '$' + cpc.toFixed(2) : 'N/A',\n    cpm: cpm ? '$' + cpm.toFixed(2) : 'N/A',\n    frequency: frequency.toFixed(1),\n    leads: leadCount,\n    cpl: cpl ? '$' + cpl : 'N/A',\n    performance_score: score,\n    recommendation: score >= 7 ? 'SCALE' : score >= 5 ? 'MONITOR' : 'PAUSE OR REWORK'\n  };\n});\n\n// Group by account\nconst accountMap = {};\nfor (const row of scored) {\n  if (!accountMap[row.account_id]) {\n    accountMap[row.account_id] = { account_name: row.account_name, adsets: [] };\n  }\n  accountMap[row.account_id].adsets.push(row);\n}\nfor (const acc of Object.values(accountMap)) {\n  acc.adsets.sort((a, b) => b.performance_score - a.performance_score);\n}\n// Ensure all three accounts appear, even with zero data\nfor (const item of $('Split Accounts').all()) {\n  const id = item.json.account_id;\n  if (!accountMap[id]) {\n    accountMap[id] = { account_name: item.json.account_name, adsets: [] };\n  }\n}\n\nreturn [{ json: { accounts: Object.values(accountMap), total_adsets: scored.length } }];"
         },
         "id": "process-insights",
         "name": "Process & Score Insights",
         "type": "n8n-nodes-base.code",
         "typeVersion": 2,
         "position": [
-          1120,
-          400
+          1088,
+          384
         ]
       },
       {
         "parameters": {
-          "jsCode": "// Format three separate Telegram messages \u2014 one per account\nconst { accounts } = $input.first().json;\nconst today = new Date().toLocaleDateString('en-AU', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });\n\nconst messages = [];\n\nfor (const acc of accounts) {\n  const { account_name, adsets } = acc;\n\n  const totalSpend = adsets.reduce((s, a) => s + parseFloat(a.spend), 0).toFixed(2);\n  const totalLeads = adsets.reduce((s, a) => s + a.leads, 0);\n  const avgCPL = totalLeads > 0 ? (parseFloat(totalSpend) / totalLeads).toFixed(2) : 'N/A';\n\n  const top = adsets.slice(0, 3);\n  const concerns = adsets.filter(a => a.performance_score < 5 || a.leads === 0);\n\n  let msg = `\ud83d\udcca *${account_name} \u2014 Meta Ads Report*\\n_${today}_\\n\\n`;\n  msg += `\ud83d\udcb0 *Overview*\\n`;\n  msg += `\u2022 Spend: $${totalSpend}\\n`;\n  msg += `\u2022 Leads: ${totalLeads}\\n`;\n  msg += `\u2022 Avg CPL: ${totalLeads > 0 ? '$' + avgCPL : 'N/A'}\\n`;\n  msg += `\u2022 Active Ad Sets: ${adsets.length}\\n\\n`;\n\n  msg += `\ud83c\udfc6 *Top Performers*\\n`;\n  for (const [i, a] of top.entries()) {\n    msg += `${i + 1}. ${a.adset}\\n`;\n    msg += `   CPL: ${a.cpl} | CTR: ${a.ctr} | Leads: ${a.leads} | Score: ${a.performance_score}/10\\n`;\n  }\n\n  if (concerns.length > 0) {\n    msg += `\\n\u26a0\ufe0f *Needs Attention*\\n`;\n    for (const a of concerns.slice(0, 3)) {\n      msg += `\u2022 ${a.adset} \u2014 ${a.recommendation} (Score: ${a.performance_score}/10, Leads: ${a.leads})\\n`;\n    }\n  }\n\n  msg += `\\n_This message was sent automatically with n8n_`;\n\n  // Telegram 4096 char limit\n  const maxLen = 3800;\n  messages.push({\n    account_name,\n    report_telegram: msg.length > maxLen ? msg.substring(0, maxLen) + '\\n_[truncated]_' : msg\n  });\n}\n\n// Return one item per account so downstream can send separately\nreturn messages.map(m => ({ json: m }));"
+          "jsCode": "// Pull AI markdown from upstream Anthropic node\nconst aiResponse = $input.first().json;\nconst aiText = aiResponse?.content?.[0]?.text || '';\n\n// Pull structured stats from Process & Score for a header summary\nconst { accounts, total_adsets } = $('Process & Score Insights').first().json;\nconst today = new Date().toLocaleDateString('en-AU', {\n  weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'\n});\n\nconst accountList = accounts.map(a => `• ${a.account_name} (${a.adsets.length} adsets)`).join('\\n');\n\nlet msg = `📊 *Meta Ads Optimisation Report*\\n_${today}_\\n\\n`;\nmsg += `*Accounts covered:*\\n${accountList}\\n`;\nmsg += `*Total active adsets:* ${total_adsets}\\n\\n`;\nmsg += `---\\n\\n${aiText}`;\n\n// Telegram 4096 cap — truncate cleanly if needed\nconst maxLen = 4000;\nif (msg.length > maxLen) msg = msg.substring(0, maxLen) + '\\n_[truncated]_';\n\nreturn [{ json: { report_telegram: msg } }];"
         },
         "id": "format-report",
         "name": "Format Report",
         "type": "n8n-nodes-base.code",
         "typeVersion": 2,
         "position": [
-          1568,
-          400
+          1728,
+          384
         ]
       },
       {
@@ -666,8 +596,8 @@
         "type": "n8n-nodes-base.telegram",
         "typeVersion": 1.2,
         "position": [
-          1776,
-          160
+          1936,
+          144
         ],
         "webhookId": "e50a5032-20a0-4a9d-b6b9-9fe4dcde2ff4",
         "credentials": {
@@ -701,14 +631,14 @@
         "type": "n8n-nodes-base.airtable",
         "typeVersion": 2.1,
         "position": [
-          1792,
-          512
+          1952,
+          496
         ],
         "disabled": true
       },
       {
         "parameters": {
-          "content": "## Meta Ads Optimisation Agent\n\n**Runs:** Daily at 9am\n**Accounts:** Flow States Retreats + Emma Maidment Business\n**Output:** Email report to Tyson with scored recommendations\n\n**Token:** 60-day expiry \u2014 set a reminder to refresh before expiry date\n\n**To update the token:** Edit the 'Fetch Campaigns' and 'Fetch Ad Insights' nodes and replace the access_token query parameter value.",
+          "content": "## Meta Ads Optimisation Agent\n\n**Runs:** Daily at 9am\n**Accounts:** Flow States Retreats + Emma Maidment Business\n**Output:** Email report to Tyson with scored recommendations\n\n**Token:** 60-day expiry — set a reminder to refresh before expiry date\n\n**To update the token:** Edit the 'Fetch Campaigns' and 'Fetch Ad Insights' nodes and replace the access_token query parameter value.",
           "height": 220,
           "width": 380
         },
@@ -733,8 +663,8 @@
         "type": "n8n-nodes-base.webhook",
         "typeVersion": 2,
         "position": [
-          -240,
-          0
+          240,
+          528
         ],
         "webhookId": "meta-ads-opt-trigger-001"
       },
@@ -749,32 +679,24 @@
         "type": "n8n-nodes-base.respondToWebhook",
         "typeVersion": 1.1,
         "position": [
-          -240,
-          208
+          464,
+          528
         ]
       },
       {
+        "parameters": {
+          "jsCode": "// Build Anthropic API request for optimisation analysis\nconst items = $input.all();\nconst insightsData = items.map(item => item.json);\n\nconst systemPrompt = `You are a Meta Ads performance analyst. Analyse the provided campaign data and deliver a concise, actionable optimisation report. Focus on: top performing campaigns, underperformers, budget recommendations, and 3-5 specific action items. Use clear headings and bullet points. Keep it under 3000 characters for Telegram delivery.`;\n\nconst userMessage = `Analyse this Meta Ads performance data and provide optimisation recommendations:\\n\\n${JSON.stringify(insightsData, null, 2)}`;\n\nreturn [{\n  json: {\n    model: \"claude-opus-4-5\",\n    max_tokens: 1500,\n    system: systemPrompt,\n    messages: [{ role: \"user\", content: userMessage }],\n    insightsData: insightsData\n  }\n}];"
+        },
         "id": "build-opt-request-001",
         "name": "Build Opt Analysis Request",
         "type": "n8n-nodes-base.code",
         "typeVersion": 2,
         "position": [
-          1144,
-          400
-        ],
-        "parameters": {
-          "jsCode": "// Build Anthropic API request for optimisation analysis\nconst items = $input.all();\nconst insightsData = items.map(item => item.json);\n\nconst systemPrompt = `You are a Meta Ads performance analyst. Analyse the provided campaign data and deliver a concise, actionable optimisation report. Focus on: top performing campaigns, underperformers, budget recommendations, and 3-5 specific action items. Use clear headings and bullet points. Keep it under 3000 characters for Telegram delivery.`;\n\nconst userMessage = `Analyse this Meta Ads performance data and provide optimisation recommendations:\\n\\n${JSON.stringify(insightsData, null, 2)}`;\n\nreturn [{\n  json: {\n    model: \"claude-opus-4-5\",\n    max_tokens: 1500,\n    system: systemPrompt,\n    messages: [{ role: \"user\", content: userMessage }],\n    insightsData: insightsData\n  }\n}];"
-        }
+          1296,
+          384
+        ]
       },
       {
-        "id": "http-opt-anthropic-001",
-        "name": "AI Optimisation Analysis",
-        "type": "n8n-nodes-base.httpRequest",
-        "typeVersion": 4.2,
-        "position": [
-          1344,
-          400
-        ],
         "parameters": {
           "method": "POST",
           "url": "https://api.anthropic.com/v1/messages",
@@ -790,10 +712,18 @@
             ]
           },
           "sendBody": true,
-          "contentType": "json",
           "specifyBody": "json",
-          "jsonBody": "={{ JSON.stringify({ model: $json.model, max_tokens: $json.max_tokens, system: $json.system, messages: $json.messages }) }}"
+          "jsonBody": "={{ JSON.stringify({ model: $json.model, max_tokens: $json.max_tokens, system: $json.system, messages: $json.messages }) }}",
+          "options": {}
         },
+        "id": "http-opt-anthropic-001",
+        "name": "AI Optimisation Analysis",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          1504,
+          384
+        ],
         "credentials": {
           "anthropicApi": {
             "id": "eXhIwRbh7FBgb6O3",
@@ -829,23 +759,7 @@
         "main": [
           [
             {
-              "node": "Fetch Campaigns",
-              "type": "main",
-              "index": 0
-            },
-            {
               "node": "Fetch Ad Insights",
-              "type": "main",
-              "index": 0
-            }
-          ]
-        ]
-      },
-      "Fetch Campaigns": {
-        "main": [
-          [
-            {
-              "node": "Process & Score Insights",
               "type": "main",
               "index": 0
             }
@@ -930,23 +844,15 @@
       }
     },
     "authors": "Tyson Venables",
-    "name": null,
-    "description": null,
-    "autosaved": false,
+    "name": "Version 51cd5e10",
+    "description": "",
+    "autosaved": true,
     "workflowPublishHistory": [
       {
-        "createdAt": "2026-04-28T19:05:09.171Z",
-        "id": 786,
+        "createdAt": "2026-04-29T13:54:40.551Z",
+        "id": 799,
         "workflowId": "lf955LDteJ512RQi",
-        "versionId": "67e4620e-f4b7-4252-9953-cd5f069459d5",
-        "event": "activated",
-        "userId": "b1512bca-25b8-4b8b-add0-b86540e5144d"
-      },
-      {
-        "createdAt": "2026-04-28T19:05:09.402Z",
-        "id": 787,
-        "workflowId": "lf955LDteJ512RQi",
-        "versionId": "67e4620e-f4b7-4252-9953-cd5f069459d5",
+        "versionId": "51cd5e10-be82-4737-b76c-48fe53409c9b",
         "event": "activated",
         "userId": "b1512bca-25b8-4b8b-add0-b86540e5144d"
       }
