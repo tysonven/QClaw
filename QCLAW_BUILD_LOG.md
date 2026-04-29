@@ -2547,3 +2547,20 @@ P2 (config cleanup):
 - ✅ P7 Infra — workflow JSON backed up to n8n-workflows/ in this commit
 - N/A P1 Frontend, P2 Backend, P3 Database, P5 Payments — no changes in
   these areas this session
+
+#### Content Studio — Cap Hashtags Code node (workflow `kJ2EdkOeEAwVbMwU`)
+- **Workflow:** Infographic Social Media Machine V2 - Flow Os
+- **Problem:** Instagram's December 2025 hard 5-hashtag limit on Graph API publishing. AI Writer system prompt was updated by Tyson to instruct the LLM, but a code-level safety net is needed to defend against AI prompt drift.
+- **Change:** Added a new `Cap Hashtags` Code node (id `0b0ab9e2-3a2c-494f-a4cb-352f5c890b5a`, position `[-7080, 1728]`) between `Cost Per Run` and the Blotato fan-out. Node trims any hashtag past the 5th from `captions.{facebook,instagram,twitter,youtube,linkedin,tiktok}` and tidies whitespace.
+- **Connections rewired:**
+  - `Cost Per Run` → previously `[Instagram [BLOTATO], Tiktok [BLOTATO]]`. Now: `[Cap Hashtags]`.
+  - `Cap Hashtags` → `Instagram [BLOTATO]` (new).
+  - `Tiktok [BLOTATO]` input edge **removed entirely** — Tyson is locked out of TikTok in Blotato; not re-routing through Cap Hashtags.
+  - Twitter / Facebook / YouTube / LinkedIn Blotato nodes remain disconnected (Tyson's debug state); they will need to be re-wired manually from `Cap Hashtags` when ready.
+- **Blotato `postContentText` updated** on all 6 platform nodes (Twitter, Instagram, Facebook, YouTube, LinkedIn, TikTok) from `={{ $('AI Writer - Content Generator').item.json.choices[0].message.content.captions.<X> }}` → `={{ $json.captions.<X> }}`. So when Tyson reconnects them, they read the capped output. YouTube's `postCreateYoutubeOptionTitle` was not touched (no hashtags in titles).
+- `settings.availableInMCP` re-asserted to `true` on PUT.
+- PUT returned HTTP 200; `updatedAt` advanced to `2026-04-29T18:51:33.781Z`. Node count 24 → 25.
+- Verified all 6 platforms' new `$json.captions.<X>` literal landed cleanly via grep round-trip on the saved JSON.
+- **Rollback artefact:** `/root/QClaw/n8n-workflows/kJ2EdkOeEAwVbMwU.before-hashtag-cap.json` (73701 bytes, pre-patch GET).
+- **Post-patch artefact:** `/root/QClaw/n8n-workflows/kJ2EdkOeEAwVbMwU.json` (94335 bytes).
+- Workflow execution NOT triggered — manual UI test pending with Tyson.

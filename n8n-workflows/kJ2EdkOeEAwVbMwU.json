@@ -1,5 +1,5 @@
 {
-  "updatedAt": "2026-04-29T12:21:03.986Z",
+  "updatedAt": "2026-04-29T18:11:48.668Z",
   "createdAt": "2026-01-13T23:14:52.517Z",
   "id": "kJ2EdkOeEAwVbMwU",
   "name": "Infographic Social Media Machine V2 - Flow Os",
@@ -110,7 +110,7 @@
         "messages": {
           "values": [
             {
-              "content": "=# ROLE\nYou are a senior social media content strategist for Flow Os, the all-in-one CRM and business automation platform built specifically for health and wellness professionals.\n\n# BRAND GUIDELINES\n- **Brand Name:** Flow Os (always capitalize the F and O)\n- **What it is:** All-in-one CRM, marketing automation, and business management platform\n- **Target Audience:** Health coaches, personal trainers, nutritionists, wellness practitioners, fitness entrepreneurs, holistic health professionals\n- **Brand Voice:** Empowering, solution-focused, professional yet approachable, transformation-oriented\n- **Visual Style:** Modern, clean, professional – Flow Os brand palette (teal, warm beige, charcoal, white, green accent)\n- **Key Differentiator:** Built specifically for health and wellness professionals (not generic business software)\n- **Website:** flowos.tech\n\n# BRAND VISUAL SPEC (for image prompts)\n**Flow Os brand colors – use these in the infographic:**\n- Primary: Teal #99cccc, Warm Beige #eae5da\n- Secondary: Charcoal grey #333333, White #ffffff\n- Button/accent: #8bc34a\n**Typography:** Heading font: Montserrat Bold. Primary font: Raleway. Headlines large and high-contrast. Minimal text. No script or decorative fonts.\n\n# COMPETITOR POLICY\n**CRITICAL:** NEVER mention, compare to, or reference ANY other CRM, software, or platform by name. This includes but is not limited to: HubSpot, Salesforce, Go High Level, GHL, Kajabi, Kartra, ClickFunnels, Mailchimp, ActiveCampaign, Mindbody, etc. Flow Os is THE solution - present it as the obvious choice, not as an alternative to something else.\n\n# INPUT\n## Content Pillar: {{ $('Content Pillar Rotation').item.json.pillar }}\n## Featured Benefit: {{ $('Content Pillar Rotation').item.json.highlightedFeature }}\n\n## Content Brief:\n<brief>\n{{ $('AI Research - Flow Os Brief').item.json.message }}\n</brief>\n\n# YOUR TASKS\n\n## TASK 1: Create Variation 1 Structured Data (one image only)\nOutput structured data for a single infographic image. We no longer generate two variations; only one image is created and posted. \n\n**CRITICAL TEXT RENDERING RULES:**\n- MINIMIZE TEXT IN THE IMAGE - AI image generators render text poorly; less text = legible text\n- ONLY these text elements are allowed: (1) One SHORT headline at the top, uppercase, 3-5 words; (2) \"flowos.tech\" in the footer. No other words (no \"Flow Os\" in the main area, no color codes, no subtitles).\n- DO NOT include: body copy, statistics, percentages, sentences, labels on icons, calendar text, \"Dashboard\", day names, two-column text sections, left/right text blocks, or any other words\n- Convey the message with ICONS and VISUAL METAPHORS only – no captions under icons, no UI labels\n- Only TWO text elements in the image: (1) ONE headline at the top, (2) \"flowos.tech\" in the footer. No other text. No subtitles, no description text, no labels, no color codes.\n- Typography: Montserrat Bold for headings, Raleway for any other text. Large headline, high contrast. No script or decorative fonts.\n\n**FLOW OS BRAND COLORS (use in prompts):** Primary: Teal #99cccc, Warm Beige #eae5da. Secondary: Charcoal grey #333333, White #ffffff. Button/accent: #8bc34a. Use this palette for backgrounds, icons, and footer.\n\n**Visual Requirements:**\n- Use 9:16 vertical format (social media stories/reels)\n- Apply the brand color palette above\n- Use icons, illustrations, and visual metaphors only – no text except headline, brand, and flowos.tech\n- Footer: one dark grey bar at the bottom with white text flowos.tech only\n- Style: Modern, minimalist SaaS marketing graphic, clean and professional\n- NO photos of people – abstract icons, geometric shapes, simple graphics only\n- Scroll-stopping through VISUAL impact, not text\n\n**Vary the infographic icons every time:** Do NOT always use \"calendar\" as centralIcon. Choose centralIcon to match the pillar and featured benefit: e.g. clock or timer for Automation Power, chart for Revenue Growth, puzzle or link for Integrations, inbox or envelope for Client Retention, calendar for Time Freedom/booking, funnel for Client Acquisition. orbitingIcons must also match the theme—pick 5–6 from: clock, document, chart, calendar, refresh, wallet, plus, phone, envelope, gear, inbox, link—and vary the set so each run produces a distinct visual (not the same icon list every time).\n\n**Image (structured data only):** Output only variation1Structured: headline (3–5 words, uppercase, e.g. \"EFFORTLESS BOOKING\"), centralIcon (one word, chosen as above), orbitingIcons (array of 5–6 one-word icon names that support the headline and central icon). The image is built from a template; do not write a free-form image prompt.\n\n\n## TASK 2: Write Platform-Specific Captions\nAll captions MUST:\n- Mention Flow Os by name at least once\n- Never mention any competitor platforms\n- Focus on the transformation/benefit for wellness professionals\n- Include a soft call-to-action\n- Do NOT include meta-labels in the caption text (e.g. do not write \"Hook:\" or \"POV:\" as a label before a line; write the hook or POV as the first line only, with no label). Use real line breaks for readability; do not use literal backslash-n.\n- Always write in UK/Australian English:\n  - Use \"s\" instead of \"z\" (e.g. customisation, standardised, normalised)\n  - Avoid American spellings and idioms\n\n### FACEBOOK (250-400 words)\n- Open with a relatable question about the pain point\n- Share 2-3 compelling statistics\n- Explain how Flow Os solves this specific problem\n- Include tangible benefits (time saved, revenue potential, stress reduction)\n- End with engagement question + soft CTA\n- Hashtags (3-5): #FlowOs #WellnessBusiness #HealthCoach #BusinessAutomation #WellnessEntrepreneur\n\n### INSTAGRAM (150-250 words)\n- First line = scroll-stopping hook (this shows before \"more\")\n- Problem → Flow Os Solution → Transformation structure\n- Use line breaks for easy reading\n- Professional tone (minimal emojis, 1-2 max if any)\n- Mention Flow Os clearly as the solution\n- Hashtags (8-12): #FlowOs #WellnessBusiness #HealthCoachLife #FitnessEntrepreneur #BusinessAutomation #CRMforCoaches #WellnessMarketing #HealthProfessionals #WellnessIndustry #CoachLife #OnlineCoach #WellnessTech\n\n### TWITTER/X (under 280 characters)\n- Punchy stat or provocative question\n- Quick mention of Flow Os as solution\n- 1-2 hashtags: #FlowOs #WellnessBusiness\n- Make it retweetable\n\n### YOUTUBE (200-350 words)\n- SEO-optimized description\n- Keywords naturally included: wellness business, CRM for health coaches, business automation for wellness, Flow Os\n- Brief overview of what viewers will learn\n- Mention Flow Os and its benefits\n- Hashtags (3-5): #FlowOs #WellnessBusiness #HealthCoachCRM #BusinessAutomation #WellnessEntrepreneur\n\n### LINKEDIN (200-300 words)\n- Professional, industry-insight tone\n- Lead with compelling statistic or trend\n- Position as thought leadership for wellness industry\n- Explain how Flow Os addresses this industry challenge\n- Focus on ROI and business outcomes\n- Encourage professional discussion\n- Hashtags (3-5): #WellnessIndustry #HealthTech #BusinessAutomation #FlowOs #WellnessEntrepreneur\n\n### TIKTOK (100-150 words)\n- First line = scroll-stopping hook (no \"Hook:\" label—just write the hook as the first line)\n- Conversational, direct, slightly playful tone\n- \"POV: You're a wellness pro who just discovered...\" style works well (POV as the line itself is fine; do not add extra labels)\n- Quick problem → Flow Os solution\n- Mention Flow Os by name\n- Hashtags (4-6): #FlowOs #WellnessBusiness #SmallBusinessTips #HealthCoachTok #EntrepreneurLife #WellnessTok\n\n## TASK 3: Create Title\nShort, punchy title (max 8 words) that captures the main benefit. Should work as infographic headline.\n\n# OUTPUT FORMAT\n\nReturn ONLY valid JSON. We generate one image from your structured data (no free-form image prompt).\n\n```json\n{\n  \"variation1Structured\": {\n    \"headline\": \"EFFORTLESS BOOKING\",\n    \"centralIcon\": \"calendar\",\n    \"orbitingIcons\": [\"clock\", \"document\", \"chart\", \"refresh\", \"wallet\", \"plus\"]\n  },\n  \"captions\": { \"facebook\": \"...\", \"instagram\": \"...\", \"twitter\": \"...\", \"youtube\": \"...\", \"linkedin\": \"...\", \"tiktok\": \"...\" },\n  \"title\": \"Short Catchy Title Here\"\n}\n```",
+              "content": "=# ROLE\nYou are a senior social media content strategist for Flow Os, the all-in-one CRM and business automation platform built specifically for health and wellness professionals.\n\n# BRAND GUIDELINES\n- **Brand Name:** Flow Os (always capitalize the F and O)\n- **What it is:** All-in-one CRM, marketing automation, and business management platform\n- **Target Audience:** Health coaches, personal trainers, nutritionists, wellness practitioners, fitness entrepreneurs, holistic health professionals\n- **Brand Voice:** Empowering, solution-focused, professional yet approachable, transformation-oriented\n- **Visual Style:** Modern, clean, professional \u2013 Flow Os brand palette (teal, warm beige, charcoal, white, green accent)\n- **Key Differentiator:** Built specifically for health and wellness professionals (not generic business software)\n- **Website:** flowos.tech\n\n# BRAND VISUAL SPEC (for image prompts)\n**Flow Os brand colors \u2013 use these in the infographic:**\n- Primary: Teal #99cccc, Warm Beige #eae5da\n- Secondary: Charcoal grey #333333, White #ffffff\n- Button/accent: #8bc34a\n**Typography:** Heading font: Montserrat Bold. Primary font: Raleway. Headlines large and high-contrast. Minimal text. No script or decorative fonts.\n\n# COMPETITOR POLICY\n**CRITICAL:** NEVER mention, compare to, or reference ANY other CRM, software, or platform by name. This includes but is not limited to: HubSpot, Salesforce, Go High Level, GHL, Kajabi, Kartra, ClickFunnels, Mailchimp, ActiveCampaign, Mindbody, etc. Flow Os is THE solution - present it as the obvious choice, not as an alternative to something else.\n\n# INPUT\n## Content Pillar: {{ $('Content Pillar Rotation').item.json.pillar }}\n## Featured Benefit: {{ $('Content Pillar Rotation').item.json.highlightedFeature }}\n\n## Content Brief:\n<brief>\n{{ $('AI Research - Flow Os Brief').item.json.message }}\n</brief>\n\n# YOUR TASKS\n\n## TASK 1: Create Variation 1 Structured Data (one image only)\nOutput structured data for a single infographic image. We no longer generate two variations; only one image is created and posted. \n\n**CRITICAL TEXT RENDERING RULES:**\n- MINIMIZE TEXT IN THE IMAGE - AI image generators render text poorly; less text = legible text\n- ONLY these text elements are allowed: (1) One SHORT headline at the top, uppercase, 3-5 words; (2) \"flowos.tech\" in the footer. No other words (no \"Flow Os\" in the main area, no color codes, no subtitles).\n- DO NOT include: body copy, statistics, percentages, sentences, labels on icons, calendar text, \"Dashboard\", day names, two-column text sections, left/right text blocks, or any other words\n- Convey the message with ICONS and VISUAL METAPHORS only \u2013 no captions under icons, no UI labels\n- Only TWO text elements in the image: (1) ONE headline at the top, (2) \"flowos.tech\" in the footer. No other text. No subtitles, no description text, no labels, no color codes.\n- Typography: Montserrat Bold for headings, Raleway for any other text. Large headline, high contrast. No script or decorative fonts.\n\n**FLOW OS BRAND COLORS (use in prompts):** Primary: Teal #99cccc, Warm Beige #eae5da. Secondary: Charcoal grey #333333, White #ffffff. Button/accent: #8bc34a. Use this palette for backgrounds, icons, and footer.\n\n**Visual Requirements:**\n- Use 9:16 vertical format (social media stories/reels)\n- Apply the brand color palette above\n- Use icons, illustrations, and visual metaphors only \u2013 no text except headline, brand, and flowos.tech\n- Footer: one dark grey bar at the bottom with white text flowos.tech only\n- Style: Modern, minimalist SaaS marketing graphic, clean and professional\n- NO photos of people \u2013 abstract icons, geometric shapes, simple graphics only\n- Scroll-stopping through VISUAL impact, not text\n\n**Vary the infographic icons every time:** Do NOT always use \"calendar\" as centralIcon. Choose centralIcon to match the pillar and featured benefit: e.g. clock or timer for Automation Power, chart for Revenue Growth, puzzle or link for Integrations, inbox or envelope for Client Retention, calendar for Time Freedom/booking, funnel for Client Acquisition. orbitingIcons must also match the theme\u2014pick 5\u20136 from: clock, document, chart, calendar, refresh, wallet, plus, phone, envelope, gear, inbox, link\u2014and vary the set so each run produces a distinct visual (not the same icon list every time).\n\n**Image (structured data only):** Output only variation1Structured: headline (3\u20135 words, uppercase, e.g. \"EFFORTLESS BOOKING\"), centralIcon (one word, chosen as above), orbitingIcons (array of 5\u20136 one-word icon names that support the headline and central icon). The image is built from a template; do not write a free-form image prompt.\n\n\n## TASK 2: Write Platform-Specific Captions\nAll captions MUST:\n- Mention Flow Os by name at least once\n- Never mention any competitor platforms\n- Focus on the transformation/benefit for wellness professionals\n- Include a soft call-to-action\n- Do NOT include meta-labels in the caption text (e.g. do not write \"Hook:\" or \"POV:\" as a label before a line; write the hook or POV as the first line only, with no label). Use real line breaks for readability; do not use literal backslash-n.\n- Always write in UK/Australian English:\n  - Use \"s\" instead of \"z\" (e.g. customisation, standardised, normalised)\n  - Avoid American spellings and idioms\n\n### FACEBOOK (250-400 words)\n- Open with a relatable question about the pain point\n- Share 2-3 compelling statistics\n- Explain how Flow Os solves this specific problem\n- Include tangible benefits (time saved, revenue potential, stress reduction)\n- End with engagement question + soft CTA\n- Hashtags (3-5): #FlowOs #WellnessBusiness #HealthCoach #BusinessAutomation #WellnessEntrepreneur\n\n### INSTAGRAM (150-250 words)\n- First line = scroll-stopping hook (this shows before \"more\")\n- Problem \u2192 Flow Os Solution \u2192 Transformation structure\n- Use line breaks for easy reading\n- Professional tone (minimal emojis, 1-2 max if any)\n- Mention Flow Os clearly as the solution\n- Hashtags (EXACTLY 5, no more): pick 5 highly relevant tags only.\n  Choose from: #FlowOs #WellnessBusiness #HealthCoachLife \n  #BusinessAutomation #CRMforCoaches #WellnessMarketing \n  #HealthProfessionals #WellnessIndustry \u2014 never more than 5 total.\n\n### TWITTER/X (under 280 characters)\n- Punchy stat or provocative question\n- Quick mention of Flow Os as solution\n- 1-2 hashtags: #FlowOs #WellnessBusiness\n- Make it retweetable\n\n### YOUTUBE (200-350 words)\n- SEO-optimized description\n- Keywords naturally included: wellness business, CRM for health coaches, business automation for wellness, Flow Os\n- Brief overview of what viewers will learn\n- Mention Flow Os and its benefits\n- Hashtags (3-5): #FlowOs #WellnessBusiness #HealthCoachCRM #BusinessAutomation #WellnessEntrepreneur\n\n### LINKEDIN (200-300 words)\n- Professional, industry-insight tone\n- Lead with compelling statistic or trend\n- Position as thought leadership for wellness industry\n- Explain how Flow Os addresses this industry challenge\n- Focus on ROI and business outcomes\n- Encourage professional discussion\n- Hashtags (3-5): #WellnessIndustry #HealthTech #BusinessAutomation #FlowOs #WellnessEntrepreneur\n\n### TIKTOK (100-150 words)\n- First line = scroll-stopping hook (no \"Hook:\" label\u2014just write the hook as the first line)\n- Conversational, direct, slightly playful tone\n- \"POV: You're a wellness pro who just discovered...\" style works well (POV as the line itself is fine; do not add extra labels)\n- Quick problem \u2192 Flow Os solution\n- Mention Flow Os by name\n- Hashtags (max 5): #FlowOs #WellnessBusiness #SmallBusinessTips #HealthCoachTok #EntrepreneurLife \u2014 never more than 5 total.\n\n## TASK 3: Create Title\nShort, punchy title (max 8 words) that captures the main benefit. Should work as infographic headline.\n\n# OUTPUT FORMAT\n\nReturn ONLY valid JSON. We generate one image from your structured data (no free-form image prompt).\n\n```json\n{\n  \"variation1Structured\": {\n    \"headline\": \"EFFORTLESS BOOKING\",\n    \"centralIcon\": \"calendar\",\n    \"orbitingIcons\": [\"clock\", \"document\", \"chart\", \"refresh\", \"wallet\", \"plus\"]\n  },\n  \"captions\": { \"facebook\": \"...\", \"instagram\": \"...\", \"twitter\": \"...\", \"youtube\": \"...\", \"linkedin\": \"...\", \"tiktok\": \"...\" },\n  \"title\": \"Short Catchy Title Here\"\n}\n```",
               "role": "system"
             }
           ]
@@ -214,7 +214,7 @@
           "mode": "list",
           "cachedResultName": "infographic-approval"
         },
-        "text": "=🎨 *New Flow Os Infographic Ready!*  \n*Title:* {{ $json.title }} \n*Pillar:* {{ $json.pillar }} \n*Feature:* {{ $json.highlightedFeature }}  \n*Image URL:*{{ $json.imageVariation1 }}\n\n--- *Twitter Preview:* {{ $json.previewData.twitterPreview }}  \n--- *Instagram Preview:* {{ $json.previewData.instagramPreview }}  \n--- Generated: {{ $json.generatedAt }}  \n\n✅ Posting automatically...",
+        "text": "=\ud83c\udfa8 *New Flow Os Infographic Ready!*  \n*Title:* {{ $json.title }} \n*Pillar:* {{ $json.pillar }} \n*Feature:* {{ $json.highlightedFeature }}  \n*Image URL:*{{ $json.imageVariation1 }}\n\n--- *Twitter Preview:* {{ $json.previewData.twitterPreview }}  \n--- *Instagram Preview:* {{ $json.previewData.instagramPreview }}  \n--- Generated: {{ $json.generatedAt }}  \n\n\u2705 Posting automatically...",
         "otherOptions": {}
       },
       "type": "n8n-nodes-base.slack",
@@ -282,7 +282,7 @@
           "cachedResultName": "FlowosAgency",
           "cachedResultUrl": "https://backend.blotato.com/v2/accounts/11273"
         },
-        "postContentText": "={{ $('AI Writer - Content Generator').item.json.choices[0].message.content.captions.twitter }}",
+        "postContentText": "={{ $json.captions.twitter }}",
         "postContentMediaUrls": "={{ $json.url }}",
         "options": {}
       },
@@ -311,7 +311,7 @@
           "cachedResultName": "flow_os_",
           "cachedResultUrl": "https://backend.blotato.com/v2/accounts/27064"
         },
-        "postContentText": "={{ $('AI Writer - Content Generator').item.json.choices[0].message.content.captions.instagram }}",
+        "postContentText": "={{ $json.captions.instagram }}",
         "postContentMediaUrls": "={{ $json.url }}",
         "options": {}
       },
@@ -341,7 +341,7 @@
           "cachedResultName": "Tyson Venables",
           "cachedResultUrl": "https://backend.blotato.com/v2/accounts/17274"
         },
-        "postContentText": "={{ $('AI Writer - Content Generator').item.json.choices[0].message.content.captions.facebook }}",
+        "postContentText": "={{ $json.captions.facebook }}",
         "postContentMediaUrls": "={{ $json.url }}",
         "facebookPageId": {
           "__rl": true,
@@ -378,7 +378,7 @@
           "cachedResultName": "FlowOs Team (Flow Os CRM & Automations)",
           "cachedResultUrl": "https://backend.blotato.com/v2/accounts/23942"
         },
-        "postContentText": "={{ $('AI Writer - Content Generator').item.json.choices[0].message.content.captions.youtube }}",
+        "postContentText": "={{ $json.captions.youtube }}",
         "postContentMediaUrls": "={{ $json.url }}",
         "postCreateYoutubeOptionTitle": "={{ $('AI Writer - Content Generator').item.json.choices[0].message.content.title }}",
         "options": {}
@@ -409,7 +409,7 @@
           "cachedResultName": "Tyson Venables",
           "cachedResultUrl": "https://backend.blotato.com/v2/accounts/11109"
         },
-        "postContentText": "={{ $('AI Writer - Content Generator').item.json.choices[0].message.content.captions.linkedin }}",
+        "postContentText": "={{ $json.captions.linkedin }}",
         "postContentMediaUrls": "={{ $json.url }}",
         "options": {}
       },
@@ -439,7 +439,7 @@
           "cachedResultName": "flow_os_",
           "cachedResultUrl": "https://backend.blotato.com/v2/accounts/27064"
         },
-        "postContentText": "={{ $('AI Writer - Content Generator').item.json.choices[0].message.content.captions.tiktok }}",
+        "postContentText": "={{ $json.captions.tiktok }}",
         "postContentMediaUrls": "={{ $json.url }}",
         "options": {}
       },
@@ -514,7 +514,7 @@
           "mode": "list",
           "cachedResultName": "n8n-error"
         },
-        "text": "=⚠️ *Flow Os Infographic Posting Error*  \nSome posts failed to publish.  \n*Time:* {{ new Date().toISOString() }} \n* Cost for run:* {{ $('Cost Per Run').item.json.runCost.estimatedTotalUsd }}\nCheck the n8n execution log for details.",
+        "text": "=\u26a0\ufe0f *Flow Os Infographic Posting Error*  \nSome posts failed to publish.  \n*Time:* {{ new Date().toISOString() }} \n* Cost for run:* {{ $('Cost Per Run').item.json.runCost.estimatedTotalUsd }}\nCheck the n8n execution log for details.",
         "otherOptions": {}
       },
       "type": "n8n-nodes-base.slack",
@@ -583,7 +583,7 @@
           "mode": "list",
           "cachedResultName": "n8n-success"
         },
-        "text": "=✅ *Flow Os Infographic Posted Successfully!*  \n*Title:* {{ $('AI Writer - Content Generator').item.json.choices[0].message.content.title }} \n*Pillar:* {{ $('Content Pillar Rotation').item.json.pillar }} \n*Feature:* {{ $('Content Pillar Rotation').item.json.highlightedFeature }}  \n*Posted to:* Twitter, Instagram, Facebook, YouTube, LinkedIn, TikTok\n* Cost for run:* {{ $('Cost Per Run').item.json.runCost.estimatedTotalUsd }}\n",
+        "text": "=\u2705 *Flow Os Infographic Posted Successfully!*  \n*Title:* {{ $('AI Writer - Content Generator').item.json.choices[0].message.content.title }} \n*Pillar:* {{ $('Content Pillar Rotation').item.json.pillar }} \n*Feature:* {{ $('Content Pillar Rotation').item.json.highlightedFeature }}  \n*Posted to:* Twitter, Instagram, Facebook, YouTube, LinkedIn, TikTok\n* Cost for run:* {{ $('Cost Per Run').item.json.runCost.estimatedTotalUsd }}\n",
         "otherOptions": {}
       },
       "type": "n8n-nodes-base.slack",
@@ -601,6 +601,19 @@
           "name": "Slack account"
         }
       }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Cap hashtags to max 5 per caption, defensive against AI drift\nconst MAX_HASHTAGS = 5;\nfunction capHashtags(text) {\n  if (!text || typeof text !== 'string') return text;\n  let count = 0;\n  const stripped = text.replace(/#\\w+/g, (m) => (++count <= MAX_HASHTAGS ? m : ''));\n  return stripped.replace(/[ \\t]+/g, ' ').replace(/\\n[ \\t]+/g, '\\n').trim();\n}\nconst item = $input.item.json;\nconst captions = item.captions || {};\nconst cappedCaptions = {};\nfor (const platform of ['facebook','instagram','twitter','youtube','linkedin','tiktok']) {\n  cappedCaptions[platform] = capHashtags(captions[platform]);\n}\nreturn {\n  json: {\n    ...item,\n    captions: cappedCaptions,\n    _hashtagCapApplied: { max: MAX_HASHTAGS, at: new Date().toISOString() }\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -7080,
+        1728
+      ],
+      "id": "0b0ab9e2-3a2c-494f-a4cb-352f5c890b5a",
+      "name": "Cap Hashtags"
     }
   ],
   "connections": {
@@ -740,7 +753,7 @@
       "main": [
         [
           {
-            "node": "Instagram [BLOTATO]",
+            "node": "Cap Hashtags",
             "type": "main",
             "index": 0
           }
@@ -894,11 +907,23 @@
           }
         ]
       ]
+    },
+    "Cap Hashtags": {
+      "main": [
+        [
+          {
+            "node": "Instagram [BLOTATO]",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
   "settings": {
     "executionOrder": "v1",
-    "availableInMCP": true
+    "availableInMCP": true,
+    "callerPolicy": "workflowsFromSameOwner"
   },
   "staticData": {
     "node:Schedule Trigger1": {
@@ -913,494 +938,10 @@
   "meta": {
     "templateCredsSetupCompleted": true
   },
-  "pinData": {
-    "Schedule Trigger": [
-      {
-        "json": {
-          "timestamp": "2026-04-29T08:07:51.636-04:00",
-          "Readable date": "April 29th 2026, 8:07:51 am",
-          "Readable time": "8:07:51 am",
-          "Day of week": "Wednesday",
-          "Year": "2026",
-          "Month": "April",
-          "Day of month": "29",
-          "Hour": "08",
-          "Minute": "07",
-          "Second": "51",
-          "Timezone": "America/New_York (UTC-04:00)"
-        },
-        "pairedItem": {
-          "item": 0
-        }
-      }
-    ],
-    "Content Pillar Rotation": [
-      {
-        "json": {
-          "pillar": "Revenue Growth",
-          "focus": "Online courses, payment plans, upsell funnels, and affiliate programs",
-          "features": [
-            "Course Hosting",
-            "Payment Plans",
-            "Upsell Funnels",
-            "Affiliate Program",
-            "Digital Products"
-          ],
-          "painPoints": [
-            "Income limited by available hours",
-            "Clients can't afford full payment",
-            "Missing upsell opportunities",
-            "No passive income streams"
-          ],
-          "benefits": [
-            "Scale beyond 1:1 services",
-            "Make premium offers accessible",
-            "Maximize client value",
-            "Build passive income"
-          ],
-          "highlightedFeature": "Payment Plans",
-          "pillarIndex": 5,
-          "generatedAt": "2026-04-29T12:07:51.661Z",
-          "allPillars": [
-            "Client Acquisition",
-            "Automation Power",
-            "Powerful Integrations",
-            "Client Retention",
-            "Time Freedom",
-            "Revenue Growth"
-          ]
-        },
-        "pairedItem": {
-          "item": 0
-        }
-      }
-    ],
-    "AI Research - Industry Stats": [
-      {
-        "json": {
-          "id": "2b05fb79-9f78-43c7-a66b-53f55a301d97",
-          "created": 1777464478,
-          "citations": [
-            "https://www.deloitte.com/us/en/insights/industry/health-care/life-sciences-and-health-care-industry-outlooks/2026-global-health-care-outlook.html",
-            "https://www.youtube.com/watch?v=YxLXvNuD9BA",
-            "https://www.globenewswire.com/news-release/2026/02/04/3232214/0/en/Health-Wellness-Industry-in-2026-Key-Trends-and-Transformations.html",
-            "https://www.vizientinc.com/insights/reports/annual-trends-and-forecasting-reports/2026-trends-report",
-            "https://www.businessresearchinsights.com/market-reports/health-and-wellness-market-119203",
-            "https://www.einpresswire.com/article/896086490/global-health-and-wellness-industry-2026-2034-market-driven-by-the-rising-incidences-of-chronic-diseases",
-            "https://www.pwc.com/us/en/services/consulting/business-transformation/library/employee-financial-wellness-survey.html"
-          ],
-          "message": "Based on the search results provided, I have limited specific data directly addressing the revenue growth challenges you've outlined for wellness professionals. However, the available information does highlight relevant industry pressures:\n\n## Industry-Wide Financial Pressures\n\n**Cost and affordability barriers are constraining the wellness market.** High costs of wellness products and services limit consumer access, with many customers finding prices prohibitive and unable to invest regularly in wellness activities.[5] This directly impacts the ability of wellness professionals to convert prospects into paying clients and maintain consistent revenue streams.\n\n**Workforce productivity is a critical concern.** Health and wellness industry leaders cited workforce challenges as their top priority for 2026, with more than 90% prioritizing productivity improvements.[1] While this data focuses on larger health systems, it reflects systemic challenges across the broader health and wellness sector regarding operational efficiency.\n\n## Technology-Driven Solutions Emerging\n\n**Digital and AI tools are becoming central to revenue strategies.** Health and wellness executives plan to invest in core business technologies, digital tools, and AI services to boost operating revenue.[1] Additionally, digital fitness platforms and virtual health services are gaining momentum, with consumers increasingly embracing online programs, apps, and wearable devices.[3]\n\n**Workplace wellness programs represent a structural growth driver.** Corporate wellness initiatives are expanding as businesses recognize that work-related illnesses and injuries cost the US economy $250 billion annually, and 74% of workers report poor mental health affecting work performance.[6] This suggests opportunities for wellness professionals to develop scalable, technology-enabled corporate solutions.\n\n## Gap in Available Data\n\nThe search results do not contain specific statistics on the four pain points you identified (time/income limitations, client affordability, missed upsells, and lack of passive income) or case studies demonstrating how payment plans and automation specifically address these challenges for independent wellness professionals. To fully address your research needs, additional sources focused specifically on small wellness business operations and revenue optimization would be required."
-        },
-        "pairedItem": {
-          "item": 0
-        }
-      }
-    ],
-    "AI Research - Flow Os Brief": [
-      {
-        "json": {
-          "id": "f9111b9a-42d0-4295-9055-405a0f8337c9",
-          "created": 1777464488,
-          "citations": [
-            "https://www.youtube.com/watch?v=oKjDeMtBZ4g",
-            "https://blog.google/innovation-and-ai/products/google-flow-veo-ai-filmmaking-tool/",
-            "https://en.wikipedia.org/wiki/Flow_(2024_film)",
-            "https://labs.google/flow/about",
-            "https://labs.google/fx/tools/flow",
-            "https://support.google.com/flow/?hl=en",
-            "https://flow.com",
-            "https://www.youtube.com/watch?v=ZgZccxuj2RY",
-            "https://www.merriam-webster.com/dictionary/flow"
-          ],
-          "message": "Health and wellness professionals face a crushing revenue bottleneck: **high costs making premium services unaffordable for clients**, leading to lost sales, stagnant income, and burnout from chasing one-off payments. Many practitioners pour heart into transformative programs—coaching packages, retreats, or therapy sessions priced at $2,000–$5,000—but watch prospects hesitate or walk away because a single lump-sum payment feels impossible amid rising living expenses.[industry_research]\n\nThis affordability crisis is severe. Industry data shows **high costs of wellness products and services limit consumer access**, with customers deeming prices prohibitive and unable to commit regularly, directly eroding practitioners' ability to convert leads into steady revenue streams.[industry_research] Quantify the hit: a typical wellness coach might lose **30-50% of potential clients** per cohort due to upfront barriers, translating to **$50,000+ in annual foregone revenue** for a mid-level practitioner serving 20-30 clients yearly. Stress mounts as hours vanish on custom negotiations or discounts, pulling focus from life-changing client work. If ignored, practitioners stay trapped in **1:1 grind**, capping earnings at $100K while dreams of scaling fade.\n\nWorse, clients suffer too. Talented individuals who need your expertise—overstressed executives or wellness seekers—settle for half-measures like free apps or sporadic sessions, delaying their transformations. Your mission to heal and empower stalls, as untapped revenue means fewer resources for marketing, team hires, or program innovation. Meanwhile, **74% of workers report poor mental health impacting performance**, fueling demand for your solutions—yet corporate wellness opportunities worth billions go unclaimed because pros can't package them accessibly.[industry_research]\n\nEnter **Flow Os**, the all-in-one CRM and business automation platform built exclusively for health and wellness professionals. Its **Payment Plans feature** shatters this barrier by automating flexible, customized installment options directly into your sales flow. Clients spread premium offers over 3-12 months with zero manual setup—Flow Os handles recurring billing, reminders, and compliance seamlessly. No more \"I can't afford it\" objections; convert 80% more leads by making high-ticket programs feel effortless.\n\n**Tangible benefits transform your business**:\n- **Scale beyond 1:1**: Offer group coaching or online courses to 10x clients without 10x hours, unlocking **$200K+ passive revenue** via automated enrollments.\n- **Maximize client value**: Upsell add-ons like VIP access mid-plan; retain 90% of clients longer, boosting lifetime value by 2-3x.\n- **Time saved**: Reclaim **20+ hours/month** from invoicing chases; focus on sessions that change lives.\n- **Revenue gained**: Pros using Flow Os Payment Plans report **40-60% lifts in program sales**, with some hitting $500K/year by stacking plans across corporate wellness deals.\n- **Stress reduced**: Predictable cash flow eliminates feast-or-famine cycles, letting you prioritize impact.\n\n**Flow Os stands alone for wellness pros** because it's tailored to your world—no bloated enterprise tools needed. Integrate client bookings, nurture sequences, and payments in one intuitive dashboard, leveraging **AI-driven insights** to spot upsell moments (aligned with industry shifts toward digital tools boosting revenue).[industry_research] Wellness coaches, nutritionists, and therapists achieve **2-5x growth** in months, proving Payment Plans don't just fix affordability—they fuel your mission at scale. Streamline with Flow Os; watch revenue—and lives—flow.\n\n(Word count: 512)"
-        },
-        "pairedItem": {
-          "item": 0
-        }
-      }
-    ],
-    "AI Writer - Content Generator": [
-      {
-        "json": {
-          "id": "chatcmpl-DZy00wHkv7tnXB0AhnBWLGdwF8EtU",
-          "object": "chat.completion",
-          "created": 1777464488,
-          "model": "gpt-4o-2024-08-06",
-          "choices": [
-            {
-              "index": 0,
-              "message": {
-                "role": "assistant",
-                "content": {
-                  "variation1Structured": {
-                    "headline": "BOOST YOUR REVENUE",
-                    "centralIcon": "chart",
-                    "orbitingIcons": [
-                      "wallet",
-                      "clock",
-                      "plus",
-                      "gear",
-                      "refresh",
-                      "link"
-                    ]
-                  },
-                  "captions": {
-                    "facebook": "Is the cost of your premium wellness services keeping clients away? 💭\n\nA staggering 30-50% of potential clients are lost due to high upfront payments, leading to over $50,000 in annual missed revenue for mid-level practitioners. This is where Flow Os shines.\n\nFlow Os' Payment Plans feature tackles this issue by offering flexible payment options across 3-12 months—with zero manual setup. This can result in up to a 60% increase in program sales!\n\nImagine the freedom: more clients, more revenue, less stress. Reclaim 20+ hours each month and focus on what truly matters—transforming lives.\n\nAre you ready to unlock your potential? Let us know your thoughts below!\n\n#FlowOs #WellnessBusiness #HealthCoach #BusinessAutomation #WellnessEntrepreneur",
-                    "instagram": "Are high upfront costs stopping your clients in their tracks? 🚫\n\nThe upfront payment hurdle leads to losing 30-50% of potential clients. With Flow Os' Payment Plans, you can shatter this barrier by offering flexible payment options and see up to a 60% spike in sales.\n\nFlow Os automates everything, letting you focus more on your passion without the stress of invoicing.\n\nWant to transform your wellness business? Let’s make it happen! \n\n#FlowOs #WellnessBusiness #HealthCoachLife #FitnessEntrepreneur #BusinessAutomation #CRMforCoaches #WellnessMarketing #HealthProfessionals #WellnessIndustry #CoachLife #OnlineCoach #WellnessTech",
-                    "twitter": "Losing clients to high upfront costs? Flow Os' Payment Plans can increase sales by up to 60%, offering flexibility your clients need. Ready to transform your wellness business? #FlowOs #WellnessBusiness",
-                    "youtube": "Are premium prices keeping your clients from committing? In this video, we dive into how Flow Os solves this problem with its Payment Plans feature. With flexible payment options, you can increase sales by up to 60% and focus more on what matters—transforming lives. Learn how Flow Os helps health coaches and wellness professionals boost their business revenue, save time, and reduce stress. Discover how to let your wellness business thrive!\n\n#FlowOs #WellnessBusiness #HealthCoachCRM #BusinessAutomation #WellnessEntrepreneur",
-                    "linkedin": "Did you know that high costs prevent 30-50% of potential wellness clients from committing? This translates to potentially over $50,000 in annual missed revenue for mid-level practitioners.\n\nFlow Os addresses this critical problem with its Payment Plans feature, designed specifically for health and wellness professionals. Automating flexible payment options not only makes premium services accessible but also significantly boosts sales and client retention.\n\nWith Flow Os, you can expect up to a 60% increase in sales while saving 20+ hours monthly from billing tasks. It’s time to focus on growing your business and impacting more lives.\n\nLet’s discuss how integrating solutions like Flow Os can transform the wellness industry. Comment your thoughts below!\n\n#WellnessIndustry #HealthTech #BusinessAutomation #FlowOs #WellnessEntrepreneur",
-                    "tiktok": "POV: You're a wellness pro who just discovered how to convert hesitant leads into committed clients... \n\nMeet Flow Os' Payment Plans: Offer your premium services with flexible payment options and increase your sales by up to 60%!\n\nSee the transformation unfold and feel your stress levels drop. 🌟 #FlowOs #WellnessBusiness #SmallBusinessTips #HealthCoachTok #EntrepreneurLife #WellnessTok"
-                  },
-                  "title": "Boost Your Revenue"
-                },
-                "refusal": null,
-                "annotations": []
-              },
-              "logprobs": null,
-              "finish_reason": "stop"
-            }
-          ],
-          "usage": {
-            "prompt_tokens": 2684,
-            "completion_tokens": 824,
-            "total_tokens": 3508,
-            "prompt_tokens_details": {
-              "cached_tokens": 0,
-              "audio_tokens": 0
-            },
-            "completion_tokens_details": {
-              "reasoning_tokens": 0,
-              "audio_tokens": 0,
-              "accepted_prediction_tokens": 0,
-              "rejected_prediction_tokens": 0
-            }
-          },
-          "service_tier": "default",
-          "system_fingerprint": "fp_5dcbd0db7f"
-        },
-        "pairedItem": {
-          "item": 0
-        }
-      }
-    ],
-    "Build Variation 1 Prompt": [
-      {
-        "json": {
-          "variation1Prompt": "Vertical 4:5 minimalist infographic. Top: \"BOOST YOUR REVENUE\" in Montserrat Bold font and soft gradient only. Middle: one circular diagram with a single chart icon in the center and five or six small icons around it: wallet, clock, plus, gear, refresh, link. Icons only, no text in or under the diagram. Bottom: one dark grey bar only, flowos.tech in Raleway font. Background: soft teal and warm beige. Clean, simple, illustration only."
-        },
-        "pairedItem": {
-          "item": 0
-        }
-      }
-    ],
-    "Generate Image - Variation 1": [
-      {
-        "json": {
-          "images": [
-            {
-              "url": "https://v3b.fal.media/files/b/0a983212/WdHRBz1w22Fjbfe3rVfaY_OE4EpQz1.png",
-              "content_type": "image/png",
-              "file_name": "WdHRBz1w22Fjbfe3rVfaY_OE4EpQz1.png",
-              "file_size": null,
-              "width": null,
-              "height": null
-            }
-          ],
-          "description": ""
-        },
-        "pairedItem": {
-          "item": 0
-        }
-      }
-    ],
-    "Format Overlay Result": [
-      {
-        "json": {
-          "images": [
-            {
-              "url": "https://v3b.fal.media/files/b/0a983212/WdHRBz1w22Fjbfe3rVfaY_OE4EpQz1.png"
-            }
-          ]
-        },
-        "pairedItem": {
-          "item": 0
-        }
-      }
-    ],
-    "Prepare Content for Approval": [
-      {
-        "json": {
-          "imageVariation1": "https://v3b.fal.media/files/b/0a983212/WdHRBz1w22Fjbfe3rVfaY_OE4EpQz1.png",
-          "title": "Boost Your Revenue",
-          "captions": {
-            "facebook": "Is the cost of your premium wellness services keeping clients away? 💭\n\nA staggering 30-50% of potential clients are lost due to high upfront payments, leading to over $50,000 in annual missed revenue for mid-level practitioners. This is where Flow Os shines.\n\nFlow Os' Payment Plans feature tackles this issue by offering flexible payment options across 3-12 months—with zero manual setup. This can result in up to a 60% increase in program sales!\n\nImagine the freedom: more clients, more revenue, less stress. Reclaim 20+ hours each month and focus on what truly matters—transforming lives.\n\nAre you ready to unlock your potential? Let us know your thoughts below!\n\n#FlowOs #WellnessBusiness #HealthCoach #BusinessAutomation #WellnessEntrepreneur",
-            "instagram": "Are high upfront costs stopping your clients in their tracks? 🚫\n\nThe upfront payment hurdle leads to losing 30-50% of potential clients. With Flow Os' Payment Plans, you can shatter this barrier by offering flexible payment options and see up to a 60% spike in sales.\n\nFlow Os automates everything, letting you focus more on your passion without the stress of invoicing.\n\nWant to transform your wellness business? Let’s make it happen! \n\n#FlowOs #WellnessBusiness #HealthCoachLife #FitnessEntrepreneur #BusinessAutomation #CRMforCoaches #WellnessMarketing #HealthProfessionals #WellnessIndustry #CoachLife #OnlineCoach #WellnessTech",
-            "twitter": "Losing clients to high upfront costs? Flow Os' Payment Plans can increase sales by up to 60%, offering flexibility your clients need. Ready to transform your wellness business? #FlowOs #WellnessBusiness",
-            "youtube": "Are premium prices keeping your clients from committing? In this video, we dive into how Flow Os solves this problem with its Payment Plans feature. With flexible payment options, you can increase sales by up to 60% and focus more on what matters—transforming lives. Learn how Flow Os helps health coaches and wellness professionals boost their business revenue, save time, and reduce stress. Discover how to let your wellness business thrive!\n\n#FlowOs #WellnessBusiness #HealthCoachCRM #BusinessAutomation #WellnessEntrepreneur",
-            "linkedin": "Did you know that high costs prevent 30-50% of potential wellness clients from committing? This translates to potentially over $50,000 in annual missed revenue for mid-level practitioners.\n\nFlow Os addresses this critical problem with its Payment Plans feature, designed specifically for health and wellness professionals. Automating flexible payment options not only makes premium services accessible but also significantly boosts sales and client retention.\n\nWith Flow Os, you can expect up to a 60% increase in sales while saving 20+ hours monthly from billing tasks. It’s time to focus on growing your business and impacting more lives.\n\nLet’s discuss how integrating solutions like Flow Os can transform the wellness industry. Comment your thoughts below!\n\n#WellnessIndustry #HealthTech #BusinessAutomation #FlowOs #WellnessEntrepreneur",
-            "tiktok": "POV: You're a wellness pro who just discovered how to convert hesitant leads into committed clients... \n\nMeet Flow Os' Payment Plans: Offer your premium services with flexible payment options and increase your sales by up to 60%!\n\nSee the transformation unfold and feel your stress levels drop. 🌟 #FlowOs #WellnessBusiness #SmallBusinessTips #HealthCoachTok #EntrepreneurLife #WellnessTok"
-          },
-          "pillar": "Revenue Growth",
-          "highlightedFeature": "Payment Plans",
-          "generatedAt": "2026-04-29T12:08:31.838Z",
-          "previewData": {
-            "title": "Boost Your Revenue",
-            "pillar": "Revenue Growth",
-            "feature": "Payment Plans",
-            "twitterPreview": "Losing clients to high upfront costs? Flow Os' Payment Plans can increase sales by up to 60%, offering flexibility your clients need. Ready to transform your wellness business? #FlowOs #WellnessBusiness",
-            "instagramPreview": "Are high upfront costs stopping your clients in their tracks? 🚫\n\nThe upfront payment hurdle leads to losing 30-50% of potential clients. With Flow Os' Payment Plans, you can shatter this barrier by o..."
-          }
-        },
-        "pairedItem": {
-          "item": 0
-        }
-      }
-    ],
-    "Send to Slack for Approval": [
-      {
-        "json": {
-          "ok": true,
-          "channel": "C0ACAGY8H3P",
-          "message": {
-            "user": "U088ACFFX9T",
-            "type": "message",
-            "ts": "1777464512.000649",
-            "bot_id": "B0ACF00QMV0",
-            "app_id": "A08USRQFR51",
-            "text": ":art: *New Flow Os Infographic Ready!*  \n*Title:* Boost Your Revenue \n*Pillar:* Revenue Growth \n*Feature:* Payment Plans  \n*Image URL:*<https://v3b.fal.media/files/b/0a983212/WdHRBz1w22Fjbfe3rVfaY_OE4EpQz1.png>\n\n--- *Twitter Preview:* Losing clients to high upfront costs? Flow Os' Payment Plans can increase sales by up to 60%, offering flexibility your clients need. Ready to transform your wellness business? #FlowOs #WellnessBusiness  \n--- *Instagram Preview:* Are high upfront costs stopping your clients in their tracks? :no_entry_sign:\n\nThe upfront payment hurdle leads to losing 30-50% of potential clients. With Flow Os' Payment Plans, you can shatter this barrier by o...  \n--- Generated: 2026-04-29T12:08:31.838Z  \n\n:white_check_mark: Posting automatically...\n_Automated with this <https://webhook.flowos.tech/workflow/kJ2EdkOeEAwVbMwU?utm_source=n8n-internal&amp;utm_medium=powered_by&amp;utm_campaign=n8n-nodes-base.slack_76cdf1b589c887dfb8e2b8a28e6b4ef77eb555d51f90e7ed533a5d9b1e8f9768|n8n workflow>_",
-            "team": "T088D7K3P8A",
-            "bot_profile": {
-              "id": "B0ACF00QMV0",
-              "app_id": "A08USRQFR51",
-              "name": "n8n app",
-              "icons": {
-                "image_36": "https://a.slack-edge.com/80588/img/plugins/app/bot_36.png",
-                "image_48": "https://a.slack-edge.com/80588/img/plugins/app/bot_48.png",
-                "image_72": "https://a.slack-edge.com/80588/img/plugins/app/service_72.png"
-              },
-              "deleted": false,
-              "updated": 1770043709,
-              "team_id": "T088D7K3P8A"
-            },
-            "blocks": [
-              {
-                "type": "rich_text",
-                "block_id": "GJ2q",
-                "elements": [
-                  {
-                    "type": "rich_text_section",
-                    "elements": [
-                      {
-                        "type": "emoji",
-                        "name": "art",
-                        "unicode": "1f3a8"
-                      },
-                      {
-                        "type": "text",
-                        "text": " "
-                      },
-                      {
-                        "type": "text",
-                        "text": "New Flow Os Infographic Ready!",
-                        "style": {
-                          "bold": true
-                        }
-                      },
-                      {
-                        "type": "text",
-                        "text": "  \n"
-                      },
-                      {
-                        "type": "text",
-                        "text": "Title:",
-                        "style": {
-                          "bold": true
-                        }
-                      },
-                      {
-                        "type": "text",
-                        "text": " Boost Your Revenue \n"
-                      },
-                      {
-                        "type": "text",
-                        "text": "Pillar:",
-                        "style": {
-                          "bold": true
-                        }
-                      },
-                      {
-                        "type": "text",
-                        "text": " Revenue Growth \n"
-                      },
-                      {
-                        "type": "text",
-                        "text": "Feature:",
-                        "style": {
-                          "bold": true
-                        }
-                      },
-                      {
-                        "type": "text",
-                        "text": " Payment Plans  \n"
-                      },
-                      {
-                        "type": "text",
-                        "text": "Image URL:",
-                        "style": {
-                          "bold": true
-                        }
-                      },
-                      {
-                        "type": "link",
-                        "url": "https://v3b.fal.media/files/b/0a983212/WdHRBz1w22Fjbfe3rVfaY_OE4EpQz1.png"
-                      },
-                      {
-                        "type": "text",
-                        "text": "\n\n--- "
-                      },
-                      {
-                        "type": "text",
-                        "text": "Twitter Preview:",
-                        "style": {
-                          "bold": true
-                        }
-                      },
-                      {
-                        "type": "text",
-                        "text": " Losing clients to high upfront costs? Flow Os' Payment Plans can increase sales by up to 60%, offering flexibility your clients need. Ready to transform your wellness business? #FlowOs #WellnessBusiness  \n--- "
-                      },
-                      {
-                        "type": "text",
-                        "text": "Instagram Preview:",
-                        "style": {
-                          "bold": true
-                        }
-                      },
-                      {
-                        "type": "text",
-                        "text": " Are high upfront costs stopping your clients in their tracks? "
-                      },
-                      {
-                        "type": "emoji",
-                        "name": "no_entry_sign",
-                        "unicode": "1f6ab"
-                      },
-                      {
-                        "type": "text",
-                        "text": "\n\nThe upfront payment hurdle leads to losing 30-50% of potential clients. With Flow Os' Payment Plans, you can shatter this barrier by o...  \n--- Generated: 2026-04-29T12:08:31.838Z  \n\n"
-                      },
-                      {
-                        "type": "emoji",
-                        "name": "white_check_mark",
-                        "unicode": "2705"
-                      },
-                      {
-                        "type": "text",
-                        "text": " Posting automatically...\n"
-                      },
-                      {
-                        "type": "text",
-                        "text": "Automated with this ",
-                        "style": {
-                          "italic": true
-                        }
-                      },
-                      {
-                        "type": "link",
-                        "url": "https://webhook.flowos.tech/workflow/kJ2EdkOeEAwVbMwU?utm_source=n8n-internal&amp;utm_medium=powered_by&amp;utm_campaign=n8n-nodes-base.slack_76cdf1b589c887dfb8e2b8a28e6b4ef77eb555d51f90e7ed533a5d9b1e8f9768",
-                        "text": "n8n workflow",
-                        "style": {
-                          "italic": true
-                        }
-                      }
-                    ]
-                  }
-                ]
-              }
-            ]
-          },
-          "message_timestamp": "1777464512.000649"
-        },
-        "pairedItem": {
-          "item": 0
-        }
-      }
-    ],
-    "Convert Base64 to Binary": [
-      {
-        "json": {
-          "url": "https://v3b.fal.media/files/b/0a983212/WdHRBz1w22Fjbfe3rVfaY_OE4EpQz1.png",
-          "title": "Boost Your Revenue",
-          "captions": {
-            "facebook": "Is the cost of your premium wellness services keeping clients away? 💭\n\nA staggering 30-50% of potential clients are lost due to high upfront payments, leading to over $50,000 in annual missed revenue for mid-level practitioners. This is where Flow Os shines.\n\nFlow Os' Payment Plans feature tackles this issue by offering flexible payment options across 3-12 months—with zero manual setup. This can result in up to a 60% increase in program sales!\n\nImagine the freedom: more clients, more revenue, less stress. Reclaim 20+ hours each month and focus on what truly matters—transforming lives.\n\nAre you ready to unlock your potential? Let us know your thoughts below!\n\n#FlowOs #WellnessBusiness #HealthCoach #BusinessAutomation #WellnessEntrepreneur",
-            "instagram": "Are high upfront costs stopping your clients in their tracks? 🚫\n\nThe upfront payment hurdle leads to losing 30-50% of potential clients. With Flow Os' Payment Plans, you can shatter this barrier by offering flexible payment options and see up to a 60% spike in sales.\n\nFlow Os automates everything, letting you focus more on your passion without the stress of invoicing.\n\nWant to transform your wellness business? Let’s make it happen! \n\n#FlowOs #WellnessBusiness #HealthCoachLife #FitnessEntrepreneur #BusinessAutomation #CRMforCoaches #WellnessMarketing #HealthProfessionals #WellnessIndustry #CoachLife #OnlineCoach #WellnessTech",
-            "twitter": "Losing clients to high upfront costs? Flow Os' Payment Plans can increase sales by up to 60%, offering flexibility your clients need. Ready to transform your wellness business? #FlowOs #WellnessBusiness",
-            "youtube": "Are premium prices keeping your clients from committing? In this video, we dive into how Flow Os solves this problem with its Payment Plans feature. With flexible payment options, you can increase sales by up to 60% and focus more on what matters—transforming lives. Learn how Flow Os helps health coaches and wellness professionals boost their business revenue, save time, and reduce stress. Discover how to let your wellness business thrive!\n\n#FlowOs #WellnessBusiness #HealthCoachCRM #BusinessAutomation #WellnessEntrepreneur",
-            "linkedin": "Did you know that high costs prevent 30-50% of potential wellness clients from committing? This translates to potentially over $50,000 in annual missed revenue for mid-level practitioners.\n\nFlow Os addresses this critical problem with its Payment Plans feature, designed specifically for health and wellness professionals. Automating flexible payment options not only makes premium services accessible but also significantly boosts sales and client retention.\n\nWith Flow Os, you can expect up to a 60% increase in sales while saving 20+ hours monthly from billing tasks. It’s time to focus on growing your business and impacting more lives.\n\nLet’s discuss how integrating solutions like Flow Os can transform the wellness industry. Comment your thoughts below!\n\n#WellnessIndustry #HealthTech #BusinessAutomation #FlowOs #WellnessEntrepreneur",
-            "tiktok": "POV: You're a wellness pro who just discovered how to convert hesitant leads into committed clients... \n\nMeet Flow Os' Payment Plans: Offer your premium services with flexible payment options and increase your sales by up to 60%!\n\nSee the transformation unfold and feel your stress levels drop. 🌟 #FlowOs #WellnessBusiness #SmallBusinessTips #HealthCoachTok #EntrepreneurLife #WellnessTok"
-          },
-          "pillar": "Revenue Growth",
-          "selectedVariation": 1
-        },
-        "binary": {},
-        "pairedItem": {
-          "item": 0
-        }
-      }
-    ],
-    "Process Image URL": [
-      {
-        "json": {
-          "url": "https://v3b.fal.media/files/b/0a983212/WdHRBz1w22Fjbfe3rVfaY_OE4EpQz1.png",
-          "title": "Boost Your Revenue",
-          "captions": {
-            "facebook": "Is the cost of your premium wellness services keeping clients away? 💭\n\nA staggering 30-50% of potential clients are lost due to high upfront payments, leading to over $50,000 in annual missed revenue for mid-level practitioners. This is where Flow Os shines.\n\nFlow Os' Payment Plans feature tackles this issue by offering flexible payment options across 3-12 months—with zero manual setup. This can result in up to a 60% increase in program sales!\n\nImagine the freedom: more clients, more revenue, less stress. Reclaim 20+ hours each month and focus on what truly matters—transforming lives.\n\nAre you ready to unlock your potential? Let us know your thoughts below!\n\n#FlowOs #WellnessBusiness #HealthCoach #BusinessAutomation #WellnessEntrepreneur",
-            "instagram": "Are high upfront costs stopping your clients in their tracks? 🚫\n\nThe upfront payment hurdle leads to losing 30-50% of potential clients. With Flow Os' Payment Plans, you can shatter this barrier by offering flexible payment options and see up to a 60% spike in sales.\n\nFlow Os automates everything, letting you focus more on your passion without the stress of invoicing.\n\nWant to transform your wellness business? Let’s make it happen! \n\n#FlowOs #WellnessBusiness #HealthCoachLife #FitnessEntrepreneur #BusinessAutomation #CRMforCoaches #WellnessMarketing #HealthProfessionals #WellnessIndustry #CoachLife #OnlineCoach #WellnessTech",
-            "twitter": "Losing clients to high upfront costs? Flow Os' Payment Plans can increase sales by up to 60%, offering flexibility your clients need. Ready to transform your wellness business? #FlowOs #WellnessBusiness",
-            "youtube": "Are premium prices keeping your clients from committing? In this video, we dive into how Flow Os solves this problem with its Payment Plans feature. With flexible payment options, you can increase sales by up to 60% and focus more on what matters—transforming lives. Learn how Flow Os helps health coaches and wellness professionals boost their business revenue, save time, and reduce stress. Discover how to let your wellness business thrive!\n\n#FlowOs #WellnessBusiness #HealthCoachCRM #BusinessAutomation #WellnessEntrepreneur",
-            "linkedin": "Did you know that high costs prevent 30-50% of potential wellness clients from committing? This translates to potentially over $50,000 in annual missed revenue for mid-level practitioners.\n\nFlow Os addresses this critical problem with its Payment Plans feature, designed specifically for health and wellness professionals. Automating flexible payment options not only makes premium services accessible but also significantly boosts sales and client retention.\n\nWith Flow Os, you can expect up to a 60% increase in sales while saving 20+ hours monthly from billing tasks. It’s time to focus on growing your business and impacting more lives.\n\nLet’s discuss how integrating solutions like Flow Os can transform the wellness industry. Comment your thoughts below!\n\n#WellnessIndustry #HealthTech #BusinessAutomation #FlowOs #WellnessEntrepreneur",
-            "tiktok": "POV: You're a wellness pro who just discovered how to convert hesitant leads into committed clients... \n\nMeet Flow Os' Payment Plans: Offer your premium services with flexible payment options and increase your sales by up to 60%!\n\nSee the transformation unfold and feel your stress levels drop. 🌟 #FlowOs #WellnessBusiness #SmallBusinessTips #HealthCoachTok #EntrepreneurLife #WellnessTok"
-          },
-          "pillar": "Revenue Growth",
-          "highlightedFeature": "Payment Plans"
-        },
-        "pairedItem": {
-          "item": 0
-        }
-      }
-    ],
-    "Cost Per Run": [
-      {
-        "json": {
-          "url": "https://v3b.fal.media/files/b/0a983212/WdHRBz1w22Fjbfe3rVfaY_OE4EpQz1.png",
-          "title": "Boost Your Revenue",
-          "captions": {
-            "facebook": "Is the cost of your premium wellness services keeping clients away? 💭\n\nA staggering 30-50% of potential clients are lost due to high upfront payments, leading to over $50,000 in annual missed revenue for mid-level practitioners. This is where Flow Os shines.\n\nFlow Os' Payment Plans feature tackles this issue by offering flexible payment options across 3-12 months—with zero manual setup. This can result in up to a 60% increase in program sales!\n\nImagine the freedom: more clients, more revenue, less stress. Reclaim 20+ hours each month and focus on what truly matters—transforming lives.\n\nAre you ready to unlock your potential? Let us know your thoughts below!\n\n#FlowOs #WellnessBusiness #HealthCoach #BusinessAutomation #WellnessEntrepreneur",
-            "instagram": "Are high upfront costs stopping your clients in their tracks? 🚫\n\nThe upfront payment hurdle leads to losing 30-50% of potential clients. With Flow Os' Payment Plans, you can shatter this barrier by offering flexible payment options and see up to a 60% spike in sales.\n\nFlow Os automates everything, letting you focus more on your passion without the stress of invoicing.\n\nWant to transform your wellness business? Let’s make it happen! \n\n#FlowOs #WellnessBusiness #HealthCoachLife #FitnessEntrepreneur #BusinessAutomation #CRMforCoaches #WellnessMarketing #HealthProfessionals #WellnessIndustry #CoachLife #OnlineCoach #WellnessTech",
-            "twitter": "Losing clients to high upfront costs? Flow Os' Payment Plans can increase sales by up to 60%, offering flexibility your clients need. Ready to transform your wellness business? #FlowOs #WellnessBusiness",
-            "youtube": "Are premium prices keeping your clients from committing? In this video, we dive into how Flow Os solves this problem with its Payment Plans feature. With flexible payment options, you can increase sales by up to 60% and focus more on what matters—transforming lives. Learn how Flow Os helps health coaches and wellness professionals boost their business revenue, save time, and reduce stress. Discover how to let your wellness business thrive!\n\n#FlowOs #WellnessBusiness #HealthCoachCRM #BusinessAutomation #WellnessEntrepreneur",
-            "linkedin": "Did you know that high costs prevent 30-50% of potential wellness clients from committing? This translates to potentially over $50,000 in annual missed revenue for mid-level practitioners.\n\nFlow Os addresses this critical problem with its Payment Plans feature, designed specifically for health and wellness professionals. Automating flexible payment options not only makes premium services accessible but also significantly boosts sales and client retention.\n\nWith Flow Os, you can expect up to a 60% increase in sales while saving 20+ hours monthly from billing tasks. It’s time to focus on growing your business and impacting more lives.\n\nLet’s discuss how integrating solutions like Flow Os can transform the wellness industry. Comment your thoughts below!\n\n#WellnessIndustry #HealthTech #BusinessAutomation #FlowOs #WellnessEntrepreneur",
-            "tiktok": "POV: You're a wellness pro who just discovered how to convert hesitant leads into committed clients... \n\nMeet Flow Os' Payment Plans: Offer your premium services with flexible payment options and increase your sales by up to 60%!\n\nSee the transformation unfold and feel your stress levels drop. 🌟 #FlowOs #WellnessBusiness #SmallBusinessTips #HealthCoachTok #EntrepreneurLife #WellnessTok"
-          },
-          "pillar": "Revenue Growth",
-          "highlightedFeature": "Payment Plans",
-          "runCost": {
-            "estimatedTotalUsd": 0.08,
-            "falImageUsd": 0.039,
-            "openaiEstimateUsd": 0.02,
-            "perplexityEstimateUsd": 0.02
-          }
-        },
-        "pairedItem": {
-          "item": 0
-        }
-      }
-    ]
-  },
-  "versionId": "edb3ce57-208c-49e1-ab79-e5334935fc39",
-  "activeVersionId": "622d6445-f223-42a3-915a-f82a6de675e0",
-  "versionCounter": 625,
+  "pinData": {},
+  "versionId": "1aa8dd94-9ad1-4dc2-8368-5425c0061220",
+  "activeVersionId": "77988c5c-705c-4709-bfa0-a19c658cb315",
+  "versionCounter": 645,
   "triggerCount": 1,
   "shared": [
     {
@@ -1462,9 +1003,9 @@
   ],
   "tags": [],
   "activeVersion": {
-    "updatedAt": "2026-03-26T09:47:57.332Z",
-    "createdAt": "2026-03-26T09:47:48.264Z",
-    "versionId": "622d6445-f223-42a3-915a-f82a6de675e0",
+    "updatedAt": "2026-04-29T18:11:37.468Z",
+    "createdAt": "2026-04-29T18:10:12.881Z",
+    "versionId": "77988c5c-705c-4709-bfa0-a19c658cb315",
     "workflowId": "kJ2EdkOeEAwVbMwU",
     "nodes": [
       {
@@ -1570,7 +1111,7 @@
           "messages": {
             "values": [
               {
-                "content": "=# ROLE\nYou are a senior social media content strategist for Flow Os, the all-in-one CRM and business automation platform built specifically for health and wellness professionals.\n\n# BRAND GUIDELINES\n- **Brand Name:** Flow Os (always capitalize the F and O)\n- **What it is:** All-in-one CRM, marketing automation, and business management platform\n- **Target Audience:** Health coaches, personal trainers, nutritionists, wellness practitioners, fitness entrepreneurs, holistic health professionals\n- **Brand Voice:** Empowering, solution-focused, professional yet approachable, transformation-oriented\n- **Visual Style:** Modern, clean, professional – Flow Os brand palette (teal, warm beige, charcoal, white, green accent)\n- **Key Differentiator:** Built specifically for health and wellness professionals (not generic business software)\n- **Website:** flowos.tech\n\n# BRAND VISUAL SPEC (for image prompts)\n**Flow Os brand colors – use these in the infographic:**\n- Primary: Teal #99cccc, Warm Beige #eae5da\n- Secondary: Charcoal grey #333333, White #ffffff\n- Button/accent: #8bc34a\n**Typography:** Heading font: Montserrat Bold. Primary font: Raleway. Headlines large and high-contrast. Minimal text. No script or decorative fonts.\n\n# COMPETITOR POLICY\n**CRITICAL:** NEVER mention, compare to, or reference ANY other CRM, software, or platform by name. This includes but is not limited to: HubSpot, Salesforce, Go High Level, GHL, Kajabi, Kartra, ClickFunnels, Mailchimp, ActiveCampaign, Mindbody, etc. Flow Os is THE solution - present it as the obvious choice, not as an alternative to something else.\n\n# INPUT\n## Content Pillar: {{ $('Content Pillar Rotation').item.json.pillar }}\n## Featured Benefit: {{ $('Content Pillar Rotation').item.json.highlightedFeature }}\n\n## Content Brief:\n<brief>\n{{ $('AI Research - Flow Os Brief').item.json.message }}\n</brief>\n\n# YOUR TASKS\n\n## TASK 1: Create Variation 1 Structured Data (one image only)\nOutput structured data for a single infographic image. We no longer generate two variations; only one image is created and posted. \n\n**CRITICAL TEXT RENDERING RULES:**\n- MINIMIZE TEXT IN THE IMAGE - AI image generators render text poorly; less text = legible text\n- ONLY these text elements are allowed: (1) One SHORT headline at the top, uppercase, 3-5 words; (2) \"flowos.tech\" in the footer. No other words (no \"Flow Os\" in the main area, no color codes, no subtitles).\n- DO NOT include: body copy, statistics, percentages, sentences, labels on icons, calendar text, \"Dashboard\", day names, two-column text sections, left/right text blocks, or any other words\n- Convey the message with ICONS and VISUAL METAPHORS only – no captions under icons, no UI labels\n- Only TWO text elements in the image: (1) ONE headline at the top, (2) \"flowos.tech\" in the footer. No other text. No subtitles, no description text, no labels, no color codes.\n- Typography: Montserrat Bold for headings, Raleway for any other text. Large headline, high contrast. No script or decorative fonts.\n\n**FLOW OS BRAND COLORS (use in prompts):** Primary: Teal #99cccc, Warm Beige #eae5da. Secondary: Charcoal grey #333333, White #ffffff. Button/accent: #8bc34a. Use this palette for backgrounds, icons, and footer.\n\n**Visual Requirements:**\n- Use 9:16 vertical format (social media stories/reels)\n- Apply the brand color palette above\n- Use icons, illustrations, and visual metaphors only – no text except headline, brand, and flowos.tech\n- Footer: one dark grey bar at the bottom with white text flowos.tech only\n- Style: Modern, minimalist SaaS marketing graphic, clean and professional\n- NO photos of people – abstract icons, geometric shapes, simple graphics only\n- Scroll-stopping through VISUAL impact, not text\n\n**Vary the infographic icons every time:** Do NOT always use \"calendar\" as centralIcon. Choose centralIcon to match the pillar and featured benefit: e.g. clock or timer for Automation Power, chart for Revenue Growth, puzzle or link for Integrations, inbox or envelope for Client Retention, calendar for Time Freedom/booking, funnel for Client Acquisition. orbitingIcons must also match the theme—pick 5–6 from: clock, document, chart, calendar, refresh, wallet, plus, phone, envelope, gear, inbox, link—and vary the set so each run produces a distinct visual (not the same icon list every time).\n\n**Image (structured data only):** Output only variation1Structured: headline (3–5 words, uppercase, e.g. \"EFFORTLESS BOOKING\"), centralIcon (one word, chosen as above), orbitingIcons (array of 5–6 one-word icon names that support the headline and central icon). The image is built from a template; do not write a free-form image prompt.\n\n\n## TASK 2: Write Platform-Specific Captions\nAll captions MUST:\n- Mention Flow Os by name at least once\n- Never mention any competitor platforms\n- Focus on the transformation/benefit for wellness professionals\n- Include a soft call-to-action\n- Do NOT include meta-labels in the caption text (e.g. do not write \"Hook:\" or \"POV:\" as a label before a line; write the hook or POV as the first line only, with no label). Use real line breaks for readability; do not use literal backslash-n.\n- Always write in UK/Australian English:\n  - Use \"s\" instead of \"z\" (e.g. customisation, standardised, normalised)\n  - Avoid American spellings and idioms\n\n### FACEBOOK (250-400 words)\n- Open with a relatable question about the pain point\n- Share 2-3 compelling statistics\n- Explain how Flow Os solves this specific problem\n- Include tangible benefits (time saved, revenue potential, stress reduction)\n- End with engagement question + soft CTA\n- Hashtags (3-5): #FlowOs #WellnessBusiness #HealthCoach #BusinessAutomation #WellnessEntrepreneur\n\n### INSTAGRAM (150-250 words)\n- First line = scroll-stopping hook (this shows before \"more\")\n- Problem → Flow Os Solution → Transformation structure\n- Use line breaks for easy reading\n- Professional tone (minimal emojis, 1-2 max if any)\n- Mention Flow Os clearly as the solution\n- Hashtags (8-12): #FlowOs #WellnessBusiness #HealthCoachLife #FitnessEntrepreneur #BusinessAutomation #CRMforCoaches #WellnessMarketing #HealthProfessionals #WellnessIndustry #CoachLife #OnlineCoach #WellnessTech\n\n### TWITTER/X (under 280 characters)\n- Punchy stat or provocative question\n- Quick mention of Flow Os as solution\n- 1-2 hashtags: #FlowOs #WellnessBusiness\n- Make it retweetable\n\n### YOUTUBE (200-350 words)\n- SEO-optimized description\n- Keywords naturally included: wellness business, CRM for health coaches, business automation for wellness, Flow Os\n- Brief overview of what viewers will learn\n- Mention Flow Os and its benefits\n- Hashtags (3-5): #FlowOs #WellnessBusiness #HealthCoachCRM #BusinessAutomation #WellnessEntrepreneur\n\n### LINKEDIN (200-300 words)\n- Professional, industry-insight tone\n- Lead with compelling statistic or trend\n- Position as thought leadership for wellness industry\n- Explain how Flow Os addresses this industry challenge\n- Focus on ROI and business outcomes\n- Encourage professional discussion\n- Hashtags (3-5): #WellnessIndustry #HealthTech #BusinessAutomation #FlowOs #WellnessEntrepreneur\n\n### TIKTOK (100-150 words)\n- First line = scroll-stopping hook (no \"Hook:\" label—just write the hook as the first line)\n- Conversational, direct, slightly playful tone\n- \"POV: You're a wellness pro who just discovered...\" style works well (POV as the line itself is fine; do not add extra labels)\n- Quick problem → Flow Os solution\n- Mention Flow Os by name\n- Hashtags (4-6): #FlowOs #WellnessBusiness #SmallBusinessTips #HealthCoachTok #EntrepreneurLife #WellnessTok\n\n## TASK 3: Create Title\nShort, punchy title (max 8 words) that captures the main benefit. Should work as infographic headline.\n\n# OUTPUT FORMAT\n\nReturn ONLY valid JSON. We generate one image from your structured data (no free-form image prompt).\n\n```json\n{\n  \"variation1Structured\": {\n    \"headline\": \"EFFORTLESS BOOKING\",\n    \"centralIcon\": \"calendar\",\n    \"orbitingIcons\": [\"clock\", \"document\", \"chart\", \"refresh\", \"wallet\", \"plus\"]\n  },\n  \"captions\": { \"facebook\": \"...\", \"instagram\": \"...\", \"twitter\": \"...\", \"youtube\": \"...\", \"linkedin\": \"...\", \"tiktok\": \"...\" },\n  \"title\": \"Short Catchy Title Here\"\n}\n```",
+                "content": "=# ROLE\nYou are a senior social media content strategist for Flow Os, the all-in-one CRM and business automation platform built specifically for health and wellness professionals.\n\n# BRAND GUIDELINES\n- **Brand Name:** Flow Os (always capitalize the F and O)\n- **What it is:** All-in-one CRM, marketing automation, and business management platform\n- **Target Audience:** Health coaches, personal trainers, nutritionists, wellness practitioners, fitness entrepreneurs, holistic health professionals\n- **Brand Voice:** Empowering, solution-focused, professional yet approachable, transformation-oriented\n- **Visual Style:** Modern, clean, professional \u2013 Flow Os brand palette (teal, warm beige, charcoal, white, green accent)\n- **Key Differentiator:** Built specifically for health and wellness professionals (not generic business software)\n- **Website:** flowos.tech\n\n# BRAND VISUAL SPEC (for image prompts)\n**Flow Os brand colors \u2013 use these in the infographic:**\n- Primary: Teal #99cccc, Warm Beige #eae5da\n- Secondary: Charcoal grey #333333, White #ffffff\n- Button/accent: #8bc34a\n**Typography:** Heading font: Montserrat Bold. Primary font: Raleway. Headlines large and high-contrast. Minimal text. No script or decorative fonts.\n\n# COMPETITOR POLICY\n**CRITICAL:** NEVER mention, compare to, or reference ANY other CRM, software, or platform by name. This includes but is not limited to: HubSpot, Salesforce, Go High Level, GHL, Kajabi, Kartra, ClickFunnels, Mailchimp, ActiveCampaign, Mindbody, etc. Flow Os is THE solution - present it as the obvious choice, not as an alternative to something else.\n\n# INPUT\n## Content Pillar: {{ $('Content Pillar Rotation').item.json.pillar }}\n## Featured Benefit: {{ $('Content Pillar Rotation').item.json.highlightedFeature }}\n\n## Content Brief:\n<brief>\n{{ $('AI Research - Flow Os Brief').item.json.message }}\n</brief>\n\n# YOUR TASKS\n\n## TASK 1: Create Variation 1 Structured Data (one image only)\nOutput structured data for a single infographic image. We no longer generate two variations; only one image is created and posted. \n\n**CRITICAL TEXT RENDERING RULES:**\n- MINIMIZE TEXT IN THE IMAGE - AI image generators render text poorly; less text = legible text\n- ONLY these text elements are allowed: (1) One SHORT headline at the top, uppercase, 3-5 words; (2) \"flowos.tech\" in the footer. No other words (no \"Flow Os\" in the main area, no color codes, no subtitles).\n- DO NOT include: body copy, statistics, percentages, sentences, labels on icons, calendar text, \"Dashboard\", day names, two-column text sections, left/right text blocks, or any other words\n- Convey the message with ICONS and VISUAL METAPHORS only \u2013 no captions under icons, no UI labels\n- Only TWO text elements in the image: (1) ONE headline at the top, (2) \"flowos.tech\" in the footer. No other text. No subtitles, no description text, no labels, no color codes.\n- Typography: Montserrat Bold for headings, Raleway for any other text. Large headline, high contrast. No script or decorative fonts.\n\n**FLOW OS BRAND COLORS (use in prompts):** Primary: Teal #99cccc, Warm Beige #eae5da. Secondary: Charcoal grey #333333, White #ffffff. Button/accent: #8bc34a. Use this palette for backgrounds, icons, and footer.\n\n**Visual Requirements:**\n- Use 9:16 vertical format (social media stories/reels)\n- Apply the brand color palette above\n- Use icons, illustrations, and visual metaphors only \u2013 no text except headline, brand, and flowos.tech\n- Footer: one dark grey bar at the bottom with white text flowos.tech only\n- Style: Modern, minimalist SaaS marketing graphic, clean and professional\n- NO photos of people \u2013 abstract icons, geometric shapes, simple graphics only\n- Scroll-stopping through VISUAL impact, not text\n\n**Vary the infographic icons every time:** Do NOT always use \"calendar\" as centralIcon. Choose centralIcon to match the pillar and featured benefit: e.g. clock or timer for Automation Power, chart for Revenue Growth, puzzle or link for Integrations, inbox or envelope for Client Retention, calendar for Time Freedom/booking, funnel for Client Acquisition. orbitingIcons must also match the theme\u2014pick 5\u20136 from: clock, document, chart, calendar, refresh, wallet, plus, phone, envelope, gear, inbox, link\u2014and vary the set so each run produces a distinct visual (not the same icon list every time).\n\n**Image (structured data only):** Output only variation1Structured: headline (3\u20135 words, uppercase, e.g. \"EFFORTLESS BOOKING\"), centralIcon (one word, chosen as above), orbitingIcons (array of 5\u20136 one-word icon names that support the headline and central icon). The image is built from a template; do not write a free-form image prompt.\n\n\n## TASK 2: Write Platform-Specific Captions\nAll captions MUST:\n- Mention Flow Os by name at least once\n- Never mention any competitor platforms\n- Focus on the transformation/benefit for wellness professionals\n- Include a soft call-to-action\n- Do NOT include meta-labels in the caption text (e.g. do not write \"Hook:\" or \"POV:\" as a label before a line; write the hook or POV as the first line only, with no label). Use real line breaks for readability; do not use literal backslash-n.\n- Always write in UK/Australian English:\n  - Use \"s\" instead of \"z\" (e.g. customisation, standardised, normalised)\n  - Avoid American spellings and idioms\n\n### FACEBOOK (250-400 words)\n- Open with a relatable question about the pain point\n- Share 2-3 compelling statistics\n- Explain how Flow Os solves this specific problem\n- Include tangible benefits (time saved, revenue potential, stress reduction)\n- End with engagement question + soft CTA\n- Hashtags (3-5): #FlowOs #WellnessBusiness #HealthCoach #BusinessAutomation #WellnessEntrepreneur\n\n### INSTAGRAM (150-250 words)\n- First line = scroll-stopping hook (this shows before \"more\")\n- Problem \u2192 Flow Os Solution \u2192 Transformation structure\n- Use line breaks for easy reading\n- Professional tone (minimal emojis, 1-2 max if any)\n- Mention Flow Os clearly as the solution\n- Hashtags (EXACTLY 5, no more): pick 5 highly relevant tags only.\n  Choose from: #FlowOs #WellnessBusiness #HealthCoachLife \n  #BusinessAutomation #CRMforCoaches #WellnessMarketing \n  #HealthProfessionals #WellnessIndustry \u2014 never more than 5 total.\n\n### TWITTER/X (under 280 characters)\n- Punchy stat or provocative question\n- Quick mention of Flow Os as solution\n- 1-2 hashtags: #FlowOs #WellnessBusiness\n- Make it retweetable\n\n### YOUTUBE (200-350 words)\n- SEO-optimized description\n- Keywords naturally included: wellness business, CRM for health coaches, business automation for wellness, Flow Os\n- Brief overview of what viewers will learn\n- Mention Flow Os and its benefits\n- Hashtags (3-5): #FlowOs #WellnessBusiness #HealthCoachCRM #BusinessAutomation #WellnessEntrepreneur\n\n### LINKEDIN (200-300 words)\n- Professional, industry-insight tone\n- Lead with compelling statistic or trend\n- Position as thought leadership for wellness industry\n- Explain how Flow Os addresses this industry challenge\n- Focus on ROI and business outcomes\n- Encourage professional discussion\n- Hashtags (3-5): #WellnessIndustry #HealthTech #BusinessAutomation #FlowOs #WellnessEntrepreneur\n\n### TIKTOK (100-150 words)\n- First line = scroll-stopping hook (no \"Hook:\" label\u2014just write the hook as the first line)\n- Conversational, direct, slightly playful tone\n- \"POV: You're a wellness pro who just discovered...\" style works well (POV as the line itself is fine; do not add extra labels)\n- Quick problem \u2192 Flow Os solution\n- Mention Flow Os by name\n- Hashtags (max 5): #FlowOs #WellnessBusiness #SmallBusinessTips #HealthCoachTok #EntrepreneurLife \u2014 never more than 5 total.\n\n## TASK 3: Create Title\nShort, punchy title (max 8 words) that captures the main benefit. Should work as infographic headline.\n\n# OUTPUT FORMAT\n\nReturn ONLY valid JSON. We generate one image from your structured data (no free-form image prompt).\n\n```json\n{\n  \"variation1Structured\": {\n    \"headline\": \"EFFORTLESS BOOKING\",\n    \"centralIcon\": \"calendar\",\n    \"orbitingIcons\": [\"clock\", \"document\", \"chart\", \"refresh\", \"wallet\", \"plus\"]\n  },\n  \"captions\": { \"facebook\": \"...\", \"instagram\": \"...\", \"twitter\": \"...\", \"youtube\": \"...\", \"linkedin\": \"...\", \"tiktok\": \"...\" },\n  \"title\": \"Short Catchy Title Here\"\n}\n```",
                 "role": "system"
               }
             ]
@@ -1626,7 +1167,7 @@
           },
           "sendBody": true,
           "specifyBody": "json",
-          "jsonBody": "={{ JSON.stringify({ prompt: $json.variation1Prompt, aspect_ratio: '4:5' }) }}",
+          "jsonBody": "={{ JSON.stringify({ prompt: $json.variation1Prompt, aspect_ratio: '4:5', output_format: 'jpeg' }) }}",
           "options": {}
         },
         "type": "n8n-nodes-base.httpRequest",
@@ -1674,7 +1215,7 @@
             "mode": "list",
             "cachedResultName": "infographic-approval"
           },
-          "text": "=🎨 *New Flow Os Infographic Ready!*  \n*Title:* {{ $json.title }} \n*Pillar:* {{ $json.pillar }} \n*Feature:* {{ $json.highlightedFeature }}  \n*Image URL:*{{ $json.imageVariation1 }}\n\n--- *Twitter Preview:* {{ $json.previewData.twitterPreview }}  \n--- *Instagram Preview:* {{ $json.previewData.instagramPreview }}  \n--- Generated: {{ $json.generatedAt }}  \n\n✅ Posting automatically...",
+          "text": "=\ud83c\udfa8 *New Flow Os Infographic Ready!*  \n*Title:* {{ $json.title }} \n*Pillar:* {{ $json.pillar }} \n*Feature:* {{ $json.highlightedFeature }}  \n*Image URL:*{{ $json.imageVariation1 }}\n\n--- *Twitter Preview:* {{ $json.previewData.twitterPreview }}  \n--- *Instagram Preview:* {{ $json.previewData.instagramPreview }}  \n--- Generated: {{ $json.generatedAt }}  \n\n\u2705 Posting automatically...",
           "otherOptions": {}
         },
         "type": "n8n-nodes-base.slack",
@@ -1974,7 +1515,7 @@
             "mode": "list",
             "cachedResultName": "n8n-error"
           },
-          "text": "=⚠️ *Flow Os Infographic Posting Error*  \nSome posts failed to publish.  \n*Time:* {{ new Date().toISOString() }} \n* Cost for run:* {{ $('Cost Per Run').item.json.runCost.estimatedTotalUsd }}\nCheck the n8n execution log for details.",
+          "text": "=\u26a0\ufe0f *Flow Os Infographic Posting Error*  \nSome posts failed to publish.  \n*Time:* {{ new Date().toISOString() }} \n* Cost for run:* {{ $('Cost Per Run').item.json.runCost.estimatedTotalUsd }}\nCheck the n8n execution log for details.",
           "otherOptions": {}
         },
         "type": "n8n-nodes-base.slack",
@@ -2043,7 +1584,7 @@
             "mode": "list",
             "cachedResultName": "n8n-success"
           },
-          "text": "=✅ *Flow Os Infographic Posted Successfully!*  \n*Title:* {{ $('AI Writer - Content Generator').item.json.choices[0].message.content.title }} \n*Pillar:* {{ $('Content Pillar Rotation').item.json.pillar }} \n*Feature:* {{ $('Content Pillar Rotation').item.json.highlightedFeature }}  \n*Posted to:* Twitter, Instagram, Facebook, YouTube, LinkedIn, TikTok\n* Cost for run:* {{ $('Cost Per Run').item.json.runCost.estimatedTotalUsd }}\n",
+          "text": "=\u2705 *Flow Os Infographic Posted Successfully!*  \n*Title:* {{ $('AI Writer - Content Generator').item.json.choices[0].message.content.title }} \n*Pillar:* {{ $('Content Pillar Rotation').item.json.pillar }} \n*Feature:* {{ $('Content Pillar Rotation').item.json.highlightedFeature }}  \n*Posted to:* Twitter, Instagram, Facebook, YouTube, LinkedIn, TikTok\n* Cost for run:* {{ $('Cost Per Run').item.json.runCost.estimatedTotalUsd }}\n",
           "otherOptions": {}
         },
         "type": "n8n-nodes-base.slack",
@@ -2200,32 +1741,7 @@
         "main": [
           [
             {
-              "node": "Twitter [BLOTATO]",
-              "type": "main",
-              "index": 0
-            },
-            {
               "node": "Instagram [BLOTATO]",
-              "type": "main",
-              "index": 0
-            },
-            {
-              "node": "Facebook [BLOTATO]",
-              "type": "main",
-              "index": 0
-            },
-            {
-              "node": "Youtube [BLOTATO]",
-              "type": "main",
-              "index": 0
-            },
-            {
-              "node": "Linkedin [BLOTATO]",
-              "type": "main",
-              "index": 0
-            },
-            {
-              "node": "Tiktok [BLOTATO]",
               "type": "main",
               "index": 0
             }
@@ -2382,15 +1898,15 @@
       }
     },
     "authors": "Tyson Venables",
-    "name": "Version 622d6445",
-    "description": "remove unused nodes",
-    "autosaved": false,
+    "name": "Version 77988c5c",
+    "description": "",
+    "autosaved": true,
     "workflowPublishHistory": [
       {
-        "createdAt": "2026-03-26T09:47:57.326Z",
-        "id": 349,
+        "createdAt": "2026-04-29T18:11:37.461Z",
+        "id": 803,
         "workflowId": "kJ2EdkOeEAwVbMwU",
-        "versionId": "622d6445-f223-42a3-915a-f82a6de675e0",
+        "versionId": "77988c5c-705c-4709-bfa0-a19c658cb315",
         "event": "activated",
         "userId": "b1512bca-25b8-4b8b-add0-b86540e5144d"
       }
