@@ -1,0 +1,130 @@
+{
+  "id": "7kpNnMtnuDWXgWcX",
+  "name": "Trading - Error Handler",
+  "description": null,
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "error-trigger",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        256,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendMessage",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  chat_id: $env.TELEGRAM_TRADING_CHAT_ID,\n  text: '🚨 Workflow error\\n\\nWorkflow: ' + ($json.workflow ? $json.workflow.name : 'unknown') +\n        '\\nExecution: ' + ($json.execution ? $json.execution.id : 'unknown') +\n        '\\nMode: ' + ($json.execution ? $json.execution.mode : 'unknown') +\n        '\\nNode: ' + ($json.execution && $json.execution.error ? ($json.execution.error.node ? $json.execution.error.node.name : 'n/a') : 'n/a') +\n        '\\nMessage: ' + ($json.execution && $json.execution.error ? ($json.execution.error.message || 'no message') : 'no error obj') +\n        '\\nLast node: ' + ($json.execution ? ($json.execution.lastNodeExecuted || 'n/a') : 'n/a')\n}) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "notify-telegram",
+      "name": "Notify Telegram",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        560,
+        304
+      ],
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    }
+  ],
+  "connections": {
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Notify Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false
+  },
+  "activeVersion": {
+    "updatedAt": "2026-04-29T20:00:29.021Z",
+    "createdAt": "2026-04-29T20:00:29.021Z",
+    "versionId": "0f44bfdc-d177-4283-baeb-d073a5a41914",
+    "workflowId": "7kpNnMtnuDWXgWcX",
+    "nodes": [
+      {
+        "parameters": {},
+        "id": "error-trigger",
+        "name": "Error Trigger",
+        "type": "n8n-nodes-base.errorTrigger",
+        "typeVersion": 1,
+        "position": [
+          256,
+          304
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendMessage",
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify({\n  chat_id: $env.TELEGRAM_TRADING_CHAT_ID,\n  text: '🚨 Workflow error\\n\\nWorkflow: ' + ($json.workflow ? $json.workflow.name : 'unknown') +\n        '\\nExecution: ' + ($json.execution ? $json.execution.id : 'unknown') +\n        '\\nMode: ' + ($json.execution ? $json.execution.mode : 'unknown') +\n        '\\nNode: ' + ($json.execution && $json.execution.error ? ($json.execution.error.node ? $json.execution.error.node.name : 'n/a') : 'n/a') +\n        '\\nMessage: ' + ($json.execution && $json.execution.error ? ($json.execution.error.message || 'no message') : 'no error obj') +\n        '\\nLast node: ' + ($json.execution ? ($json.execution.lastNodeExecuted || 'n/a') : 'n/a')\n}) }}",
+          "options": {
+            "timeout": 15000
+          }
+        },
+        "id": "notify-telegram",
+        "name": "Notify Telegram",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          560,
+          304
+        ],
+        "continueOnFail": true,
+        "retryOnFail": true,
+        "maxTries": 3,
+        "waitBetweenTries": 2000
+      }
+    ],
+    "connections": {
+      "Error Trigger": {
+        "main": [
+          [
+            {
+              "node": "Notify Telegram",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "authors": "import",
+    "name": null,
+    "description": null,
+    "autosaved": false,
+    "workflowPublishHistory": [
+      {
+        "createdAt": "2026-04-29T20:01:52.442Z",
+        "id": 807,
+        "workflowId": "7kpNnMtnuDWXgWcX",
+        "versionId": "0f44bfdc-d177-4283-baeb-d073a5a41914",
+        "event": "activated",
+        "userId": "b1512bca-25b8-4b8b-add0-b86540e5144d"
+      }
+    ]
+  }
+}

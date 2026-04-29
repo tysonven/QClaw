@@ -2564,3 +2564,60 @@ P2 (config cleanup):
 - **Rollback artefact:** `/root/QClaw/n8n-workflows/kJ2EdkOeEAwVbMwU.before-hashtag-cap.json` (73701 bytes, pre-patch GET).
 - **Post-patch artefact:** `/root/QClaw/n8n-workflows/kJ2EdkOeEAwVbMwU.json` (94335 bytes).
 - Workflow execution NOT triggered — manual UI test pending with Tyson.
+
+#### Trading Market Scanner — Restored after 2-day silent failure (workflow `3YahxqOguET3pifj`)
+- **Workflow:** Trading - Market Scanner. Cron: hourly Mon, every 2h Tue–Fri, every 4h weekend.
+- **Symptom:** No Telegram updates since Tue 28 Apr 2026 18:00 UTC. 22 consecutive failed runs (status=error, ~1s each) before detection on Wed 29 Apr 2026 ~19:30 UTC. Detection lag: ~25h. Heartbeat now in place — would have been ~2h instead.
+- **Root cause:** Workflow edit on **2026-04-28T18:30:52Z** introduced a templated `Notify Edge` body referencing `$json.highEdge.length` and `$json.noEdge.length` — but no upstream node produced a `{ highEdge, noEdge }` object. The pipeline reached `Notify Edge` (Analyse Edge → Run Market Sims → Has Edge?), then n8n's HttpRequestV3 pre-flight JSON validation rejected the evaluated body. Has Edge? IF was also broken (same bad refs) but routed items through anyway because both `main[0]` and `main[1]` pointed at Notify Edge — the IF was a no-op pass-through.
+- **Raw exception text** (execution 723655, last in series):
+  ```
+  NodeOperationError: JSON parameter needs to be valid JSON
+      at ExecuteContext.execute (HttpRequestV3.node.ts:442:15)
+      at WorkflowExecute.executeNode (workflow-execute.ts:1045:31)
+      at WorkflowExecute.runNode (workflow-execute.ts:1226:22)
+  lastNodeExecuted: "Notify Edge"
+  ```
+- **Triage findings** (none of the brief's three hypotheses were the cause):
+  - Sim worker on `:4001`: healthy (HTTP 200 in 230ms; pid 2276594, plain python3 — no pm2 entry).
+  - Cron firing: yes, on schedule. n8n in Docker (`n8n-project-n8n-1`) on a separate host (157.230.216.158), not on the qclaw box.
+  - Markets passing filter: yes — `Build Run Summary` `stats.passed_filter` is consistently 2–3 BTC markets per run.
+  - Polymarket commodity coverage: thin. Across 3500 open markets, 11 hits for `gold|silver|wti|brent|crude|oil price|barrel`; most "gold" hits are Trump "Gold Cards" merch, not commodity. Regex broadening landed but real bottleneck is payload availability, not the keyword list.
+- **Fixes applied** (priority order swapped from original brief — restore Telegram first, regex broadening last):
+  1. **New `Build Run Summary` Code node** between `Run Market Simulations` and `Has Edge?`. Aggregates sim outputs back with original Analyse Edge fields via `$('Analyse Edge').itemMatching(i)`. Partitions into `highEdge` / `noEdge` / `neutral` by asymmetric thresholds: `+0.07` for high, `-0.10` for no, gated on `volume ≥ 5000`. Emits `stats {fetched, passed_filter, markets_simulated, sim_errors, high_edge_count, no_edge_count, neutral_count}` and a Supabase-shaped `sims` array.
+  2. **`Has Edge?` IF rewired**: TRUE → `Notify Edge`, FALSE → new `NoOp End` terminator (was previously both → Notify Edge).
+  3. **`Save Simulations` reconnected** off `Build Run Summary`. Was orphaned (`"Save Simulations":{"main":[[]]}`). Credential unchanged — uses stored `Supabase FSC` httpHeaderAuth (id `Nd2uuX5t9KEwbQPv`); no raw service-role key in workflow JSON.
+  4. **`Notify Heartbeat` HTTP node** off `Build Run Summary` — fires every successful run with `🔁 Scanner run | <ts> | Fetched: N | Passed filter: N | Sims: ok/total | Edges: H high / N no`. `continueOnFail: true`, `retryOnFail: true`, `maxTries: 3`, `waitBetweenTries: 2000`.
+  5. **`Merge Pages` node** before `Analyse Edge` — combines the four `Fetch Page*` HTTP outputs into a single execution stream, fixing per-execution `seen` Set dedup that previously failed across the 4 parallel Analyse Edge runs.
+  6. **`Analyse Edge` regex broadened** — adds bare-number `(?:above|over|reach|hit|cross|exceed|surpass|past|to|at)\s+\$?<num>` fallback alongside the original `\$<num>` matcher, with per-asset `minPrice` floor (`btc:10000, eth:500, gold:1000, silver:10, wti:30, brent:30`) so years/IDs cannot be misread as targets. False-positive `gold cards / olympic gold / gold medal / golden bachelor / golden globe` exclusions added to the sports/non-commodity filter.
+  7. **`Notify Edge` resilience** — `continueOnFail: true`, retry 3× / 2s backoff, 15s timeout, hardcoded chat_id replaced with `$env.TELEGRAM_TRADING_CHAT_ID`.
+  8. **Env hardening**: `SIM_HOST=http://138.68.138.214:4001` and `TELEGRAM_TRADING_CHAT_ID=1375806243` appended to `/home/n8nadmin/n8n-project/.env` on the n8n host (NOT `/root/.quantumclaw/.env` on qclaw — n8n loads via `env_file:` in compose; brief had this conflated). Container recreated via `docker compose up -d n8n` (NOT `restart` — restart keeps old env). Backup: `.env.before-trading-fix-2026-04-29`. Permissions still `-rw------- n8nadmin:n8nadmin`.
+  9. **`Run Market Simulations` URL** → `={{ $env.SIM_HOST }}/simulate` (was hardcoded IP).
+  10. **New companion workflow `Trading - Error Handler`** (id `7kpNnMtnuDWXgWcX`). Single ErrorTrigger → Telegram HTTP node sending `🚨 Workflow error\nWorkflow: <name>\nExecution: <id>\nNode: <node>\nMessage: <msg>\nLast node: <last>`. Wired as `settings.errorWorkflow` on the scanner. Two-day silent failures are now structurally impossible — any run that errors before reaching `Notify Heartbeat` triggers a Telegram alert via the error workflow.
+- **Secondary follow-up bug discovered during verification:** First post-patch run (723715) succeeded but `Save Simulations` returned `400 - {"code":"22P02","message":"invalid input syntax for type uuid: \"540844\""}`. The `trading_simulations.market_id` column is `uuid`, but Polymarket emits integer-string IDs. Historical successful rows have `market_id: NULL`. Fix: dropped `market_id` from the `sims` payload, moved Polymarket's id into `raw_output.polymarket_market_id` so the linkage isn't lost. Verified row 2 of execution 723751 contains `raw_output.polymarket_market_id: "540844"`, `raw_output.question: "Will bitcoin hit $1m before GTA VI?"`, `probability: 0.0002`, `current_price: 75515.19`, `edge: -0.4903`, full `macro_factors {dxy, tnx}`.
+- **Verification (live, not theoretical):**
+  - Execution 723715 (20:05 UTC): finished=t, status=success, 6.1s, lastNodeExecuted=`Notify Heartbeat` — all 13 nodes ran.
+  - Execution 723751 (20:14 UTC, after market_id fix): finished=t, status=success, 4.6s — **2 rows landed in `trading_simulations`** with `created_at >= 2026-04-29T20:13:09Z`.
+  - Tested via temporary `* * * * *` cron expression added to `Smart Schedule`, removed immediately after each verification (3 extra rows in execution log, no production impact).
+- **Topology after fix** (14 nodes):
+  - `Smart Schedule` → fan-out to `Fetch Polymarket / Fetch Page 2/3/4`
+  - 4× Fetch → `Merge Pages` (append, 4 inputs) → `Analyse Edge` (runs once now, dedup intact)
+  - `Analyse Edge` → `Run Market Simulations` (env URL) → `Build Run Summary`
+  - `Build Run Summary` → fan-out: `Has Edge?` + `Save Simulations` + `Notify Heartbeat`
+  - `Has Edge?` TRUE → `Notify Edge` ; FALSE → `NoOp End`
+- **Repo artefacts:**
+  - Pre-patch backup: `/root/QClaw/n8n-workflows/trading-market-scanner.before-2026-04-29-fix.json` (33908 bytes, broken state)
+  - Post-patch live: `/root/QClaw/n8n-workflows/trading-market-scanner.json` (43907 bytes, 14 nodes)
+  - New: `/root/QClaw/n8n-workflows/trading-error-handler.json` (4449 bytes)
+- **Settings re-asserted on PUT:** `availableInMCP: true ✓`, `errorWorkflow: 7kpNnMtnuDWXgWcX ✓`, `executionOrder: v1`, `callerPolicy: workflowsFromSameOwner`. Cron expressions back to original 3 (`0 */1 * * 1`, `0 */2 * * 2-5`, `0 */4 * * 0,6`).
+
+**Pending (carparked for next session):**
+- Polymarket commodity coverage is thin even with broadened regex. If commodity edge is the goal, supplement with Kalshi/PredictIt sources rather than expanding keyword lists.
+- The Apr 28 broken edit pattern would benefit from a pre-deploy lint of n8n expressions (catch references to fields no upstream node produces) — could be a Code-node-only smoke test that walks the graph and grep-checks `$json.<key>` against upstream emitters.
+- Clipper Phase 2 (face detection) still next.
+
+**7 Pillars gate:**
+- ✅ P3 Database — `trading_simulations` table mapping verified (uuid mismatch caught and routed via `raw_output`)
+- ✅ P4 Auth — Supabase FSC credential unchanged (stored, not raw); n8n public API key used for orchestration only
+- ✅ P6 Security — no hardcoded chat_id / sim host / service role key in workflow JSON; `/root/.quantumclaw/.env` permissions `600` unchanged; `/home/n8nadmin/n8n-project/.env` permissions `600` unchanged; backups created before each in-place edit
+- ✅ P7 Infra — workflow + error handler + .env backups committed to repo; live state matches repo state
+- N/A P1 Frontend, P2 Backend, P5 Payments — no changes in these areas this session

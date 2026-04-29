@@ -1,0 +1,995 @@
+{
+  "updatedAt": "2026-04-28T18:30:52.641Z",
+  "createdAt": "2026-04-03T11:49:18.364Z",
+  "id": "3YahxqOguET3pifj",
+  "name": "Trading - Market Scanner",
+  "description": null,
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 */1 * * 1"
+            },
+            {
+              "field": "cronExpression",
+              "expression": "0 */2 * * 2-5"
+            },
+            {
+              "field": "cronExpression",
+              "expression": "0 */4 * * 0,6"
+            }
+          ]
+        }
+      },
+      "id": "scanner-schedule",
+      "name": "Smart Schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        256,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://gamma-api.polymarket.com/markets",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "closed",
+              "value": "false"
+            },
+            {
+              "name": "limit",
+              "value": "200"
+            },
+            {
+              "name": "offset",
+              "value": "0"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "Mozilla/5.0"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "fetch-polymarket",
+      "name": "Fetch Polymarket",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://gamma-api.polymarket.com/markets",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "closed",
+              "value": "false"
+            },
+            {
+              "name": "limit",
+              "value": "200"
+            },
+            {
+              "name": "offset",
+              "value": "100"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "Mozilla/5.0"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "fetch-page2",
+      "name": "Fetch Page 2",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        496
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://gamma-api.polymarket.com/markets",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "closed",
+              "value": "false"
+            },
+            {
+              "name": "limit",
+              "value": "200"
+            },
+            {
+              "name": "offset",
+              "value": "200"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "Mozilla/5.0"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "fetch-page3",
+      "name": "Fetch Page 3",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        688
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://gamma-api.polymarket.com/markets",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "closed",
+              "value": "false"
+            },
+            {
+              "name": "limit",
+              "value": "200"
+            },
+            {
+              "name": "offset",
+              "value": "300"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "Mozilla/5.0"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "fetch-page4",
+      "name": "Fetch Page 4",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        880
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const isWeekend = [0,6].includes(new Date().getDay());\nconst isMonday = new Date().getDay() === 1;\n\nconst markets = $input.all().map(i => i.json);\n\n// Asset keywords \u2014 broadened to catch more Polymarket question formats\nconst assetKeywords = {\n  btc: ['bitcoin', 'btc'],\n  eth: ['ethereum', 'eth price', 'ether', 'eth hit', 'eth reach', 'eth above', 'eth to', 'ethereum hit', 'ethereum reach', 'ethereum above'],\n  gold: ['gold price', 'gold hit', 'price of gold', 'xau', 'gold above', 'gold reach', 'gold to', 'gold at', 'gold cross', 'gold exceed', 'gold surpass', 'gold breaks', 'gold past'],\n  silver: ['silver price', 'silver hit', 'price of silver', 'xag', 'silver above', 'silver reach', 'silver to', 'silver at', 'silver cross', 'silver exceed', 'silver surpass'],\n  wti: ['wti', 'crude oil price', 'west texas', 'crude oil', 'oil price', 'oil above', 'oil reach', 'oil hit'],\n  brent: ['brent', 'brent crude', 'brent oil']\n};\n\n// Sports teams that contain asset keywords (false positives)\nconst sportsExclude = /stanley cup|nba|nfl|nhl|warriors|knights|oilers|lakers|nuggets|cavaliers|celtics|76ers|super bowl|world cup|premier league|championship|playoffs|olympics|finals|win the|grand prix/i;\n\nconst results = [];\nconst seen = new Set();\n\nfor (const m of markets) {\n  const text = (m.question || '').toLowerCase();\n  const desc = (m.description || '').toLowerCase();\n  const fullText = text + ' ' + desc;\n  const endDate = m.endDate || m.end_date_iso;\n  const marketId = m.id || m.conditionId;\n\n  // Deduplicate across pages\n  if (seen.has(marketId)) continue;\n  seen.add(marketId);\n\n  // Skip sports\n  if (sportsExclude.test(m.question || '')) continue;\n\n  // Identify asset\n  let asset = null;\n  for (const [a, keywords] of Object.entries(assetKeywords)) {\n    if (keywords.some(k => fullText.includes(k))) {\n      asset = a;\n      break;\n    }\n  }\n  if (!asset) continue;\n  if (isWeekend && asset !== 'btc' && asset !== 'eth') continue;\n\n  // Parse target price \u2014 handle $150k, $1m, $100,000 etc.\n  const priceMatches = text.match(/\\$[\\d,]+\\.?\\d*[kmb]?/gi) || [];\n  const prices = priceMatches.map(p => {\n    const suffix = p.slice(-1).toLowerCase();\n    const clean = p.replace(/[$,kmb]/gi, '');\n    const num = parseFloat(clean);\n    if (suffix === 'k') return num * 1000;\n    if (suffix === 'm') return num * 1000000;\n    if (suffix === 'b') return num * 1000000000;\n    return num;\n  }).filter(p => p > 0);\n\n  if (prices.length === 0) continue;\n\n  // Horizon: days from today to market end date\n  const horizonDays = endDate\n    ? Math.ceil((new Date(endDate) - new Date()) / 86400000)\n    : 30;\n\n  // Extended to 365 days\n  if (horizonDays <= 0 || horizonDays > 365) continue;\n\n  // Parse yes price from outcomePrices\n  let yesPrice = null;\n  try {\n    const p = typeof m.outcomePrices === 'string'\n      ? JSON.parse(m.outcomePrices)\n      : m.outcomePrices;\n    if (p?.[0]) yesPrice = parseFloat(p[0]);\n  } catch {}\n  if (yesPrice === null || yesPrice < 0.02 || yesPrice > 0.98) continue;\n\n  const targetPrice = Math.max(...prices);\n\n  results.push({\n    market_id: marketId,\n    question: m.question,\n    asset,\n    target: targetPrice,\n    yes_price: yesPrice,\n    horizon_days: horizonDays,\n    end_date: endDate,\n    volume: parseFloat(m.volume || 0),\n    needs_simulation: true,\n    source: m.source || 'polymarket'\n  });\n}\n\n// Sort by volume descending\nresults.sort((a, b) => b.volume - a.volume);\n\nreturn results.map(r => ({ json: r }));"
+      },
+      "id": "analyse-edge",
+      "name": "Analyse Edge",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1376,
+        608
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://fdabygmromuqtysitodp.supabase.co/rest/v1/trading_simulations",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.sims) }}",
+        "options": {}
+      },
+      "id": "save-sims",
+      "name": "Save Simulations",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2048,
+        400
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "Nd2uuX5t9KEwbQPv",
+          "name": "Supabase FSC"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "edge-check",
+              "leftValue": "={{ $json.highEdge.length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            },
+            {
+              "id": "no-edge-check",
+              "leftValue": "={{ $json.noEdge.length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "or"
+        },
+        "options": {}
+      },
+      "id": "has-edge",
+      "name": "Has Edge?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2048,
+        704
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendMessage",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  chat_id: 1375806243,\n  text: ($json.highEdge.length > 0\n    ? '\\ud83c\\udfaf Edge Found!\\n\\n' + $json.highEdge.map(h =>\n        '[' + (h.source || 'polymarket') + '] ' + h.asset.toUpperCase() + ': ' + h.question + '\\n' +\n        'Target: $' + h.target.toLocaleString() + ' | Horizon: ' + h.horizon_days + ' days (ends ' + (h.end_date || 'N/A') + ')\\n' +\n        'Sim: ' + (h.sim_probability*100).toFixed(1) + '% | Market: ' + (h.yes_price*100).toFixed(1) + '% | Edge: ' + h.edge.toFixed(1) + '%\\n' +\n        'Volume: $' + (h.volume/1000).toFixed(0) + 'K'\n      ).join('\\n\\n')\n    : '\\ud83d\\udcca Market Intelligence \\u2014 No YES edge found but notable OVERPRICED markets detected:\\n\\n' + ($json.noEdge || []).map(r =>\n        '[' + (r.source || 'polymarket') + '] ' + r.asset.toUpperCase() + ': market YES=' + (r.yes_price*100).toFixed(1) + '% | our sim=' + (r.sim_probability*100).toFixed(1) + '% | potential NO edge\\nQuestion: ' + r.question\n      ).join('\\n\\n')\n  ) + ($json.highEdge.length > 0 && $json.noEdge.length > 0\n    ? '\\n\\n---\\n\\n\\ud83d\\udcca Notable OVERPRICED markets:\\n\\n' + $json.noEdge.map(r =>\n        '[' + (r.source || 'polymarket') + '] ' + r.asset.toUpperCase() + ': market YES=' + (r.yes_price*100).toFixed(1) + '% | our sim=' + (r.sim_probability*100).toFixed(1) + '% | potential NO edge\\nQuestion: ' + r.question\n      ).join('\\n\\n')\n    : ''),\n  parse_mode: 'HTML'\n}) }}",
+        "options": {}
+      },
+      "id": "notify-edge",
+      "name": "Notify Edge",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2272,
+        704
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://138.68.138.214:4001/simulate",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ asset: $json.asset, target: $json.target, question: $json.question, horizon_days: $json.horizon_days }) }}",
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 500
+            }
+          },
+          "timeout": 60000
+        }
+      },
+      "id": "run-market-sims",
+      "name": "Run Market Simulations",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1600,
+        608
+      ]
+    }
+  ],
+  "connections": {
+    "Smart Schedule": {
+      "main": [
+        [
+          {
+            "node": "Fetch Polymarket",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Fetch Page 2",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Fetch Page 3",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Fetch Page 4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Polymarket": {
+      "main": [
+        [
+          {
+            "node": "Analyse Edge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Page 2": {
+      "main": [
+        [
+          {
+            "node": "Analyse Edge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Page 3": {
+      "main": [
+        [
+          {
+            "node": "Analyse Edge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Page 4": {
+      "main": [
+        [
+          {
+            "node": "Analyse Edge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analyse Edge": {
+      "main": [
+        [
+          {
+            "node": "Run Market Simulations",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Market Simulations": {
+      "main": [
+        [
+          {
+            "node": "Has Edge?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Edge?": {
+      "main": [
+        [
+          {
+            "node": "Notify Edge",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Notify Edge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Simulations": {
+      "main": [
+        []
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": true
+  },
+  "staticData": {
+    "node:Every 30 Minutes": {
+      "recurrenceRules": []
+    },
+    "node:Smart Schedule": {
+      "recurrenceRules": []
+    }
+  },
+  "meta": null,
+  "pinData": {},
+  "versionId": "152593af-e7ac-4baf-816b-efde1c885265",
+  "activeVersionId": "152593af-e7ac-4baf-816b-efde1c885265",
+  "versionCounter": 254,
+  "triggerCount": 1,
+  "shared": [
+    {
+      "updatedAt": "2026-04-03T11:49:18.364Z",
+      "createdAt": "2026-04-03T11:49:18.364Z",
+      "role": "workflow:owner",
+      "workflowId": "3YahxqOguET3pifj",
+      "projectId": "KwpTDWcFWL3DfyW3",
+      "project": {
+        "updatedAt": "2026-04-08T20:28:08.726Z",
+        "createdAt": "2025-06-06T11:27:14.830Z",
+        "id": "KwpTDWcFWL3DfyW3",
+        "name": "Tyson Venables <tysonvenables@protonmail.com>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "b1512bca-25b8-4b8b-add0-b86540e5144d",
+        "projectRelations": [
+          {
+            "updatedAt": "2025-06-06T11:27:14.830Z",
+            "createdAt": "2025-06-06T11:27:14.830Z",
+            "userId": "b1512bca-25b8-4b8b-add0-b86540e5144d",
+            "projectId": "KwpTDWcFWL3DfyW3",
+            "user": {
+              "updatedAt": "2026-04-28T17:03:57.360Z",
+              "createdAt": "2025-06-06T11:27:13.858Z",
+              "id": "b1512bca-25b8-4b8b-add0-b86540e5144d",
+              "email": "tysonvenables@protonmail.com",
+              "firstName": "Tyson",
+              "lastName": "Venables",
+              "personalizationAnswers": {
+                "version": "v4",
+                "personalization_survey_submitted_at": "2025-06-06T11:42:52.454Z",
+                "personalization_survey_n8n_version": "1.95.3",
+                "companySize": "<20",
+                "companyType": "saas",
+                "role": "business-owner",
+                "reportedSource": "friend"
+              },
+              "settings": {
+                "userActivated": true,
+                "easyAIWorkflowOnboarded": true,
+                "firstSuccessfulWorkflowId": "WVXrFCjb8wO7RWRX",
+                "userActivatedAt": 1751062185356,
+                "npsSurvey": {
+                  "responded": true,
+                  "lastShownAt": 1769430963515
+                }
+              },
+              "disabled": false,
+              "mfaEnabled": false,
+              "lastActiveAt": "2026-04-28",
+              "isPending": false
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "tags": [],
+  "activeVersion": {
+    "updatedAt": "2026-04-28T18:30:52.644Z",
+    "createdAt": "2026-04-28T18:30:52.644Z",
+    "versionId": "152593af-e7ac-4baf-816b-efde1c885265",
+    "workflowId": "3YahxqOguET3pifj",
+    "nodes": [
+      {
+        "parameters": {
+          "rule": {
+            "interval": [
+              {
+                "field": "cronExpression",
+                "expression": "0 */1 * * 1"
+              },
+              {
+                "field": "cronExpression",
+                "expression": "0 */2 * * 2-5"
+              },
+              {
+                "field": "cronExpression",
+                "expression": "0 */4 * * 0,6"
+              }
+            ]
+          }
+        },
+        "id": "scanner-schedule",
+        "name": "Smart Schedule",
+        "type": "n8n-nodes-base.scheduleTrigger",
+        "typeVersion": 1.2,
+        "position": [
+          256,
+          400
+        ]
+      },
+      {
+        "parameters": {
+          "url": "https://gamma-api.polymarket.com/markets",
+          "sendQuery": true,
+          "queryParameters": {
+            "parameters": [
+              {
+                "name": "closed",
+                "value": "false"
+              },
+              {
+                "name": "limit",
+                "value": "200"
+              },
+              {
+                "name": "offset",
+                "value": "0"
+              }
+            ]
+          },
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "User-Agent",
+                "value": "Mozilla/5.0"
+              }
+            ]
+          },
+          "options": {}
+        },
+        "id": "fetch-polymarket",
+        "name": "Fetch Polymarket",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          480,
+          304
+        ]
+      },
+      {
+        "parameters": {
+          "url": "https://gamma-api.polymarket.com/markets",
+          "sendQuery": true,
+          "queryParameters": {
+            "parameters": [
+              {
+                "name": "closed",
+                "value": "false"
+              },
+              {
+                "name": "limit",
+                "value": "200"
+              },
+              {
+                "name": "offset",
+                "value": "100"
+              }
+            ]
+          },
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "User-Agent",
+                "value": "Mozilla/5.0"
+              }
+            ]
+          },
+          "options": {}
+        },
+        "id": "fetch-page2",
+        "name": "Fetch Page 2",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          480,
+          496
+        ]
+      },
+      {
+        "parameters": {
+          "url": "https://gamma-api.polymarket.com/markets",
+          "sendQuery": true,
+          "queryParameters": {
+            "parameters": [
+              {
+                "name": "closed",
+                "value": "false"
+              },
+              {
+                "name": "limit",
+                "value": "200"
+              },
+              {
+                "name": "offset",
+                "value": "200"
+              }
+            ]
+          },
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "User-Agent",
+                "value": "Mozilla/5.0"
+              }
+            ]
+          },
+          "options": {}
+        },
+        "id": "fetch-page3",
+        "name": "Fetch Page 3",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          480,
+          688
+        ]
+      },
+      {
+        "parameters": {
+          "url": "https://gamma-api.polymarket.com/markets",
+          "sendQuery": true,
+          "queryParameters": {
+            "parameters": [
+              {
+                "name": "closed",
+                "value": "false"
+              },
+              {
+                "name": "limit",
+                "value": "200"
+              },
+              {
+                "name": "offset",
+                "value": "300"
+              }
+            ]
+          },
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "User-Agent",
+                "value": "Mozilla/5.0"
+              }
+            ]
+          },
+          "options": {}
+        },
+        "id": "fetch-page4",
+        "name": "Fetch Page 4",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          480,
+          880
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "const isWeekend = [0,6].includes(new Date().getDay());\nconst isMonday = new Date().getDay() === 1;\n\nconst markets = $input.all().map(i => i.json);\n\n// Asset keywords \u2014 broadened to catch more Polymarket question formats\nconst assetKeywords = {\n  btc: ['bitcoin', 'btc'],\n  eth: ['ethereum', 'eth price', 'ether', 'eth hit', 'eth reach', 'eth above', 'eth to', 'ethereum hit', 'ethereum reach', 'ethereum above'],\n  gold: ['gold price', 'gold hit', 'price of gold', 'xau', 'gold above', 'gold reach', 'gold to', 'gold at', 'gold cross', 'gold exceed', 'gold surpass', 'gold breaks', 'gold past'],\n  silver: ['silver price', 'silver hit', 'price of silver', 'xag', 'silver above', 'silver reach', 'silver to', 'silver at', 'silver cross', 'silver exceed', 'silver surpass'],\n  wti: ['wti', 'crude oil price', 'west texas', 'crude oil', 'oil price', 'oil above', 'oil reach', 'oil hit'],\n  brent: ['brent', 'brent crude', 'brent oil']\n};\n\n// Sports teams that contain asset keywords (false positives)\nconst sportsExclude = /stanley cup|nba|nfl|nhl|warriors|knights|oilers|lakers|nuggets|cavaliers|celtics|76ers|super bowl|world cup|premier league|championship|playoffs|olympics|finals|win the|grand prix/i;\n\nconst results = [];\nconst seen = new Set();\n\nfor (const m of markets) {\n  const text = (m.question || '').toLowerCase();\n  const desc = (m.description || '').toLowerCase();\n  const fullText = text + ' ' + desc;\n  const endDate = m.endDate || m.end_date_iso;\n  const marketId = m.id || m.conditionId;\n\n  // Deduplicate across pages\n  if (seen.has(marketId)) continue;\n  seen.add(marketId);\n\n  // Skip sports\n  if (sportsExclude.test(m.question || '')) continue;\n\n  // Identify asset\n  let asset = null;\n  for (const [a, keywords] of Object.entries(assetKeywords)) {\n    if (keywords.some(k => fullText.includes(k))) {\n      asset = a;\n      break;\n    }\n  }\n  if (!asset) continue;\n  if (isWeekend && asset !== 'btc' && asset !== 'eth') continue;\n\n  // Parse target price \u2014 handle $150k, $1m, $100,000 etc.\n  const priceMatches = text.match(/\\$[\\d,]+\\.?\\d*[kmb]?/gi) || [];\n  const prices = priceMatches.map(p => {\n    const suffix = p.slice(-1).toLowerCase();\n    const clean = p.replace(/[$,kmb]/gi, '');\n    const num = parseFloat(clean);\n    if (suffix === 'k') return num * 1000;\n    if (suffix === 'm') return num * 1000000;\n    if (suffix === 'b') return num * 1000000000;\n    return num;\n  }).filter(p => p > 0);\n\n  if (prices.length === 0) continue;\n\n  // Horizon: days from today to market end date\n  const horizonDays = endDate\n    ? Math.ceil((new Date(endDate) - new Date()) / 86400000)\n    : 30;\n\n  // Extended to 365 days\n  if (horizonDays <= 0 || horizonDays > 365) continue;\n\n  // Parse yes price from outcomePrices\n  let yesPrice = null;\n  try {\n    const p = typeof m.outcomePrices === 'string'\n      ? JSON.parse(m.outcomePrices)\n      : m.outcomePrices;\n    if (p?.[0]) yesPrice = parseFloat(p[0]);\n  } catch {}\n  if (yesPrice === null || yesPrice < 0.02 || yesPrice > 0.98) continue;\n\n  const targetPrice = Math.max(...prices);\n\n  results.push({\n    market_id: marketId,\n    question: m.question,\n    asset,\n    target: targetPrice,\n    yes_price: yesPrice,\n    horizon_days: horizonDays,\n    end_date: endDate,\n    volume: parseFloat(m.volume || 0),\n    needs_simulation: true,\n    source: m.source || 'polymarket'\n  });\n}\n\n// Sort by volume descending\nresults.sort((a, b) => b.volume - a.volume);\n\nreturn results.map(r => ({ json: r }));"
+        },
+        "id": "analyse-edge",
+        "name": "Analyse Edge",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1376,
+          608
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "https://fdabygmromuqtysitodp.supabase.co/rest/v1/trading_simulations",
+          "authentication": "genericCredentialType",
+          "genericAuthType": "httpHeaderAuth",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify($json.sims) }}",
+          "options": {}
+        },
+        "id": "save-sims",
+        "name": "Save Simulations",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          2048,
+          400
+        ],
+        "credentials": {
+          "httpHeaderAuth": {
+            "id": "Nd2uuX5t9KEwbQPv",
+            "name": "Supabase FSC"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "options": {
+              "caseSensitive": true,
+              "leftValue": "",
+              "typeValidation": "loose"
+            },
+            "conditions": [
+              {
+                "id": "edge-check",
+                "leftValue": "={{ $json.highEdge.length }}",
+                "rightValue": 0,
+                "operator": {
+                  "type": "number",
+                  "operation": "gt"
+                }
+              },
+              {
+                "id": "no-edge-check",
+                "leftValue": "={{ $json.noEdge.length }}",
+                "rightValue": 0,
+                "operator": {
+                  "type": "number",
+                  "operation": "gt"
+                }
+              }
+            ],
+            "combinator": "or"
+          },
+          "options": {}
+        },
+        "id": "has-edge",
+        "name": "Has Edge?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2,
+        "position": [
+          2048,
+          704
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendMessage",
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify({\n  chat_id: 1375806243,\n  text: ($json.highEdge.length > 0\n    ? '\\ud83c\\udfaf Edge Found!\\n\\n' + $json.highEdge.map(h =>\n        '[' + (h.source || 'polymarket') + '] ' + h.asset.toUpperCase() + ': ' + h.question + '\\n' +\n        'Target: $' + h.target.toLocaleString() + ' | Horizon: ' + h.horizon_days + ' days (ends ' + (h.end_date || 'N/A') + ')\\n' +\n        'Sim: ' + (h.sim_probability*100).toFixed(1) + '% | Market: ' + (h.yes_price*100).toFixed(1) + '% | Edge: ' + h.edge.toFixed(1) + '%\\n' +\n        'Volume: $' + (h.volume/1000).toFixed(0) + 'K'\n      ).join('\\n\\n')\n    : '\\ud83d\\udcca Market Intelligence \\u2014 No YES edge found but notable OVERPRICED markets detected:\\n\\n' + ($json.noEdge || []).map(r =>\n        '[' + (r.source || 'polymarket') + '] ' + r.asset.toUpperCase() + ': market YES=' + (r.yes_price*100).toFixed(1) + '% | our sim=' + (r.sim_probability*100).toFixed(1) + '% | potential NO edge\\nQuestion: ' + r.question\n      ).join('\\n\\n')\n  ) + ($json.highEdge.length > 0 && $json.noEdge.length > 0\n    ? '\\n\\n---\\n\\n\\ud83d\\udcca Notable OVERPRICED markets:\\n\\n' + $json.noEdge.map(r =>\n        '[' + (r.source || 'polymarket') + '] ' + r.asset.toUpperCase() + ': market YES=' + (r.yes_price*100).toFixed(1) + '% | our sim=' + (r.sim_probability*100).toFixed(1) + '% | potential NO edge\\nQuestion: ' + r.question\n      ).join('\\n\\n')\n    : ''),\n  parse_mode: 'HTML'\n}) }}",
+          "options": {}
+        },
+        "id": "notify-edge",
+        "name": "Notify Edge",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          2272,
+          704
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "http://138.68.138.214:4001/simulate",
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify({ asset: $json.asset, target: $json.target, question: $json.question, horizon_days: $json.horizon_days }) }}",
+          "options": {
+            "batching": {
+              "batch": {
+                "batchSize": 1,
+                "batchInterval": 500
+              }
+            },
+            "timeout": 60000
+          }
+        },
+        "id": "run-market-sims",
+        "name": "Run Market Simulations",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          1600,
+          608
+        ]
+      }
+    ],
+    "connections": {
+      "Smart Schedule": {
+        "main": [
+          [
+            {
+              "node": "Fetch Polymarket",
+              "type": "main",
+              "index": 0
+            },
+            {
+              "node": "Fetch Page 2",
+              "type": "main",
+              "index": 0
+            },
+            {
+              "node": "Fetch Page 3",
+              "type": "main",
+              "index": 0
+            },
+            {
+              "node": "Fetch Page 4",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Fetch Polymarket": {
+        "main": [
+          [
+            {
+              "node": "Analyse Edge",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Fetch Page 2": {
+        "main": [
+          [
+            {
+              "node": "Analyse Edge",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Fetch Page 3": {
+        "main": [
+          [
+            {
+              "node": "Analyse Edge",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Fetch Page 4": {
+        "main": [
+          [
+            {
+              "node": "Analyse Edge",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Analyse Edge": {
+        "main": [
+          [
+            {
+              "node": "Run Market Simulations",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Run Market Simulations": {
+        "main": [
+          [
+            {
+              "node": "Has Edge?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Has Edge?": {
+        "main": [
+          [
+            {
+              "node": "Notify Edge",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Notify Edge",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Save Simulations": {
+        "main": [
+          []
+        ]
+      }
+    },
+    "authors": "Tyson Venables",
+    "name": null,
+    "description": null,
+    "autosaved": false,
+    "workflowPublishHistory": [
+      {
+        "createdAt": "2026-04-28T18:30:52.777Z",
+        "id": 784,
+        "workflowId": "3YahxqOguET3pifj",
+        "versionId": "152593af-e7ac-4baf-816b-efde1c885265",
+        "event": "activated",
+        "userId": "b1512bca-25b8-4b8b-add0-b86540e5144d"
+      },
+      {
+        "createdAt": "2026-04-28T18:30:53.267Z",
+        "id": 785,
+        "workflowId": "3YahxqOguET3pifj",
+        "versionId": "152593af-e7ac-4baf-816b-efde1c885265",
+        "event": "activated",
+        "userId": "b1512bca-25b8-4b8b-add0-b86540e5144d"
+      }
+    ]
+  }
+}
