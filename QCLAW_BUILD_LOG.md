@@ -2621,3 +2621,11 @@ P2 (config cleanup):
 - ✅ P6 Security — no hardcoded chat_id / sim host / service role key in workflow JSON; `/root/.quantumclaw/.env` permissions `600` unchanged; `/home/n8nadmin/n8n-project/.env` permissions `600` unchanged; backups created before each in-place edit
 - ✅ P7 Infra — workflow + error handler + .env backups committed to repo; live state matches repo state
 - N/A P1 Frontend, P2 Backend, P5 Payments — no changes in these areas this session
+
+## [2026-05-02] Charlie Overhaul — Foundation Committed
+
+Phase 1 (role spec + failure catalogue), Phase 2 (code-grounded audit), and Phase 2.5 (CEO Operating Model) complete. Foundation docs committed:
+- CEO_OPERATING_MODEL.md — operating model and trust gradient (north star)
+- CHARLIE_OVERHAUL.md — running architecture doc
+
+Phase 3 (Charlie 2.0 design) in progress. See CHARLIE_OVERHAUL.md for current state.
