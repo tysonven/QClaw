@@ -2866,3 +2866,63 @@ Canonical state doc committed to repo root. Initial v1 population covers all 5 b
 Architectural principles locked in this doc: GHL is canonical contact store per business unit, Stripe is canonical payer record, this doc bridges them with structural context. Pseudonymisation rule: first name + last initial in committed doc; full mappings in private file at ~/.quantumclaw/flow_os_state_private.md (gitignored, qclaw-server-only).
 
 Pre-slice progress: 3 of 4 remaining canonical docs complete (CHARLIE_ROLE.md, FLOW_OS_SPECIALISTS.md, FLOW_OS_STATE.md). Final pre-slice doc pending: N8N_WORKFLOW_INDEX.md (focused Tyson + Claude Code session, scheduled next session).
+
+## [2026-05-03] Charlie Overhaul — Session Summary and End-of-Day State
+
+Substantial day on the Charlie 2.0 overhaul. Capturing the full arc here so future sessions (and Charlie himself, post-Phase-4 bootstrap) have the consolidated picture.
+
+### What was completed today
+
+**Design phases:**
+- Phase 1 — Charlie role spec + failure catalogue (5 patterns: hallucinated context, stale memory, false completion reports, phantom tool use, lane violations)
+- Phase 2 — Code-grounded audit of current Charlie via Claude Code; headline finding: doc-runtime gap (Charlie has been built as if he reads canonical docs at session start, but the runtime opens almost none of them)
+- Phase 2.5 — CEO Operating Model spec locked (north star: Tyson as CEO, Charlie as orchestration, specialists as operators, Claude Code as implementor; daily rhythm with morning + evening digests; trust gradient with 5 levels; non-negotiable rules; success criteria with 50/30/20 → 30/60/10 trajectory)
+- Phase 3 — Six-component Charlie 2.0 design locked: bootstrap mechanism, canonical doc loading, skill loading strategy (pragmatic split), tool surface overhaul, verification gates (soft + hard), Claude Code delegation bridge
+
+**Foundation docs committed:**
+- `CEO_OPERATING_MODEL.md` — north star
+- `CHARLIE_OVERHAUL.md` — running architecture doc with full Phase 3 design + footnote pointing to FLOW_OS_SPECIALISTS.md as canonical registry
+- `LOCATIONS.md` — single source of location for state, logs, configs, docs
+- `KEYWORD_REFERENCE.md` — keyword cheat sheet for skill loading routing
+- `CLAUDE_CODE_OPERATING_RULES.md` — Claude Code session discipline (working tree, lock file, branch hygiene, scope, verification, handoff, read-before-write, secrets, escalation, reading order)
+- `CLAUDE_CODE_INVENTORY.md` — Claude Code tool surface and access scope
+- `CHARLIE_ROLE.md` — Charlie's canonical role spec with warm but precise tone
+- `FLOW_OS_SPECIALISTS.md` — 15 specialists across 6 sections + 3 deferred
+- `FLOW_OS_STATE.md` — initial v1 population across all 5 business contexts + cross-dimensional clients
+
+**Process learnings captured:**
+- Code-fence artefacts from large markdown pastes — caught and fixed via diagnose-pause-fix Claude Code pattern
+- Person↔business mapping is load-bearing context Charlie needs (Stripe customer name ≠ business operating name in many cases)
+- Cross-dimensional clients are a structural pattern: 3 clients (Lucy H., Eliza J. + Gutful, Kylie F.) span multiple business units
+- GHL is canonical contact store per business unit; Stripe is canonical payer record; state doc bridges with structural context
+
+### Pre-slice progress
+
+- Foundation docs: COMPLETE
+- `CHARLIE_ROLE.md`: COMPLETE
+- `FLOW_OS_SPECIALISTS.md`: COMPLETE
+- `FLOW_OS_STATE.md`: COMPLETE
+- `N8N_WORKFLOW_INDEX.md`: PENDING — focused Tyson + Claude Code session scheduled for next session
+
+### Blockers for Phase 4 implementation
+
+One: `N8N_WORKFLOW_INDEX.md` must be populated before Phase 4 Slice 1 (Bootstrap and canonical doc loading) ships, because the bootstrap reads it as part of canonical doc loading.
+
+### Next session
+
+1. Populate `N8N_WORKFLOW_INDEX.md` via focused Tyson + Claude Code session walking through every active n8n workflow on `webhook.flowos.tech` (~2-3 hours estimated)
+2. Once committed, Phase 4 Slice 1 (Bootstrap and canonical doc loading) can begin
+
+### Today's commit chain
+
+In order:
+- `eb6de4d` — Charlie overhaul foundation (CEO_OPERATING_MODEL.md + CHARLIE_OVERHAUL.md initial)
+- `e18f75a` — Phase 3 design complete (CHARLIE_OVERHAUL.md updated with full Phase 3 block + Phase 4 slicing + Phase 5+ roadmap)
+- `17499ea` — Pre-slice foundation 1 (LOCATIONS.md + KEYWORD_REFERENCE.md + CLAUDE_CODE_OPERATING_RULES.md + CLAUDE_CODE_INVENTORY.md)
+- `b7fad6c` — Canonical role spec (CHARLIE_ROLE.md)
+- `3313b02` — Code-fence touch-up on CLAUDE_CODE_OPERATING_RULES.md
+- `0c415aa` — FLOW_OS_SPECIALISTS.md committed with CHARLIE_OVERHAUL.md footnote
+- `8a2fdf3` — Canonical state doc v1 (FLOW_OS_STATE.md)
+- (this commit) — End-of-session summary
+
+End of day. Next session: N8N_WORKFLOW_INDEX.md focused session, then Phase 4 Slice 1 begins.
