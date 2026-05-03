@@ -2796,3 +2796,35 @@ All six components of Charlie 2.0 designed and locked:
 6. Claude Code delegation bridge — audit-first dispatch, Supabase-tracked, scope-gated authorisation
 
 See CHARLIE_OVERHAUL.md for full design. Phase 4 implementation prerequisites and slicing defined.
+
+## 2026-05-03 — FSC credential header contribution: confirmed (resolves step 7 ambiguity)
+
+**Trigger:** during the 2026-04-30 Crete pipeline hardening (commit `91746aa`), step 7 ("strip inline `apikey`/`Authorization: Bearer` headers in favour of the `Supabase FSC` credential") was deferred because the n8n public API doesn't expose credential values, so the FSC credential's actual header contribution couldn't be inspected. Without that, removing inline headers risked breaking auth.
+
+**Probe procedure:** created a one-shot temporary workflow `Crete - FSC Credential Probe (TEMP 2026-05-03)` (id `hAOfnl9ifMBzM9FF`) with three nodes — Webhook → HTTP Request → Respond. The HTTP Request node hit `https://httpbin.org/headers` (which echoes received headers back), with the `Supabase FSC` credential (id `Nd2uuX5t9KEwbQPv`, type `httpHeaderAuth`) attached and **no inline auth headers**. Triggered via `curl -X POST https://webhook.flowos.tech/webhook/crete-fsc-probe-2026-05-03` then deactivated + deleted (404 confirmed).
+
+**Result:** httpbin echoed only generic transport headers — `Accept`, `Accept-Encoding`, `Host`, `User-Agent: axios/1.12.0`, `X-Amzn-Trace-Id`. **No `apikey`, no `Authorization`, no Supabase token.** The FSC credential adds NOTHING to outgoing requests.
+
+```json
+{
+  "headers": {
+    "Accept": "application/json,text/html,application/xhtml+xml,application/xml,text/*;q=0.9, image/*;q=0.8, */*;q=0.7",
+    "Accept-Encoding": "gzip, compress, deflate, br",
+    "Host": "httpbin.org",
+    "User-Agent": "axios/1.12.0",
+    "X-Amzn-Trace-Id": "Root=1-69f73eb5-7624fb7e3977c8823f62c0d0"
+  }
+}
+```
+
+**Implication:** the `Supabase FSC` credential is a misconfigured / empty `httpHeaderAuth` (the Name/Value pair is unset, or the credential exists in name only). Every Crete and GHL workflow that references it has been authenticating **purely via the inline `apikey` / `Authorization: Bearer {{$env.SUPABASE_ANON_KEY}}` headers**. The credential attachment is cosmetic.
+
+**Step 7 verdict — false premise:** the brief's plan to "strip inline headers in favour of the FSC credential" cannot proceed as written. Stripping inline headers would leave the workflows with no auth → 401 from Supabase on every call. **Do NOT strip inline headers.** Two valid forward paths:
+1. **Populate the FSC credential properly via the n8n UI** (set its Name/Value to e.g. `apikey: <service-role-key>` plus a second credential for `Authorization`), THEN strip inline headers. Net win: secrets stop flowing through `$env.SUPABASE_ANON_KEY` references in workflow JSON. Requires n8n UI session.
+2. **Accept the FSC credential is a no-op and detach it** from the Crete + GHL HTTP nodes (keep inline headers as the actual auth source). Cleanup, no auth change. Lower-value but removes a misleading attribution.
+
+The 2026-04-30 commit's "Tech debt — pending next session" entry is therefore **partially obsolete**: the n8n-host SSH access is still required for step 6 (webhook auth + nginx rate limit), but step 7 needs a different action (n8n UI session OR detach-as-cleanup), not the strip-inline-headers action originally specified.
+
+**Repo artefacts:** none — temp workflow created and deleted in this probe; no permanent changes to live workflows. Workflow JSON for the probe (5 nodes incl. trigger/respond) lived only at `/tmp/crete-build/fsc-probe-workflow.json` on Tyson's laptop and qclaw `/tmp`.
+
+**Pillars gate:** N/A — pure inspection, no production state changed.
