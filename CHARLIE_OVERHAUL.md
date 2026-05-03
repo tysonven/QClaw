@@ -133,6 +133,8 @@ Deferred: Retreat Planner (FSC), Stripe Operator (read-only reporting only — c
 
 **Phase 4 prerequisite:** focused session to populate `N8N_WORKFLOW_INDEX.md` from current production workflows. Tyson + Claude Code, estimated 2-3 hours, before Charlie 2.0 ships.
 
+> **Footnote (added 2026-05-03):** This registry section is a snapshot from Phase 3 design. The canonical current registry is `FLOW_OS_SPECIALISTS.md`. Notable evolution since this design was written: the two Ads Operator entries (Flow OS and Emma Maidment Business) have been consolidated into a single Ad Agency Operator specialist matching the actual running architecture. Always read `FLOW_OS_SPECIALISTS.md` for current truth.
+
 ### Component 3 — Skill loading strategy
 
 **Purpose:** Replace the unrouted skill concatenation (every loaded skill in every prompt) with a pragmatic always-on/on-demand split. Closes failure pattern D (phantom tools — load-bearing skills currently unsymlinked) and reduces prompt bloat.

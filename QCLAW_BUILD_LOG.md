@@ -2848,3 +2848,13 @@ Pre-slice progress: 1 of 4 remaining canonical docs complete (CHARLIE_ROLE.md). 
 ## [2026-05-03] Charlie Overhaul — CC Docs Touch-up
 
 Fixed markdown code-fence artefacts in CLAUDE_CODE_OPERATING_RULES.md and CLAUDE_CODE_INVENTORY.md from prior paste operation. Content unchanged, formatting restored so both docs render correctly when Claude Code reads them at session start.
+
+## [2026-05-03] Charlie Overhaul — FLOW_OS_SPECIALISTS.md Committed
+
+Canonical specialist registry committed to repo root. 15 specialists across 6 business contexts (Flow OS: 7, FSC: 3, SproutCode: 1, Crete: 2, Personal: 1, Shared: 1) plus 3 deferred specialists with trigger conditions.
+
+Notable: Ad Agency Operator consolidates the two Ads Operator entries originally split in Phase 3 design (Flow OS + Emma Maidment Business) into a single shared specialist matching actual running architecture (account-routing handled server-side via creator field and chatId; ad creation FSC-only; reporting all three accounts). CHARLIE_OVERHAUL.md updated with footnote pointing to FLOW_OS_SPECIALISTS.md as canonical current registry.
+
+Phase 4 Slice 2 reconciliation tasks captured in FLOW_OS_SPECIALISTS.md "Phase 4 reconciliation tasks" section. Ready for next pre-slice doc: FLOW_OS_STATE.md.
+
+Pre-slice progress: 2 of 4 remaining canonical docs complete (CHARLIE_ROLE.md, FLOW_OS_SPECIALISTS.md). Still pending: FLOW_OS_STATE.md, N8N_WORKFLOW_INDEX.md.
