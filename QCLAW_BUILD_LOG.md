@@ -2838,3 +2838,9 @@ Four foundation docs created in repo root:
 - CLAUDE_CODE_INVENTORY.md — Claude Code's tool surface and access scope
 
 Phase 4 implementation begins after remaining pre-slice docs (FLOW_OS_STATE.md, FLOW_OS_SPECIALISTS.md, N8N_WORKFLOW_INDEX.md, CHARLIE_ROLE.md) are populated in subsequent sessions.
+
+## [2026-05-03] Charlie Overhaul — CHARLIE_ROLE.md Committed
+
+Canonical role spec for Charlie committed to repo root. This file is loaded into Charlie's context on every session as part of the identity layer (per Phase 3 Component 1 bootstrap order). It defines: identity, in-lane vs out-of-lane behaviour, non-negotiable verification reflexes, communication discipline, escalation paths, multi-business-unit awareness, session-start read order, write authority by target, and active guards against the five failure patterns.
+
+Pre-slice progress: 1 of 4 remaining canonical docs complete (CHARLIE_ROLE.md). Still pending: FLOW_OS_SPECIALISTS.md, FLOW_OS_STATE.md, N8N_WORKFLOW_INDEX.md.
