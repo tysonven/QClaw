@@ -2622,10 +2622,165 @@ P2 (config cleanup):
 - ✅ P7 Infra — workflow + error handler + .env backups committed to repo; live state matches repo state
 - N/A P1 Frontend, P2 Backend, P5 Payments — no changes in these areas this session
 
-## [2026-05-02] Charlie Overhaul — Foundation Committed
+## 2026-04-30 — Crete Publishing Pipeline Hardening
 
-Phase 1 (role spec + failure catalogue), Phase 2 (code-grounded audit), and Phase 2.5 (CEO Operating Model) complete. Foundation docs committed:
-- CEO_OPERATING_MODEL.md — operating model and trust gradient (north star)
-- CHARLIE_OVERHAUL.md — running architecture doc
+**Goal:** Stop the silent-fail cascade where Instagram rows with `media_url=NULL` would be picked up by `Crete - Scheduled Publisher`, posted to Blotato (which rejected them), and never advance past `status=approved` — re-failing every hour. Three rows had been stuck for up to 96h before detection.
 
-Phase 3 (Charlie 2.0 design) in progress. See CHARLIE_OVERHAUL.md for current state.
+**Workflows touched:** `Crete - Scheduled Publisher` (`9kTWhh9PlxMpyMlp`), `Crete - Content Publish` (`zXKBjp3yjW2oR2Mj`), `Crete - Content Generator` (`tnvXFYvODL1PrhJa`). Reference error workflow: `Trading - Error Handler` (`7kpNnMtnuDWXgWcX`).
+
+### Diagnosis (deferred from build brief §2.5)
+
+Read of `src/dashboard/server.js:1926` shows the route is sound:
+- **Auth:** Bearer header `Authorization: Bearer <token>` OR `?token=<value>` query param, validated by the global auth middleware (lines 380–410). Localhost is NOT auto-trusted (verified: `curl http://localhost:4000/...` still returns 401).
+- **Token env var:** `process.env.DASHBOARD_AUTH_TOKEN` (or `config.dashboard.authToken` from `~/.quantumclaw/config.json`).
+- **Success response:** `{ success: true, url: "https://media.creteprojects.com/images/<uuid>.png", style, key }`. URL prefix from `CRETE_R2_PUBLIC_URL` env var (default `https://media.creteprojects.com`). All required env vars (`R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `CRETE_R2_BUCKET_NAME`, `CRETE_R2_PUBLIC_URL`) ARE present in `/root/.quantumclaw/.env`.
+
+`git log src/dashboard/server.js --since=2026-04-21 --until=2026-04-23`:
+- `26fe992 2026-04-23 feat: migrate Crete R2 to dedicated bucket with custom domain`
+- `07ce57a 2026-04-22 fix: scheduled publishing + stock photo selection for Crete content`
+- `0597cbc 2026-04-21 feat: GHL Marketing dashboard tab + fix n8n workflow auth + regenerate webhook`
+
+The Apr 21 commit (`fix n8n workflow auth`) and Apr 23 R2 migration line up with the date the brief identifies as the start of `text_card` failures (last successful gen Apr 21). Most plausible failure mode: n8n's HTTP node `Generate Text Card` was sending an outdated auth token after Apr 21, OR the Apr 23 R2 migration changed the response URL host in a way `Merge Image URL` couldn't parse — combined with the existing silent-null pattern, every text_card slot since produced `media_url=NULL` and the failure went undetected. **Definitive root cause requires a request-log trace from the n8n side; deferred.** This session removes the silent-null behaviour and adds a stock-photo fallback so the failure mode is loud + non-blocking from now on.
+
+### Schema migration — `crete_publish_retry_tracking`
+
+Applied via Supabase MCP on project `fdabygmromuqtysitodp` (n8n database):
+
+```sql
+ALTER TABLE public.crete_content_queue
+  ADD COLUMN IF NOT EXISTS publish_attempts INT NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS last_error TEXT,
+  ADD COLUMN IF NOT EXISTS last_attempt_at TIMESTAMPTZ;
+
+CREATE INDEX IF NOT EXISTS idx_crete_content_queue_publishable
+  ON public.crete_content_queue (status, scheduled_for, publish_attempts)
+  WHERE status = 'approved';
+```
+
+Verified: 3 columns added, partial index created, RLS still enabled (`relrowsecurity=t`, 1 policy). The `status` column has **no CHECK constraint** — free-text — so `failed` and `archived` are usable without DDL.
+
+Migration SQL file committed at `n8n-workflows/migrations/2026_04_30_crete_publish_retry_tracking.sql`.
+
+### `Crete - Scheduled Publisher` (`9kTWhh9PlxMpyMlp`)
+
+3 → 5 nodes. Settings: `errorWorkflow=7kpNnMtnuDWXgWcX`, `availableInMCP=true` re-asserted on PUT.
+
+- **`Query Approved Due` HTTP node**: added `publish_attempts=lt.3` query param (so permanently-failed rows stop being retried), bumped `limit` from `5` to `10` for headroom. Attached `Supabase FSC` credential (id `Nd2uuX5t9KEwbQPv`); inline `apikey` / `Authorization: Bearer {{$env.SUPABASE_ANON_KEY}}` headers retained per the GHL Marketing pattern (see "Tech debt" below).
+- **`Trigger Publish` HTTP node**: added `onError: continueRegularOutput`. Reason: when `Crete - Content Publish` returns 502 on permanent failure (3 attempts exhausted), the per-item iteration must keep running for rows 2-N rather than halting the whole hourly run.
+- **New `Build Summary` Code node** as a parallel branch off `Hourly Schedule` (sibling of `Query Approved Due`). `alwaysOutputData: true`, "Run Once for All Items" mode, body emits `[{json: {count: $('Query Approved Due').all().length, ids: [...], timestamp}}]`.
+- **New `Heartbeat` Telegram node** downstream of `Build Summary`. Posts `💛 Scheduled Publisher tick: triggered N item(s)` to chat `1375806243`.
+
+**Topology gotcha (caught + fixed live):** First PUT placed `Heartbeat` after `Trigger Publish`. The 14:00 UTC tick ran `success` in n8n executions but **no Telegram message arrived**. Diagnosis via `GET /api/v1/executions/<id>?includeData=true`:
+```
+runData keys: ["Hourly Schedule", "Query Approved Due"]
+Hourly Schedule: 1 item
+Query Approved Due: 0 items
+```
+n8n skips downstream nodes when input has 0 items. With an empty queue (the most common case for this hourly publisher), neither `Trigger Publish` nor `Heartbeat` executed — defeating the heartbeat's whole purpose (silent-skip detection on cron jobs). Fix: re-route `Heartbeat` as a **parallel branch off `Hourly Schedule`** (which always emits 1 item), with `Build Summary` between Schedule and Heartbeat. `Build Summary` reads `$('Query Approved Due').all()` for the count, relying on n8n's fan-out connection-list ordering: `Hourly Schedule` lists `Query Approved Due` FIRST, `Build Summary` SECOND, so QAD's subtree completes before Build Summary executes. **Lesson for future heartbeat builds**: never route a heartbeat downstream of a node that may emit 0 items. Always source it from an always-emits parent (Schedule, Webhook, Manual trigger) or use `alwaysOutputData: true` on a node whose input is guaranteed non-empty.
+
+**Verification (live, post-fix):**
+- Fixed Scheduled Publisher PUT returned HTTP 200; topology confirmed via GET — `Hourly Schedule.main[0]` = `[Query Approved Due, Build Summary]` in that order, `Build Summary.alwaysOutputData=true`.
+- Triggered via temporary fast cron: PUT with `Hourly Schedule.parameters.rule.interval[0].expression = "0 * * * * *"` (every minute on :00) at 14:58:14 UTC → execution `724304` fired at 14:59:00 UTC, status=success, finished=true. Reverted to `0 0 * * * *` immediately after (PUT HTTP 200).
+- Execution `724304` `runData` keys: `["Hourly Schedule", "Query Approved Due", "Build Summary", "Heartbeat"]` — all 4 nodes ran (was 2 nodes pre-fix).
+- Heartbeat HTTP node return body: `{"ok":true, "result":{"message_id":3108, "chat":{"id":1375806243, "username":"tysonven"}, "text":"💛 Scheduled Publisher tick: triggered 0 item(s)"}}`. Telegram delivery **confirmed end-to-end** via the API response (no longer awaiting visual confirmation).
+
+### `Crete - Content Publish` (`zXKBjp3yjW2oR2Mj`)
+
+14 → 24 nodes. Settings: `errorWorkflow=7kpNnMtnuDWXgWcX`, `availableInMCP=true` re-asserted on PUT.
+
+**New validation path (between `Extract Item` and `Platform Switch`):**
+- `Validate Media` Code node — flags `_validation_failed=true, _failure_reason='missing_media_for_instagram'` for Instagram rows missing `media_url`.
+- `Validation Failed?` IF node — `main[0]` (true) → Mark Failed branch; `main[1]` (false) → `Platform Switch` (existing path).
+- `Mark Failed (Validation)` HTTP PATCH → sets `status='failed', publish_attempts=current+1, last_error='missing_media_for_instagram', last_attempt_at=now()`. Supabase FSC credential attached.
+- `Telegram Validation Failed` → posts `🛑 Crete publish blocked — <title> | reason: <_failure_reason> | id: <id>` to chat `1375806243`. Pulls `_failure_reason` from `$('Validate Media').item.json` (NOT `$('Extract Item')` — the field is set by Validate Media's output, an earlier draft used the wrong reference and was caught and re-PUT during validation).
+- `Respond Validation Failed` → `responseCode: 422`, body `{success: false, reason: <_failure_reason>, content_id}`.
+
+**New publish-failure path (off Blotato/FB error outputs):**
+- `LinkedIn Post (Blotato)`, `Instagram Post (Blotato)`, `Facebook Post` all set to `onError: continueErrorOutput`. Their `main[1]` (error) outputs route to `Increment Attempts`.
+- `Increment Attempts` Code → builds PATCH body `{publish_attempts: prev+1, last_error: <err.message ∥ JSON.stringify(err)>.slice(0,1000), last_attempt_at, status: attempts >= 3 ? 'failed' : 'approved', _will_retry}`.
+- `Patch Attempts` HTTP PATCH → applies it. Supabase FSC credential attached.
+- `Telegram Publish Failed` → `⚠️ Crete publish failed (will retry): ...` for attempts 1-2, `🛑 Crete publish PERMANENTLY failed (3 attempts): ...` for attempt 3.
+- `Respond Publish Failed` → `responseCode: 502`, body `{success: false, attempt, will_retry, content_id, error}`.
+
+**Success path:**
+- `Update Status` HTTP PATCH body now includes `publish_attempts: ($('Extract Item').item.json.publish_attempts || 0) + 1, last_attempt_at: now()` alongside the existing `status='published', published_at=now()`. Supabase FSC credential attached.
+- `Telegram Notify` → `Heartbeat` (new) → `Respond` (success path tail). Heartbeat fires per successful publish: `💛 Crete publish OK — <title> | platform=<...> | id=<...>`.
+
+**Validation test (live):**
+- Inserted synthetic test row id `d4fec160-0657-4167-b9b0-1325ffd0c601`: `platform='instagram'`, `media_url=NULL`, `status='approved'`, `scheduled_for=now()`, `title='[TEST-VALIDATION-2026-04-30] synthetic missing-media probe'`.
+- POSTed to `https://webhook.flowos.tech/webhook/crete-content-publish` with `{content_id: ...}`.
+- First run (after initial PUT): HTTP 422 in 2.04s, body `{"success":false,"reason":"validation_failed","content_id":"..."}`. Row state confirmed: `status='failed'`, `publish_attempts=1`, `last_error='missing_media_for_instagram'`, `last_attempt_at=2026-04-30T13:46:03Z`. **Pass**, but `reason` field returned the fallback string `validation_failed` instead of `missing_media_for_instagram` because `Respond Validation Failed`'s expression read `$('Extract Item').item.json._failure_reason` — Extract Item runs before Validate Media so the field is undefined there.
+- Fix: changed all references from `$('Extract Item').item.json._failure_reason` to `$('Validate Media').item.json._failure_reason` (also affected `Telegram Validation Failed`). Re-built, re-PUT (HTTP 200).
+- Second run: HTTP 422, body `{"success":false,"reason":"missing_media_for_instagram","content_id":"d4fec160..."}` — precise reason now flows through. Row state: `publish_attempts=2`, `last_error='missing_media_for_instagram'`, `last_attempt_at=2026-04-30T14:00:40Z`. **Pass.**
+- No Blotato call attempted in either run (validation short-circuited before `Platform Switch`).
+- Test row archived: `UPDATE crete_content_queue SET status='archived', last_error='archived after synthetic validation test passed (build brief 2026-04-30)' WHERE id='d4fec160-0657-4167-b9b0-1325ffd0c601'`.
+
+### `Crete - Content Generator` (`tnvXFYvODL1PrhJa`)
+
+15 → 18 nodes. Settings: `errorWorkflow=7kpNnMtnuDWXgWcX`, `availableInMCP=true` re-asserted on PUT.
+
+- **`Merge Image URL` Code node rewritten** — happy path unchanged (assigns `cleanRow.media_url = apiResp.url, metadata.image_source='generator'`). Failure path now `throw new Error('generate-image API returned no url for slot <slot|title>. Response: <stringified apiResp>.slice(0,500)')` instead of silently null'ing. The Error Workflow (`7kpNnMtnuDWXgWcX`) catches this and posts a Telegram alert.
+- **`Select Random Photo` Code node rewritten** — preserves existing theme-filter semantics, but now `throw new Error('Photo library returned 0 photos. Theme=<...>')` if the library is empty, and `throw new Error('Photo library returned no usable photo for theme: <...>. Library size: N')` if filtering yields nothing usable. Output also tags `metadata.image_source='library_fallback'` (vs `'library'`) when the row arrived via the new fallback path.
+- **`Generate Text Card`** set to `onError: continueErrorOutput`.
+- **New `Photo Fallback` Code node** on the `Generate Text Card` error output → builds a row with `_needsPhoto=true, _photoTheme=<image_theme∥theme>, _fallback_from_generator=true`.
+- **New `Telegram Fallback Alert`** → `⚠️ Image generator unavailable, fell back to stock photo for <title>`. Loud but non-blocking.
+- **Wiring:** `Generate Text Card` `main[0]` → `Merge Image URL` (existing); `Generate Text Card` `main[1]` (error) → `Photo Fallback` → `Telegram Fallback Alert` → `Fetch Photo Library` → `Select Random Photo` → `Insert to Supabase` (existing path resumes).
+- **`Insert to Supabase`** — Supabase FSC credential attached.
+- **`Telegram Notify` → `Heartbeat` (new)** at tail. Heartbeat: `💛 Content Generator tick OK — generated N row(s)`.
+
+**Regression discovered + fixed (2026-05-02):** First natural tick after PUT was 2026-05-01 12:00 UTC (n8n's effective hour for cron `0 0 8 * * *` — timezone-shifted from 08:00 UTC). Execution `724874` errored at `Insert to Supabase` with HTTP 400:
+```
+NodeApiError: 400 — {"code":"PGRST204","details":null,"hint":null,
+  "message":"Could not find the 'photos' column of 'crete_content_queue' in the schema cache"}
+lastNodeExecuted: "Insert to Supabase"
+```
+Root cause: my rewritten `Select Random Photo` set `const row = $input.item.json` — but `$input.item.json` IS the photo-library response (contains `photos[]`), not the Crete row. The original (working) code used `$('Image Router').item.json` for row context. After my edit, the row sent to Supabase had `{photos: [...22 photos...], media_url, metadata}` and was missing all the actual content fields (title, body, platform, content_type, etc.). PGRST rejected the unknown `photos` column. Hard regression — the n8n Code-node row-context source is non-obvious and I substituted incorrectly. **Fix (PUT'd 2026-05-02 ~08:30 UTC):** restore `$('Image Router').item.json` as the primary row source, plus add a try/catch fallback to `$('Photo Fallback').item.json` for the text-card-failed path (which the original code didn't cover because Photo Fallback didn't exist). Also strip `_needsImage`/`_apiBody` in the destructure so they don't leak into the Insert payload via the fallback path. **n8n's `.item` accessor is paired-item-aware**, so multi-item executions correctly resolve each Select Random Photo iteration to its corresponding Image Router output.
+
+**Pending validation (carparked):** next natural Content Generator tick at **2026-05-02 12:00 UTC**. Watch for: (a) Insert to Supabase succeeds (HTTP 200/201) for any photo-path slots; (b) `metadata.image_source='library'` for normal photo path or `'library_fallback'` for text-card-failed path; (c) no `'photos'` field in the inserted row. Rollback plan if it fails: revert Content Generator from `n8n-workflows/crete-content-generator.before-2026-04-30-fix.json` via `curl -X PUT $N8N_BASE/api/v1/workflows/tnvXFYvODL1PrhJa -d @<that-file>` (filtering to {name,nodes,connections,settings}); the original silent-null behaviour returns but the queue stops failing loudly. Any future content generated with `media_url=NULL` would then be caught by the new `Crete - Content Publish` validation path (which IS verified as working) — it would mark `status=failed, last_error='missing_media_for_instagram'` instead of silently retrying.
+
+### Recovery (already complete pre-session)
+
+The 3 stuck rows from the build brief were resolved before this session by Tyson:
+- `c9e4332b-baa8-4b10-898a-6e847fb9e764` (2026-04-25): archived (5 days stale)
+- `a19cdd5b-f64c-453a-95db-e02e65cadf8c` (2026-04-25): archived (5 days stale)
+- `5f560a1f-6dbe-4338-9a42-c8dae4982eb0` (2026-04-30): media_url switched to a stock photo, published manually via Blotato submission `0cab6040-5fd1-4314-8cf0-4642bdeadc82` (Path A in the brief).
+
+Pre-session DB state confirmed: 24 published, 2 archived, 0 approved+due+attempts<3.
+
+### Repo artefacts
+
+```
+n8n-workflows/
+  crete-scheduled-publisher.json                       # 6906 bytes — post-PUT live state
+  crete-scheduled-publisher.before-2026-04-30-fix.json # 5409 bytes — original
+  crete-content-publish.json                           # 36146 bytes — post-PUT live state
+  crete-content-publish.before-2026-04-30-fix.json     # 20785 bytes — original
+  crete-content-generator.json                         # 30705 bytes — post-PUT live state
+  crete-content-generator.before-2026-04-30-fix.json   # 24974 bytes — original
+  migrations/
+    2026_04_30_crete_publish_retry_tracking.sql        # 978 bytes — applied via Supabase MCP
+```
+
+### Tech debt — pending next session (n8n-host access required)
+
+Two items deferred because they require shell on the n8n host (`n8nadmin@<n8n-server-ip>`). The `N8N_SSH_KEY=/root/QClaw/charlie_n8n_key` env var on qclaw points at a path that doesn't exist on this box, so SSH to the n8n host wasn't possible this session.
+
+1. **Webhook auth + Nginx rate limit** (build brief step 6). `Crete - Content Publish`'s webhook is currently open to the public internet — only Scheduled Publisher legitimately calls it, but anyone with the URL can trigger publishes. Plan: generate `CRETE_WEBHOOK_TOKEN` via `openssl rand -hex 32`, add to `/root/.quantumclaw/.env` AND `/home/n8nadmin/n8n-project/.env` on the n8n host, recreate the n8n container via `docker compose up -d` (NOT restart — env_file change), add `Verify Token` Code node in Content Publish, add `X-Webhook-Token` header to Trigger Publish in Scheduled Publisher, add Nginx `limit_req zone=publish burst=10 nodelay` on `/webhook/crete-content-publish` in `webhook.flowos.tech` vhost.
+2. **Full Supabase FSC credential migration** (build brief step 7 caveat). Current state: the `Supabase FSC` credential (id `Nd2uuX5t9KEwbQPv`) is now attached to every Crete HTTP node that hits Supabase, AND the inline `apikey` / `Authorization: Bearer {{$env.SUPABASE_ANON_KEY}}` headers are retained — same pattern as `ghl-marketing-content-generator.json`. The brief's intent ("removes hardcoded reliance on `$env.SUPABASE_ANON_KEY` for Crete") would mean removing the inline headers. The n8n public API doesn't expose credential values so the FSC credential's actual header contribution can't be inspected; risk-averse path was to preserve current functionality and defer the strip-out until the credential's role can be verified.
+
+### 7 Pillars gate
+
+- ✅ **P3 Database** — migration applied, RLS preserved, partial index created, schema verified post-migration.
+- ✅ **P4 Auth** — Supabase FSC credential attached (stored, not raw); inline anon-key headers retained as transitional state per existing GHL pattern.
+- ❌ **P4 Auth (deferred)** — Content Publish webhook still unauthenticated. Blocked on n8n-host access. Risk window is unchanged from pre-session state (already open).
+- ✅ **P6 Security** — no hardcoded credentials in any modified workflow JSON; service tokens stay in `/root/.quantumclaw/.env` (perms `600`); test row id `d4fec160-...` archived (audit trail preserved, not deleted).
+- ❌ **P6 Security (deferred)** — Nginx rate limit on `/webhook/crete-content-publish` not added. Same blocker as P4 webhook auth.
+- ✅ **P7 Infra** — workflow + migration + backup JSONs all committed; live state matches repo state; `availableInMCP: true` re-asserted on every PUT (per memory note: PUT body is `{name, nodes, connections, settings}` and resets unspecified flags).
+- N/A **P1 Frontend, P2 Backend, P5 Payments** — no changes in these areas this session.
+
+### Pending validation (carparked)
+
+- ~~**Heartbeat in Telegram**~~ — **VERIFIED** via fast-cron probe at 2026-04-30 14:59:00 UTC. Telegram API returned `{"ok":true, "result":{"message_id":3108, "text":"💛 Scheduled Publisher tick: triggered 0 item(s)"}}`. All 36+ subsequent natural ticks (15:00 UTC 2026-04-30 → 08:00 UTC 2026-05-02) have run `status=success`. Pattern is solid.
+- ~~**Content Generator (post-fix)**~~ — **VERIFIED** at 2026-05-02 12:00 UTC natural tick (execution `725593`, status=success, all 13 expected nodes ran). Two rows inserted cleanly: `fc2e6f2f-8241-4e9f-bbc3-c6260df4f02e` (Instagram, image_type=photo, metadata.image_source='library', metadata.photo_id='photo-007', has_media=true) and `146db1fa-ee3b-40fb-8ec5-4e04007e6279` (Facebook, image_type=null, no photo needed, flowed through Image Router unchanged). Both rows already `status=published` — entire pipeline healthy end-to-end post-fix. The 2026-05-01 12:00 UTC tick was the only casualty of the regression (status=error, no row inserted that day).
+- **Image generator root cause** — code review didn't find a smoking gun; needs a request-log trace from the n8n side comparing pre/post Apr 21 to determine whether auth token, body shape, or response URL parsing was the failure. Deferred until n8n-host shell access lands.
+
