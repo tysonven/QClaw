@@ -2784,3 +2784,15 @@ Two items deferred because they require shell on the n8n host (`n8nadmin@<n8n-se
 - ~~**Content Generator (post-fix)**~~ — **VERIFIED** at 2026-05-02 12:00 UTC natural tick (execution `725593`, status=success, all 13 expected nodes ran). Two rows inserted cleanly: `fc2e6f2f-8241-4e9f-bbc3-c6260df4f02e` (Instagram, image_type=photo, metadata.image_source='library', metadata.photo_id='photo-007', has_media=true) and `146db1fa-ee3b-40fb-8ec5-4e04007e6279` (Facebook, image_type=null, no photo needed, flowed through Image Router unchanged). Both rows already `status=published` — entire pipeline healthy end-to-end post-fix. The 2026-05-01 12:00 UTC tick was the only casualty of the regression (status=error, no row inserted that day).
 - **Image generator root cause** — code review didn't find a smoking gun; needs a request-log trace from the n8n side comparing pre/post Apr 21 to determine whether auth token, body shape, or response URL parsing was the failure. Deferred until n8n-host shell access lands.
 
+
+## [2026-05-03] Charlie Overhaul — Phase 3 Design Complete
+
+All six components of Charlie 2.0 designed and locked:
+1. Bootstrap mechanism — five-layer load, session-cached, observable
+2. Canonical doc loading — identity/state/operational/capability layers, single source of location pattern
+3. Skill loading strategy — pragmatic always-on/on-demand split, upgradeable to intent classification
+4. Tool surface overhaul — lane discipline at tool level, dead stubs removed, scoped narrow tools added
+5. Verification gates — soft (prompt) + hard (runtime) enforcement on completion, delegation, state, tool existence, lane
+6. Claude Code delegation bridge — audit-first dispatch, Supabase-tracked, scope-gated authorisation
+
+See CHARLIE_OVERHAUL.md for full design. Phase 4 implementation prerequisites and slicing defined.
