@@ -2858,3 +2858,11 @@ Notable: Ad Agency Operator consolidates the two Ads Operator entries originally
 Phase 4 Slice 2 reconciliation tasks captured in FLOW_OS_SPECIALISTS.md "Phase 4 reconciliation tasks" section. Ready for next pre-slice doc: FLOW_OS_STATE.md.
 
 Pre-slice progress: 2 of 4 remaining canonical docs complete (CHARLIE_ROLE.md, FLOW_OS_SPECIALISTS.md). Still pending: FLOW_OS_STATE.md, N8N_WORKFLOW_INDEX.md.
+
+## [2026-05-03] Charlie Overhaul — FLOW_OS_STATE.md Committed
+
+Canonical state doc committed to repo root. Initial v1 population covers all 5 business contexts plus cross-dimensional clients section. Captures: 9 paid Flow OS subs (~$1,541 MRR), 4 internal users, 1 paid + 1 free + 4 trial GHL Support Bot users, 10 active FSC engagements (~$4,502/mth recurring + one-offs), 3 cross-dimensional clients (Lucy H. VIP across 3 engagements, Eliza J. + Gutful linkage, Kylie F. multi-engagement growing relationship), SproutCode pre-revenue beta + seed-stage, Crete EOI-phase / pre-entity / land-sourcing, Trading Operator only on Personal.
+
+Architectural principles locked in this doc: GHL is canonical contact store per business unit, Stripe is canonical payer record, this doc bridges them with structural context. Pseudonymisation rule: first name + last initial in committed doc; full mappings in private file at ~/.quantumclaw/flow_os_state_private.md (gitignored, qclaw-server-only).
+
+Pre-slice progress: 3 of 4 remaining canonical docs complete (CHARLIE_ROLE.md, FLOW_OS_SPECIALISTS.md, FLOW_OS_STATE.md). Final pre-slice doc pending: N8N_WORKFLOW_INDEX.md (focused Tyson + Claude Code session, scheduled next session).
