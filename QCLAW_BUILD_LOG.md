@@ -2844,3 +2844,7 @@ Phase 4 implementation begins after remaining pre-slice docs (FLOW_OS_STATE.md, 
 Canonical role spec for Charlie committed to repo root. This file is loaded into Charlie's context on every session as part of the identity layer (per Phase 3 Component 1 bootstrap order). It defines: identity, in-lane vs out-of-lane behaviour, non-negotiable verification reflexes, communication discipline, escalation paths, multi-business-unit awareness, session-start read order, write authority by target, and active guards against the five failure patterns.
 
 Pre-slice progress: 1 of 4 remaining canonical docs complete (CHARLIE_ROLE.md). Still pending: FLOW_OS_SPECIALISTS.md, FLOW_OS_STATE.md, N8N_WORKFLOW_INDEX.md.
+
+## [2026-05-03] Charlie Overhaul — CC Docs Touch-up
+
+Fixed markdown code-fence artefacts in CLAUDE_CODE_OPERATING_RULES.md and CLAUDE_CODE_INVENTORY.md from prior paste operation. Content unchanged, formatting restored so both docs render correctly when Claude Code reads them at session start.

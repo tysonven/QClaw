@@ -6,8 +6,12 @@ These rules are non-negotiable. They override any conflicting instruction in a b
 
 ## 1. Working tree discipline
 
-**Before starting any work, run:**git status
+**Before starting any work, run:**
+
+```bash
+git status
 git log --oneline -10
+```
 
 **Rules:**
 
@@ -28,12 +32,16 @@ When starting work, check for an existing lock:
 - If lock exists with heartbeat >30 minutes old: lock is stale. Overwrite with own session info.
 - If no lock exists: create one.
 
-Lock content:session_id: <uuid>
+Lock content:
+
+```text
+session_id: <uuid>
 started_at: <iso timestamp>
 task_summary: <one line>
 expected_duration: <minutes/hours/session>
 branch: <branch name>
 last_heartbeat: <iso timestamp>
+```
 
 Update heartbeat every 5 minutes during active work. Remove the lock when work completes or session ends.
 
@@ -72,10 +80,26 @@ Before any commit:
 - For doc changes: read the file back after writing to confirm it's correct
 - For config or infra changes: verify the change took effect with a probe (e.g. PM2 reload + status check)
 
-The commit message includes a one-line verification summary. Format:<type>: <subject><body, if needed>verified: <one-line summary of verification taken>
+The commit message includes a one-line verification summary. Format:
 
-Example:fix: dashboard /api/scheduled handler reloads heartbeatHeartbeat now re-reads scheduled config without PM2 restart.verified: POST /api/scheduled returns ok, GET /api/scheduled lists new task,
+```text
+<type>: <subject>
+
+<body, if needed>
+
+verified: <one-line summary of verification taken>
+```
+
+Example:
+
+```text
+fix: dashboard /api/scheduled handler reloads heartbeat
+
+Heartbeat now re-reads scheduled config without PM2 restart.
+
+verified: POST /api/scheduled returns ok, GET /api/scheduled lists new task,
 heartbeat fires within 60s without restart
+```
 
 If verification fails, do not commit. Report the failure and wait for instruction.
 
