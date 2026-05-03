@@ -2828,3 +2828,13 @@ The 2026-04-30 commit's "Tech debt — pending next session" entry is therefore 
 **Repo artefacts:** none — temp workflow created and deleted in this probe; no permanent changes to live workflows. Workflow JSON for the probe (5 nodes incl. trigger/respond) lived only at `/tmp/crete-build/fsc-probe-workflow.json` on Tyson's laptop and qclaw `/tmp`.
 
 **Pillars gate:** N/A — pure inspection, no production state changed.
+
+## [2026-05-03] Charlie Overhaul — Pre-Slice Foundation Docs Committed
+
+Four foundation docs created in repo root:
+- LOCATIONS.md — single source of location for all state, logs, configs, docs
+- KEYWORD_REFERENCE.md — skill loading keyword cheat sheet (for Tyson reference)
+- CLAUDE_CODE_OPERATING_RULES.md — discipline rules for Claude Code sessions
+- CLAUDE_CODE_INVENTORY.md — Claude Code's tool surface and access scope
+
+Phase 4 implementation begins after remaining pre-slice docs (FLOW_OS_STATE.md, FLOW_OS_SPECIALISTS.md, N8N_WORKFLOW_INDEX.md, CHARLIE_ROLE.md) are populated in subsequent sessions.

@@ -8,7 +8,7 @@ Running architecture document for Charlie 2.0. This overhaul redesigns Charlie t
 - Phase 2 (Code-grounded audit): COMPLETE — see /tmp/charlie_phase2_audit.md
 - Phase 2.5 (CEO Operating Model spec): COMPLETE — see CEO_OPERATING_MODEL.md
 - Phase 3 (Charlie 2.0 design): COMPLETE
-- Phase 4 (Implementation): PENDING
+- Phase 4 (Implementation): IN PROGRESS — pre-slice foundation
 
 ## Failure patterns being addressed
 
