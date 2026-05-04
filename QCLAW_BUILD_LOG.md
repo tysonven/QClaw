@@ -2961,3 +2961,31 @@ Notable findings:
 **Infrastructure note:** Today's qclaw → n8n SSH probe outcome (separate session work) confirmed n8n SSH operational. The image generator root cause investigation deferred Apr 30 due to dashboard auth blockers is now infrastructure-unblocked. Pull-forward window for the May 17 deferred items (webhook auth, nginx rate limit, FSC populate-vs-detach) opens whenever a 30-min quiet slot appears post-index session.
 
 Pre-slice progress: N8N_WORKFLOW_INDEX.md cluster 2 of 11 complete. 9 clusters remain.
+
+## [2026-05-04] Charlie Overhaul — N8N_WORKFLOW_INDEX.md Flow OS GHL Marketing cluster documented
+
+Cluster 3 of 11. Flow OS GHL Marketing cluster (5 workflows: Approval Handler, Content Generator, Publisher, Scheduled Publisher, Weekly Report). Format conventions from Trading + Crete clusters applied cleanly.
+
+Notable findings during cluster review:
+- 0/5 of cluster has heartbeat + errorWorkflow pattern. Largest single contributor to the 13-workflow heartbeat-pattern backlog.
+- Same orchestrator/downstream reporting trap as Crete: Scheduled Publisher 100% green while Publisher status invisible. Locks the general principle that Charlie's digest needs composite reporting for orchestrators.
+- `ghl-marketing.md` skill file describes a GHL Social Planner intermediate; actual Publisher workflow goes direct-to-platform via Facebook Graph API + Blotato. Skill file stale on architecture — Phase 4 Slice 2 reconciliation list.
+- `LI Guard Check` + `LI Guard Apply` pattern in Publisher is a workflow-internal LinkedIn rate-limiter. Reusable precedent for cross-cluster.
+
+**System-level finding — schedule timezone drift:** n8n is evaluating cron in America/New_York (UTC-4 EDT) not UTC. Node names declaring UTC are misleading; actual fire times are 4 hours later. Discovered during Flow OS GHL Marketing cluster doc pass. Affects at minimum 4 already-documented workflows; likely affects more in remaining 7 clusters. Cluster-sweep correction pass scheduled post-cluster-11. Three potential fixes: rename nodes for accuracy, compensate cron expressions, change n8n timezone config (cleanest). Decision pending sweep.
+
+**Confirmed root cause via direct Tyson verification:** Approval Handler suspect-dormant verdict from Telegram trigger probe was wrong-shaped. Real cause: Content Generator delivers approval messages to `flowstatesads_bot` (different bot than ops monitoring), which Approval Handler's trigger likely doesn't listen on. End-to-end Telegram approval loop broken at bot-identity boundary. Dashboard reject/regenerate path is functional. Plus secondary draft-ID template bug confirmed — empty in delivered messages. Both bugs added to work list as bot-consolidation dispatch.
+
+Work list additions (cumulative tracking):
+
+7. Schedule timezone cluster-sweep correction (post-cluster-11, 11 clusters)
+
+- Process rule for skill file maintenance — proposed addition to CLAUDE_CODE_OPERATING_RULES.md: any system change touching functionality documented in a skill file must update the skill file in the same commit
+
+8. Bot consolidation across QClaw — `flowstatesads_bot` vs `@tyson_quantumbot`. Currently Content Generator + Approval Handler are split across bots, breaking the approval loop. Consolidate to single bot OR formally document the multi-bot split as intentional. Confirmed by direct verification 2026-05-04.
+
+9. Bot inventory in LOCATIONS.md — multi-bot infrastructure exists with no canonical mapping of "which bot serves which workflow/dashboard/specialist." Same Single Source of Location pattern. Add a "Bots" section to LOCATIONS.md listing every bot, its credential location, and the workflows/dashboards using it.
+
+10. Trivial fix: Content Generator Send-to-Telegram template `{{ $json[0].id }}` → `{{ $json.id }}` so Draft ID renders. Bundle with bot consolidation dispatch.
+
+Pre-slice progress: N8N_WORKFLOW_INDEX.md cluster 3 of 11 complete. 8 clusters remain.

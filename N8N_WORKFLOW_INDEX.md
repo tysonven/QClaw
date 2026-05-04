@@ -28,7 +28,7 @@ This file is the sixth canonical doc Charlie reads at session start, after `CEO_
 |---|---|---|
 | Trading | 5 | documented |
 | Crete | 4 | documented |
-| Flow OS GHL Marketing | 5 | pending |
+| Flow OS GHL Marketing | 5 | documented |
 | Ad Agency | 6 | pending |
 | Tyson personal brand — LinkedIn | 5 | pending |
 | Tyson personal brand — Instagram | 3 | pending |
@@ -200,8 +200,103 @@ Recent significant change: 2026-04-30 publishing pipeline hardening session per 
 - **Last verified:** 2026-05-04
 - **Notes:** `updatedAt: 2026-04-30T14:59 UTC` — second touch of the Apr 30 hardening session. The Hourly Schedule's 6-field cron leverages n8n's seconds-precision; same pattern as Content Generator's daily 08:00 trigger. Skill file: `crete-marketing.md` (note: skill file is stale on the schema additions per Phase 2 audit).
 
+---
+
+## Flow OS GHL Marketing cluster
+
+5 workflows. All belong to **Flow OS** per `FLOW_OS_SPECIALISTS.md`. Specialist owner across all 5: **Flow OS GHL Marketing**. Skill file: `ghl-marketing.md` (load-bearing per Phase 2 audit; **stale on the distribution architecture** — see Publisher entry).
+
+Cluster-level findings:
+- **Heartbeat + errorWorkflow gap is total: 0/5** workflows have either. This cluster is the largest single contributor to the 13-workflow heartbeat-pattern backlog from the discovery audit.
+- **Orchestrator + downstream pattern present** — Scheduled Publisher (every 15 min poller) invokes Publisher (per-row publishing webhook). Same structural reporting note as Crete: orchestrator can be 100% green while downstream is failing, so Charlie's digest must combine orchestrator heartbeats AND downstream success rates.
+- **Schedule timezone interpretation:** cron expressions in this cluster appear to fire in `America/New_York` despite node names stating `UTC` — surfaced per-workflow; tracked as a system-wide cluster-sweep item in the maintenance log.
+- **Bot identity split confirmed (2026-05-04):** Content Generator delivers approval-pending Telegram messages via `flowstatesads_bot` while Approval Handler's `telegramTrigger` listens on a different bot. End-to-end approval loop broken at the bot-identity boundary, not at trigger registration. Tracked as work-list item.
+
+### GHL Marketing: Approval Handler
+
+- **ID:** `ptHK2TZq5XppKOOg`
+- **Belongs to:** Flow OS
+- **Specialist owner:** Flow OS GHL Marketing (per `FLOW_OS_SPECIALISTS.md`)
+- **Trigger:** Two triggers in one workflow — `telegramTrigger` "Telegram Trigger" (listens for `message` updates) and `webhook` POST `/webhook/ghl-marketing-regenerate` "Dashboard Regenerate Webhook" (responseMode: `onReceived`).
+- **Purpose:** Two-track approval flow for generated GHL Marketing draft posts. Track A (Telegram): when Tyson replies to the approval-pending Telegram message, `Telegram Trigger` fires, `Parse Reply` extracts the action (approve / regenerate / feedback), `Route Action` switches to: **approve** → `Approve in Supabase` (sets row `status=approved`) → `Trigger Publisher` (POSTs to the Publisher webhook) → `Confirm Approval` (Telegram acknowledgement); **regenerate** → `Save Feedback to Supabase` (captures Tyson's regenerate prompt) → `Fetch Original Draft` → `Regenerate Content (Claude)` → `Parse Regenerated` → `Save New Draft` → `Send Revised to Telegram` (new approval-pending message). Track B (Dashboard): `Dashboard Regenerate Webhook` + `Parse Dashboard Input` + `Normalize Trigger` lets the dashboard's reject/regenerate UI feed into the same regenerate path. The whole workflow is the human-in-the-loop layer that gates publishing on Tyson's explicit approval per `ghl-marketing.md` line 686-691 distribution flow.
+- **Heartbeat:** N
+- **Error workflow:** none.
+- **Recent activity:** 0 executions in last 7 days. **Per probe `/tmp/approval_handler_probe.md` (2026-05-04): 0 executions in API's last 200 rows.** With Content Generator producing 2 approval-pending drafts in the same window, this should have shown some activity — see Known issues for confirmed root cause.
+- **Bucket:** M (silent failure here breaks the GHL Marketing approval loop end-to-end)
+- **Known issues:** Approval Handler's Telegram trigger listens on a bot that does not match the bot Content Generator publishes through. Per probe (`/tmp/content_generator_telegram_probe.md` + Tyson direct verification 2026-05-04): Content Generator delivers approval-pending messages to chat thread `flowstatesads_bot`. If Approval Handler's `telegramTrigger` is configured against `@tyson_quantumbot` or any other bot's API token, replies in the `flowstatesads_bot` thread never reach this workflow's trigger — the approval loop is broken at the bot-identity boundary, not at the trigger-registration layer. The workflow is not necessarily dormant in the Trading Weekly Analyst sense; it has nothing to react to because upstream Telegram delivery is split across bots. Fix is part of the same bot-consolidation dispatch as Content Generator's bug (a) below. Plus: no heartbeat/errorWorkflow — joins cluster-wide gap. The dashboard regenerate webhook path remains functional independent of the Telegram bot question (Tyson confirmed working dashboard reject-with-feedback flow on 2026-05-04).
+- **Last verified:** 2026-05-04
+- **Notes:** `updatedAt: 2026-04-22T11:20 UTC`. The two-trigger pattern is unusual — most workflows in the index have one trigger. Talks to: Telegram Bot API (read + write), Anthropic API (Claude regenerate), Supabase. Cross-references the Publisher webhook by URL (not workflow ID). Skill file: `ghl-marketing.md` (stale on distribution architecture).
+
+### GHL Marketing: Content Generator
+
+- **ID:** `Awo65rdSe5BvDHtC`
+- **Belongs to:** Flow OS
+- **Specialist owner:** Flow OS GHL Marketing
+- **Trigger:** `scheduleTrigger` "Cron MWF 07:00 UTC" with cron expression `0 7 * * 1,3,5` (Mon/Wed/Fri at minute 0, hour 7).
+- **Purpose:** 3×/week content generator for the GHL Support Specialist marketing campaign. `Determine Post Type` rotates between the Mon/Wed/Fri archetype (per `ghl-marketing.md` line 656: Monday pain-led, Wednesday value-led, Friday offer-led), `Fetch Recent Hooks` pulls recent post hooks from Supabase to enforce the "no repeat hook within 2 weeks" rule (line 662), `Prepare Prompt Data` builds the LLM prompt from the day's archetype + audience segment + tone rules from the skill file, `Generate Content (Claude)` produces the draft via Anthropic API, `Parse Response` extracts copy + hashtags + suggested image, `Save to Supabase` writes a `status=pending_approval` draft row, `Assign Image URL` assigns an image asset, and `Send to Telegram` posts the approval-pending message that Tyson reacts to via the Approval Handler workflow.
+- **Heartbeat:** N
+- **Error workflow:** none.
+- **Recent activity:** 2 executions in last 7 days. Both successful end-to-end (per probe `/tmp/content_generator_telegram_probe.md` — all 9 nodes ran, no errors, Telegram API returned `ok:true` with assigned message IDs). Last successful execution `2026-05-01T11:00:00 UTC`. Note: the cron `0 7 * * 1,3,5` named "07:00 UTC" actually fires at 11:00 UTC — see Known issues.
+- **Bucket:** M
+- **Known issues:** Two confirmed bugs (per probe at `/tmp/content_generator_telegram_probe.md`, executions 723440 + 724863):
+
+  **(a) Bot identity split.** Send to Telegram delivers messages successfully (Telegram API returns `ok:true` with message IDs) — but to chat thread `flowstatesads_bot` (8622820007 / "Flow States Ads Agent"), not the operations bot Tyson normally monitors (`@tyson_quantumbot` per `ui.html:570`). Approval Handler's `telegramTrigger` appears to listen on a different bot, breaking the approval loop end-to-end. Tyson can see the messages by opening the `flowstatesads_bot` chat directly, but the design intent (single approval thread visible alongside other ops alerts) is broken. Fix dispatch needed: consolidate to single bot, OR explicitly document the multi-bot split as intentional.
+
+  **(b) Empty Draft ID in Telegram message.** Template at Send to Telegram uses `{{ $json[0].id }}` — at that node `$json` is the Save-to-Supabase response object, not an array, so the expression evaluates undefined and the message reads "Draft ID:" with nothing after it. Confirmed by Tyson's screenshot 2026-05-04. Fix: change to `{{ $json.id }}` or equivalent. Trivial dispatch.
+
+  Schedule timezone naming mismatch (cron "07:00 UTC" actually fires at 11:00 UTC due to n8n's NY-timezone evaluation) — see cluster-sweep correction pass tracked in maintenance log. No heartbeat/errorWorkflow — joins cluster-wide gap.
+- **Last verified:** 2026-05-04
+- **Notes:** `updatedAt: 2026-04-27T13:12 UTC`. Talks to: Anthropic API, Supabase (`marketing_drafts` table per probe), Telegram Bot API (via `flowstatesads_bot` credential). Cross-reference: `ghl-marketing.md` for ICA archetypes (line 530-535), tone rules (line 545-553), three core pain points (line 559-565), content calendar (line 656-660). Skill file: `ghl-marketing.md`.
+
+### GHL Marketing: Publisher
+
+- **ID:** `fonuRTyqepxdyIdf`
+- **Belongs to:** Flow OS
+- **Specialist owner:** Flow OS GHL Marketing
+- **Trigger:** `webhook` POST `/webhook/ghl-marketing-publish` (responseMode: `responseNode`).
+- **Purpose:** Per-draft publisher that distributes an approved row to multiple platforms. `Fetch Draft` reads the row from Supabase, `Prepare` builds per-platform payloads. The LinkedIn leg has special handling: `LI Guard Check` queries Blotato for recent LinkedIn post timing (Blotato enforces a minimum gap between LinkedIn posts to avoid rate limiting), `LI Guard Apply` decides whether to defer this LinkedIn post, and `Skip LinkedIn?` IF either skips (defer) or proceeds via `LinkedIn Post (Blotato)`. In parallel: `Facebook Post` posts to Facebook Graph API directly, `IG Post (Blotato)` posts to Instagram via Blotato. After all platforms attempted, `Compute Final` aggregates per-platform results into a row state, `Update Supabase` writes the publish state back, `Telegram Notify` posts a per-publish summary, `Respond` returns the response payload to the caller. **Note:** this implementation contradicts `ghl-marketing.md` line 690 which says "On approval → pushed to GHL Social Planner via API → GHL Social Planner distributes" — actual implementation distributes directly.
+- **Heartbeat:** N
+- **Error workflow:** none.
+- **Recent activity:** 1 execution in last 7 days. Successful. Last successful execution `2026-04-30T09:24:55 UTC`.
+- **Bucket:** M
+- **Known issues:** **Skill file mismatch on distribution architecture** — `ghl-marketing.md` describes a GHL Social Planner intermediate; actual workflow goes direct-to-platform via Facebook Graph API + Blotato. Skill file reconciliation pending Phase 4 Slice 2. No heartbeat or errorWorkflow. Low recent activity (1 execution in 7d) is consistent with the Mon/Wed/Fri generator cadence + Tyson's approval throughput — and with the bot identity split confirmed in Content Generator's entry: if approvals aren't reaching Approval Handler via the right bot, Publisher only fires on the dashboard regenerate path or scheduled-publisher path, not via approve-via-Telegram.
+- **Last verified:** 2026-05-04
+- **Notes:** `updatedAt: 2026-04-29T19:11 UTC`. Talks to: Facebook Graph API, Blotato API (LinkedIn + Instagram), Supabase. The `LI Guard Check` + `LI Guard Apply` pattern is a workflow-internal rate-limiter for LinkedIn — interesting precedent for cross-cluster reuse. Skill file: `ghl-marketing.md` (stale on architecture).
+
+### GHL Marketing: Scheduled Publisher
+
+- **ID:** `dHceOMijUOcnEowO`
+- **Belongs to:** Flow OS
+- **Specialist owner:** Flow OS GHL Marketing
+- **Trigger:** `scheduleTrigger` "Every 15 min" (`minutesInterval: 15`).
+- **Purpose:** Every-15-minute orchestrator for time-scheduled GHL Marketing publishing. `Fetch Due Drafts` queries Supabase for rows with `status=approved` and `scheduled_for <= now`, `Split Rows` fans out one item per due draft, `Fire Publisher` POSTs each to the Publisher webhook (`fonuRTyqepxdyIdf` via `/webhook/ghl-marketing-publish`). The 15-minute cadence means Approval Handler can mark a row `approved` with a future `scheduled_for` and this orchestrator will pick it up at the right window.
+- **Heartbeat:** N (despite firing every 15 min — same pattern as Crete Scheduled Publisher).
+- **Error workflow:** none.
+- **Recent activity:** 100+ executions in last 7 days (API limit). 100 successes / 0 errors (heuristic). Last successful execution `2026-05-04T10:30:54 UTC` — running healthy at the 15-minute level.
+- **Bucket:** M
+- **Known issues:** **Same orchestrator/downstream reporting trap as Crete Scheduled Publisher.** This workflow is 100% green on its own heartbeat-equivalent (it simply succeeds when it polls), but a green status here says nothing about whether the rows it dispatched to Publisher actually published successfully. Charlie's digest reading just this workflow's status would conclude "GHL Marketing pipeline healthy" when reality could be "fan-out succeeded, downstream Publisher failed silently". The general principle from the Crete cluster applies: orchestrator workflows need composite heartbeat + downstream-success reporting. Most pressing because the Publisher workflow doesn't have heartbeat/errorWorkflow either, so the orchestrator's green status is the only signal the pipeline emits.
+- **Last verified:** 2026-05-04
+- **Notes:** `updatedAt: 2026-04-22T11:20 UTC`. Talks to: Supabase (read), Publisher workflow (HTTP). Stable since the original GHL Marketing build. Skill file: `ghl-marketing.md`.
+
+### GHL Marketing: Weekly Report
+
+- **ID:** `jRiiOsWneQAtfVPD`
+- **Belongs to:** Flow OS
+- **Specialist owner:** Flow OS GHL Marketing
+- **Trigger:** `scheduleTrigger` "Sunday 20:00 UTC" with cron expression `0 20 * * 0` (Sunday at minute 0, hour 20).
+- **Purpose:** Weekly Sunday-evening recap of the GHL Marketing campaign performance. `Calculate Date Range` resolves the 7-day window, `Fetch Marketing Stats` pulls the week's draft + publish + engagement metrics from Supabase, `Aggregate Stats` computes summary numbers, `Generate Report (Claude Haiku)` produces a narrative (Haiku per `ghl-marketing.md` line 698 cost-efficiency rule: "All copy generation uses Claude Sonnet (cost-efficient)" — Weekly Report uses Haiku, even cheaper, appropriate for summary narration), `Format Report` shapes the message, `Send Report to Telegram` posts to Tyson's chat.
+- **Heartbeat:** N
+- **Error workflow:** none.
+- **Recent activity:** 1 execution in last 7 days. Successful. Last successful execution `2026-05-04T00:00:00 UTC`. Note: the cron `0 20 * * 0` named "Sunday 20:00 UTC" fires at 00:00 UTC Monday, which is 20:00 NY time Sunday — confirming the cluster-wide NY-timezone interpretation. Tyson would have received the report at 03:00 Athens time Monday, not 23:00 Athens time Sunday as a UTC reading would imply.
+- **Bucket:** S
+- **Known issues:** **Schedule timezone naming mismatch** (same pattern as Content Generator) — actual fire is Sunday 20:00 NY = Monday 00:00 UTC, not "Sunday 20:00 UTC" as the node name suggests. Worth rolling into the cluster-wide schedule audit. No heartbeat/errorWorkflow, but low frequency and weekly visibility in Tyson's Telegram makes silent failure detectable. Note: this report posts via the same Telegram node configuration as Content Generator — likely also via `flowstatesads_bot`, so same bot-identity-split implications apply (Tyson would need to check the `flowstatesads_bot` thread to find the weekly report).
+- **Last verified:** 2026-05-04
+- **Notes:** `updatedAt: 2026-04-21T13:24 UTC`. Talks to: Supabase (read), Anthropic API (Claude Haiku), Telegram. Skill file: `ghl-marketing.md`.
+
 ## Maintenance log
 
 This section captures changes to the workflow index over time. Most recent at top.
+
+- **2026-05-04 — Pending cluster-sweep tracked: schedule timezone correction across N clusters.** n8n cron evaluation runs in America/New_York (UTC-4 EDT) not UTC despite node names. Affects at minimum: Crete Content Generator (committed, technically-misleading UTC claim), GHL Marketing Content Generator + Weekly Report (this commit). Likely affects unevaluated clusters too. Sweep correction post-cluster-11 will decide between: rename nodes (cosmetic), compensate cron (functional), or change n8n timezone config (cleanest fix). Tracked as work-list item.
 
 - **2026-05-04 — v1 created with Trading cluster (5 of 46 workflows documented).** Format conventions locked: cron in backticks, workflow IDs in backticks, "S→M when X" notation for conditional workflows, cross-references to `FLOW_OS_SPECIALISTS.md` and `FLOW_OS_STATE.md`, `[needs Tyson input]` preferred over synthesised purpose. Trading cluster used as template-establishing first pass. Notable findings: Trading - Weekly Analyst silently dormant since 2026-04-04 (cron registration likely cleared by n8n restart event); Trading - Market Scanner has ongoing post-JSON-fix error mode that needs separate diagnostic; Trading - Error Handler rename decision logged (to be executed in separate dispatch). Authored by Tyson + Claude (chat) per Phase 3 Component 2.
