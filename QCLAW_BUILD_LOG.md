@@ -2932,3 +2932,16 @@ End of day. Next session: N8N_WORKFLOW_INDEX.md focused session, then Phase 4 Sl
 Trading worker /simulate endpoint hardened: outer try/except wrap returns valid JSON for any failure mode (was returning Flask's HTML 500 page, breaking the n8n Trading - Market Scanner "Run Market Simulations" node). request.get_json now silent=True. Already live in PM2 since ~08:02 UTC; this commit lands the running code in main.
 
 Process tidy: CLAUDE_CODE_TASKS.md added to .gitignore (transient session brief docs from Charlie dispatches — pattern expected to recur, narrow ignore preserves the tracked CC_OPERATING_RULES + CC_INVENTORY docs). Backup glob in .gitignore expanded to `*.bak.*` and `*.backup.*` to match the qclaw-dev skill's timestamped backup convention. Pre-existing `monte_carlo.py.bak.20260504-080207` removed (byte-identical to HEAD, content preserved in git history).
+
+## [2026-05-04] Charlie Overhaul — N8N_WORKFLOW_INDEX.md created, Trading cluster documented
+
+First cluster of the workflow index documented. Trading cluster (5 workflows: Market Scanner, Position Monitor, Trade Executor, Weekly Analyst, Error Handler) used as template-establishing pass. Format conventions locked.
+
+Notable findings during cluster review:
+- Trading - Weekly Analyst silently dormant since 2026-04-04 — cron registration likely cleared by an n8n restart event. Mechanical fix (deactivate/reactivate) deferred to combined dispatch with the broader heartbeat + errorWorkflow backlog.
+- Trading - Market Scanner has ongoing post-fix error mode beyond what today's monte_carlo.py JSON fix addressed. Errors confirmed at 09:00 UTC and ~12:00 Athens time on 2026-05-04. Separate diagnostic dispatch needed.
+- Trading - Error Handler rename decision: rename to neutral identity (proposed "Shared Error Handler") with per-domain handlers deferred to Phase 5+ if needed. Mechanical rename dispatch to follow.
+
+Pre-slice progress: 4 of 4 remaining canonical docs in progress (CHARLIE_ROLE.md, FLOW_OS_SPECIALISTS.md, FLOW_OS_STATE.md complete; N8N_WORKFLOW_INDEX.md cluster 1 of 11 complete). 10 clusters remain to document.
+
+Concurrent backlog item: 13 mission-critical workflows lack heartbeat + errorWorkflow pattern. Discovery audit identified them. To be addressed in a single sweep dispatch as Phase 4+ work.
