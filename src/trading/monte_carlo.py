@@ -135,26 +135,29 @@ def run_simulation(asset, target, horizon_days=30):
 
 @app.route("/simulate", methods=["POST"])
 def simulate():
-    body = request.get_json(force=True)
-    asset = body.get("asset", "gold").lower()
-    target = body.get("target")
-    horizon = body.get("horizon_days", 30)
-
-    if target is None:
-        return jsonify({"error": "target is required"}), 400
-
     try:
-        target = float(target)
-        horizon = int(horizon)
-    except (ValueError, TypeError):
-        return jsonify({"error": "target must be numeric"}), 400
+        body = request.get_json(force=True, silent=True) or {}
+        asset = body.get("asset", "gold").lower()
+        target = body.get("target")
+        horizon = body.get("horizon_days", 30)
 
-    result, error = run_simulation(asset, target, horizon)
-    if error:
-        return jsonify({"error": error}), 400
+        if target is None:
+            return jsonify({"error": "target is required"}), 400
 
-    result["question"] = body.get("question", f"Will {asset} hit ${target}?")
-    return jsonify(result)
+        try:
+            target = float(target)
+            horizon = int(horizon)
+        except (ValueError, TypeError):
+            return jsonify({"error": "target must be numeric"}), 400
+
+        result, error = run_simulation(asset, target, horizon)
+        if error:
+            return jsonify({"error": error}), 400
+
+        result["question"] = body.get("question", f"Will {asset} hit ${target}?")
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e), "type": type(e).__name__}), 500
 
 
 @app.route("/health", methods=["GET"])

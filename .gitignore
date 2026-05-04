@@ -58,3 +58,10 @@ src/clipper/models/*.caffemodel
 *_ed25519
 id_*
 **/charlie_n8n_key
+
+# Charlie dispatch transient briefs (recurring; narrow ignore — CC_OPERATING_RULES.md and CC_INVENTORY.md remain tracked)
+CLAUDE_CODE_TASKS.md
+
+# Timestamped backup files (qclaw-dev skill convention: file.bak.<timestamp> / file.backup.<epoch>)
+*.bak.*
+*.backup.*
