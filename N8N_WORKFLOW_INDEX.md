@@ -29,7 +29,7 @@ This file is the sixth canonical doc Charlie reads at session start, after `CEO_
 | Trading | 5 | documented |
 | Crete | 4 | documented |
 | Flow OS GHL Marketing | 5 | documented |
-| Ad Agency | 6 | pending |
+| Ad Agency | 6 | documented |
 | Tyson personal brand — LinkedIn | 5 | pending |
 | Tyson personal brand — Instagram | 3 | pending |
 | Flow OS — Client integrations | 3 | pending |
@@ -224,6 +224,9 @@ Cluster-level findings:
 - **Recent activity:** 0 executions in last 7 days. **Per probe `/tmp/approval_handler_probe.md` (2026-05-04): 0 executions in API's last 200 rows.** With Content Generator producing 2 approval-pending drafts in the same window, this should have shown some activity — see Known issues for confirmed root cause.
 - **Bucket:** M (silent failure here breaks the GHL Marketing approval loop end-to-end)
 - **Known issues:** Approval Handler's Telegram trigger listens on a bot that does not match the bot Content Generator publishes through. Per probe (`/tmp/content_generator_telegram_probe.md` + Tyson direct verification 2026-05-04): Content Generator delivers approval-pending messages to chat thread `flowstatesads_bot`. If Approval Handler's `telegramTrigger` is configured against `@tyson_quantumbot` or any other bot's API token, replies in the `flowstatesads_bot` thread never reach this workflow's trigger — the approval loop is broken at the bot-identity boundary, not at the trigger-registration layer. The workflow is not necessarily dormant in the Trading Weekly Analyst sense; it has nothing to react to because upstream Telegram delivery is split across bots. Fix is part of the same bot-consolidation dispatch as Content Generator's bug (a) below. Plus: no heartbeat/errorWorkflow — joins cluster-wide gap. The dashboard regenerate webhook path remains functional independent of the Telegram bot question (Tyson confirmed working dashboard reject-with-feedback flow on 2026-05-04).
+
+  **Cross-reference (2026-05-04 probe):** Bot Router on the same bot (`flowstatesads_bot`) was confirmed dormant via direct probe. Approval Handler likely shares the same trigger-registration failure since both `telegramTrigger`s depend on the same n8n Telegram listener subscription. Bundle Approval Handler verification + recovery into the same dispatch as Bot Router.
+
 - **Last verified:** 2026-05-04
 - **Notes:** `updatedAt: 2026-04-22T11:20 UTC`. The two-trigger pattern is unusual — most workflows in the index have one trigger. Talks to: Telegram Bot API (read + write), Anthropic API (Claude regenerate), Supabase. Cross-references the Publisher webhook by URL (not workflow ID). Skill file: `ghl-marketing.md` (stale on distribution architecture).
 
@@ -292,6 +295,125 @@ Cluster-level findings:
 - **Known issues:** **Schedule timezone naming mismatch** (same pattern as Content Generator) — actual fire is Sunday 20:00 NY = Monday 00:00 UTC, not "Sunday 20:00 UTC" as the node name suggests. Worth rolling into the cluster-wide schedule audit. No heartbeat/errorWorkflow, but low frequency and weekly visibility in Tyson's Telegram makes silent failure detectable. Note: this report posts via the same Telegram node configuration as Content Generator — likely also via `flowstatesads_bot`, so same bot-identity-split implications apply (Tyson would need to check the `flowstatesads_bot` thread to find the weekly report).
 - **Last verified:** 2026-05-04
 - **Notes:** `updatedAt: 2026-04-21T13:24 UTC`. Talks to: Supabase (read), Anthropic API (Claude Haiku), Telegram. Skill file: `ghl-marketing.md`.
+
+---
+
+## Ad Agency cluster
+
+6 workflows. All belong to **Shared** (Ad Agency Operator serves Flow OS + Emma Maidment Business + Flow States Retreats per `FLOW_OS_SPECIALISTS.md`). Specialist owner across all 6: **Ad Agency Operator**. Skill file: `ads-agency.md` (`src/agents/skills/ads-agency.md`, 2,293 bytes, mtime 2026-03-27 — covers webhook routing keywords from Charlie's perspective; not stale on the architecture).
+
+Cluster-level findings:
+- **Rex (Strategist) confirmed UI-only** — searched all 75 workflows in n8n for any name containing "rex" or "strategist" → zero matches. Rex remains a UI stub at `ui.html:531` per `FLOW_OS_SPECIALISTS.md` Ad Agency Operator entry. **No 6th specialist-named workflow exists.** The 6 workflows in this cluster are the 5 named in `FLOW_OS_SPECIALISTS.md` + the **Telegram Bot Router** (`lu39mAN7epBRK3Kw`) which serves as the conversational entry point for the whole agency from Telegram.
+- **Bot identity confirmed `flowstatesads_bot`** — the Telegram Bot Router's `Help Reply` node identifies itself as "*Flow States Ads Agent*" (same bot as the GHL Marketing Content Generator probe 2026-05-04). High-confidence cross-cluster confirmation: **11 workflows now confirmed on `flowstatesads_bot`** (6 Ad Agency + 5 Flow OS GHL Marketing). Work-list item 8 (bot consolidation) spans both clusters.
+- **Heartbeat + errorWorkflow gap is total: 0/6.** Joins the cluster-wide backlog alongside Flow OS GHL Marketing's 0/5.
+- **Hardcoded accounts** confirmed unchanged from `FLOW_OS_SPECIALISTS.md`: Ledger has EMB + Flow States Retreats; Optimisation has all three (incl. Flow OS); other 4 take account dynamically via webhook payload or have no account context.
+- **Multi-user pattern** — Bot Router has explicit Tyson + Em authorisation gates: copy + brief + research available to both, ad creation + optimisation report Tyson-only, with Em-uses-copy → Tyson-notified hooks. Reflects the Ad Agency Operator entry's `creator: tyson|emma` routing.
+- **Schedule timezone observation does not apply** to this cluster — Optimisation uses `hoursInterval: 24` (relative interval, not cron), Bot Router uses `telegramTrigger`, the other 4 are webhook-only. No further entries to add to the timezone cluster-sweep work-list item 7.
+- **Bot Router confirmed dormant via direct probe (2026-05-04)** — see Bot Router Known Issues. The Ad Agency conversational layer end-to-end is broken at the trigger-registration level; sub-role workflows remain reachable via dashboard/direct webhook calls.
+
+### Flow States — Competitor Ad Research
+
+(Scout sub-role per `FLOW_OS_SPECIALISTS.md`.)
+
+- **ID:** `QnCEES9T7WxW5vVR`
+- **Belongs to:** Shared
+- **Specialist owner:** Ad Agency Operator (per `FLOW_OS_SPECIALISTS.md`)
+- **Trigger:** `webhook` POST `/webhook/competitor-research` (responseMode: `responseNode`).
+- **Purpose:** On-demand competitor ad research backing the Ad Agency's Scout sub-role. `Parse Research Request` extracts brand name + research intent from the inbound payload, `Route Research Intent` switches on action type (research / save / list). Research path: `Build Research Prompt` → `Claude Ad Research` (httpRequest to Anthropic) → `Format Research Reply`. Save path (when Tyson flags an ad for the swipe file): `Parse Ad to Save` → `Claude Parse Ad` (extract structured ad metadata) → `Save Ad to Supabase` → `Format Save Reply`. List path (return current swipe-file inventory): `Fetch Competitor Ads` → `Format List Reply`. All paths converge at `Send Research Reply` (Telegram) + `Webhook Response`. The Telegram chatId comes from the inbound webhook payload (`={{ $json.chatId }}`) — no hardcoded chatId, so the bot identity is whichever credential the Telegram node is wired to.
+- **Heartbeat:** N
+- **Error workflow:** none.
+- **Recent activity:** 1 execution in last 7 days. 1 success / 0 errors. Last successful execution `2026-05-03T12:57:43 UTC`.
+- **Bucket:** S
+- **Known issues:** No heartbeat/errorWorkflow — joins cluster-wide gap. Workflow name "Flow States — Competitor Ad Research" sounds FSC-aligned but it's account-agnostic (no hardcoded `act_*`). Per the Ad Agency cross-reference audit (2026-05-03), the workflow name itself ties scope to FSC but the implementation accepts any brand passed via the webhook payload — no behavioural lock to FSC-only.
+- **Last verified:** 2026-05-04
+- **Notes:** `updatedAt: 2026-04-04T18:01 UTC`. Talks to: Anthropic API (Claude), Supabase (swipe file table), Telegram. Skill file: `ads-agency.md` (covers the routing keywords Charlie recognises for triggering this workflow). Cross-reference: `FLOW_OS_SPECIALISTS.md` Ad Agency Operator entry — Scout sub-role.
+
+### Meta Ads Ad Creation Agent
+
+(Ledger sub-role per `FLOW_OS_SPECIALISTS.md`.)
+
+- **ID:** `lrGcirtmOHb1xTq8`
+- **Belongs to:** Shared (account-hardcoded scope: EMB + Flow States Retreats)
+- **Specialist owner:** Ad Agency Operator
+- **Trigger:** `webhook` POST `/webhook/ad-creation-agent` (responseMode: `lastNode`).
+- **Purpose:** Multi-step conversational ad creation flow backing the Ad Agency's Ledger sub-role. Receives Telegram messages relayed from the Bot Router and walks through a step-by-step ad-build wizard: account selection → mode selection (new campaign vs add-to-existing) → objective (if new campaign) → audience config (if new campaign) → campaign / ad-set selection → copy source (use existing variant or new copy) → copy text → URL → budget → creative asset (image upload via Telegram). Session state persists in Supabase between webhook calls (`Load Session` / `Create or Update Session`). On final asset receipt, `Prepare Build Data` → `Process Image Upload` → `Download Image Binary` → `Convert Binary to Base64` → `Upload Image to Meta v3` → `Create Campaign` (if new) → `Create Ad Set` (if new) → `Create Ad Creative` → `Create Ad` → `Format Success Message` → `Send Success Reply` + `Delete Session (Complete)`. The flow is gated on Tyson per the Bot Router's "Ad Creation Gate (Tyson Only)" — Em is shown a "not authorised" reply.
+- **Heartbeat:** N
+- **Error workflow:** none.
+- **Recent activity:** 0 executions in last 30 days. **Expected** — ad creation is human-initiated and infrequent; consistent with `FLOW_OS_SPECIALISTS.md` Ad Agency Operator caveat that the agency has been low-usage for ad creation specifically.
+- **Bucket:** M
+- **Known issues:** Hardcoded to **Emma Maidment Business** (`act_1426936257455201`) and **Flow States Retreats** (`act_464237024205104`) — Flow OS account (`act_414785961683125`) is **not** in this workflow; ad creation for Flow OS is not currently supported. Flow States Retreats is dormant per `FLOW_OS_STATE.md` Section 5 + `LOCATIONS.md:73`, but the hardcoded reference remains — pending cleanup per `FLOW_OS_SPECIALISTS.md` Ad Agency Operator caveats. No heartbeat/errorWorkflow. The 51-node multi-step wizard pattern would be hard to add a heartbeat to meaningfully (heartbeat-per-step isn't useful) — a different observability strategy (e.g. session-table TTL monitoring) may serve better than the standard heartbeat pattern.
+- **Last verified:** 2026-05-04
+- **Notes:** `updatedAt: 2026-04-04T18:01 UTC`. Talks to: Meta Graph API v3 (campaigns / ad sets / ad creatives / ads / image upload), Supabase (`ad_creation_sessions` table per `QCLAW_BUILD_LOG.md:128`), Telegram. The conversational state is persisted across many webhook invocations — silent failure mid-flow would leave a stale session row. Skill file: `ads-agency.md`.
+
+### Meta Ads Copy Agent
+
+(Penny sub-role per `FLOW_OS_SPECIALISTS.md`.)
+
+- **ID:** `0sIugM5o5wTwpflq`
+- **Belongs to:** Shared
+- **Specialist owner:** Ad Agency Operator
+- **Trigger:** `webhook` POST `/webhook/meta-ads-copy-agent` (responseMode: `responseNode`).
+- **Purpose:** Generates 5 ad copy variants from an offer + angle + format + creator brief. `Parse Input` extracts the brief fields, `Build Copy Request` shapes the LLM prompt (drawing on the GHL Support Specialist tone rules per `ghl-marketing.md` lines 545-553 — also referenced for Ad Agency copy generation), `Generate Ad Copy Variants` (httpRequest to Anthropic) produces 5 variants, `Format Output` shapes them for delivery, `Save Copy to Supabase` persists them with UTM URLs (per `QCLAW_BUILD_LOG.md:127` "copy_agent_output stores copy variants with UTM URLs"), `Send Copy to Tyson (Telegram)` posts to Telegram, `Webhook Response` returns the variants. The Telegram chatId is dynamic via the inbound webhook (`={{ $('Webhook Trigger').first().json.body.chatId || '1375806243' }}`) with `1375806243` (Tyson) as fallback.
+- **Heartbeat:** N
+- **Error workflow:** none.
+- **Recent activity:** 0 executions in last 30 days. Consistent with `FLOW_OS_SPECIALISTS.md` low-usage note.
+- **Bucket:** S
+- **Known issues:** No heartbeat/errorWorkflow. The fallback chatId `'1375806243'` (Tyson hardcoded) is a sensible default for missing-payload cases; no specific concern. No hardcoded accounts — fully dynamic via the `creator: tyson|emma` field in the payload (the routing decision happens server-side in this workflow's prompt via creator field, not via account ID).
+- **Last verified:** 2026-05-04
+- **Notes:** `updatedAt: 2026-04-04T18:01 UTC`. Talks to: Anthropic API, Supabase (`copy_agent_output` table), Telegram. UTM convention used: `utm_source=meta&utm_medium=paid_social&utm_campaign=[offer-slug]&utm_content=[angle-slug]&utm_term=[creator]` per `QCLAW_BUILD_LOG.md:135-136`. Skill file: `ads-agency.md`.
+
+### Meta Ads Creative Brief Agent
+
+(Frame sub-role per `FLOW_OS_SPECIALISTS.md`.)
+
+- **ID:** `TtSUyKpvE5f9iQZg`
+- **Belongs to:** Shared
+- **Specialist owner:** Ad Agency Operator
+- **Trigger:** `webhook` POST `/webhook/meta-ads-creative-brief` (responseMode: `responseNode`).
+- **Purpose:** Generates a creative brief for a video ad (script, visual direction, production notes). `Parse Input` extracts the brief request (offer / angle / format / hook / creator), `Build Brief Request` shapes the LLM prompt, `Generate Creative Brief` (httpRequest to Anthropic) produces the brief, `Format Output` packages it, `Send Brief to Tyson (Telegram)` posts a short Telegram acknowledgement (the full brief is delivered separately — per the Bot Router's Brief Confirmation node text "Full brief has been sent to Tyson's email"), `Webhook Response` returns the brief.
+- **Heartbeat:** N
+- **Error workflow:** none.
+- **Recent activity:** 0 executions in last 30 days.
+- **Bucket:** S
+- **Known issues:** `chatId` hardcoded to `1375806243` (Tyson) in `Send Brief to Tyson (Telegram)` — **by design.** Per Tyson 2026-05-04: ads sign-off authority is Tyson's based on ads experience; Em creates brief requests via Bot Router, Tyson reviews and approves. The hardcoded chatId enforces that approval routing. Operational decision, not a bug. No heartbeat/errorWorkflow — joins cluster-wide gap.
+- **Last verified:** 2026-05-04
+- **Notes:** `updatedAt: 2026-03-26T16:40 UTC` — has not been touched in nearly 6 weeks, the second-oldest `updatedAt` in the cluster after Bot Router. Talks to: Anthropic API, Telegram. Skill file: `ads-agency.md`.
+
+### Meta Ads Optimisation Agent
+
+(Optimisation reporting sub-role per `FLOW_OS_SPECIALISTS.md`.)
+
+- **ID:** `lf955LDteJ512RQi`
+- **Belongs to:** Shared (covers all 3 Meta accounts)
+- **Specialist owner:** Ad Agency Operator
+- **Trigger:** Two triggers — `scheduleTrigger` "Daily Schedule (9am)" with `hoursInterval: 24` (every 24 hours from activation, not cron-based), AND `webhook` POST `/webhook/meta-ads-optimisation-trigger` "Webhook Trigger (On-Demand)" (responseMode: `responseNode`) for on-demand pulls (e.g. from the Bot Router's "Show me the latest ad performance" intent route).
+- **Purpose:** Daily 7-day-window performance report across all three Meta ad accounts. `Set Date Range & Accounts` defines the window and the three account IDs (`act_414785961683125` Flow OS, `act_1426936257455201` EMB, `act_464237024205104` Flow States Retreats), `Split Accounts` fans out per-account, `Fetch Ad Insights` (httpRequest to Meta Graph) pulls insight data, `Process & Score Insights` (code) produces per-account stats and a combined narrative score, `Build Opt Analysis Request` + `AI Optimisation Analysis` (httpRequest to Anthropic) generates an optimisation narrative, `Format Report` shapes the Telegram report, `Send Report to Tyson (Telegram)` posts the report. Optional `Log Report (Optional)` Airtable node is currently disabled.
+- **Heartbeat:** N
+- **Error workflow:** none.
+- **Recent activity:** 33 executions in last 7 days. **18 successes / 15 errors (heuristic).** Last successful execution `2026-05-04T04:00:40 UTC`. **All 33 executions in the 30d window happened in the last 7 days** — none between days 7 and 30, suggesting the workflow either was inactive earlier, or had its activation reset around the Apr 29 update.
+- **Bucket:** M
+- **Known issues:** **Elevated error rate (~45%) in last 7 days post-Apr-29 update.** `updatedAt: 2026-04-29T14:29 UTC` lines up with the Trading session's broader ops work that week. Possible causes: Meta Ads API rate limiting (3 accounts × per-account fetch may hit limits), Flow States Retreats account dormancy returning errors, or an issue introduced in the Apr 29 update. Same diagnostic flavour as Trading Market Scanner's post-fix error mode and Crete Content Publish's visibility findings — these warrant a small batch dispatch that reads recent error executions across the three workflows and identifies the per-workflow failure paths. The 33-vs-7-expected execution count over 7d (workflow has both 24h schedule AND on-demand webhook) suggests Bot Router on-demand calls are firing it ~26 extra times per week, or a tighter schedule is firing than the trigger config implies. **`chatId` hardcoded to Tyson** for the Send Report node — Em can't pull the report directly via Bot Router (the "Report Restricted (Emma)" node in Bot Router enforces this; she gets a "Tyson notified" message instead). No heartbeat/errorWorkflow.
+- **Last verified:** 2026-05-04
+- **Notes:** `updatedAt: 2026-04-29T14:29 UTC`. Talks to: Meta Graph API (Insights endpoint per account), Anthropic API, Telegram. The disabled Airtable node hints at a planned-but-not-shipped reporting persistence layer. Skill file: `ads-agency.md`.
+
+### Meta Ads Telegram Bot Router
+
+(Conversational entry point — not a sub-role per `FLOW_OS_SPECIALISTS.md` but the unifying surface that Tyson + Em interact with.)
+
+- **ID:** `lu39mAN7epBRK3Kw`
+- **Belongs to:** Shared
+- **Specialist owner:** Ad Agency Operator
+- **Trigger:** `telegramTrigger` listening for `message` and `callback_query` updates on the **`flowstatesads_bot`** Telegram bot (inferred from the `Help Reply` node identifying itself as "*Flow States Ads Agent*"; credential ID not exposed in the API response but the node text confirms identity).
+- **Purpose:** Conversational orchestrator for the entire Ad Agency. Routes inbound Telegram messages from `flowstatesads_bot` to the right sub-role workflow via Claude-based intent classification. Flow: `Telegram Trigger` → `Parse Message` → `Authorisation Gate` (whitelist of authorised user IDs — Tyson + Em) → `Parse Intent` (uses `Build Anthropic Request` + `Intent Classifier (Claude)` for fuzzy intent matching) → `Intent Router` switch routing to: **Copy** (acks → calls Penny via `Call Copy Agent` → returns variants → "Notify Tyson if Emma requested" hook → `Send Tyson Notification`); **Brief** (acks → calls Frame via `Call Brief Agent` → confirmation message); **Report** (`Tyson Only Gate` — Em gets `Report Restricted (Emma)` reply; Tyson path triggers Optimisation Agent on-demand webhook); **Ad Creation** (`Ad Creation Gate (Tyson Only)` — Em gets `Ad Creation Not Authorised`; Tyson path checks `Active Ad Session` and either forwards to in-flight Ledger session or starts new one); **Iterate** (call Penny in iterate mode for variant refinement); **Research** (call Scout via `Call Research Agent`); **Help** (static help text identifying the bot as "Flow States Ads Agent"); **Unknown** (fallback help text).
+- **Heartbeat:** N (its own silent failure means the entire Ad Agency conversational interface goes dark — confirmed dormant per Known issues below).
+- **Error workflow:** none.
+- **Recent activity:** 0 executions in last 30 days. **Confirmed dormant via direct Tyson probe 2026-05-04** — see Known issues.
+- **Bucket:** M (silent failure here breaks the entire Ad Agency conversational layer end-to-end; only the dashboard-modal paths and direct sub-role webhook calls remain functional)
+- **Known issues:** **Confirmed dormant per direct probe (2026-05-04):** Tyson sent test message to `flowstatesads_bot` ("show me the latest ad performance") — no reply received. Bot Router's `telegramTrigger` is registered `active=true` in n8n DB but is not actually firing. Same failure mode as Trading Weekly Analyst's cron registration. Recovery path: deactivate/reactivate to force trigger re-registration, add heartbeat + errorWorkflow before flipping back active so next outage surfaces within hours. Bundle with the heartbeat + errorWorkflow sweep dispatch (work-list item already tracking 13 mission-critical workflows missing the pattern; Bot Router joins this as the highest-impact target since silent failure breaks the entire Ad Agency conversational layer end-to-end).
+
+  **Operational reality (per Tyson 2026-05-04):** Bot Router was set up as the conversational orchestrator for the Ad Agency cluster but never adopted in daily flow. Sub-role workflows (Scout, Penny, Frame, Ledger, Optimisation) are invoked directly via dashboard or specific webhooks rather than through Bot Router's intent-classified routing. Tyson currently copy-pastes between workflows because the agents don't chain. The orchestration architecture exists in code but not in operational use. This is a load-bearing finding for Phase 4+ specialist communication contract design — specialists without a defined inter-specialist contract default to humans-as-integrator. Charlie 2.0's design must include defined inter-specialist invocation routes via Charlie-as-router.
+- **Last verified:** 2026-05-04
+- **Notes:** `updatedAt: 2026-03-19T14:00 UTC` — oldest `updatedAt` in the cluster (almost 7 weeks). Talks to: Anthropic API (Claude intent classifier), all 5 other Ad Agency workflows (via their webhooks), Telegram, Supabase (active session check). The Bot Router is the de-facto authorisation layer for the cluster — Tyson-only gates on Optimisation Report and Ad Creation are enforced here, not at the downstream workflow level. If Em finds a way to call those downstream webhooks directly, the gates wouldn't apply — a defence-in-depth concern that's structurally fine for an internal-bot-only setup but worth flagging if the webhooks are ever exposed. Skill file: `ads-agency.md` + cross-reference `FLOW_OS_SPECIALISTS.md` Ad Agency Operator entry.
 
 ## Maintenance log
 

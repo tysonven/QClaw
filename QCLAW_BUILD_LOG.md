@@ -2989,3 +2989,24 @@ Work list additions (cumulative tracking):
 10. Trivial fix: Content Generator Send-to-Telegram template `{{ $json[0].id }}` → `{{ $json.id }}` so Draft ID renders. Bundle with bot consolidation dispatch.
 
 Pre-slice progress: N8N_WORKFLOW_INDEX.md cluster 3 of 11 complete. 8 clusters remain.
+
+## [2026-05-04] Charlie Overhaul — N8N_WORKFLOW_INDEX.md Ad Agency cluster documented
+
+Cluster 4 of 11. Ad Agency cluster (6 workflows: Scout, Ledger, Penny, Frame, Optimisation, Bot Router). Rex confirmed UI-only — no backing workflow exists. Format conventions from Trading + Crete + Flow OS GHL Marketing applied cleanly.
+
+Notable findings during cluster review:
+- 0/6 of cluster has heartbeat + errorWorkflow pattern. Joins the heartbeat backlog alongside Flow OS GHL Marketing's 0/5.
+- Bot identity confirmed cross-cluster: Bot Router self-identifies as "Flow States Ads Agent" in Help Reply text — same `flowstatesads_bot` as Flow OS GHL Marketing Content Generator. **11 workflows now confirmed on `flowstatesads_bot`** (6 Ad Agency + 5 Flow OS GHL Marketing). Work list item 8 (bot consolidation) spans both clusters.
+- Optimisation Agent has elevated 7d error rate (~45% of 33 executions). Diagnostic same flavour as Trading Market Scanner and Crete Content Publish — bundle for batch.
+- Flow States Retreats account hardcoded in Ledger workflow remains pending cleanup per `FLOW_OS_SPECIALISTS.md`.
+- Frame `chatId` hardcoded to Tyson is intentional design per Tyson 2026-05-04 (ads sign-off authority lives with Tyson) — operational decision, not a bug. Logged in entry.
+
+**Architectural finding from cluster review:** Bot Router (Ad Agency conversational orchestrator) was built but never adopted operationally — Tyson reports copy-pasting between Ad Agency sub-role workflows because agents don't chain. Same shape as Apr 30 visibility findings (system built piece-by-piece without integration enforced) but at the orchestration layer rather than the observability layer. Added as work-list item 12. Charlie 2.0's design must include defined inter-specialist invocation routes via Charlie-as-router; without this, humans-as-integrator failure mode will reappear with new specialists. Probe outcome 2026-05-04: Bot Router `telegramTrigger` confirmed dormant via direct test (Tyson sent "show me the latest ad performance" to `flowstatesads_bot`, no reply received), joins Trading Weekly Analyst pattern. Approval Handler cross-referenced as likely-same-cause given shared bot.
+
+**Approval Handler entry updated:** Cross-reference paragraph appended to N8N_WORKFLOW_INDEX.md Approval Handler Known issues (cluster 3) — now reflects confirmed-dormant Bot Router as cross-cluster evidence that Approval Handler likely shares the same trigger-registration failure mode. Both `telegramTrigger`s on `flowstatesads_bot`; bundle verification + recovery into the same dispatch as Bot Router.
+
+Work list addition:
+
+12. Specialist-to-specialist communication contract — Phase 4+ load-bearing concern, not Phase 5+ tidy. Bot Router was the conversational orchestrator built and never adopted operationally; Tyson reports copy-pasting between workflows because agents don't chain. Charlie 2.0's design must include defined inter-specialist invocation routes via Charlie as router. Without it, humans-as-integrator pattern will reappear with new specialists.
+
+Pre-slice progress: N8N_WORKFLOW_INDEX.md cluster 4 of 11 complete. 7 clusters remain.
