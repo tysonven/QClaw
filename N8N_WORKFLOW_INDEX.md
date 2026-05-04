@@ -31,7 +31,7 @@ This file is the sixth canonical doc Charlie reads at session start, after `CEO_
 | Flow OS GHL Marketing | 5 | documented |
 | Ad Agency | 6 | documented |
 | Tyson personal brand — LinkedIn | 5 | documented |
-| Tyson personal brand — Instagram | 3 | pending |
+| Tyson personal brand — Instagram | 3 | documented |
 | Flow OS — Client integrations | 3 | pending |
 | Cross-cutting + token refresh | 3 | pending |
 | Flow OS Blog | 1 | pending |
@@ -510,6 +510,69 @@ Cluster-level findings:
 - **Known issues:** V1 is current and correct (no V2 successor). Disabled platforms (TikTok, Bluesky, Pinterest) are intentionally off — Tyson is not using them currently. The disabled "Flow Os LinkedIn" branch reflects a real operational issue: Tyson lost access to the Flow OS company LinkedIn page, so the branch was disconnected. Workflow currently produces content for Tyson personal brand only. If/when Flow OS company page access is regained, the disabled branch can be reactivated. The workflow was originally adapted from a third-party template and customised for Flow OS avatar-style videos. Cluster fit: workflow distributes to LinkedIn but also Facebook, Instagram, Twitter, YouTube — fit anomaly within the LinkedIn cluster but no other "multi-platform" cluster exists in the index. Tyson decision 2026-05-04: keep in LinkedIn cluster for now (single-workflow categories are overkill); reconsider if more multi-platform workflows surface in remaining clusters. No heartbeat/errorWorkflow.
 - **Last verified:** 2026-05-04
 - **Notes:** `createdAt: 2025-07-15`, `updatedAt: 2026-03-26T08:48 UTC`. Talks to: OpenAI (script writing), Perplexity (research), Heygen (avatar video generation), Blotato (multi-platform distribution), Slack (notifications). 36 nodes total of which 14 are Sticky Notes (workflow-internal documentation) and 4 are disabled — high cosmetic-vs-functional ratio, normal for an experiment-heavy personal-brand workflow. **No skill file**.
+
+---
+
+## Tyson Personal Brand — Instagram cluster
+
+3 workflows. All belong to **Personal** (Tyson personal brand). **Specialist owner: None — Tyson directly.** No agent specialist exists for personal brand Instagram in `FLOW_OS_SPECIALISTS.md`. No skill file in `src/agents/skills/`.
+
+Cluster-level findings:
+- **Heartbeat + standard errorWorkflow gap: 0/3** — but the Reels Auto-Publisher has a workflow-internal `errorTrigger` + Slack catch-all (rare across the index) which gives partial coverage of the same observability concern. The other 2 workflows have no error handling beyond Slack-on-success.
+- **Google Sheets is the data layer**, not Supabase. **Only cluster in the index using Google Sheets** as primary data layer (other clusters: main Supabase or LinkedIn's secondary Supabase). The reel queue (`251.mp4`–`500.mp4` rows + `posted_at` + `post_url` etc.) lives in Google Sheets per `FLOW_OS_STATE.md` Section 4.
+- **LLM stack: Anthropic** (Claude Haiku for caption generation) — back to ecosystem default after the LinkedIn cluster's OpenAI fork. Confirms memory's note that Claude Haiku replaced an earlier hardcoded Code node for captions.
+- **Alerting: Slack-only** across all 3. No Telegram. Reinforces work-list item 18 (alerting platform consolidation — Tyson's lean toward Path A) — particularly concerning for Token Expiry Monitor whose Slack-only alerts are the only signal Charlie or Tyson would receive about IG token expiry, and Tyson reports rarely checking Slack.
+- **No orchestrator** — third "no orchestrator at all" cluster (LinkedIn first). Workflows coordinate via the shared Google Sheet. Adds the third data point supporting work-list item 12 (specialist-to-specialist communication contract reframe to Phase 4+ load-bearing).
+- **Schedule timezone NY pattern confirmed for 6 more cron expressions**: Token Monitor (1 cron), Reels Auto-Publisher (4 separate crons named "Every 5 Hours"), Performance Sync (1 cron). Cluster-sweep work-list item 7 running tally now **14 workflows**.
+
+### Instagram Token Expiry Monitor
+
+- **ID:** `cP5TjJ3DFle6r6FC`
+- **Belongs to:** Personal (Tyson personal brand)
+- **Specialist owner:** None — Tyson directly.
+- **Trigger:** `scheduleTrigger` "Every Monday at 9am" with cron expression `0 0 9 * * 1` (6-field; Monday 09:00 NY = 13:00 UTC per cluster-wide timezone observation).
+- **Purpose:** Weekly check of the Instagram Graph API access token's expiry timestamp. `Check Token Expiry` calls Facebook Graph API to fetch the current token's `expires_at`, `Parse Expiry Data` computes days remaining, `Needs Alert?` IF gates: if token is within the alert window, `Slack — Token Alert` posts a "renew the IG token" message; otherwise `Slack — Token OK` posts a confirmation. The whole workflow is the **only line of defence against silent IG token expiry** — when this token expires, the Reels Auto-Publisher's `Create Media Container` and `Publish Media` calls will fail, breaking the reel engine entirely.
+- **Heartbeat:** N
+- **Error workflow:** none.
+- **Recent activity:** **0 executions in last 30 days.** API returned 0 rows in the last 100. Workflow is `active=true` but the cron has not fired any of the four expected Monday windows (Apr 7, 14, 21, 28). **Silent dormancy** — exact same diagnostic shape as Trading Weekly Analyst and Bot Router (telegramTrigger). Likely cause: cron registration unbound from n8n's scheduler after a restart event since the last `updatedAt: 2026-03-26T08:49 UTC`.
+- **Bucket:** **M** (this is the IG ecosystem's only token-expiry early-warning system; silent dormancy here means token expiry would land as a Reels Auto-Publisher production failure rather than a planned renewal)
+- **Known issues:** Confirmed silent dormancy in this audit (2026-05-04). Third confirmed dormant trigger pattern after Trading Weekly Analyst and Bot Router — pattern now established as common rather than isolated, likely cron registration cleared by n8n event since `updatedAt: 2026-03-26`. Recovery: deactivate/reactivate to force trigger re-registration, add heartbeat + errorWorkflow before flipping back active. **Tyson confirms 2026-05-04** the IG token is recent enough that standard heartbeat + errorWorkflow sweep dispatch timing catches it before expiry — no special handling needed. Bundle with sweep dispatch (work-list item already tracking). Schedule timezone naming mismatch (cron named "9am" but fires at 13:00 UTC = 09:00 NY) — joins cluster-sweep work-list item 7. Slack-only alerting is brittle per work-list item 18 — even if workflow recovers, alerts to a channel Tyson rarely checks risk delaying response.
+- **Last verified:** 2026-05-04
+- **Notes:** `createdAt: 2026-03-16T09:01 UTC`, `updatedAt: 2026-03-26T08:49 UTC` — has not been touched in nearly 6 weeks. Talks to: Facebook Graph API (Meta endpoint that returns IG token metadata), Slack. **No skill file**.
+
+### Instagram Trial Reels Auto-Publisher
+
+- **ID:** `44g7cbGz5osQ1pcBVhIoz`
+- **Belongs to:** Personal (Tyson personal brand)
+- **Specialist owner:** None — Tyson directly.
+- **Trigger:** Two triggers — `errorTrigger` "Workflow Error Trigger" (handles in-workflow errors via Slack catch-all) AND `scheduleTrigger` "Every 5 Hours" with **four** cron expressions in one trigger node: `0 21 * * *` (21:00 NY = 01:00 UTC), `0 2 * * *` (02:00 NY = 06:00 UTC), `0 7 * * *` (07:00 NY = 11:00 UTC), `0 11 * * *` (11:00 NY = 15:00 UTC). Trigger named "Every 5 Hours" but the four windows are not exactly 5h apart (5h / 5h / 4h / 10h overnight gap). 4 fires/day matches `FLOW_OS_STATE.md` "4-5 reels per day" cadence.
+- **Purpose:** End-to-end auto-publisher for the 30-Day Operator Reel Engine (Batch 2, posts 251–500 per `FLOW_OS_STATE.md` Section 4). Per scheduled fire: `Get Next Pending Row` (Google Sheets) reads the queue, `Filter Unposted Rows` filters where `posted == FALSE`, `Has Pending Row?` IF gates: if no rows, `No Pending Posts (Stop)`. If pending, `Build Video URL` constructs the R2 URL (`r2.dev/reels/<filename>`), `Validate R2 URL (HEAD)` does a HEAD request to confirm the file exists, `URL Returns 200?` IF either short-circuits to `Slack — URL Error` or proceeds. Caption generation: `Build Caption Prompt` shapes the prompt using the row's content theme + ICA archetype hints (Sophie / Tom per state doc), `Call Claude Haiku` (Anthropic API — Haiku for cost efficiency on captions) generates the caption, `Extract Caption` parses it. IG publishing: `Create Media Container` POSTs the video URL + caption to `graph.facebook.com` Reels endpoint, `Save Container ID` captures the container ID, `Wait 30s (Initial Processing)` lets Meta process the video, then a polling loop: `Increment Poll Counter` + `Poll Media Status` + `Merge Poll Result` + `Status = FINISHED?` IF + `Poll Timed Out?` IF + `Wait 15s (Poll Retry)` until container is ready or timeout fires. On success: `Publish Media` posts the container as a live reel, `Merge Publish Result` shapes the result, `Mark Posted = TRUE` updates the Google Sheet, `Slack — Success` notifies. Error paths: `Slack — Processing Error` (in-flow processing failure), `Slack — URL Error` (R2 file missing), `Slack — Catch-All Error` (any uncaught error via the workflow-internal errorTrigger).
+- **Heartbeat:** N (no node named heartbeat; the cluster's de-facto observability is the Slack — Success node firing per publish, plus the workflow-internal `errorTrigger` + Slack catch-all)
+- **Error workflow:** none (workflow has its own `errorTrigger` for in-workflow handling — this is a different mechanism from `settings.errorWorkflow` which references an external workflow).
+- **Recent activity:** 27 executions in last 7 days (matches expected 4 fires/day × 7 days = 28 with 1 short by edge of the window). All 27 successful. Last successful execution `2026-05-04T11:00:00 UTC` (= 07:00 NY = "0 7 * * *" cron, confirms NY-timezone evaluation).
+- **Bucket:** M
+- **Known issues:** **Schedule timezone naming mismatch** — node named "Every 5 Hours" but actual fire times are `21:00 / 02:00 / 07:00 / 11:00 NY` (= `01:00 / 06:00 / 11:00 / 15:00 UTC`). Each cron expression individually joins cluster-sweep work-list item 7. **Slack-only alerting is brittle** per work-list item 18 — including the catch-all error path. **Token dependency on Token Expiry Monitor** which is currently dormant — when the IG token does eventually expire, Auto-Publisher will fail at `Create Media Container`/`Publish Media` and surface via the `Slack — Catch-All Error` path; no proactive renewal warning until Token Monitor is recovered. **`Validate R2 URL (HEAD)` step is the only guard against missing reel files** — if a reel is queued but the R2 file is missing or moved, the URL check catches it and Slack-alerts; but no automated remediation. The workflow's internal `errorTrigger` + Slack catch-all is the rare partial-coverage pattern noted in the cluster intro — closest thing to standard heartbeat+errorWorkflow in this cluster.
+
+  **Compound silent-failure risk:** Two compounding silent-failure paths exist for the IG production pipeline. (1) Token Expiry Monitor (`cP5TjJ3DFle6r6FC`) is currently dormant — when IG token does eventually expire, no proactive renewal warning fires until Token Monitor is recovered. (2) Reels Auto-Publisher's own catch-all error path is Slack-only (per work-list item 18: Tyson rarely checks Slack). So even if IG token expires and reels begin failing at `Create Media Container`/`Publish Media`, the failure surfaces only in a Slack channel Tyson doesn't check. The two failure paths compound: silent token expiry → silent reel publishing failure → no Tyson awareness until manually noticed. Mitigation in the heartbeat + errorWorkflow sweep dispatch should explicitly route catch-all alerts to Telegram given alerting platform consolidation work-list item 18 lean toward Path A.
+- **Last verified:** 2026-05-04
+- **Notes:** `createdAt: 2026-03-05T15:00 UTC`, `updatedAt: 2026-04-14T16:38 UTC` — touched ~3 weeks ago, possibly the Claude Haiku caption-generation upgrade per memory ("caption generation Claude Haiku API replaced hardcoded Code node"). Talks to: Google Sheets (reel queue), Cloudflare R2 (`r2.dev/reels/`), Anthropic API (Claude Haiku for captions), Facebook Graph API (Reels endpoint), Slack. The 30-Day Operator Reel Engine context per `FLOW_OS_STATE.md` Section 4: Batch 2 (251–500) underway, 4-5 reels per day cadence, ICA archetypes Sophie + Tom, Batch 2 themes (Revenue Leakage, Offer Clarity, AI + Automation for Operators, Founder Operating Rhythm, Scaling Without Breaking).
+
+  **Workflow design 2026-03 by Tyson built from scratch** — deliberate choices on (a) workflow-internal `errorTrigger` + Slack catch-all rather than external `settings.errorWorkflow`, (b) Google Sheets as data layer rather than Supabase (the only such cluster in the index), (c) 4 separate cron expressions in one trigger node giving 4 fires/day at 21:00/02:00/07:00/11:00 NY — non-uniform 5h/5h/4h/9h overnight gap is intentional. The internal-errorTrigger pattern is a useful precedent for the heartbeat sweep dispatch design — demonstrates that in-workflow `errorTrigger` nodes work as a self-contained alternative to `settings.errorWorkflow`.
+
+### Sync Instagram Performance Data
+
+- **ID:** `EtJlwFvdpfpYoEfC`
+- **Belongs to:** Personal (Tyson personal brand)
+- **Specialist owner:** None — Tyson directly.
+- **Trigger:** `scheduleTrigger` "Every Day at 10am" with cron expression `0 0 10 * * *` (6-field; Daily 10:00 NY = 14:00 UTC).
+- **Purpose:** Daily metrics sync from Instagram Graph back into the Google Sheet that the Reels Auto-Publisher writes into. `Get All Rows` reads the full sheet, `Filter Eligible Rows` keeps rows where `posted == TRUE` and within the metrics window, `Aggregate All Items` collects them, `Fetch IG Insights` calls Facebook Graph API for per-post metrics (impressions, reach, saves, plays, etc.), `Parse Metrics` shapes them, `Update Sheet with Metrics` writes the metrics back to per-row columns, `Slack — Sync Complete` notifies.
+- **Heartbeat:** N
+- **Error workflow:** none.
+- **Recent activity:** 6 executions in last 7 days. All 6 successful. Last successful execution `2026-05-03T14:00:00 UTC` (= 10:00 NY ✓). Daily cadence: 7 expected, 6 observed (one fire either short of the window or skipped).
+- **Bucket:** S (analytics-only; failure means Tyson loses one day of metrics visibility but doesn't break the production reel engine)
+- **Known issues:** **Schedule timezone naming mismatch** — joins cluster-sweep work-list item 7. **Slack-only alerting** per work-list item 18 — sync-complete Slack messages going unread means Tyson can't easily verify daily metrics are flowing in. No heartbeat/errorWorkflow. The workflow doesn't differentiate between "Instagram metrics genuinely zero" and "Insights API returned no data" — silent zeros could mask a metrics pipeline issue.
+- **Last verified:** 2026-05-04
+- **Notes:** `createdAt: 2026-03-06T19:00 UTC`, `updatedAt: 2026-03-26T08:47 UTC` — has not been touched in ~6 weeks; current 100% success rate suggests it's stable. Talks to: Google Sheets (read + write same sheet as Reels Auto-Publisher), Facebook Graph API (Insights endpoint), Slack. The shared Google Sheet is the implicit data layer connecting all 3 cluster workflows — there is no Supabase, no separate database project, just the sheet. Performance metrics live in per-row columns alongside the post URL and posted-at timestamp.
 
 ## Maintenance log
 

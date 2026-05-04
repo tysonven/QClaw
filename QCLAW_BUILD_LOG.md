@@ -3043,3 +3043,27 @@ Work list additions:
 18. **Alerting platform consolidation decision — Phase 4 Slice 1 dependency.** Tyson currently doesn't reliably check Slack (LinkedIn cluster's Slack alerts mostly unread; same dormancy pattern as the Analytics weekly report email). Three paths under consideration: (A) consolidate everything to Telegram including LinkedIn cluster's Slack + email alerts — multiple bots is fine if it streamlines monitoring to one app, (B) keep multi-platform with Charlie as synthesiser via morning + evening digests, (C) hybrid — Telegram for urgent alerts and approvals, email for long-form reference reports, retire Slack. Tyson's lean 2026-05-04: Path A. Charlie 2.0 implication: Path A simplifies bootstrap (single read protocol, one bot inventory), Path B adds meaningful integration complexity (three protocols + dedup logic). Decision needed before Phase 4 Slice 1 finalises because bootstrap architecture depends on it. Likely bundle execution with bot consolidation dispatch (work-list item 8). Estimated 1-2 hours of Claude Code work to rewire LinkedIn cluster Slack + email nodes to Telegram if Path A is chosen.
 
 Pre-slice progress: N8N_WORKFLOW_INDEX.md cluster 5 of 11 complete. 6 clusters remain.
+
+## [2026-05-04] Charlie Overhaul — N8N_WORKFLOW_INDEX.md Instagram cluster documented
+
+Cluster 6 of 11. Tyson Personal Brand — Instagram cluster (3 workflows: Token Expiry Monitor, Trial Reels Auto-Publisher, Sync Performance Data). No specialist owner — Tyson directly. Format conventions from prior 5 clusters applied cleanly.
+
+Notable findings during cluster review:
+- 0/3 of cluster has standard heartbeat + errorWorkflow pattern; 1/3 (Reels Auto-Publisher) has workflow-internal `errorTrigger` + Slack catch-all (rare partial-coverage variant — useful precedent).
+- Token Expiry Monitor confirmed silent dormant — third confirmed dormant trigger after Trading Weekly Analyst and Bot Router. Pattern is now established as common.
+- All 3 cluster workflows alert via Slack only — reinforces work-list item 18 (alerting platform consolidation).
+- No orchestrator workflow exists; coordination via shared Google Sheet — third "no orchestrator at all" cluster (LinkedIn first), supporting work-list item 12 reframe.
+- LLM stack: Anthropic (Claude Haiku for caption generation in Reels Auto-Publisher) — back to ecosystem default after LinkedIn cluster's OpenAI fork. Memory's Haiku-replaces-Code-node note confirmed.
+- Reels Auto-Publisher fires 27 times in 7d (matches state doc's "4-5 reels per day" cadence); Performance Sync fires daily; Token Monitor fires 0 times in 30d.
+
+**Cluster data layer:** Instagram cluster is the only documented cluster using Google Sheets as primary data layer (other clusters: main Supabase or LinkedIn's secondary Supabase). The shared Google Sheet connects all 3 cluster workflows — reel queue + post URLs + posted timestamps + per-post performance metrics all in per-row columns. Worth tracking as architectural diversity in `LOCATIONS.md` if it grows; v1 captures the pattern in this entry.
+
+**Third confirmed dormant trigger:** Token Expiry Monitor (`cP5TjJ3DFle6r6FC`) joins Trading Weekly Analyst and Bot Router as confirmed silently dormant. Pattern is now established as common across the index — at least 3 of 46 workflows have triggers registered `active=true` in the n8n DB but not actually firing. Heartbeat + errorWorkflow sweep dispatch is now the most operationally urgent post-doc-pass work item.
+
+**Internal errorTrigger pattern:** Reels Auto-Publisher demonstrates a workflow-internal `errorTrigger` + Slack catch-all pattern as alternative to standard `settings.errorWorkflow`. Built deliberately by Tyson. Worth surfacing as design choice precedent for the heartbeat sweep dispatch — in-workflow `errorTrigger` may be cleaner for self-contained workflows than external errorWorkflow references.
+
+**Compound silent-failure pattern:** Token Monitor dormancy + Slack-only alerting (Tyson rarely checks) = compounding silent-failure path for IG production pipeline. Documented in Reels Auto-Publisher entry. Mitigation via Path A from work-list item 18 (consolidate alerting to Telegram).
+
+**Cluster-sweep timezone tally update:** 6 more cron expressions confirmed in NY-timezone naming mismatch pattern (Token Monitor + 4 in Reels Auto-Publisher trigger + Performance Sync). Running tally: 14 workflows with timezone naming drift across documented clusters.
+
+Pre-slice progress: N8N_WORKFLOW_INDEX.md cluster 6 of 11 complete. 5 clusters remain.
