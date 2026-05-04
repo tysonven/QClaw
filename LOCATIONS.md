@@ -54,6 +54,7 @@ This file is the second thing every agent reads at session start, after its iden
 - Supabase project: `fdabygmromuqtysitodp`
 - Secondary Supabase project (LinkedIn lead gen): `zshmlgtvhdneekbfcyjc` — separate from main QClaw Supabase. Used by Tyson personal brand LinkedIn lead gen workflows for prospect tracking, engagement counters, and analytics. Schema and tables are LinkedIn-cluster-specific; not part of the main canonical state architecture. To be inventoried in the LinkedIn-cluster reconciliation work.
 - Cloudflare R2: used by Clipper, Content Studio, Crete Marketing, Flow OS GHL Marketing (each scoped to own bucket/folder)
+- n8n internal Postgres database — used by some n8n workflows for state/dedup logic (e.g. Morning Light WL→HL conflict resolution). Distinct from external Supabase. Hidden architectural dependency; access scope is internal-to-n8n only, not externally queryable from the Charlie or QClaw stack.
 
 ## Secrets and credentials
 

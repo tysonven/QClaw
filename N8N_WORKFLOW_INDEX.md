@@ -32,12 +32,12 @@ This file is the sixth canonical doc Charlie reads at session start, after `CEO_
 | Ad Agency | 6 | documented |
 | Tyson personal brand — LinkedIn | 5 | documented |
 | Tyson personal brand — Instagram | 3 | documented |
-| Flow OS — Client integrations | 3 | pending |
+| Flow OS — Client integrations | 2 | documented |
 | Cross-cutting + token refresh | 3 | pending |
 | Flow OS Blog | 1 | pending |
 | Flow OS Infographics | 1 | pending |
 | FSC Content Studio | 1 | pending |
-| Various utilities and standalone | 9 | pending |
+| Various utilities and standalone | 10 | pending |
 
 Total: 46 active workflows.
 
@@ -573,6 +573,52 @@ Cluster-level findings:
 - **Known issues:** **Schedule timezone naming mismatch** — joins cluster-sweep work-list item 7. **Slack-only alerting** per work-list item 18 — sync-complete Slack messages going unread means Tyson can't easily verify daily metrics are flowing in. No heartbeat/errorWorkflow. The workflow doesn't differentiate between "Instagram metrics genuinely zero" and "Insights API returned no data" — silent zeros could mask a metrics pipeline issue.
 - **Last verified:** 2026-05-04
 - **Notes:** `createdAt: 2026-03-06T19:00 UTC`, `updatedAt: 2026-03-26T08:47 UTC` — has not been touched in ~6 weeks; current 100% success rate suggests it's stable. Talks to: Google Sheets (read + write same sheet as Reels Auto-Publisher), Facebook Graph API (Insights endpoint), Slack. The shared Google Sheet is the implicit data layer connecting all 3 cluster workflows — there is no Supabase, no separate database project, just the sheet. Performance metrics live in per-row columns alongside the post URL and posted-at timestamp.
+
+---
+
+## Flow OS Client integrations cluster
+
+This cluster contains 2 active workflows. A third intake workflow (`intake-kylie-content-system`, `qOwJhClx5BnOeycf`) was initially categorised here per discovery audit but reclassified to "Various utilities and standalone" after Tyson confirmed 2026-05-04 that the form's GHL destination is the FSC GHL sub-account, not the Flow OS GHL sub-account.
+
+Both workflows are paying-client integrations. **Specialist owner: None — integration workflows. Tyson directly responsible.** No agent specialist exists in `FLOW_OS_SPECIALISTS.md` for client-specific integrations. No skill file in `src/agents/skills/`.
+
+Cluster-level findings:
+- **Heartbeat + standard errorWorkflow gap: 0/2.** Morning Light has workflow-internal duplicate-error handling and Gutful has validate-email gates, but no standard `settings.errorWorkflow` and no heartbeat node on either.
+- **Both are webhook-triggered** (no schedules) — so no schedule timezone work-list contributions from this cluster.
+- **Both ultimately write to Flow OS GHL sub-account** via `services.leadconnectorhq.com` (the canonical contact store per `LOCATIONS.md`). Net pattern: thin webhook → field-map → GHL upsert adapters.
+- **Recent activity diverges sharply:** Morning Light 100+/7d (100% success); Gutful 0 in 30d. Gutful's 0 is cross-corroborated by Flow OS downstream automations as business-side dormancy on the Gutful Shopify store, not a webhook-broken state — see Gutful entry.
+- **Inactive predecessor sweep** — 3 inactive workflows look like predecessor/template versions: `E4PDhQyrGbd8lAQi` "Master MLM avatar social media machine V1", `9mgN68ib4BLn8W5w` "MASTER WL to HL", `gCG5uP4sggi8MFob` "Production - Wellness Living to FlowOS [Morning Light]". Worth a Tyson decision pass on whether to archive these formally. Adds to work-list item 9 (V1/V2/V3 cleanup sweep). No inactive Gutful V1/V2 found — the V3 predecessors may have been hard-deleted rather than deactivated.
+- **No orchestrator** — 2 independent webhook adapters, no cross-workflow chaining. The "no orchestrator at all" observation continues but is genuinely fine here: integration adapters don't need an orchestrator, they just react to upstream webhooks. Different shape from LinkedIn/Instagram clusters' "no orchestrator" pattern.
+
+### 21/10/25 Morning Light WL to HL
+
+- **ID:** `TikJkWLzpreI6iTa`
+- **Belongs to:** Flow OS (paying client integration — **Kayla N. / Morning Light Yoga & Pilates**, $297 unlimited per `FLOW_OS_STATE.md` Section 1)
+- **Specialist owner:** None — integration workflow. Tyson directly responsible. Cross-reference: `FLOW_OS_STATE.md` Section 1 for client status.
+- **Trigger:** `webhook` POST `/webhook/wl-production` (responseMode: `responseNode`).
+- **Purpose:** Real-time integration that pipes Kayla N.'s **WellnessLiving** booking platform events into her **Flow OS GHL sub-account** as contacts. WellnessLiving (Kayla's class-booking system) fires a webhook on customer events; this workflow receives the payload, `Validate WellnessLiving Webhook` (code) checks it's authentic, `Map WL -> HL` shapes the WL booking record into the HL contact schema, `Edit Fields` finalises, `Get Contact` queries GHL via `services.leadconnectorhq.com` to check for an existing contact match. `If has contact id` IF gates: existing contact → `Merge Tags` (code) merges WL tags with existing tags + `Put` updates via GHL API. New contact → `Merge to create new contact` shapes the create payload + creates via GHL API. `Detect Duplicate Error` + `If Duplicate Error?` IF + `Log Error in Custom Field` handle the rare race condition where two webhooks for the same email arrive in flight. Postgres node (`Execute a SQL query`) + `Select best data` resolves which WL record wins when conflicts arise. `Respond 200` returns success to WellnessLiving so it doesn't retry. **Failure impact for Kayla:** if this workflow silently fails, new WellnessLiving bookings stop appearing in her Flow OS GHL contacts — she'd lose the automation she's paying for.
+- **Heartbeat:** N
+- **Error workflow:** none.
+- **Recent activity:** 100+ executions in last 7 days (API limit hit). All 100 successful. Last successful execution `2026-05-04T12:31:19 UTC`. Highest-frequency client integration in the index — Kayla's class bookings are firing webhooks continuously throughout the day.
+- **Bucket:** M
+- **Known issues:** **Date-prefixed workflow name** ("21/10/25" = 21 October 2025 in DD/MM/YY) is non-canonical naming — looks like a snapshot timestamp added during deployment. `createdAt: 2025-09-23` precedes the 21/10/25 date in the name, so the date represents either a deployment milestone or a post-creation rename. Worth canonicalising as part of Tyson's cleanup pass (e.g. rename to "Morning Light WL→HL" without the date prefix). No heartbeat/errorWorkflow despite being mission-critical for a paying client at 100+/7d. **Inactive predecessor candidates** in n8n: `9mgN68ib4BLn8W5w` "MASTER WL to HL" (looks like the template), `gCG5uP4sggi8MFob` "Production - Wellness Living to FlowOS [Morning Light]" (looks like an older Morning Light version). Decision pending Tyson on archive — joins work-list item 9.
+- **Last verified:** 2026-05-04
+- **Notes:** `createdAt: 2025-09-23T11:20 UTC`, `updatedAt: 2026-02-27T10:41 UTC` — has not been touched in over 2 months, current 100% success rate suggests it's stable. Talks to: WellnessLiving (incoming webhook), GHL via `services.leadconnectorhq.com`, **n8n's internal Postgres database** (not external Supabase) for the conflict-resolution Postgres node. Per Tyson 2026-05-04: this is n8n's own database, distinct from the main QClaw Supabase + LinkedIn secondary Supabase + Instagram cluster's Google Sheets. n8n internal Postgres is a previously-undocumented data layer worth surfacing in `LOCATIONS.md`. **Stripe payer:** Kayla N. ($297/mth). **No skill file** — workflow purpose inferred from node structure + state doc.
+
+### Gutful Shopify to Flow OS V3
+
+- **ID:** `9VqCAnczY5gFJcRE`
+- **Belongs to:** Flow OS (paying client integration — **Michael Y. / Gutful**, $297 unlimited per `FLOW_OS_STATE.md` Section 1; **cross-dimensional client** — Eliza J. co-runs Gutful operationally per `FLOW_OS_STATE.md` Section 2)
+- **Specialist owner:** None — integration workflow. Tyson directly responsible. Cross-reference: `FLOW_OS_STATE.md` Section 1 + Section 2 cross-dimensional clients (Eliza J. + Gutful linkage).
+- **Trigger:** **Two webhook triggers** in one workflow — `webhook` POST `/webhook/shopify-customer` (responseMode: `responseNode`) AND `webhook` POST `/webhook/shopify-order` (responseMode: `responseNode`).
+- **Purpose:** Real-time integration that pipes Mikey's **Gutful Shopify store** customer + order events into his **Flow OS GHL sub-account** as contacts. Two parallel webhook paths from the same Shopify store: **Customer path** — Shopify fires `/webhook/shopify-customer` on new customer creation, `Validate Shopify Customer Webhook` (code) checks authenticity, `Validate Customer Email` IF gates on email presence, `Map Customer Fields1` (set) shapes payload, `Generate Customer Tags1` (code) builds Gutful-specific tags, `Upsert HighLevel Contact (Customer)1` creates or updates the contact via `services.leadconnectorhq.com`, `Respond Customer Success1` or `Respond Customer Error1` returns to Shopify. **Order path** — Shopify fires `/webhook/shopify-order` on order placement, mirror flow with Order-specific field mapping and tags. The two paths share Postgres-node-based deduplication (`Execute a SQL query2` and `Execute a SQL query3`) to prevent the customer-then-order race from creating duplicate contacts. **Failure impact for Mikey:** if this workflow silently fails, Gutful's Shopify activity stops flowing into his Flow OS GHL — order/customer events lost, downstream automations (welcome flows, abandoned-cart, etc.) silently broken.
+- **Heartbeat:** N
+- **Error workflow:** none.
+- **Recent activity:** 0 executions in last 30 days. 0 executions in entire 100-row API window. Cross-corroborated 2026-05-04 by Tyson: Flow OS downstream automations catching Gutful customer-purchase data show last execution 2026-04-17 — since downstream activity requires upstream webhook delivery, the silence is most likely business-side dormancy on Gutful Shopify (low volume), not n8n-side webhook breakage. Workflow remains healthy and ready when activity resumes.
+- **Bucket:** M
+- **Known issues:** 30-day silent period diagnostic: Tyson cross-reference 2026-05-04 — Flow OS downstream automations that catch Gutful customer-purchase data show last successful execution 2026-04-17. Since downstream automations only fire when upstream webhooks deliver, this corroborates business-side dormancy on Gutful Shopify rather than a webhook-broken state. Most likely reading: Gutful is genuinely quiet (low order/customer volume in the past month); workflow is healthy and ready when activity resumes. Tyson plans to send a check-in email to Mikey or Eliza for confirmation. **Operational caveat:** Tyson is not contracted to manage Gutful's n8n workflow operationally — Gutful pays $297/mth for the Flow OS subscription which includes the integration, but ongoing workflow health is not part of the deliverable. If a fix becomes needed, contract scoping conversation with Mikey/Eliza precedes any work. No heartbeat/errorWorkflow despite being mission-critical paying-client integration. **"V3" suffix** implies V1/V2 predecessors existed — neither found in active or inactive workflow list, suggesting hard deletion. V3 has been stable since the original build (4 months untouched). Joins work-list item 9 (V1/V2/V3 cleanup sweep) — for this workflow specifically, the cleanup is "confirm V3 is canonical and current" rather than "archive predecessors". **Cross-dimensional context worth preserving:** Eliza J. is on FSC 1:1 mentoring with Emma ($919/mth from 9 Apr 2026 per `FLOW_OS_STATE.md`); any Gutful conversation factors in Eliza's parallel relationship.
+- **Last verified:** 2026-05-04
+- **Notes:** `createdAt: 2025-10-14T11:13 UTC`, `updatedAt: 2026-01-08T12:41 UTC` — not touched in nearly 4 months; the workflow has been stable since the V3 build, which is positive — the 0-execution count is most likely Shopify-side dormancy than n8n-side rot, corroborated by downstream-automation evidence. Talks to: Shopify (incoming webhooks), GHL via `services.leadconnectorhq.com`, Supabase (Postgres for dedup; **[needs Tyson input]** on whether this Postgres node uses the same n8n internal database as Morning Light, or external Supabase). **Stripe payer:** Michael Y. (the contractual relationship is with Mikey; Eliza is operational co-runner, not a Flow OS direct customer). **No skill file**.
 
 ## Maintenance log
 
