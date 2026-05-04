@@ -2926,3 +2926,9 @@ In order:
 - (this commit) — End-of-session summary
 
 End of day. Next session: N8N_WORKFLOW_INDEX.md focused session, then Phase 4 Slice 1 begins.
+
+## [2026-05-04] Trading - Market Scanner JSON fix + Charlie Overhaul process tidy
+
+Trading worker /simulate endpoint hardened: outer try/except wrap returns valid JSON for any failure mode (was returning Flask's HTML 500 page, breaking the n8n Trading - Market Scanner "Run Market Simulations" node). request.get_json now silent=True. Already live in PM2 since ~08:02 UTC; this commit lands the running code in main.
+
+Process tidy: CLAUDE_CODE_TASKS.md added to .gitignore (transient session brief docs from Charlie dispatches — pattern expected to recur, narrow ignore preserves the tracked CC_OPERATING_RULES + CC_INVENTORY docs). Backup glob in .gitignore expanded to `*.bak.*` and `*.backup.*` to match the qclaw-dev skill's timestamped backup convention. Pre-existing `monte_carlo.py.bak.20260504-080207` removed (byte-identical to HEAD, content preserved in git history).
