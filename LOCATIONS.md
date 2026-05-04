@@ -52,6 +52,7 @@ This file is the second thing every agent reads at session start, after its iden
 - n8n server: `ssh n8n` → `157.230.216.158`, Docker Compose
 - Dashboard: `agentboardroom.flowos.tech`
 - Supabase project: `fdabygmromuqtysitodp`
+- Secondary Supabase project (LinkedIn lead gen): `zshmlgtvhdneekbfcyjc` — separate from main QClaw Supabase. Used by Tyson personal brand LinkedIn lead gen workflows for prospect tracking, engagement counters, and analytics. Schema and tables are LinkedIn-cluster-specific; not part of the main canonical state architecture. To be inventoried in the LinkedIn-cluster reconciliation work.
 - Cloudflare R2: used by Clipper, Content Studio, Crete Marketing, Flow OS GHL Marketing (each scoped to own bucket/folder)
 
 ## Secrets and credentials

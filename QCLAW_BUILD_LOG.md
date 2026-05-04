@@ -3007,6 +3007,37 @@ Notable findings during cluster review:
 
 Work list addition:
 
-12. Specialist-to-specialist communication contract — Phase 4+ load-bearing concern, not Phase 5+ tidy. Bot Router was the conversational orchestrator built and never adopted operationally; Tyson reports copy-pasting between workflows because agents don't chain. Charlie 2.0's design must include defined inter-specialist invocation routes via Charlie as router. Without it, humans-as-integrator pattern will reappear with new specialists.
+12. **Specialist-to-specialist communication contract — Phase 4+ load-bearing.** Three patterns observed across documented clusters: (a) Ad Agency Bot Router built as orchestrator but never adopted, (b) Crete pipeline orchestrator working at heartbeat layer but not at downstream-success-reporting layer, (c) LinkedIn cluster has no orchestrator at all — workflows coordinate via shared database. All three end with humans-as-integrator. Charlie 2.0 must define how specialists invoke each other AND how Charlie reads composite state from shared databases when no orchestrator exists. The pattern is now too consistent to defer to Phase 5+.
 
 Pre-slice progress: N8N_WORKFLOW_INDEX.md cluster 4 of 11 complete. 7 clusters remain.
+
+## [2026-05-04] Charlie Overhaul — N8N_WORKFLOW_INDEX.md LinkedIn cluster documented + LOCATIONS.md secondary Supabase
+
+Cluster 5 of 11. Tyson Personal Brand — LinkedIn cluster (5 workflows: Analytics + monitoring, Content Generation, Engagement Automation, Lead Generation, Master avatar machine V1). No specialist owner — Tyson directly. Format conventions from prior 4 clusters applied cleanly.
+
+Notable findings during cluster review:
+- 0/5 of cluster has heartbeat + errorWorkflow pattern. Joins the heartbeat backlog.
+- Lead Gen has elevated 7d error rate (~67% of 6 executions; last successful 2026-04-30). Bundle into the same diagnostic batch as Trading Market Scanner / Crete Content Publish / GHL Marketing Optimisation Agent.
+- Master avatar V1 multi-platform fit anomaly: Tyson decision 2026-05-04 to keep in LinkedIn cluster (single-workflow categories overkill). Reconsider if more multi-platform workflows surface in remaining clusters.
+- Schedule timezone NY pattern confirmed for 5 more cron expressions in this cluster. Cluster-sweep work-list item 7 now covers 8 workflows total.
+- PhantomBuster discovery-audit reference confirmed as operational history, not current state — Lead Gen workflow uses Apify + Browserflow exclusively. PhantomBuster transition started, never fully completed; sweep of stale references added as work-list item 15.
+
+**Cluster fork from ecosystem default:** LinkedIn cluster runs on a different stack than the rest of the ecosystem — separate Supabase project (`zshmlgtvhdneekbfcyjc`), OpenAI not Anthropic, Slack + email not Telegram for alerting. Documented as cluster-level findings; `LOCATIONS.md` updated to include the secondary Supabase project under a new "Secondary Supabase projects" line.
+
+**Architectural finding update:** Three patterns of specialist-coordination-failure now observed across 3 documented clusters (Ad Agency Bot Router unused, Crete orchestrator partially-blind, LinkedIn no-orchestrator-at-all). Updated work-list item 12 from Phase 5+ tidy to Phase 4+ load-bearing — Charlie 2.0's design must define how specialists invoke each other AND how composite state is read when no orchestrator exists. Updated text replaces the original item 12 in the Ad Agency cluster build log entry.
+
+**Operational reality (Master avatar workflow):** Tyson lost access to the Flow OS LinkedIn company page; the disabled "Flow Os LinkedIn" branch in `NhTdMXeqliW6dPDr` reflects this real-world access loss, not a workflow bug. Worth marking because it's the kind of operational reality detail that without explicit capture would result in Charlie hallucinating "Flow OS LinkedIn distribution is wired but disabled" without knowing the access-recovery dependency.
+
+Work list additions:
+
+13. LinkedIn Engagement rate limit verification — confirm current daily limit value in Supabase, verify it's conservative relative to LinkedIn's anti-abuse heuristics. Small verification task.
+
+14. LinkedIn Analytics weekly report routing + dormancy — Tyson decision 2026-05-04: reports should go to tyson@flowos.tech. Verify whether Email Report Sender is currently configured to that destination, and disambiguate between two possible states: (a) wrong destination configured (needs update), (b) workflow silently broken (needs trigger recovery). Probe Mon executions and email destination config. Bundle with the heartbeat + errorWorkflow sweep dispatch.
+
+15. PhantomBuster sweep — workflow was originally built with PhantomBuster, transitioned to Apify but never fully completed. Sweep skill files, old briefs, and any other docs for residual PhantomBuster references that are stale. Discovery audit referenced PhantomBuster — confirm whether discovery audit's source data has stale references too.
+
+16. Optional: LinkedIn lead gen specialist in FLOW_OS_SPECIALISTS.md. Currently no specialist exists for Tyson personal brand LinkedIn — explicitly Tyson-direct work. If LinkedIn lead gen becomes more autonomous (per the trust gradient model), a specialist can be added. For now, document explicitly as Tyson-direct.
+
+17. Optional: FLOW_OS_STATE.md add Tyson personal brand LinkedIn lead gen subsection. Parallel to the Instagram reel engine entry; document cadence, current performance, known constraints (PhantomBuster→Apify migration in progress, separate Supabase project, OpenAI stack vs ecosystem-default Anthropic).
+
+Pre-slice progress: N8N_WORKFLOW_INDEX.md cluster 5 of 11 complete. 6 clusters remain.

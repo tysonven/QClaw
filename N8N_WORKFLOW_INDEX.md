@@ -30,7 +30,7 @@ This file is the sixth canonical doc Charlie reads at session start, after `CEO_
 | Crete | 4 | documented |
 | Flow OS GHL Marketing | 5 | documented |
 | Ad Agency | 6 | documented |
-| Tyson personal brand — LinkedIn | 5 | pending |
+| Tyson personal brand — LinkedIn | 5 | documented |
 | Tyson personal brand — Instagram | 3 | pending |
 | Flow OS — Client integrations | 3 | pending |
 | Cross-cutting + token refresh | 3 | pending |
@@ -414,6 +414,102 @@ Cluster-level findings:
   **Operational reality (per Tyson 2026-05-04):** Bot Router was set up as the conversational orchestrator for the Ad Agency cluster but never adopted in daily flow. Sub-role workflows (Scout, Penny, Frame, Ledger, Optimisation) are invoked directly via dashboard or specific webhooks rather than through Bot Router's intent-classified routing. Tyson currently copy-pastes between workflows because the agents don't chain. The orchestration architecture exists in code but not in operational use. This is a load-bearing finding for Phase 4+ specialist communication contract design — specialists without a defined inter-specialist contract default to humans-as-integrator. Charlie 2.0's design must include defined inter-specialist invocation routes via Charlie-as-router.
 - **Last verified:** 2026-05-04
 - **Notes:** `updatedAt: 2026-03-19T14:00 UTC` — oldest `updatedAt` in the cluster (almost 7 weeks). Talks to: Anthropic API (Claude intent classifier), all 5 other Ad Agency workflows (via their webhooks), Telegram, Supabase (active session check). The Bot Router is the de-facto authorisation layer for the cluster — Tyson-only gates on Optimisation Report and Ad Creation are enforced here, not at the downstream workflow level. If Em finds a way to call those downstream webhooks directly, the gates wouldn't apply — a defence-in-depth concern that's structurally fine for an internal-bot-only setup but worth flagging if the webhooks are ever exposed. Skill file: `ads-agency.md` + cross-reference `FLOW_OS_SPECIALISTS.md` Ad Agency Operator entry.
+
+---
+
+## Tyson Personal Brand — LinkedIn cluster
+
+5 workflows. All belong to **Personal** (Tyson personal brand). **Specialist owner: None — Tyson directly.** No agent specialist currently exists for personal brand LinkedIn lead gen in `FLOW_OS_SPECIALISTS.md`. No skill file exists in `src/agents/skills/` for these workflows.
+
+Cluster-level findings:
+- **Heartbeat + errorWorkflow gap is total: 0/5.** Joins the cluster-wide backlog.
+- **Separate Supabase project** — 4 of 5 workflows talk to `zshmlgtvhdneekbfcyjc.supabase.co`, distinct from the main QClaw Supabase (`fdabygmromuqtysitodp`). LinkedIn lead gen data lives in its own project. Documented in `LOCATIONS.md` under "Secondary Supabase projects".
+- **OpenAI, not Anthropic** — every LinkedIn workflow uses OpenAI nodes. Different LLM stack from the Anthropic-on-Claude pattern across the rest of the ecosystem.
+- **Slack + Email, not Telegram** — alerting is via Slack channels and email reports, not Telegram. The cross-cluster bot consolidation work-list item 8 does not affect this cluster.
+- **No chain orchestration** — all 5 are independently scheduled with shared database. Same humans-as-integrator failure mode as Ad Agency Bot Router; same Phase 4+ specialist communication contract concern (work-list item 12 applies — and is the third pattern observation supporting the item-12 reframe from Phase 5+ tidy to Phase 4+ load-bearing).
+- **Schedule timezone NY pattern confirmed for 5 more workflows** — adding to cluster-sweep work-list item 7. Affected cron expressions: Analytics Collection (`0 0 8 * * *`), Weekly Report (`0 0 9 * * 1`), Content Schedule (`0 0 8 * * 1,3,5`), Lead Gen (`0 0 9 * * 1-5`), Follow-up (`0 0 11 * * 2,4`).
+- **No `FLOW_OS_STATE.md` entry currently** for LinkedIn lead gen — recommended as work-list item 17.
+
+### linkedIn analytics and monitoring
+
+- **ID:** `yPt090tPv4FJtwAZ`
+- **Belongs to:** Personal (Tyson personal brand)
+- **Specialist owner:** None — Tyson directly.
+- **Trigger:** Three `scheduleTrigger` nodes — "Analytics Collection Trigger" `0 0 8 * * *` (daily 08:00 NY), "Weekly Report Trigger" `0 0 9 * * 1` (Mon 09:00 NY), "System Health Monitor" `0 0 * * * *` (every hour, top of hour).
+- **Purpose:** Three-track analytics + reporting + health for the LinkedIn lead-gen pipeline. **Daily Analytics:** `Recent Posts Query` reads recent posts from Supabase, `LinkedIn Post Analytics` computes per-post engagement, `Analytics Database Update` writes back, `AI Performance Analyzer` (OpenAI) generates narrative analysis, `Parse Performance Analysis` shapes output, `Insights Logger` persists. **Weekly Report (Mon 09:00 NY):** `Weekly Metrics Query` reads aggregate stats, `Lead Metrics Query` + `Engagement Metrics Query` compute per-axis numbers, `Merge Weekly Metrics` combines them, `AI Report Generator` (OpenAI) produces narrative, `Parse Report` shapes, `Email Report Sender` emails the report, `Slack Weekly Summary` posts to Slack, `Report Archive` persists. **System Health (hourly):** `System Health Query` checks pipeline state, `Health Alert Filter` IF triggers `Slack Health Alert` if anomalous, `Alert Logger` persists.
+- **Heartbeat:** N (the "System Health Monitor" trigger is essentially the cluster's de-facto observability layer for LinkedIn ops — the closest thing to a heartbeat across the 5 LinkedIn workflows, though it monitors Supabase state rather than firing per-workflow heartbeats).
+- **Error workflow:** none.
+- **Recent activity:** 100+ executions in last 7 days (API limit hit). All 100 successful. Last successful execution `2026-05-04T12:00:00 UTC`. The 100+ count is dominated by the hourly System Health Monitor (24×7=168 hourly fires expected; capped at 100 per query).
+- **Bucket:** M (the only operational visibility layer for the LinkedIn cluster — its silent failure leaves the rest of the cluster invisible)
+- **Known issues:** **Schedule timezone naming mismatch** for both "08:00" and "09:00" Mon-named cron expressions — joins cluster-sweep work-list item 7. No heartbeat/errorWorkflow on this workflow itself, which is paradoxical given it serves as the cluster's observability layer.
+
+  **[Tyson decision 2026-05-04]** Weekly LinkedIn reports go to `tyson@flowos.tech`. Tyson has not received reports recently — verify whether the Email Report Sender is currently configured to that destination, and if not, update the workflow to route there. Two possible states: (a) workflow is currently sending reports to a different/old address, in which case route reconfiguration is needed; (b) workflow is silently broken and not sending reports at all (same shape as Bot Router and Approval Handler dormancy patterns). Verification probe needed to disambiguate. Bundle into the heartbeat + errorWorkflow sweep dispatch.
+- **Last verified:** 2026-05-04
+- **Notes:** `createdAt: 2025-06-06`, `updatedAt: 2026-03-26T08:48 UTC`. Talks to: Supabase (LinkedIn project `zshmlgtvhdneekbfcyjc`, multiple tables for posts/leads/engagement/insights), OpenAI (analysis + reporting), Slack (alerts + weekly summary), email (weekly report). The hourly System Health Monitor is unique across all 4 prior documented clusters — no other workflow has an hourly self-health-check cadence. **No skill file**.
+
+### LinkedIn Content Generation
+
+- **ID:** `qszqid6NY51SoX95`
+- **Belongs to:** Personal (Tyson personal brand)
+- **Specialist owner:** None — Tyson directly (no agent specialist exists for personal brand LinkedIn).
+- **Trigger:** `scheduleTrigger` "Content Schedule Trigger" with cron expression `0 0 8 * * 1,3,5` (6-field; Mon/Wed/Fri 08:00 NY = 12:00 UTC per cluster-wide timezone observation), AND `chatTrigger` "When chat message received" (n8n's built-in chat-UI trigger, allows manual on-demand generation from the n8n editor).
+- **Purpose:** 3×/week scheduled content generation publishing directly to Tyson's LinkedIn personal profile. `Content Pillar Selector` rotates between content pillars per the day, `Fetch LinkedIn URN` resolves the personal-profile URN from the LinkedIn API, `Merge URN and Pillar` shapes the publish target, `AI Content Generator` (OpenAI) produces the post, `Parse and Quality Check` validates output, `Content Quality Gate` IF gates publishing on quality threshold, `Publish to LinkedIn` POSTs directly to `api.linkedin.com` (not via Blotato), `Extract Post ID` captures the published-post ID, `Database Logger` persists to the LinkedIn Supabase, `Slack Notification` posts confirmation to Tyson's Slack. Failure path uses `Failed Content Logger`. The `Fetch Recent Posts` + `Fetch Top Performing Posts` + `Build Content Context` nodes feed the chat-trigger path with historical context for on-demand generation.
+- **Heartbeat:** N
+- **Error workflow:** none.
+- **Recent activity:** 3 executions in last 7 days. All 3 successful. Last successful execution `2026-05-04T12:00:00 UTC`. Matches the M/W/F 08:00 NY (12:00 UTC) cadence — May 4 is Mon, May 1 was Fri, Apr 29 was Wed = 3 fires expected, 3 observed.
+- **Bucket:** M
+- **Known issues:** **Schedule timezone naming mismatch** (cron `0 0 8 * * 1,3,5` named "08:00" but fires at 12:00 UTC = 08:00 NY) — joins cluster-sweep work-list item 7. No heartbeat/errorWorkflow — joins cluster-wide gap. The chat-trigger path is functional but not exposed outside the n8n editor — only Tyson can use it from inside n8n's UI.
+- **Last verified:** 2026-05-04
+- **Notes:** `createdAt: 2025-06-06`, `updatedAt: 2026-03-26T08:48 UTC` — has not been touched in nearly 6 weeks; current 100% success rate suggests it's stable. Talks to: LinkedIn API (api.linkedin.com), Supabase (LinkedIn project `zshmlgtvhdneekbfcyjc`), OpenAI, Slack. **No skill file** — workflow purpose inferred from node structure.
+
+### LinkedIn Engagement Automation
+
+- **ID:** `VMqrrhecG2hrpn4C`
+- **Belongs to:** Personal (Tyson personal brand)
+- **Specialist owner:** None — Tyson directly.
+- **Trigger:** `scheduleTrigger` "Engagement Monitor Trigger" with cron expression `0 0 */4 * * *` (every 4 hours, top of hour) AND `webhook` POST `/webhook/linkedin-engagement-webhook` "LinkedIn Webhook Trigger" (responseMode: `responseNode`).
+- **Purpose:** Every-4-hour automated engagement (commenting + liking) on Tyson's LinkedIn feed. `LinkedIn Feed Monitor` (n8n LinkedIn node) pulls recent feed items, `AI Content Analyzer` (OpenAI) classifies each post, `Parse Content Analysis` shapes the analysis, `Check Engagement Rate Limit` queries Supabase for the per-day engagement counter, `Merge Analysis and Rate Limit` decides which posts to engage with, `Engagement Filter` IF gates on threshold, `Comment or Like Router` IF picks action type. For comments: `AI Response Generator` produces a comment, `Response Quality Gate` + `Quality Check` IF validates, `LinkedIn Comment Creator` posts the comment. For likes: `LinkedIn Like Action` posts the reaction. `Engagement Logger` + `Rate Limit Tracker` persist counters to Supabase. The webhook leg lets external triggers fire engagement on-demand. `Fetch Engagement Weights` + `Merge Engagement Context` weight engagement decisions per content type/author/topic.
+- **Heartbeat:** N
+- **Error workflow:** none.
+- **Recent activity:** 39 executions in last 7 days. All 39 successful. Last successful execution `2026-05-04T12:00:00 UTC`. Cadence check: `*/4` hours = 6 fires/day × 7 days = 42 expected; 39 observed (some hours may have produced no engagement-eligible posts and short-circuited at the gate, but they should still appear as executions).
+- **Bucket:** M
+- **Known issues:** No heartbeat/errorWorkflow. The `Check Engagement Rate Limit` node is essential — autonomous LinkedIn engagement without a rate limit risks account flagging by LinkedIn's anti-abuse heuristics.
+
+  **[Tyson to verify in Supabase]** Daily rate limit value not currently known. Worth verifying that the configured limit is conservative relative to LinkedIn's anti-abuse heuristics — autonomous engagement without sufficient rate limiting risks account flagging. Added to post-doc-pass work list as small verification task.
+- **Last verified:** 2026-05-04
+- **Notes:** `createdAt: 2025-06-06`, `updatedAt: 2026-03-26T08:48 UTC`. Talks to: LinkedIn API (via n8n's LinkedIn node — credential-managed, not direct httpRequest), Supabase (LinkedIn project `zshmlgtvhdneekbfcyjc`), OpenAI. **No skill file**.
+
+### LinkedIn Lead Generation (Apify + Browserflow)
+
+- **ID:** `jmIA9yKIJobsIC60`
+- **Belongs to:** Personal (Tyson personal brand)
+- **Specialist owner:** None — Tyson directly.
+- **Trigger:** Two `scheduleTrigger` nodes — "Lead Generation Trigger" with cron `0 0 9 * * 1-5` (weekdays 09:00 NY = 13:00 UTC) AND "Follow-up Trigger" with cron `0 0 11 * * 2,4` (Tue/Thu 11:00 NY = 15:00 UTC).
+- **Purpose:** Two-phase LinkedIn outreach automation. **Phase 1 — Outreach (weekday 09:00 NY):** `Launch Apify LinkedIn Scraper` POSTs to `api.apify.com` to start a LinkedIn search-result scrape (Apify actor `curious_coder~linkedin-pr…` — name truncated in API response), `Wait for Apify Results` polls until the actor completes, `Fetch Apify Results` retrieves the prospect list, `Parse Prospect List` shapes records, `AI Lead Scorer` (OpenAI) scores each prospect 1-10, `Parse Lead Score` extracts the score, `Lead Qualification Filter` IF gates on threshold (low scorers go to `Low Score Logger`), `Check Daily Rate Limit` queries Supabase for the daily connection-request counter, `Rate Limit Gate` IF stops on cap, `AI Personalization Engine` (OpenAI) writes a personalised connection note, `Send Connection via Browserflow` POSTs to `api.browserflow.io` to send the connection request via browser automation (Browserflow handles the browser session and cookies; no LinkedIn API write here), `Prospect Database Logger` persists to Supabase, `Update Rate Limit Counter` increments the daily counter. **Phase 2 — Follow-up (Tue/Thu 11:00 NY):** `Query Accepted Connections` reads Supabase for connections that accepted in the last N days, `AI Follow-up Generator` (OpenAI) writes a follow-up message, `Send Follow-up via Browserflow` posts it via Browserflow, `Follow-up Tracker` updates Supabase.
+- **Heartbeat:** N
+- **Error workflow:** none.
+- **Recent activity:** 6 executions in last 7 days. **2 successes / 4 errors (heuristic).** Last successful execution `2026-04-30T15:00:00 UTC`. **Most recent execution `2026-05-01T13:00:00 UTC` errored** (`status=error, finished=False`). The cluster's **only error-prone workflow** — same diagnostic flavour as Trading Market Scanner / Crete Content Publish / GHL Marketing Optimisation Agent.
+- **Bucket:** M
+- **Known issues:** **Elevated error rate (~67% over 7d).** Possible causes: Apify actor failures (rate limits, target page changes, scraper detection by LinkedIn), Browserflow session expiry, OpenAI rate limits, daily-rate-limit logic blocking after a successful outreach, or an issue introduced upstream. Same flavour as the other errored-mission-critical workflows; bundle into the same batch diagnostic dispatch. **Schedule timezone naming** — cron `0 0 9 * * 1-5` and `0 0 11 * * 2,4` named for NY hours but fire at UTC+4. Joins cluster-sweep. No heartbeat/errorWorkflow — particularly painful here given this is the workflow most likely to need observability.
+
+  **PhantomBuster transition history:** Discovery audit referenced "PhantomBuster free plan limits" — this is operational history, not current state. Per Tyson 2026-05-04: workflow was originally built with PhantomBuster, transitioned to Apify + Browserflow at some point, transition was never fully completed. Current implementation uses Apify + Browserflow exclusively. PhantomBuster references in audit context are stale historical residue and should be ignored. Worth a sweep of skill files, old briefs, and any other docs for residual PhantomBuster references that should be updated or removed.
+- **Last verified:** 2026-05-04
+- **Notes:** `createdAt: 2025-06-06`, `updatedAt: 2026-03-26T08:47 UTC`. Talks to: api.apify.com (LinkedIn scraper actor), api.browserflow.io (browser-automation outreach), Supabase (LinkedIn project `zshmlgtvhdneekbfcyjc`), OpenAI. Browserflow is a niche browser-automation service — single-vendor dependency worth flagging. **No skill file**.
+
+### Master avatar social media machine V1
+
+- **ID:** `NhTdMXeqliW6dPDr`
+- **Belongs to:** Personal (Tyson personal brand)
+- **Specialist owner:** None — Tyson directly. (Note: workflow is structured to potentially distribute to Flow OS company page LinkedIn but that branch is currently disabled; see Known Issues.)
+- **Trigger:** `scheduleTrigger` "Schedule Trigger" — params truncated in API response; need a follow-up probe to confirm cadence.
+- **Purpose:** Avatar-video generation pipeline distributed to multiple social platforms. `AI Writer` (OpenAI) produces a script, `AI Research - Report` + `AI Research - Top 10` (Perplexity) ground the content in current sources. `Setup Heygen` configures the Heygen API call, IF branch decides between `Create Avatar Video WITH Background Video` and `Create Avatar Video WITHOUT Background Video` (both Heygen httpRequest nodes), `Get Avatar Video` polls until video is ready, `If Video Done` IF gates distribution. `Upload media` (Blotato) uploads the video to Blotato, `5min Wait` for processing, then fan-out to per-platform Blotato nodes: **active** = LinkedIn, Facebook, Instagram, Twitter, YouTube; **disabled** = TikTok, Bluesky, Pinterest, "Flow Os LinkedIn" (a separate LinkedIn endpoint, possibly a Flow OS company-page route). `Send a message` (Slack) posts a final completion notification.
+- **Heartbeat:** N
+- **Error workflow:** none.
+- **Recent activity:** 2 executions in last 7 days. All 2 successful.
+- **Bucket:** S
+- **Known issues:** V1 is current and correct (no V2 successor). Disabled platforms (TikTok, Bluesky, Pinterest) are intentionally off — Tyson is not using them currently. The disabled "Flow Os LinkedIn" branch reflects a real operational issue: Tyson lost access to the Flow OS company LinkedIn page, so the branch was disconnected. Workflow currently produces content for Tyson personal brand only. If/when Flow OS company page access is regained, the disabled branch can be reactivated. The workflow was originally adapted from a third-party template and customised for Flow OS avatar-style videos. Cluster fit: workflow distributes to LinkedIn but also Facebook, Instagram, Twitter, YouTube — fit anomaly within the LinkedIn cluster but no other "multi-platform" cluster exists in the index. Tyson decision 2026-05-04: keep in LinkedIn cluster for now (single-workflow categories are overkill); reconsider if more multi-platform workflows surface in remaining clusters. No heartbeat/errorWorkflow.
+- **Last verified:** 2026-05-04
+- **Notes:** `createdAt: 2025-07-15`, `updatedAt: 2026-03-26T08:48 UTC`. Talks to: OpenAI (script writing), Perplexity (research), Heygen (avatar video generation), Blotato (multi-platform distribution), Slack (notifications). 36 nodes total of which 14 are Sticky Notes (workflow-internal documentation) and 4 are disabled — high cosmetic-vs-functional ratio, normal for an experiment-heavy personal-brand workflow. **No skill file**.
 
 ## Maintenance log
 
