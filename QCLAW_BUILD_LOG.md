@@ -2945,3 +2945,19 @@ Notable findings during cluster review:
 Pre-slice progress: 4 of 4 remaining canonical docs in progress (CHARLIE_ROLE.md, FLOW_OS_SPECIALISTS.md, FLOW_OS_STATE.md complete; N8N_WORKFLOW_INDEX.md cluster 1 of 11 complete). 10 clusters remain to document.
 
 Concurrent backlog item: 13 mission-critical workflows lack heartbeat + errorWorkflow pattern. Discovery audit identified them. To be addressed in a single sweep dispatch as Phase 4+ work.
+
+## [2026-05-04] Charlie Overhaul — N8N_WORKFLOW_INDEX.md Crete cluster documented
+
+Cluster 2 of 11. Crete cluster (4 workflows). 3 of 4 had the heartbeat + errorWorkflow pattern wired (pointing to 7kpNnMtnuDWXgWcX — the workflow pending rename per Trading cluster decision). Format conventions from Trading cluster applied cleanly.
+
+Notable findings:
+- Content Generator: image generator root cause from the Apr 30 session is still unresolved; Photo Fallback work is the runtime workaround keeping the pipeline alive. Now infrastructure-unblocked given today's n8n SSH probe outcome.
+- Content Publish: 86% failure rate over 7d, last successful publish 2026-05-02. Reframed in the entry: this is the Apr 30 visibility layer working as designed, not a regression. The hardening was a resilience layer (silent-fail prevention, retry-loop suppression, error capture, heartbeat coverage), not a root-cause fix on underlying APIs or upstream content quality.
+- Content Regenerate is the heartbeat gap in the cluster — only Crete workflow without errorWorkflow set. Lower priority (human-initiated, low volume) but worth adding for consistency in the sweep dispatch.
+- Scheduled Publisher: structural reporting note recorded for Phase 4 Slice 1 design — orchestrator workflows need composite heartbeat + downstream-success reporting in the digest, not just their own heartbeats. General principle, not Crete-specific.
+
+**Diagnostic dispatch tracked:** Content Publish 86% failure rate (over 7d, last successful publish 2026-05-02) is the Apr 30 hardening working as designed — visibility, not suppression. Underlying failure rate was always there; pre-Apr-30 it was silent. Diagnostic SQL prepared (group by last_error in crete_content_queue) for follow-up dispatch. Tyson explicitly: silent failures unacceptable; need dashboard surfacing of which channels are failing.
+
+**Infrastructure note:** Today's qclaw → n8n SSH probe outcome (separate session work) confirmed n8n SSH operational. The image generator root cause investigation deferred Apr 30 due to dashboard auth blockers is now infrastructure-unblocked. Pull-forward window for the May 17 deferred items (webhook auth, nginx rate limit, FSC populate-vs-detach) opens whenever a 30-min quiet slot appears post-index session.
+
+Pre-slice progress: N8N_WORKFLOW_INDEX.md cluster 2 of 11 complete. 9 clusters remain.

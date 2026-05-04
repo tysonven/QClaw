@@ -27,7 +27,7 @@ This file is the sixth canonical doc Charlie reads at session start, after `CEO_
 | Category | Workflow count | Status |
 |---|---|---|
 | Trading | 5 | documented |
-| Crete | 4 | pending |
+| Crete | 4 | documented |
 | Flow OS GHL Marketing | 5 | pending |
 | Ad Agency | 6 | pending |
 | Tyson personal brand — LinkedIn | 5 | pending |
@@ -123,6 +123,82 @@ Total: 46 active workflows.
 - **Notes:** `availableInMCP: false` (the only Trading workflow with this set false — it's an internal handler, not for direct invocation). Created and last-updated identical timestamps `2026-04-29T20:00:29 UTC` matching commit `ca41c2c`. As more workflows get the heartbeat + errorWorkflow pattern (per the discovery audit's mission-critical backlog), invocation volume on this workflow will grow substantially. Skill file: `trading.md` (mentioned in the Apr 29 fix narrative).
 
 ---
+
+---
+
+## Crete cluster
+
+4 workflows. All belong to **Crete** (village development project + personal-business automations) per `FLOW_OS_SPECIALISTS.md`. Specialist owner across all 4: **Crete Marketing Operator** (content creation + distribution for Crete projects). Skill file: `crete-marketing.md` (with load-bearing operational detail per Phase 2 audit; **stale on the 2026-04-30 schema additions** — reconciliation pending in Phase 4 Slice 2).
+
+Recent significant change: 2026-04-30 publishing pipeline hardening session per `QCLAW_BUILD_LOG.md`. Scope was a **resilience layer** addressing four visibility-related failure modes: silent inserts of broken rows (fixed by throw-on-missing-URL + photo library fallback), hourly retry loops on permanently-broken rows (fixed by `publish_attempts` column with `<3` filter + `Validate Media` flipping Instagram-with-null-media to `failed` pre-Blotato), failures with no diagnostic trail (fixed by `last_error` and `last_attempt_at` columns + error-output branches capturing exception messages), and silent-success-but-no-output (fixed by per-workflow heartbeat node firing regardless of item count). Explicit non-goals of the hardening: fixing the agentboardroom image generator endpoint (deferred, blocked on dashboard auth at the time), reducing Blotato API failure rates, network/timeout issues, anything upstream of the n8n workflow boundary.
+
+### Crete - Content Generator
+
+- **ID:** `tnvXFYvODL1PrhJa`
+- **Belongs to:** Crete
+- **Specialist owner:** Crete Marketing Operator (per `FLOW_OS_SPECIALISTS.md`)
+- **Trigger:** `scheduleTrigger` "Schedule 08:00 UTC" with cron expression `0 0 8 * * *` (6-field n8n format with leading second; fires daily at 08:00:00 UTC).
+- **Purpose:** Daily generator for Crete marketing content. `Fetch Calendar` reads scheduled slots from `crete_content_queue` Supabase, `Filter Due Slots` keeps only today's pending rows, `Build Prompt` + `Claude API` produce the post copy, `Build Row` shapes the record, `Insert to Supabase` writes a `status=pending_review` row. The image leg is a router: `Image Router` + `Needs Image?` IF gates whether the row needs an image asset; if yes, `Generate Text Card` calls the dashboard text-card endpoint (per Apr 30 build log diagnosis at `src/dashboard/server.js:1926`); if photo-based content, `Needs Photo?` IF + `Fetch Photo Library` → `Select Random Photo` pulls from the R2 photo library, with `Photo Fallback` + `Telegram Fallback Alert` covering the case where the library lookup fails. Final `Telegram Notify` posts a "ready for review" alert with the row ID; `Heartbeat` notifies success per the standard pattern.
+- **Heartbeat:** Y (`Heartbeat` httpRequest node).
+- **Error workflow:** `7kpNnMtnuDWXgWcX` (Trading - Error Handler — pending rename to "Shared Error Handler" per Trading cluster decision).
+- **Recent activity:** 6 executions in last 7 days. 5 successes / 1 error (heuristic). Last successful execution `2026-05-03T12:00:00 UTC`.
+- **Bucket:** M
+- **Known issues:** Image generator root cause from the Apr 30 session is **still unresolved** — per `QCLAW_BUILD_LOG.md`, code review of `src/dashboard/server.js` couldn't find a smoking gun and the diagnosis was deferred until n8n-host shell access lands. As of the 2026-05-04 SSH probe (separate session work today), n8n SSH is now infrastructure-unblocked, so this investigation can resume in the next available quiet slot. The `Photo Fallback` + library-lookup work added on 2026-04-30 is the workaround that keeps the pipeline running; the underlying text-card generation issue (failures since Apr 21 per build log) is non-blocking but unfixed.
+- **Last verified:** 2026-05-04
+- **Notes:** `updatedAt: 2026-05-02T08:35 UTC` — the Apr 30 hardening session's commit landed Apr 30 but the workflow itself was last tweaked May 2 (likely the cap-hashtags / JPEG-fix work per recent commits `e4ad82c` "Cap Hashtags" and `bdc0e6f` "force JPEG output"). Inserts to Supabase `crete_content_queue` table. Image library lives in Cloudflare R2 (Crete Marketing bucket scope per `LOCATIONS.md`). Skill file: `crete-marketing.md`.
+
+### Crete - Content Publish
+
+- **ID:** `zXKBjp3yjW2oR2Mj`
+- **Belongs to:** Crete
+- **Specialist owner:** Crete Marketing Operator
+- **Trigger:** `webhook` POST `/webhook/crete-content-publish` (responseMode: `responseNode`).
+- **Purpose:** Per-row publisher invoked by Scheduled Publisher (and on-demand from the dashboard). Receives a Crete content row ID; `Get Content` fetches it from `crete_content_queue`; `Extract Item` shapes the publish payload; `Validate Media` runs platform-specific media checks; `Validation Failed?` IF short-circuits to `Mark Failed (Validation)` + `Telegram Validation Failed` + `Respond Validation Failed` if media is missing or malformed (this is the path the Apr 30 hardening session added to stop the silent-fail cascade where `media_url=NULL` rows were being posted to Blotato and silently rejected). On success: `Platform Switch` routes to one of `Facebook Post` (httpRequest), `LinkedIn Post (Blotato)`, `Instagram Post (Blotato)`, or `Other Platform Skip`; per-platform `Restore Fields` `set` nodes preserve canonical row state across the platform-specific transformations; `Update Status` writes `published` back to Supabase; `Telegram Notify` posts the success message; `Respond` returns the success payload. Failure path uses `Increment Attempts` + `Patch Attempts` to update the new `publish_attempts` column added Apr 30, plus `Telegram Publish Failed` + `Respond Publish Failed`. `Heartbeat` fires at the end.
+- **Heartbeat:** Y (`Heartbeat` httpRequest node).
+- **Error workflow:** `7kpNnMtnuDWXgWcX` (pending rename).
+- **Recent activity:** 100+ executions in last 7 days (API limit). **14 successes / 86 errors-or-unfinished (heuristic).** Last successful execution `2026-05-02T15:02:34 UTC` — i.e. no successes in nearly 2 days at audit time despite continued invocations.
+- **Bucket:** M
+- **Known issues:** 86% failure rate over 7d (14 successes / 86 errors-or-unfinished). Last successful publish: `2026-05-02T15:02:34 UTC`. **This is the visibility layer working, not a regression.** The Apr 30 hardening session was a resilience layer (silent-fail prevention, retry-loop suppression, error capture, heartbeat coverage), not a root-cause fix on the underlying APIs or upstream content quality. Pre-Apr-30 the same failures occurred but were invisible — silent NULL-media inserts, hourly retry loops on broken rows, no error trail. Post-Apr-30 they show as loud failures with `last_error` populated. The next layer of work is identifying what is consistently failing now that it's visible. Diagnostic SQL to start with:
+
+  ```sql
+  SELECT last_error, COUNT(*), MIN(last_attempt_at), MAX(last_attempt_at), array_agg(DISTINCT platform) FROM crete_content_queue WHERE last_error IS NOT NULL AND last_attempt_at > now() - interval '7 days' GROUP BY last_error ORDER BY COUNT(*) DESC
+  ```
+
+  Group by error → dispatch list. Tracked as a high-priority follow-up dispatch alongside the Market Scanner post-fix diagnostic. Also: `crete-marketing.md` skill file is stale on the Apr 30 schema additions (`publish_attempts`, `last_error`, `last_attempt_at`) — Phase 4 Slice 2 reconciliation list per `FLOW_OS_SPECIALISTS.md`.
+- **Last verified:** 2026-05-04
+- **Notes:** `updatedAt: 2026-04-30T14:00:39 UTC` — matches the hardening session timestamp. Talks to: Facebook Graph API, Blotato API (LinkedIn + Instagram), Supabase `crete_content_queue`, Telegram Bot API. Migration that added the retry-tracking columns committed at `n8n-workflows/migrations/2026_04_30_crete_publish_retry_tracking.sql`. Skill file: `crete-marketing.md` (stale).
+
+### Crete - Content Regenerate
+
+- **ID:** `KKjw893zwzHwv1o6`
+- **Belongs to:** Crete
+- **Specialist owner:** Crete Marketing Operator
+- **Trigger:** `webhook` POST `/webhook/crete-content-regenerate` (responseMode: `responseNode`).
+- **Purpose:** On-demand regeneration of a single Crete content row. Invoked from the dashboard (per `crete-marketing.md`: "Dashboard approve/reject buttons trigger n8n webhooks") when an operator rejects a generated row and wants new copy. `Get Content` reads the original row, `Build Prompt` constructs a regenerate prompt using the original calendar slot context, `Claude API` produces new copy, `Parse Response` extracts the new content, `Update Row` writes the new copy back to the same `crete_content_queue` row (rather than creating a new row), `Telegram Notify` posts the "regenerated, ready for review" alert, `Respond` returns success.
+- **Heartbeat:** N
+- **Error workflow:** none.
+- **Recent activity:** 4 executions in last 7 days. All 4 successful. Last successful execution `2026-05-02T15:01:25 UTC`.
+- **Bucket:** S
+- **Known issues:** No `errorWorkflow` set — out of step with the other 3 Crete workflows which all wire to `7kpNnMtnuDWXgWcX`. The on-demand nature of this workflow (low volume, human-initiated) makes silent failure less likely to go unnoticed (operator notices the regenerate button didn't work), so urgency is lower than for the scheduled workflows — but worth adding for consistency in the heartbeat-pattern sweep dispatch.
+- **Last verified:** 2026-05-04
+- **Notes:** `updatedAt: 2026-04-11T11:25 UTC` — has not been touched since the original Crete pipeline build, predating the Apr 30 hardening. Talks to: Anthropic API (Claude), Supabase `crete_content_queue`, Telegram. Skill file: `crete-marketing.md`.
+
+### Crete - Scheduled Publisher
+
+- **ID:** `9kTWhh9PlxMpyMlp`
+- **Belongs to:** Crete
+- **Specialist owner:** Crete Marketing Operator
+- **Trigger:** `scheduleTrigger` "Hourly Schedule" with cron expression `0 0 * * * *` (6-field n8n format with leading second; fires at the top of every hour, every day).
+- **Purpose:** Hourly poller that drives the publishing leg of the Crete pipeline. `Query Approved Due` reads `crete_content_queue` for rows with `status=approved` and `scheduled_for <= now`, indexed by the partial index `idx_crete_content_queue_publishable` added in the Apr 30 migration. For each due row, `Trigger Publish` POSTs to the Content Publish webhook (`zXKBjp3yjW2oR2Mj` via `/webhook/crete-content-publish`). `Build Summary` aggregates per-run stats (rows attempted, successes, failures); `Heartbeat` notifies completion regardless of outcome. The hourly cadence means a typical day fires 24 times; many fires find no due rows and complete without invoking Content Publish.
+- **Heartbeat:** Y (`Heartbeat` httpRequest node).
+- **Error workflow:** `7kpNnMtnuDWXgWcX` (pending rename).
+- **Recent activity:** 100+ executions in last 7 days (API limit). 97 successes / 3 errors (heuristic). Last successful execution `2026-05-04T09:00:00 UTC` — running healthy at the hour level.
+- **Bucket:** M
+- **Known issues:** This workflow itself is healthy, but its downstream dependency (Content Publish, `zXKBjp3yjW2oR2Mj`) has been failing for ~86% of the rows it dispatches. So Scheduled Publisher's "successful" runs include cases where it dispatched a row that subsequently failed at Content Publish. Charlie's reporting on Crete pipeline health needs to combine **both** workflows' status to give Tyson an accurate picture — Scheduled Publisher's heartbeat alone says "I ran" but doesn't say "the rows I dispatched actually published."
+
+  **Structural reporting note for Phase 4 Slice 1 design:** This workflow is an orchestrator — it invokes Content Publish 0-N times per hour depending on queue state. Its own heartbeat says "I dispatched X rows, completed without error" but does not report whether those X rows actually published successfully (that's downstream Content Publish's job). Scheduled Publisher can be 100% green while Content Publish is 86% red, and a Charlie digest reading just heartbeats would conclude "Crete pipeline healthy" when reality is broken. Charlie's digest must combine heartbeats AND downstream success rates for orchestration workflows. General principle, not Crete-specific — applies to any workflow whose primary job is invoking other workflows.
+- **Last verified:** 2026-05-04
+- **Notes:** `updatedAt: 2026-04-30T14:59 UTC` — second touch of the Apr 30 hardening session. The Hourly Schedule's 6-field cron leverages n8n's seconds-precision; same pattern as Content Generator's daily 08:00 trigger. Skill file: `crete-marketing.md` (note: skill file is stale on the schema additions per Phase 2 audit).
 
 ## Maintenance log
 
