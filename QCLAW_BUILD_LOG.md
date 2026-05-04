@@ -3091,3 +3091,76 @@ Work list additions:
 20. **Gutful workflow contract scoping conversation.** Per Tyson 2026-05-04: Gutful pays $297/mth for the Flow OS subscription which includes the integration, but ongoing n8n workflow health is not contractually part of the deliverable. If the Gutful integration breaks in the future, scoping conversation with Mikey or Eliza precedes any work. Worth surfacing as an explicit operational reality in `FLOW_OS_STATE.md` Section 1 Gutful entry: paid Flow OS subscription does not include workflow management. Pattern likely applies to other paid client integrations too.
 
 Pre-slice progress: N8N_WORKFLOW_INDEX.md cluster 7 of 11 complete. 4 clusters remain.
+
+## [2026-05-04] Charlie Overhaul — Session Close-Out
+
+Long deep work session today on N8N_WORKFLOW_INDEX.md plus emergent architectural findings. Capturing where we left off and what's queued for next session.
+
+### Today's commits (Charlie overhaul work, in order)
+
+1. `deb6970` — fix(trading): wrap /simulate in try/except + .gitignore tidy (working tree triage)
+2. `f563883` — N8N_WORKFLOW_INDEX.md created with Trading cluster (cluster 1 of 11)
+3. `1bdadc4` — N8N_WORKFLOW_INDEX.md add Crete cluster (cluster 2 of 11)
+4. `bfe9fa1` — N8N_WORKFLOW_INDEX.md add Flow OS GHL Marketing cluster (cluster 3 of 11)
+5. `5d66bbd` — N8N_WORKFLOW_INDEX.md add Ad Agency cluster (cluster 4 of 11)
+6. `b28ec42` — N8N_WORKFLOW_INDEX.md add LinkedIn cluster (cluster 5 of 11) + LOCATIONS.md secondary Supabase
+7. `717ac51` — append work-list item 18 alerting platform consolidation
+8. `462b1a2` — N8N_WORKFLOW_INDEX.md add Instagram cluster (cluster 6 of 11)
+9. `f9f53e9` — N8N_WORKFLOW_INDEX.md add Flow OS Client integrations cluster (cluster 7 of 11) + LOCATIONS.md n8n internal Postgres + critical executions-history API finding
+
+### Pre-slice progress
+
+- 7 of 11 clusters documented (30 workflow entries)
+- 4 clusters remaining: Cross-cutting + token refresh (3), Flow OS Blog (1), Flow OS Infographics (1), FSC Content Studio (1), Various utilities and standalone (10 — including the reclassified intake-kylie-content-system from cluster 7)
+
+### Architectural findings surfaced today (significant)
+
+1. **Schedule timezone drift system-wide** — n8n evaluating cron in America/New_York not UTC despite node names declaring UTC. 14 workflows across 5 clusters confirmed affected. Cluster-sweep correction pass scheduled post-cluster-11. Three potential fixes: rename nodes, compensate cron expressions, change n8n timezone config (cleanest).
+
+2. **Bot identity split** — Two Telegram bots in QClaw stack (`flowstatesads_bot` and `@tyson_quantumbot`/QuantumClaw). 11 workflows on flowstatesads_bot (Ad Agency + GHL Marketing). Approval flows broken at the bot-identity boundary. Bot consolidation dispatch tracked as work-list item 8.
+
+3. **Three confirmed dormant triggers** — Trading Weekly Analyst, Bot Router, Token Expiry Monitor. All show active=true in n8n DB but never fire. Pattern is structural n8n behaviour, not isolated bad luck. Recovery is mechanical (deactivate/reactivate).
+
+4. **Three patterns of specialist-coordination-failure** — Bot Router unused (Ad Agency), Crete partial-blind (orchestrator green while downstream red), LinkedIn no-orchestrator-at-all. Pattern reframed work-list item 12 from Phase 5+ tidy to Phase 4+ load-bearing.
+
+5. **Skill file staleness pattern** — trading.md, ghl-marketing.md, crete-marketing.md all confirmed stale on operational reality. Process rule needed: any system change touching skill-file-documented functionality must update skill file in same commit. Phase 4 Slice 2 reconciliation work + ongoing process rule.
+
+6. **Operational reality vs structural intent gap** — bot identity split, schedule timezone drift, skill file staleness, Bot Router never adopted, Apr 30 Crete hardening visibility-not-suppression — all examples of system-as-built drifting from system-as-documented. Charlie 2.0 must be designed assuming this gap exists.
+
+7. **Critical: n8n executions-history API may be unreliable** — Tyson reports some workflows show 0 executions in API but have actually had executions in reality. Breaks the core diagnostic assumption used throughout the doc pass. Affected dormancy verdicts on Trading Weekly Analyst, Bot Router, Token Expiry Monitor, Approval Handler all flagged for re-verification. Charlie 2.0's bootstrap probe (Phase 3 Component 1 Layer 5) cannot rely on execution-history API alone — needs second-source verification. Pre-Phase-4-Slice-1 dependency.
+
+### Work list current state (20 items)
+
+1. Market Scanner post-fix diagnostic — ongoing failure mode beyond JSON fix (confirmed by Tyson's Telegram observation 2026-05-04 09:00 UTC + 12:00 Athens errors)
+2. Crete Content Publish failure-mode diagnostic — group last_error in crete_content_queue, dispatch fixes per error class
+3. Heartbeat + errorWorkflow sweep — 13+ mission-critical workflows lacking the pattern
+4. Trading Error Handler rename to neutral identity ("Shared Error Handler") + update 4 dependent workflows
+5. Trading Weekly Analyst recovery (deactivate/reactivate to force schedule re-registration)
+6. Skill file reconciliation (Phase 4 Slice 2) — multiple skill files stale
+7. Schedule timezone cluster-sweep correction (post-cluster-11) — 14 workflows confirmed affected
+8. Bot consolidation across QClaw — 11 workflows on flowstatesads_bot vs @tyson_quantumbot
+9. V1/V2/V3 cleanup sweep + bot inventory in LOCATIONS.md (3 inactive predecessor candidates surfaced for Tyson decision: Master MLM avatar V1, MASTER WL to HL, Production WL to FlowOS [Morning Light])
+10. Trivial fix: Content Generator Send-to-Telegram template `{{ $json[0].id }}` → `{{ $json.id }}`
+11. Cross-cluster Blotato Instagram failure investigation (GHL Marketing Publisher + Crete Content Publish + Optimisation Agent same pattern)
+12. Specialist-to-specialist communication contract — Phase 4+ load-bearing
+13. LinkedIn Engagement rate limit verification in Supabase
+14. LinkedIn Analytics weekly report routing + dormancy (Tyson decision: route to tyson@flowos.tech)
+15. PhantomBuster sweep — stale references in skill files / old briefs
+16. Optional: LinkedIn lead gen specialist in FLOW_OS_SPECIALISTS.md
+17. Optional: FLOW_OS_STATE.md add Tyson personal brand LinkedIn lead gen subsection
+18. Pull-forward May 17 deferred items (webhook auth, nginx rate limit, FSC populate-vs-detach) — n8n SSH now operational
+19. Process rule for skill file maintenance — proposed addition to CLAUDE_CODE_OPERATING_RULES.md
+20. Gutful workflow contract scoping conversation — paid Flow OS subscription does not include workflow management; pattern likely applies to other paid client integrations
+
+(Note: items 18 alerting platform consolidation + 19 executions-history API investigation are pre-Phase-4-Slice-1 dependencies)
+
+### Next session
+
+1. Resume cluster 8: Cross-cutting + token refresh (3 workflows — includes the two genuine token refreshers + the third zero-execution candidate flagged for archive)
+2. Then clusters 9-11: Flow OS Blog + Infographics + FSC Content Studio + Various utilities (and intake-kylie-content-system in Various utilities per cluster 7 reclassification)
+3. After all 11 clusters committed: cluster-sweep correction pass (timezone drift across 14 workflows, dormancy re-verification post-API-investigation, Crete Content Generator UTC retro-correction)
+4. Then Phase 4 Slice 1: Bootstrap + canonical doc loading begins
+
+intake-kylie-content-system entry preserved at `/tmp/intake_kylie_for_cluster_11.md` on qclaw for cluster 11 application.
+
+End of day. Path forward clear.
