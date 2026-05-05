@@ -1,0 +1,497 @@
+{
+  "id": "lf955LDteJ512RQi",
+  "name": "Meta Ads Optimisation Agent",
+  "description": null,
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 24
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Daily Schedule (9am)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        240,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Set date range: last 7 days\nconst today = new Date();\nconst since = new Date(today);\nsince.setDate(since.getDate() - 7);\n\nconst fmt = (d) => d.toISOString().split('T')[0];\n\nreturn [{\n  json: {\n    since: fmt(since),\n    until: fmt(today),\n    accounts: [\n      { id: 'act_464237024205104', name: 'Flow States Retreats' },\n      { id: 'act_1426936257455201', name: 'Emma Maidment Business' },\n      { id: 'act_414785961683125', name: 'Flow OS' }\n    ]\n  }\n}];"
+      },
+      "id": "set-date-range",
+      "name": "Set Date Range & Accounts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        464,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Split accounts into individual items for parallel fetching\nconst { since, until, accounts } = $input.first().json;\nreturn accounts.map(acc => ({\n  json: { account_id: acc.id, account_name: acc.name, since, until }\n}));"
+      },
+      "id": "split-accounts",
+      "name": "Split Accounts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        688,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=https://graph.facebook.com/v21.0/{{ $json.account_id }}/insights",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "fields",
+              "value": "campaign_name,campaign_id,adset_name,adset_id,impressions,reach,clicks,ctr,cpc,cpm,spend,actions,cost_per_action_type,frequency"
+            },
+            {
+              "name": "level",
+              "value": "adset"
+            },
+            {
+              "name": "time_range",
+              "value": "={ \"since\": \"{{ $json.since }}\", \"until\": \"{{ $json.until }}\" }"
+            },
+            {
+              "name": "limit",
+              "value": "100"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "fetch-insights",
+      "name": "Fetch Ad Insights",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        896,
+        352
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "bJDoAH6FBEUyRbJK",
+          "name": "Meta Ads - FlowStates AdsAgent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build account lookup from upstream Split Accounts\nconst splitItems = $('Split Accounts').all();\nconst accountByIndex = {};\nsplitItems.forEach((item, idx) => {\n  accountByIndex[idx] = {\n    account_id: item.json.account_id,\n    account_name: item.json.account_name\n  };\n});\n\nconst insights = [];\nfor (const item of $input.all()) {\n  const data = item.json.data || [];\n  if (data.length === 0) continue;\n\n  // Skip campaign-list responses \u2014 only score insights rows\n  if (data[0].impressions === undefined) continue;\n\n  // Resolve which account this batch belongs to via pairedItem\n  const pi = Array.isArray(item.pairedItem) ? item.pairedItem[0] : item.pairedItem;\n  const pairedIdx = pi?.item ?? 0;\n  const acc = accountByIndex[pairedIdx] || { account_id: '', account_name: 'Unknown' };\n\n  for (const row of data) {\n    insights.push({ ...row, account_id: acc.account_id, account_name: acc.account_name });\n  }\n}\n\nif (insights.length === 0) {\n  return [{ json: { accounts: [], total_adsets: 0 } }];\n}\n\n// Score each adset\nconst scored = insights.map(row => {\n  const spend = parseFloat(row.spend || 0);\n  const clicks = parseInt(row.clicks || 0);\n  const impressions = parseInt(row.impressions || 0);\n  const ctr = parseFloat(row.ctr || 0);\n  const cpc = parseFloat(row.cpc || 0);\n  const cpm = parseFloat(row.cpm || 0);\n  const frequency = parseFloat(row.frequency || 0);\n\n  const actions = row.actions || [];\n  const leads = actions.find(a => a.action_type === 'lead' || a.action_type === 'offsite_conversion.fb_pixel_lead');\n  const leadCount = leads ? parseInt(leads.value) : 0;\n  const cpl = leadCount > 0 ? (spend / leadCount).toFixed(2) : null;\n\n  let score = 5;\n  if (ctr > 2) score += 2;\n  else if (ctr > 1) score += 1;\n  if (cpc < 1) score += 1;\n  if (frequency > 4) score -= 2;\n  if (frequency > 6) score -= 1;\n  if (leadCount > 0) score += 2;\n  score = Math.max(1, Math.min(10, score));\n\n  return {\n    account_id: row.account_id,\n    account_name: row.account_name,\n    campaign: row.campaign_name,\n    adset: row.adset_name,\n    spend: spend.toFixed(2),\n    impressions, clicks,\n    ctr: ctr.toFixed(2) + '%',\n    cpc: cpc ? '$' + cpc.toFixed(2) : 'N/A',\n    cpm: cpm ? '$' + cpm.toFixed(2) : 'N/A',\n    frequency: frequency.toFixed(1),\n    leads: leadCount,\n    cpl: cpl ? '$' + cpl : 'N/A',\n    performance_score: score,\n    recommendation: score >= 7 ? 'SCALE' : score >= 5 ? 'MONITOR' : 'PAUSE OR REWORK'\n  };\n});\n\n// Group by account\nconst accountMap = {};\nfor (const row of scored) {\n  if (!accountMap[row.account_id]) {\n    accountMap[row.account_id] = { account_name: row.account_name, adsets: [] };\n  }\n  accountMap[row.account_id].adsets.push(row);\n}\nfor (const acc of Object.values(accountMap)) {\n  acc.adsets.sort((a, b) => b.performance_score - a.performance_score);\n}\n// Ensure all three accounts appear, even with zero data\nfor (const item of $('Split Accounts').all()) {\n  const id = item.json.account_id;\n  if (!accountMap[id]) {\n    accountMap[id] = { account_name: item.json.account_name, adsets: [] };\n  }\n}\n\nreturn [{ json: { accounts: Object.values(accountMap), total_adsets: scored.length } }];"
+      },
+      "id": "process-insights",
+      "name": "Process & Score Insights",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1088,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const aiResponse = $input.first().json;\nconst aiText = aiResponse?.content?.[0]?.text || '';\nconst { accounts, total_adsets } = $('Process & Score Insights').first().json;\nconst today = new Date().toLocaleDateString('en-AU', {\n  weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'\n});\n\nconst accountList = accounts\n  .map(a => `\u2022 ${a.account_name} \u2014 ${a.adsets.length} adsets`)\n  .join('\\n');\n\nlet msg = `\ud83d\udcca *Meta Ads Optimisation Report*\\n_${today}_\\n\\n`;\nmsg += `${accountList}\\n`;\nmsg += `*Total active adsets:* ${total_adsets}\\n`;\nmsg += `\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\\n\\n`;\nmsg += aiText;\n\nconst maxLen = 4000;\nif (msg.length > maxLen) msg = msg.substring(0, maxLen) + '\\n_[truncated]_';\n\nreturn [{ json: { report_telegram: msg } }];"
+      },
+      "id": "format-report",
+      "name": "Format Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1728,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "1375806243",
+        "text": "={{ $json.report_telegram }}",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "send-report-telegram",
+      "name": "Send Report to Tyson (Telegram)",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1936,
+        144
+      ],
+      "webhookId": "e50a5032-20a0-4a9d-b6b9-9fe4dcde2ff4",
+      "credentials": {
+        "telegramApi": {
+          "id": "UR6xX8CchGBKaP3h",
+          "name": "Flow States Ads Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "base": {
+          "__rl": true,
+          "mode": "id",
+          "value": "AIRTABLE_BASE_ID"
+        },
+        "table": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Ads Reports"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {}
+        },
+        "options": {}
+      },
+      "id": "log-to-airtable",
+      "name": "Log Report (Optional)",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [
+        1952,
+        496
+      ],
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "content": "## Meta Ads Optimisation Agent\n\n**Runs:** Daily at 9am UTC + on-demand webhook\n**Accounts:** Flow States Retreats, Emma Maidment Business, Flow OS\n**Output:** Telegram report to Tyson with per-account scored recommendations + AI analysis\n\n**Token:** Long-lived system user token stored as n8n Header Auth credential\n(id: bJDoAH6FBEUyRbJK). No expiry tracking required.\n\n**To rotate the token:**\n1. Generate new long-lived token in Meta Business Suite\n2. Update the Header Auth credential value to \"Bearer <new_token>\"\n3. No node edits required \u2014 credential is referenced by Fetch Ad Insights",
+        "height": 396,
+        "width": 428
+      },
+      "id": "sticky-note",
+      "name": "Setup Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        240,
+        -128
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "meta-ads-optimisation-trigger",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "opt-webhook-trigger",
+      "name": "Webhook Trigger (On-Demand)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        240,
+        528
+      ],
+      "webhookId": "meta-ads-opt-trigger-001"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "{\"status\": \"triggered\", \"message\": \"Optimisation report is being generated and will be emailed shortly.\"}",
+        "options": {}
+      },
+      "id": "opt-webhook-respond",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        464,
+        528
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build Anthropic API request \u2014 per-account sections\nconst items = $input.all();\nconst insightsData = items.map(item => item.json);\n\nconst systemPrompt = `You are a Meta Ads performance analyst writing a daily Telegram report for an operator managing multiple Meta ad accounts.\n\nSTRUCTURE (mandatory):\n- Produce ONE report with a SEPARATE SECTION for EACH account in the data\n- Each account section MUST contain:\n  \u2022 Account name as a *bold heading*\n  \u2022 Overview metrics: spend, leads, avg CPL, active adsets\n  \u2022 Top performer(s): name, key stats, why it's working\n  \u2022 Concerns: any adsets scoring below 7 or with 0 leads\n  \u2022 Account-specific recommendations (1-3 tactical actions)\n- If an account has zero active adsets, still include its section with a brief note (\"No active delivery \u2014 recommend reactivating top historical performers\" or similar)\n- End with a \"*Cross-account priorities*\" section: the top 3 actions across all accounts, ranked by impact\n- Separate accounts with a horizontal divider line: \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\nTELEGRAM MARKDOWN RULES (parse_mode=Markdown \u2014 strict):\n- USE: *bold*, _italic_, hyphen lists\n- DO NOT USE: # or ## headers (they render as literal text), pipe tables (| col | col |), ** double-asterisks, or HTML\n- For section headers, use *Bold Text* on its own line\n- For tabular data, use bullet lists not pipe tables\n- Use emoji sparingly: \ud83d\udcca for headers, \u2705 for wins, \u26a0\ufe0f for concerns, \ud83d\udcb0 for spend recs\n\nLENGTH: Under 3500 characters total. Be specific and tactical, not generic.`;\n\nconst userMessage = `Analyse this Meta Ads data (already grouped by account) and produce the per-account report:\\n\\n${JSON.stringify(insightsData, null, 2)}`;\n\nreturn [{\n  json: {\n    model: \"claude-opus-4-5\",\n    max_tokens: 2000,\n    system: systemPrompt,\n    messages: [{ role: \"user\", content: userMessage }],\n    insightsData: insightsData\n  }\n}];"
+      },
+      "id": "build-opt-request-001",
+      "name": "Build Opt Analysis Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1296,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "anthropicApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $json.model, max_tokens: $json.max_tokens, system: $json.system, messages: $json.messages }) }}",
+        "options": {}
+      },
+      "id": "http-opt-anthropic-001",
+      "name": "AI Optimisation Analysis",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1504,
+        384
+      ],
+      "credentials": {
+        "anthropicApi": {
+          "id": "eXhIwRbh7FBgb6O3",
+          "name": "Anthropic account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select public.record_heartbeat('{{ $workflow.id }}'::text, 'started'::text, 'Meta Ads Optimisation Agent'::text, '{{ $execution.id }}'::text);",
+        "options": {}
+      },
+      "name": "Heartbeat: Start (Schedule)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        440,
+        304
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "qGUxEHfEZkZGdAcZ",
+          "name": "Supabase Postgres DB"
+        }
+      },
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "id": "bf4e484f-f8d4-4191-b2fd-0f37aacdbf5d"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select public.record_heartbeat('{{ $workflow.id }}'::text, 'started'::text, 'Meta Ads Optimisation Agent'::text, '{{ $execution.id }}'::text);",
+        "options": {}
+      },
+      "name": "Heartbeat: Start (Webhook)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        440,
+        528
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "qGUxEHfEZkZGdAcZ",
+          "name": "Supabase Postgres DB"
+        }
+      },
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "id": "77cd217e-ee1a-49d7-be63-ea1134b46a33"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select public.record_heartbeat('{{ $workflow.id }}'::text, 'success'::text, 'Meta Ads Optimisation Agent'::text, '{{ $execution.id }}'::text);",
+        "options": {}
+      },
+      "name": "Heartbeat: Success",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        2186,
+        144
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "qGUxEHfEZkZGdAcZ",
+          "name": "Supabase Postgres DB"
+        }
+      },
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "id": "c4598c18-069d-4867-8456-c8356d2ecaf0"
+    }
+  ],
+  "connections": {
+    "Daily Schedule (9am)": {
+      "main": [
+        [
+          {
+            "node": "Heartbeat: Start (Schedule)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Date Range & Accounts": {
+      "main": [
+        [
+          {
+            "node": "Split Accounts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Accounts": {
+      "main": [
+        [
+          {
+            "node": "Fetch Ad Insights",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Ad Insights": {
+      "main": [
+        [
+          {
+            "node": "Process & Score Insights",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process & Score Insights": {
+      "main": [
+        [
+          {
+            "node": "Build Opt Analysis Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Optimisation Analysis": {
+      "main": [
+        [
+          {
+            "node": "Format Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Report": {
+      "main": [
+        [
+          {
+            "node": "Send Report to Tyson (Telegram)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Log Report (Optional)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook Trigger (On-Demand)": {
+      "main": [
+        [
+          {
+            "node": "Heartbeat: Start (Webhook)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Opt Analysis Request": {
+      "main": [
+        [
+          {
+            "node": "AI Optimisation Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Heartbeat: Start (Schedule)": {
+      "main": [
+        [
+          {
+            "node": "Set Date Range & Accounts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Heartbeat: Start (Webhook)": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Set Date Range & Accounts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Report to Tyson (Telegram)": {
+      "main": [
+        [
+          {
+            "node": "Heartbeat: Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": true
+  }
+}

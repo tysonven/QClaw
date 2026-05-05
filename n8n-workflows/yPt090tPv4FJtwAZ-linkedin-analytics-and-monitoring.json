@@ -1,0 +1,964 @@
+{
+  "id": "yPt090tPv4FJtwAZ",
+  "name": "linkedIn analytics and monitoring",
+  "description": null,
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 0 8 * * *"
+            }
+          ]
+        }
+      },
+      "id": "d4000001-0000-0000-0000-000000000001",
+      "name": "Analytics Collection Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://zshmlgtvhdneekbfcyjc.supabase.co/rest/v1/content_posts?status=eq.published&select=post_id,content_pillar,post_content,created_at&order=created_at.desc&limit=10",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "return=representation"
+            }
+          ]
+        },
+        "options": {},
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi"
+      },
+      "id": "d4000001-0000-0000-0000-000000000002",
+      "name": "Recent Posts Query",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        224,
+        0
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "QT6Zi0SSBBSbGPF3",
+          "name": "Supabase account LinkedIn DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Fetch full analytics data for this post from Supabase\n// (LinkedIn Marketing API requires partner access - using stored metrics instead)\nconst postId = $input.item.json.post_id || 'unknown';\nconst url = 'https://zshmlgtvhdneekbfcyjc.supabase.co/rest/v1/content_posts?post_id=eq.' + encodeURIComponent(postId) + '&select=*';\n\nlet postData = $input.item.json;\ntry {\n  const response = await $http.get(url, {\n    headers: {\n      'apikey': 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpzaG1sZ3R2aGRuZWVrYmZjeWpjIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3Mjc5NzI4OSwiZXhwIjoyMDg4MzczMjg5fQ.Jop1GNUQijVBzV8KEYLfgpdkdS8b-KhwHFtNY2kH23Y',\n      'Authorization': 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpzaG1sZ3R2aGRuZWVrYmZjeWpjIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3Mjc5NzI4OSwiZXhwIjoyMDg4MzczMjg5fQ.Jop1GNUQijVBzV8KEYLfgpdkdS8b-KhwHFtNY2kH23Y'\n    }\n  });\n  if (Array.isArray(response.data) && response.data.length > 0) {\n    postData = { ...postData, ...response.data[0] };\n  }\n} catch(e) {\n  // Use existing data if fetch fails\n}\n\nreturn {\n  post_id: postData.post_id || postId,\n  content_pillar: postData.content_pillar || 'unknown',\n  post_content: postData.post_content || '',\n  post_length: postData.post_length || 0,\n  impressions: postData.impressions || 0,\n  clicks: postData.clicks || 0,\n  likes: postData.likes || 0,\n  comments: postData.comments || 0,\n  shares: postData.shares || 0,\n  engagement_rate: postData.engagement_rate || 0,\n  analytics_updated_at: postData.analytics_updated_at || null,\n  created_at: postData.created_at || new Date().toISOString()\n};"
+      },
+      "id": "d4000001-0000-0000-0000-000000000003",
+      "name": "LinkedIn Post Analytics",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        448,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ 'https://zshmlgtvhdneekbfcyjc.supabase.co/rest/v1/content_posts?post_id=eq.' + $json.post_id }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "return=representation"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({ impressions: $json.impressions || 0, clicks: $json.clicks || 0, likes: $json.likes || 0, comments: $json.comments || 0, shares: $json.shares || 0, engagement_rate: $json.engagement_rate || 0, analytics_updated_at: new Date().toISOString() }) }}",
+        "options": {},
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi"
+      },
+      "id": "d4000001-0000-0000-0000-000000000004",
+      "name": "Analytics Database Update",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        672,
+        0
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "QT6Zi0SSBBSbGPF3",
+          "name": "Supabase account LinkedIn DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4.1-mini",
+          "mode": "list",
+          "cachedResultName": "GPT-4.1-MINI"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "You are a performance analyst for Tyson Venables' LinkedIn content.\n\nYour job is to analyse a single post's performance metrics and provide a brief, plain-language insight.\n\nContext:\n- Tyson posts 3x per week on LinkedIn (Mon/Wed/Fri)\n- Content pillars: System Clarity (60%), Sustainable Automation (25%), Translation (15%)\n- Audience: founders, coaches, health professionals interested in systems and automation\n- Average benchmarks to compare against: impressions 200\u2013500, engagement rate 2\u20135%, likes 10\u201330, comments 2\u20138\n\nProvide:\n1. Performance rating: 'above_average', 'average', or 'below_average'\n2. One specific insight about what the data suggests\n3. One actionable recommendation (if below average)\n\nRespond ONLY with a JSON object:\n{\"performance\": \"above_average|average|below_average\", \"insight\": \"<one sentence>\", \"recommendation\": \"<one sentence or null>\"}",
+              "role": "system"
+            },
+            {
+              "content": "=Analyse this post's performance:\n\nPost ID: {{ $json.post_id }}\nImpressions: {{ $json.impressions }}\nLikes: {{ $json.likes }}\nComments: {{ $json.comments }}\nShares: {{ $json.shares }}\nEngagement rate: {{ $json.engagement_rate?.toFixed ? $json.engagement_rate.toFixed(2) : $json.engagement_rate }}%"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.3
+        }
+      },
+      "id": "d4000001-0000-0000-0000-000000000005",
+      "name": "AI Performance Analyzer",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.8,
+      "position": [
+        832,
+        0
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "I9np0X3gCWfXpKEf",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.item.json.message?.content || $input.item.json.choices?.[0]?.message?.content || '{}';\nlet parsed;\ntry {\n  parsed = JSON.parse(raw);\n} catch(e) {\n  parsed = { performance: 'unknown', insight: 'parse error', recommendation: null };\n}\nconst dbData = $('Analytics Database Update').item.json;\nreturn {\n  ...dbData,\n  performance_rating: parsed.performance,\n  performance_insight: parsed.insight,\n  performance_recommendation: parsed.recommendation\n};"
+      },
+      "id": "d4000001-0000-0000-0000-000000000006",
+      "name": "Parse Performance Analysis",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1104,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://zshmlgtvhdneekbfcyjc.supabase.co/rest/v1/performance_insights",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "return=representation"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({ post_id: $json.post_id, performance_rating: $json.performance_rating || 'unknown', insight: $json.insight || '', recommendation: $json.recommendation || '' }) }}",
+        "options": {},
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi"
+      },
+      "id": "d4000001-0000-0000-0000-000000000007",
+      "name": "Insights Logger",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1328,
+        0
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "QT6Zi0SSBBSbGPF3",
+          "name": "Supabase account LinkedIn DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 0 9 * * 1"
+            }
+          ]
+        }
+      },
+      "id": "d4000001-0000-0000-0000-000000000008",
+      "name": "Weekly Report Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ 'https://zshmlgtvhdneekbfcyjc.supabase.co/rest/v1/content_posts?created_at=gte.' + new Date(Date.now()-7*24*60*60*1000).toISOString() + '&select=*' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "return=representation"
+            }
+          ]
+        },
+        "options": {},
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi"
+      },
+      "id": "d4000001-0000-0000-0000-000000000009",
+      "name": "Weekly Metrics Query",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        224,
+        304
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "QT6Zi0SSBBSbGPF3",
+          "name": "Supabase account LinkedIn DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const supabaseUrl = 'https://zshmlgtvhdneekbfcyjc.supabase.co';\nconst serviceKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpzaG1sZ3R2aGRuZWVrYmZjeWpjIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3Mjc5NzI4OSwiZXhwIjoyMDg4MzczMjg5fQ.Jop1GNUQijVBzV8KEYLfgpdkdS8b-KhwHFtNY2kH23Y';\nconst sevenDaysAgo = new Date(Date.now() - 7*24*60*60*1000).toISOString();\ntry {\n  const response = await $http.get(supabaseUrl + '/rest/v1/prospects?created_at=gte.' + sevenDaysAgo + '&select=*', { headers: { 'apikey': serviceKey, 'Authorization': 'Bearer ' + serviceKey } });\n  const prospects = Array.isArray(response) ? response : (response.data || []);\n  return [{ json: { total_prospects: prospects.length, new_this_week: prospects.length, week_start: sevenDaysAgo } }];\n} catch(e) {\n  return [{ json: { total_prospects: 0, new_this_week: 0, week_start: sevenDaysAgo } }];\n}"
+      },
+      "id": "d4000001-0000-0000-0000-000000000010",
+      "name": "Lead Metrics Query",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        448,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Fetch engagement activities from last 7 days\nconst since = new Date(Date.now() - 7*24*60*60*1000).toISOString();\nconst url = 'https://zshmlgtvhdneekbfcyjc.supabase.co/rest/v1/engagement_activities?created_at=gte.' + since + '&select=*';\nlet data = [];\ntry {\n  const response = await $http.get(url, {\n    headers: {\n      'apikey': 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpzaG1sZ3R2aGRuZWVrYmZjeWpjIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3Mjc5NzI4OSwiZXhwIjoyMDg4MzczMjg5fQ.Jop1GNUQijVBzV8KEYLfgpdkdS8b-KhwHFtNY2kH23Y',\n      'Authorization': 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpzaG1sZ3R2aGRuZWVrYmZjeWpjIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3Mjc5NzI4OSwiZXhwIjoyMDg4MzczMjg5fQ.Jop1GNUQijVBzV8KEYLfgpdkdS8b-KhwHFtNY2kH23Y'\n    }\n  });\n  data = Array.isArray(response.data) ? response.data : [];\n} catch(e) { data = []; }\n// Always return at least one item so workflow continues\nif (data.length === 0) return [{ total_engagements: 0, comment_count: 0, like_count: 0 }];\nreturn data;"
+      },
+      "id": "d4000001-0000-0000-0000-000000000011",
+      "name": "Engagement Metrics Query",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const contentMetrics = $('Weekly Metrics Query').item.json;\nconst leadMetrics = $('Lead Metrics Query').item.json;\nconst engagementMetrics = $input.item.json;\nreturn {\n  week_ending: new Date().toISOString().split('T')[0],\n  content: contentMetrics,\n  leads: leadMetrics,\n  engagement: engagementMetrics\n};"
+      },
+      "id": "d4000001-0000-0000-0000-000000000012",
+      "name": "Merge Weekly Metrics",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4.1-mini",
+          "mode": "list",
+          "cachedResultName": "GPT-4.1-MINI"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "You are writing a weekly LinkedIn performance report for Tyson Venables.\n\nTyson's voice for internal reports:\n- Direct, clear, no fluff\n- Plain language\n- Focuses on what matters: what worked, what didn't, what to do next\n- Anti-hustle: does not celebrate vanity metrics\n- Measures what matters: engagement quality, lead quality, connection acceptance rate\n\nReport format (HTML email):\n- Subject line suggestion\n- Brief executive summary (2\u20133 sentences)\n- Content performance table\n- Lead generation summary\n- Engagement activity summary\n- One clear recommendation for next week\n- Keep it under 400 words\n\nTone: Like a trusted operator reporting to the CEO. Calm, factual, useful.\n\nRespond with a JSON object:\n{\"subject\": \"<email subject>\", \"html_body\": \"<full HTML email body>\"}",
+              "role": "system"
+            },
+            {
+              "content": "=Generate the weekly LinkedIn report for the week ending {{ $json.week_ending }}.\n\nCONTENT METRICS:\n- Posts published: {{ $json.content.total_posts }}\n- Total impressions: {{ $json.content.total_impressions }}\n- Total likes: {{ $json.content.total_likes }}\n- Total comments: {{ $json.content.total_comments }}\n- Total shares: {{ $json.content.total_shares }}\n- Avg engagement rate: {{ $json.content.avg_engagement_rate }}%\n- Best engagement rate: {{ $json.content.best_engagement_rate }}%\n- Top performing pillar: {{ $json.content.top_pillar }}\n\nLEAD GENERATION:\n- New li_prospects found: {{ $json.leads.total_prospects }}\n- Connection requests sent: {{ $json.leads.pending_requests }}\n- Connections accepted: {{ $json.leads.accepted_connections }}\n- Avg lead score: {{ $json.leads.avg_lead_score }}/10\n- Prospects followed up: {{ $json.leads.prospects_followed_up }}\n\nENGAGEMENT ACTIVITY:\n- Total engagements: {{ $json.engagement.total_engagements }}\n- Comments made: {{ $json.engagement.comments_made }}\n- Likes given: {{ $json.engagement.likes_given }}\n- Avg engagement score: {{ $json.engagement.avg_engagement_score }}/10"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.4
+        }
+      },
+      "id": "d4000001-0000-0000-0000-000000000013",
+      "name": "AI Report Generator",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.8,
+      "position": [
+        1056,
+        304
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "I9np0X3gCWfXpKEf",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.item.json.message?.content || $input.item.json.choices?.[0]?.message?.content || '{}';\nlet parsed;\ntry {\n  parsed = JSON.parse(raw);\n} catch(e) {\n  parsed = { subject: 'LinkedIn Weekly Report', html_body: '<p>Report generation failed.</p>' };\n}\nconst metricsData = $('Merge Weekly Metrics').item.json;\nreturn {\n  ...metricsData,\n  email_subject: parsed.subject,\n  email_html: parsed.html_body\n};"
+      },
+      "id": "d4000001-0000-0000-0000-000000000014",
+      "name": "Parse Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1328,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "support@flowos.tech",
+        "toEmail": "support@flowos.tech",
+        "subject": "={{ $json.email_subject }}",
+        "html": "={{ $json.email_html }}",
+        "options": {}
+      },
+      "id": "d4000001-0000-0000-0000-000000000015",
+      "name": "Email Report Sender",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        1552,
+        304
+      ],
+      "webhookId": "3c231ab5-a2b8-4bde-8aa3-53c95131641d",
+      "credentials": {
+        "smtp": {
+          "id": "uwXn4zYDG5J3mHz5",
+          "name": "support@flowos"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "linkedin-report",
+          "mode": "name"
+        },
+        "text": "=*Weekly LinkedIn Report* \u2014 Week ending {{ $json.week_ending }}\n\n*Content:* {{ $json.content.total_posts }} posts | {{ $json.content.total_impressions }} impressions | {{ $json.content.avg_engagement_rate }}% avg engagement\n*Leads:* {{ $json.leads.total_prospects }} found | {{ $json.leads.accepted_connections }} accepted | avg score {{ $json.leads.avg_lead_score }}/10\n*Engagement:* {{ $json.engagement.total_engagements }} total | {{ $json.engagement.comments_made }} comments | {{ $json.engagement.likes_given }} likes\n\nFull report sent to support@flowos.tech",
+        "otherOptions": {}
+      },
+      "id": "d4000001-0000-0000-0000-000000000016",
+      "name": "Slack Weekly Summary",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.3,
+      "position": [
+        1760,
+        304
+      ],
+      "webhookId": "aff13b97-9b88-473d-9de9-35b080acbd86",
+      "credentials": {
+        "slackOAuth2Api": {
+          "id": "qvXU2mcT4H1OJgRo",
+          "name": "Slack account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://zshmlgtvhdneekbfcyjc.supabase.co/rest/v1/weekly_reports",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "return=representation"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({ week_ending: new Date().toISOString().split('T')[0], total_posts: $json.total_posts || 0, total_impressions: $json.total_impressions || 0, avg_engagement_rate: $json.avg_engagement_rate || 0, total_prospects: $json.total_prospects || 0, accepted_connections: $json.accepted_connections || 0, total_engagements: $json.total_engagements || 0, report_html: $json.report_html || '' }) }}",
+        "options": {},
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi"
+      },
+      "id": "d4000001-0000-0000-0000-000000000017",
+      "name": "Report Archive",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1984,
+        304
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "QT6Zi0SSBBSbGPF3",
+          "name": "Supabase account LinkedIn DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 0 * * * *"
+            }
+          ]
+        }
+      },
+      "id": "d4000001-0000-0000-0000-000000000018",
+      "name": "System Health Monitor",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        608
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Fetch recent system alerts from Supabase\nconst url = 'https://zshmlgtvhdneekbfcyjc.supabase.co/rest/v1/system_alerts?select=*&order=created_at.desc&limit=5';\nlet data = [];\ntry {\n  const response = await $http.get(url, {\n    headers: {\n      'apikey': 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpzaG1sZ3R2aGRuZWVrYmZjeWpjIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3Mjc5NzI4OSwiZXhwIjoyMDg4MzczMjg5fQ.Jop1GNUQijVBzV8KEYLfgpdkdS8b-KhwHFtNY2kH23Y',\n      'Authorization': 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpzaG1sZ3R2aGRuZWVrYmZjeWpjIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3Mjc5NzI4OSwiZXhwIjoyMDg4MzczMjg5fQ.Jop1GNUQijVBzV8KEYLfgpdkdS8b-KhwHFtNY2kH23Y'\n    }\n  });\n  data = Array.isArray(response.data) ? response.data : [];\n} catch(e) { data = []; }\n// Always return a result - default healthy state if no alerts\nif (data.length === 0) return [{ alert_type: 'none', failed_executions: 0, successful_executions: 0, avg_execution_time: 0, status: 'healthy' }];\nreturn data;"
+      },
+      "id": "d4000001-0000-0000-0000-000000000019",
+      "name": "System Health Query",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        608
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "cond-health",
+              "leftValue": "={{ $json.failed_executions }}",
+              "rightValue": 3,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "d4000001-0000-0000-0000-000000000020",
+      "name": "Health Alert Filter",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        448,
+        608
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "linkedin-report",
+          "mode": "name"
+        },
+        "text": "=*System Health Alert* \u2014 LinkedIn Workflows\n\nFailed executions in last hour: {{ $json.failed_executions }}\nSuccessful executions: {{ $json.successful_executions }}\nAvg execution time: {{ $json.avg_execution_time_seconds }}s\n\nCheck n8n for details.",
+        "otherOptions": {}
+      },
+      "id": "d4000001-0000-0000-0000-000000000021",
+      "name": "Slack Health Alert",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.3,
+      "position": [
+        672,
+        512
+      ],
+      "webhookId": "387609b2-aed2-4de2-a521-e14b0e481bec",
+      "credentials": {
+        "slackOAuth2Api": {
+          "id": "qvXU2mcT4H1OJgRo",
+          "name": "Slack account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://zshmlgtvhdneekbfcyjc.supabase.co/rest/v1/system_alerts",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "return=representation"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({ alert_type: $json.alert_type || 'health_check', failed_executions: $json.failed_executions || 0, successful_executions: $json.successful_executions || 0, avg_execution_time: $json.avg_execution_time || 0 }) }}",
+        "options": {},
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi"
+      },
+      "id": "d4000001-0000-0000-0000-000000000022",
+      "name": "Alert Logger",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        880,
+        512
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "QT6Zi0SSBBSbGPF3",
+          "name": "Supabase account LinkedIn DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select public.record_heartbeat('{{ $workflow.id }}'::text, 'started'::text, 'linkedIn analytics and monitoring'::text, '{{ $execution.id }}'::text);",
+        "options": {}
+      },
+      "name": "Heartbeat: Start (Analytics)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        200,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "qGUxEHfEZkZGdAcZ",
+          "name": "Supabase Postgres DB"
+        }
+      },
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "id": "8d30771b-0372-4848-9923-c80827053b5e"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select public.record_heartbeat('{{ $workflow.id }}'::text, 'started'::text, 'linkedIn analytics and monitoring'::text, '{{ $execution.id }}'::text);",
+        "options": {}
+      },
+      "name": "Heartbeat: Start (Weekly)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        200,
+        304
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "qGUxEHfEZkZGdAcZ",
+          "name": "Supabase Postgres DB"
+        }
+      },
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "id": "b91b28de-7d30-4c41-a556-b1adace2e858"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select public.record_heartbeat('{{ $workflow.id }}'::text, 'started'::text, 'linkedIn analytics and monitoring'::text, '{{ $execution.id }}'::text);",
+        "options": {}
+      },
+      "name": "Heartbeat: Start (Health)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        200,
+        608
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "qGUxEHfEZkZGdAcZ",
+          "name": "Supabase Postgres DB"
+        }
+      },
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "id": "6aba7ec5-6c83-4859-a434-fa0874d9c0a3"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select public.record_heartbeat('{{ $workflow.id }}'::text, 'success'::text, 'linkedIn analytics and monitoring'::text, '{{ $execution.id }}'::text);",
+        "options": {}
+      },
+      "name": "Heartbeat: Success",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1578,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "qGUxEHfEZkZGdAcZ",
+          "name": "Supabase Postgres DB"
+        }
+      },
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "id": "3ede362e-4783-4399-991f-2c39b5a87e25"
+    }
+  ],
+  "connections": {
+    "Analytics Collection Trigger": {
+      "main": [
+        [
+          {
+            "node": "Heartbeat: Start (Analytics)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Recent Posts Query": {
+      "main": [
+        [
+          {
+            "node": "LinkedIn Post Analytics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LinkedIn Post Analytics": {
+      "main": [
+        [
+          {
+            "node": "Analytics Database Update",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analytics Database Update": {
+      "main": [
+        [
+          {
+            "node": "AI Performance Analyzer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Performance Analyzer": {
+      "main": [
+        [
+          {
+            "node": "Parse Performance Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Performance Analysis": {
+      "main": [
+        [
+          {
+            "node": "Insights Logger",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Weekly Report Trigger": {
+      "main": [
+        [
+          {
+            "node": "Heartbeat: Start (Weekly)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Weekly Metrics Query": {
+      "main": [
+        [
+          {
+            "node": "Lead Metrics Query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lead Metrics Query": {
+      "main": [
+        [
+          {
+            "node": "Engagement Metrics Query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Engagement Metrics Query": {
+      "main": [
+        [
+          {
+            "node": "Merge Weekly Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Weekly Metrics": {
+      "main": [
+        [
+          {
+            "node": "AI Report Generator",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Report Generator": {
+      "main": [
+        [
+          {
+            "node": "Parse Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Report": {
+      "main": [
+        [
+          {
+            "node": "Email Report Sender",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email Report Sender": {
+      "main": [
+        [
+          {
+            "node": "Slack Weekly Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack Weekly Summary": {
+      "main": [
+        [
+          {
+            "node": "Report Archive",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "System Health Monitor": {
+      "main": [
+        [
+          {
+            "node": "Heartbeat: Start (Health)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "System Health Query": {
+      "main": [
+        [
+          {
+            "node": "Health Alert Filter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Health Alert Filter": {
+      "main": [
+        [
+          {
+            "node": "Slack Health Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Slack Health Alert": {
+      "main": [
+        [
+          {
+            "node": "Alert Logger",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Heartbeat: Start (Analytics)": {
+      "main": [
+        [
+          {
+            "node": "Recent Posts Query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Heartbeat: Start (Weekly)": {
+      "main": [
+        [
+          {
+            "node": "Weekly Metrics Query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Heartbeat: Start (Health)": {
+      "main": [
+        [
+          {
+            "node": "System Health Query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert Logger": {
+      "main": [
+        [
+          {
+            "node": "Heartbeat: Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insights Logger": {
+      "main": [
+        [
+          {
+            "node": "Heartbeat: Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Report Archive": {
+      "main": [
+        [
+          {
+            "node": "Heartbeat: Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": true,
+    "timeSavedMode": "fixed"
+  }
+}

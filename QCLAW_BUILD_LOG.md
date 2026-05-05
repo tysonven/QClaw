@@ -3801,3 +3801,77 @@ volume, latency delta is negligible).
   bootstrap probe and the future ops dashboards a non-API source
   for Morning Light health.
 
+---
+
+## 2026-05-05 — Phase 4 Slice 0 Sub-project B Batch 4: ad-agency + LinkedIn heartbeats
+
+Instrumented 4 multi-trigger / multi-terminal workflows. 14 new
+heartbeat nodes across the batch. None had existing heartbeats.
+
+| Workflow ID | Slug | Triggers | Heartbeats |
+|---|---|---|---|
+| `lf955LDteJ512RQi` | meta-ads-optimisation-agent | Daily 09:00 + Webhook (on-demand) | 2× Start (per trigger), Success |
+| `44g7cbGz5osQ1pcBVhIoz` | instagram-trial-reels-auto-publisher | Every 5h + Error Trigger | Start, 2× Success (work / no-pending), 1× Error (3-source fan-in) |
+| `yPt090tPv4FJtwAZ` | linkedin-analytics-and-monitoring | 3 schedule triggers (daily 08:00, weekly Mon 09:00, hourly health) | 3× Start (per trigger), 1× Success (3-source fan-in) |
+| `VMqrrhecG2hrpn4C` | linkedin-engagement-automation | Every 4h + Webhook | 2× Start (per trigger), 1× Success (2-source fan-in) |
+
+**Two new patterns landed:**
+
+1. **Fan-in heartbeats for equivalent terminals.** When a workflow has
+   multiple terminal nodes that are functionally the same outcome
+   (multiple error paths that all mean "the run failed", multiple
+   success terminals that all mean "the run finished"), wire a SINGLE
+   heartbeat node and `append_after` it to each terminal. n8n allows
+   any number of incoming edges to one node — fan-in works correctly,
+   the heartbeat fires once per execution regardless of which terminal
+   was reached. Examples in this batch:
+   - `ig-reels`: Slack — Processing/URL/Catch-All Error → Heartbeat: Error
+   - `li-analytics`: Alert Logger / Insights Logger / Report Archive → Heartbeat: Success
+   - `li-engagement`: Rate Limit Tracker / Webhook Response → Heartbeat: Success
+   Saves 4-5 nodes per workflow vs distinct-per-terminal heartbeats.
+2. **Distinct success/non-success states for IG Reels.** "No Pending
+   Posts (Stop)" terminal represents a clean no-work run, distinct
+   from work-done. Used a separate `Heartbeat: Success (No Pending)`
+   with metadata `{terminal:"no_pending"}` so dashboards can
+   distinguish "ran but nothing to do" from "ran and worked." Empty-
+   input handling pattern (work-list item 27) — concrete approach for
+   workflows where the design has an explicit no-work-to-do path.
+
+**Process notes:**
+
+- meta-ads's `Setup Notes` flagged as orphan by the validator —
+  benign; it's an n8n sticky-note node intentionally disconnected
+  from the execution graph (just visual annotation in the editor).
+  No action needed; the validator warning is informational.
+- `_ALLOWED_SETTINGS_KEYS` from Batch 3 saved time here — all 4
+  workflows had their settings filtered cleanly without per-workflow
+  retries.
+
+**Verification:**
+
+- 4 PUTs returned 200, all `active=true`. Post-PUT GET confirms 14
+  new heartbeat nodes with correct double-brace SQL syntax and
+  `continueOnFail=true` across the board.
+- Natural fires (UTC):
+  - `meta-ads`: daily 09:00 (Tyson can also trigger via webhook)
+  - `ig-reels`: every 5h — next at 21:00 UTC tonight
+  - `li-analytics`: hourly health monitor — next at 18:00 UTC
+  - `li-engagement`: every 4h — next at 20:00 UTC
+- Per Tyson's "defer testing for mutating workflows" rule.
+
+**Files added (4 canonical post-PUT JSONs):**
+
+- `n8n-workflows/lf955LDteJ512RQi-meta-ads-optimisation-agent.json`
+- `n8n-workflows/44g7cbGz5osQ1pcBVhIoz-instagram-trial-reels-auto-publisher.json`
+- `n8n-workflows/yPt090tPv4FJtwAZ-linkedin-analytics-and-monitoring.json`
+- `n8n-workflows/VMqrrhecG2hrpn4C-linkedin-engagement-automation.json`
+
+**Out of scope (deferred):**
+
+- Batch 5 (4 dormant-recovery workflows: Trading Weekly Analyst, Bot
+  Router, Token Expiry Monitor, GHL Changelog Emails). Each requires
+  deactivate→reactivate after instrumentation to force trigger
+  re-registration; per-workflow cadence drift is accepted per Tyson's
+  earlier confirmation.
+- Slug-only file rationalisation (sweep after Batch 5).
+

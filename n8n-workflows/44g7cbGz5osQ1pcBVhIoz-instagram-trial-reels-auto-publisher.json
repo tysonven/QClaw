@@ -1,0 +1,1168 @@
+{
+  "id": "44g7cbGz5osQ1pcBVhIoz",
+  "name": "Instagram Trial Reels Auto-Publisher",
+  "description": null,
+  "nodes": [
+    {
+      "parameters": {
+        "documentId": {
+          "value": "={{ $env.GOOGLE_SHEET_ID }}",
+          "__rl": true,
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Master Sheet",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "07f68019-d088-4ca6-8a2b-5ac3fa4b011b",
+      "name": "Get Next Pending Row",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [
+        -2944,
+        192
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "hyBONhD1mYNRNs6l",
+          "name": "GoogleAuth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "has-row",
+              "leftValue": "={{ $json[\"Post #\"] }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {
+          "looseTypeValidation": true
+        }
+      },
+      "id": "92a78453-e198-4c36-8b54-4018cb8f268d",
+      "name": "Has Pending Row?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -2608,
+        336
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first();\nconst postNum = parseInt(item.json['Post #'], 10);\nconst paddedNum = String(postNum).padStart(3, '0');\nconst filename = paddedNum + '.mp4';\nconst videoUrl = `https://pub-e30ed019da08425db69a4978352362b0.r2.dev/reels/${filename}`;\nreturn [{\n  json: {\n    ...item.json,\n    postNum,\n    paddedNum,\n    filename,\n    videoUrl,\n    _rowIndex: item.json._rowIndex ?? item.json.row_number,\n    pollCount: 0\n  }\n}];"
+      },
+      "id": "8a347438-4dc4-4dc9-845b-6adf3e53737f",
+      "name": "Build Video URL",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2416,
+        256
+      ]
+    },
+    {
+      "parameters": {
+        "method": "HEAD",
+        "url": "={{ $json.videoUrl }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "97be112b-3a21-4fce-932c-e64828787e2e",
+      "name": "Validate R2 URL (HEAD)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -2208,
+        256
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "url-ok",
+              "leftValue": "={{ $json.statusCode }}",
+              "rightValue": 200,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "03725894-32a9-431d-8f8c-fd769f95e0bd",
+      "name": "URL Returns 200?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -1984,
+        256
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v21.0/{{ $env.IG_USER_ID }}/media",
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "media_type",
+              "value": "REELS"
+            },
+            {
+              "name": "video_url",
+              "value": "={{ $('Build Video URL').first().json.videoUrl }}"
+            },
+            {
+              "name": "caption",
+              "value": "={{ $json.caption }}"
+            },
+            {
+              "name": "share_to_feed",
+              "value": "false"
+            },
+            {
+              "name": "trial_params",
+              "value": "{\"graduation_strategy\":\"MANUAL\"}"
+            },
+            {
+              "name": "access_token",
+              "value": "={{ $env.IG_ACCESS_TOKEN }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "4b247844-2743-4205-816a-9d312353cadf",
+      "name": "Create Media Container",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1088,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const containerResponse = $input.first();\nconst containerId = containerResponse.json.id;\nif (!containerId) throw new Error('No container ID returned from Instagram API');\n// Preserve all original data from Build Video URL (includes row_number, _rowIndex, etc.)\nconst originalData = $('Build Video URL').first().json;\nreturn [{ json: { ...originalData, containerId } }];"
+      },
+      "id": "33c0c41a-4e03-4caf-94b9-785dbb9401e0",
+      "name": "Save Container ID",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -864,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "amount": 30
+      },
+      "id": "86b566c8-a322-4f19-961a-258cfb21f215",
+      "name": "Wait 30s (Initial Processing)",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        -1104,
+        368
+      ],
+      "webhookId": "wait-initial-30s"
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first();\nconst pollCount = (item.json.pollCount || 0) + 1;\nconst MAX_POLLS = 20;\nreturn [{ json: { ...item.json, pollCount, timedOut: pollCount > MAX_POLLS } }];"
+      },
+      "id": "6ed39f22-cf9e-4b80-8d94-3a10a18e41bb",
+      "name": "Increment Poll Counter",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -864,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=https://graph.facebook.com/v21.0/{{ $json.containerId }}",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "fields",
+              "value": "status_code"
+            },
+            {
+              "name": "access_token",
+              "value": "={{ $env.IG_ACCESS_TOKEN }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "98f2f149-4d9e-44b9-a799-52d65bea4d3a",
+      "name": "Poll Media Status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -656,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const pollResult = $input.first();\nconst priorData = $('Increment Poll Counter').first();\nreturn [{ json: { ...priorData.json, status_code: pollResult.json.status_code } }];"
+      },
+      "id": "deb1a2f3-4fa0-45e9-b533-3ebab8c3ac19",
+      "name": "Merge Poll Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -448,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "is-finished",
+              "leftValue": "={{ $json.status_code }}",
+              "rightValue": "FINISHED",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "df61d00b-eb30-453e-8495-052249d337d2",
+      "name": "Status = FINISHED?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -224,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "timed-out",
+              "leftValue": "={{ $json.timedOut }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "d54681be-35f4-43a0-919d-f7dc4c608a82",
+      "name": "Poll Timed Out?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        0,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "amount": 15
+      },
+      "id": "4e0587b4-e222-4ccf-81b1-98d09592fd04",
+      "name": "Wait 15s (Poll Retry)",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        464
+      ],
+      "webhookId": "wait-retry-15s"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v21.0/{{ $env.IG_USER_ID }}/media_publish",
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "creation_id",
+              "value": "={{ $json.containerId }}"
+            },
+            {
+              "name": "access_token",
+              "value": "={{ $env.IG_ACCESS_TOKEN }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "1422b928-dd53-4a82-bf47-114c7a83121f",
+      "name": "Publish Media",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const publishResult = $input.first();\nconst priorData = $('Merge Poll Result').first();\nconst igMediaId = publishResult.json.id;\nif (!igMediaId) throw new Error('Publish failed \u2014 no media ID in response');\nreturn [{ json: { ...priorData.json, igMediaId } }];"
+      },
+      "id": "18827f66-1fc3-43ab-b1a0-573b77ca723b",
+      "name": "Merge Publish Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "value": "={{ $env.GOOGLE_SHEET_ID }}",
+          "__rl": true,
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Master Sheet",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "row_number": "={{ $json._rowIndex || $json.row_number }}",
+            "Posted (Checkbox)": true,
+            "Posted At": "={{ $now.toISO() }}",
+            "IG Media ID": "={{ $json.igMediaId }}"
+          },
+          "matchingColumns": [
+            "row_number"
+          ],
+          "schema": [
+            {
+              "id": "row_number",
+              "displayName": "row_number",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Posted (Checkbox)",
+              "displayName": "Posted (Checkbox)",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "boolean",
+              "canBeUsedToMatch": false,
+              "removed": false
+            },
+            {
+              "id": "Posted At",
+              "displayName": "Posted At",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false,
+              "removed": false
+            },
+            {
+              "id": "IG Media ID",
+              "displayName": "IG Media ID",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "28a17b70-dbf8-4a6b-92ab-41e37b989a02",
+      "name": "Mark Posted = TRUE",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [
+        448,
+        0
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "hyBONhD1mYNRNs6l",
+          "name": "GoogleAuth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "C0ACT56TYQ1",
+          "mode": "list",
+          "cachedResultName": "n8n-success"
+        },
+        "text": "={{ '\\u2705 *Reel Posted Successfully!*\\n\\n*Post #:* ' + $('Merge Publish Result').item.json['Post #'] + '\\n*Hook:* ' + $('Merge Publish Result').item.json.Hook + '\\n*Caption Type:* ' + $('Merge Publish Result').item.json['Caption Type (Deep / Mid / Short)'] + '\\n*CTA Type:* ' + $('Merge Publish Result').item.json['CTA Type (None / Soft / Direct)'] + '\\n*Video URL:* ' + $('Merge Publish Result').item.json['Video URL'] + '\\n*Instagram Media ID:* ' + $('Merge Publish Result').item.json['IG Media ID'] + '\\n*Posted at:* ' + $now.toFormat('yyyy-MM-dd HH:mm') }}",
+        "otherOptions": {}
+      },
+      "id": "6a312ef2-3c32-4508-ba17-5e0b045d72c9",
+      "name": "Slack \u2014 Success",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        672,
+        0
+      ],
+      "webhookId": "f65cd4f4-7c2e-4fbe-92fc-b4f3a1e4ab79",
+      "credentials": {
+        "slackOAuth2Api": {
+          "id": "qvXU2mcT4H1OJgRo",
+          "name": "Slack account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "C0AC7JF8AQK",
+          "mode": "list",
+          "cachedResultName": "n8n-error"
+        },
+        "text": "={{ '\\ud83d\\udea8 *Reel Skipped \\u2014 Video URL Inaccessible*\\n\\n*Post #:* ' + $json['Post #'] + '\\n*Hook:* ' + $json.Hook + '\\n*Video URL:* ' + $json.videoUrl + '\\n*Status Code:* ' + $json.statusCode + '\\n*Action:* Check Cloudflare R2 \\u2014 file may be missing or private.' }}",
+        "otherOptions": {}
+      },
+      "id": "d09890ec-1694-4af9-a045-0d19802d228e",
+      "name": "Slack \u2014 URL Error",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        -1760,
+        464
+      ],
+      "webhookId": "15b4d6a0-546a-4914-9767-f6f2b92862bd",
+      "credentials": {
+        "slackOAuth2Api": {
+          "id": "qvXU2mcT4H1OJgRo",
+          "name": "Slack account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "C0AC7JF8AQK",
+          "mode": "list",
+          "cachedResultName": "n8n-error"
+        },
+        "text": "={{ '\\u26a0\\ufe0f *Reel Processing Timed Out*\\n\\n*Post #:* ' + $json['Post #'] + '\\n*Container ID:* ' + $json.containerId + '\\n*Status:* ' + $json.status_code + '\\n*Poll attempts:* ' + $json.pollCount + '\\n*Video URL:* ' + $json.videoUrl + '\\n*Note:* Post has NOT been marked Posted \\u2014 safe to retry.' }}",
+        "otherOptions": {}
+      },
+      "id": "a0f4e7c1-cd70-4536-9d5f-f8932d79e1bf",
+      "name": "Slack \u2014 Processing Error",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        224,
+        288
+      ],
+      "webhookId": "f9958099-675a-4179-9692-fd743d2b2331",
+      "credentials": {
+        "slackOAuth2Api": {
+          "id": "qvXU2mcT4H1OJgRo",
+          "name": "Slack account"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "78f21a0c-c2e1-4a56-bd55-369062e32629",
+      "name": "Workflow Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        -3088,
+        656
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "C0AC7JF8AQK",
+          "mode": "list",
+          "cachedResultName": "n8n-error"
+        },
+        "text": "={{ '\\ud83d\\udd34 *Workflow Error \\u2014 Instagram Reels Publisher*\\n\\n*Error:* ' + $json.execution.error.message + '\\n*Node:* ' + $json.execution.lastNodeExecuted + '\\n*Execution ID:* ' + $json.execution.id + '\\n*Time:* ' + $now.toISO() }}",
+        "otherOptions": {}
+      },
+      "id": "2a9ffc7f-a70f-43a2-83c1-8cce13371696",
+      "name": "Slack \u2014 Catch-All Error",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        -2864,
+        656
+      ],
+      "webhookId": "aae21896-e44d-4502-b0e9-65303e68f197",
+      "credentials": {
+        "slackOAuth2Api": {
+          "id": "qvXU2mcT4H1OJgRo",
+          "name": "Slack account"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "af3ef170-5433-493f-93a3-e7763c354d4a",
+      "name": "No Pending Posts (Stop)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        -2416,
+        464
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Filter out rows where Posted (Checkbox) is already true\n// Handles both boolean true and string \"TRUE\"\nreturn $input.all().filter(item => {\n  const posted = item.json['Posted (Checkbox)'];\n  // Exclude if posted is boolean true, string \"TRUE\", or string \"true\"\n  if (posted === true) return false;\n  if (typeof posted === 'string' && posted.toUpperCase() === 'TRUE') return false;\n  return true;\n});"
+      },
+      "id": "filter-not-posted-code-001",
+      "name": "Filter Unposted Rows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2768,
+        336
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $('Build Video URL').first().json;\nconst hook = data['Hook'];\nconst theme = data['Micro Theme'];\nconst ctaType = (data['CTA Type (None / Soft / Direct)'] || 'Soft').trim();\n\nconst systemPrompt = `You write Instagram reel captions for Tyson, founder of Flow OS and Flow States Collective. He builds AI-powered business systems for coaches, wellness practitioners, and solo operators.\n\nYOUR JOB: Write one caption based on the hook, theme, and CTA type provided.\n\nVoice rules:\n- Write like a sharp friend who runs a business, not a consultant or motivational speaker\n- Short sentences. Punchy. Some incomplete. Like how people actually think.\n- Use specific scenarios and numbers, never abstract principles\n- Reference the ICA world: coaching sessions, discovery calls, DMs, client onboarding, content batching, group programs, retreats, wellness, healing practices\n- Light self-awareness and humour is good. Never corny.\n- No emojis. No hashtags. No hype energy.\n- Never use: leverage, optimize, elevate, unlock, game-changer, next level\n- Never use bullet point lists. Write in flowing sentences and paragraphs.\n- First person where natural (I see this all the time, I built this for a client last week)\n\nCaption structure:\n1. OPEN: One sentence that extends the hook. Do not repeat the hook text.\n2. BODY: 2-4 sentences using ONE format: mini story, scenario, reframe, or contrast.\n3. CLOSE: CTA matching the CTA type.\n\nCTA rules:\n- DIRECT: End with DM me [WORD] and I will [specific thing]. Rotate: LEAKS, AUTOMATE, AUDIT, BUILD, FLOW, SYSTEM, CLARITY\n- SOFT: End with one casual line like Follow for more of this.\n- DM TRIGGER: End with Comment [WORD] and I will send you [freebie]. Words: SYSTEM, LEAKS, RHYTHM, CLARITY, CHECKLIST\n- LINK IN BIO: End with Link in bio to [action]. e.g. book your free ops audit\n- SAVE BAIT: End with Save this for [specific moment].\n- DIAGNOSTIC or NONE: Use a Soft CTA instead.\n\nLength: 50-110 words. Aim for 75 words.\n\nDo NOT use bullet lists, start with Here is the thing or Let me be honest, write generic abstractions, or mention Flow OS by name.`;\n\nconst userMessage = `Hook: \"${hook}\"\nTheme: ${theme}\nCTA Type: ${ctaType}\n\nWrite the caption. Return ONLY the caption text, nothing else.`;\n\nreturn [{\n  json: {\n    ...data,\n    systemPrompt,\n    userMessage,\n    caption: ''\n  }\n}];"
+      },
+      "id": "build-caption-prompt-001",
+      "name": "Build Caption Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1760,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "anthropicApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 300, system: $json.systemPrompt, messages: [{ role: 'user', content: $json.userMessage }] }) }}",
+        "options": {}
+      },
+      "id": "call-claude-haiku-001",
+      "name": "Call Claude Haiku",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1536,
+        160
+      ],
+      "credentials": {
+        "anthropicApi": {
+          "id": "eXhIwRbh7FBgb6O3",
+          "name": "Anthropic account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const response = $input.first().json;\nlet caption = '';\n\ntry {\n  if (response.content && response.content[0] && response.content[0].text) {\n    caption = response.content[0].text.trim();\n  }\n} catch (e) {\n  caption = $('Build Caption Prompt').first().json['Hook'];\n}\n\nconst originalData = $('Build Caption Prompt').first().json;\n\nreturn [{\n  json: {\n    ...originalData,\n    caption\n  }\n}];"
+      },
+      "id": "extract-caption-001",
+      "name": "Extract Caption",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1312,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 21 * * *"
+            },
+            {
+              "field": "cronExpression",
+              "expression": "0 2 * * *"
+            },
+            {
+              "field": "cronExpression",
+              "expression": "0 7 * * *"
+            },
+            {
+              "field": "cronExpression",
+              "expression": "0 11 * * *"
+            }
+          ]
+        }
+      },
+      "id": "e7f0d4b1-d924-48af-a02c-659251233834",
+      "name": "Every 5 Hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -3136,
+        192
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select public.record_heartbeat('{{ $workflow.id }}'::text, 'started'::text, 'Instagram Trial Reels Auto-Publisher'::text, '{{ $execution.id }}'::text);",
+        "options": {}
+      },
+      "name": "Heartbeat: Start",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -2936,
+        192
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "qGUxEHfEZkZGdAcZ",
+          "name": "Supabase Postgres DB"
+        }
+      },
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "id": "33a4d5d2-a443-4d68-9c20-74754190bb56"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select public.record_heartbeat('{{ $workflow.id }}'::text, 'success'::text, 'Instagram Trial Reels Auto-Publisher'::text, '{{ $execution.id }}'::text);",
+        "options": {}
+      },
+      "name": "Heartbeat: Success",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        922,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "qGUxEHfEZkZGdAcZ",
+          "name": "Supabase Postgres DB"
+        }
+      },
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "id": "914d4d77-0728-44e8-84af-1b05b993d4fe"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select public.record_heartbeat('{{ $workflow.id }}'::text, 'success'::text, 'Instagram Trial Reels Auto-Publisher'::text, '{{ $execution.id }}'::text, '{{ JSON.stringify({terminal:\"no_pending\"}) }}'::jsonb);",
+        "options": {}
+      },
+      "name": "Heartbeat: Success (No Pending)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -2166,
+        464
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "qGUxEHfEZkZGdAcZ",
+          "name": "Supabase Postgres DB"
+        }
+      },
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "id": "7fcb6708-9fa1-4470-bb14-f289148fab93"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select public.record_heartbeat('{{ $workflow.id }}'::text, 'error'::text, 'Instagram Trial Reels Auto-Publisher'::text, '{{ $execution.id }}'::text, '{{ JSON.stringify({terminal:\"slack_error\"}) }}'::jsonb);",
+        "options": {}
+      },
+      "name": "Heartbeat: Error",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -2564,
+        656
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "qGUxEHfEZkZGdAcZ",
+          "name": "Supabase Postgres DB"
+        }
+      },
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "id": "19543eb2-89bb-4524-a380-fd7e1f4b59f6"
+    }
+  ],
+  "connections": {
+    "Get Next Pending Row": {
+      "main": [
+        [
+          {
+            "node": "Filter Unposted Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Pending Row?": {
+      "main": [
+        [
+          {
+            "node": "Build Video URL",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No Pending Posts (Stop)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Video URL": {
+      "main": [
+        [
+          {
+            "node": "Validate R2 URL (HEAD)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate R2 URL (HEAD)": {
+      "main": [
+        [
+          {
+            "node": "URL Returns 200?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "URL Returns 200?": {
+      "main": [
+        [
+          {
+            "node": "Build Caption Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Slack \u2014 URL Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Media Container": {
+      "main": [
+        [
+          {
+            "node": "Save Container ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Container ID": {
+      "main": [
+        [
+          {
+            "node": "Wait 30s (Initial Processing)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 30s (Initial Processing)": {
+      "main": [
+        [
+          {
+            "node": "Increment Poll Counter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Increment Poll Counter": {
+      "main": [
+        [
+          {
+            "node": "Poll Media Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Poll Media Status": {
+      "main": [
+        [
+          {
+            "node": "Merge Poll Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Poll Result": {
+      "main": [
+        [
+          {
+            "node": "Status = FINISHED?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Status = FINISHED?": {
+      "main": [
+        [
+          {
+            "node": "Publish Media",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Poll Timed Out?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Poll Timed Out?": {
+      "main": [
+        [
+          {
+            "node": "Slack \u2014 Processing Error",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Wait 15s (Poll Retry)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 15s (Poll Retry)": {
+      "main": [
+        [
+          {
+            "node": "Increment Poll Counter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Publish Media": {
+      "main": [
+        [
+          {
+            "node": "Merge Publish Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Publish Result": {
+      "main": [
+        [
+          {
+            "node": "Mark Posted = TRUE",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Posted = TRUE": {
+      "main": [
+        [
+          {
+            "node": "Slack \u2014 Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Workflow Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Slack \u2014 Catch-All Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Unposted Rows": {
+      "main": [
+        [
+          {
+            "node": "Has Pending Row?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Caption Prompt": {
+      "main": [
+        [
+          {
+            "node": "Call Claude Haiku",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Claude Haiku": {
+      "main": [
+        [
+          {
+            "node": "Extract Caption",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Caption": {
+      "main": [
+        [
+          {
+            "node": "Create Media Container",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Every 5 Hours": {
+      "main": [
+        [
+          {
+            "node": "Heartbeat: Start",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Heartbeat: Start": {
+      "main": [
+        [
+          {
+            "node": "Get Next Pending Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack \u2014 Success": {
+      "main": [
+        [
+          {
+            "node": "Heartbeat: Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "No Pending Posts (Stop)": {
+      "main": [
+        [
+          {
+            "node": "Heartbeat: Success (No Pending)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack \u2014 Processing Error": {
+      "main": [
+        [
+          {
+            "node": "Heartbeat: Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack \u2014 URL Error": {
+      "main": [
+        [
+          {
+            "node": "Heartbeat: Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack \u2014 Catch-All Error": {
+      "main": [
+        [
+          {
+            "node": "Heartbeat: Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  }
+}

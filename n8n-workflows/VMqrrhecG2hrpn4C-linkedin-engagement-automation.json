@@ -1,0 +1,798 @@
+{
+  "id": "VMqrrhecG2hrpn4C",
+  "name": "LinkedIn Engagement Automation",
+  "description": null,
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 0 */4 * * *"
+            }
+          ]
+        }
+      },
+      "id": "b2000001-0000-0000-0000-000000000001",
+      "name": "Engagement Monitor Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -272,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "communityManagement",
+        "operation": "getAll"
+      },
+      "id": "b2000001-0000-0000-0000-000000000002",
+      "name": "LinkedIn Feed Monitor",
+      "type": "n8n-nodes-base.linkedIn",
+      "typeVersion": 1,
+      "position": [
+        -80,
+        0
+      ],
+      "credentials": {
+        "linkedInCommunityManagementOAuth2Api": {
+          "id": "5m5ISjqwffFRaUtG",
+          "name": "LinkedIn Community Management account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4.1-mini",
+          "mode": "list",
+          "cachedResultName": "GPT-4.1-MINI"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "You are a content relevance analyser for Tyson Venables and Flow OS / Flow States Collective.\nYour job is to analyse a LinkedIn post and determine:\n1. Whether it is relevant to Tyson's audience and niche\n2. An engagement score (1\u201310)\n3. The recommended engagement type\n\nTyson's niche and ICA:\n- Coaches, health professionals, wellness entrepreneurs, small business founders\n- Topics: automation, systems thinking, business efficiency, wellness, mindset, entrepreneurship\n\nENGAGEMENT SCORING GUIDANCE (updated from real performance data):\n- The current recommended minimum score threshold is: {{ $json.engagement_context?.min_score_threshold || 7 }}\n- Top performing topics (posts on these topics have generated the most connections): {{ $json.engagement_context?.top_performing_topics?.join(', ') || 'insufficient data yet' }}\n- Historical comment-to-connection rate: {{ $json.engagement_context?.comment_connection_rate || 0 }}%\n- Historical like-to-connection rate: {{ $json.engagement_context?.like_connection_rate || 0 }}%\n\nUse this data to calibrate your scoring. If a post matches a top performing topic, score it higher.\nIf comment connection rate is significantly higher than like rate, prefer 'comment' as engagement type.\n\nRespond ONLY with valid JSON:\n{\n  \"score\": <1-10>,\n  \"should_engage\": <true/false>,\n  \"engagement_type\": \"comment\" | \"like\" | \"skip\",\n  \"reason\": \"<brief explanation>\",\n  \"post_topic\": \"<one of: automation, wellness, coaching, entrepreneurship, mindset, systems, other>\"\n}",
+              "role": "system"
+            },
+            {
+              "content": "=Analyse this LinkedIn post:\n\nAuthor: {{ $json.author?.name || $json.authorName || 'Unknown' }}\nAuthor headline: {{ $json.author?.headline || '' }}\nPost text: {{ ($json.text || $json.commentary || '').substring(0, 500) }}\nLikes: {{ $json.likeCount || $json.numLikes || 0 }}\nComments: {{ $json.commentCount || $json.numComments || 0 }}"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.2
+        }
+      },
+      "id": "b2000001-0000-0000-0000-000000000003",
+      "name": "AI Content Analyzer",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.8,
+      "position": [
+        400,
+        0
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "I9np0X3gCWfXpKEf",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.item.json.message?.content || $input.item.json.choices?.[0]?.message?.content || '{}';\nlet parsed;\ntry {\n  parsed = JSON.parse(raw);\n} catch(e) {\n  parsed = { score: 0, engagement_type: 'skip', reason: 'parse error', post_topic: 'unknown' };\n}\nreturn { ...($input.item.json), engagement_score: parsed.score, engagement_type: parsed.engagement_type, analysis_reason: parsed.reason, post_topic: parsed.post_topic };"
+      },
+      "id": "b2000001-0000-0000-0000-000000000004",
+      "name": "Parse Content Analysis",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Fetch today's engagement rate limit from Supabase\nconst today = new Date().toISOString().split('T')[0];\nconst url = 'https://zshmlgtvhdneekbfcyjc.supabase.co/rest/v1/engagement_rate_limits?date=eq.' + today + '&select=*';\n\nlet todayCount = 0;\ntry {\n  const response = await $http.get(url, {\n    headers: {\n      'apikey': 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpzaG1sZ3R2aGRuZWVrYmZjeWpjIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3Mjc5NzI4OSwiZXhwIjoyMDg4MzczMjg5fQ.Jop1GNUQijVBzV8KEYLfgpdkdS8b-KhwHFtNY2kH23Y',\n      'Authorization': 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpzaG1sZ3R2aGRuZWVrYmZjeWpjIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3Mjc5NzI4OSwiZXhwIjoyMDg4MzczMjg5fQ.Jop1GNUQijVBzV8KEYLfgpdkdS8b-KhwHFtNY2kH23Y',\n      'Content-Type': 'application/json'\n    }\n  });\n  const data = response.data;\n  if (Array.isArray(data) && data.length > 0) {\n    todayCount = data[0].engagement_count || 0;\n  }\n} catch(e) {\n  // If request fails, default to 0 (allow engagement)\n  todayCount = 0;\n}\n\nreturn { engagement_count: todayCount, date: today };"
+      },
+      "id": "b2000001-0000-0000-0000-000000000005",
+      "name": "Check Engagement Rate Limit",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const analysis = $('Parse Content Analysis').item.json;\n// rateData may be an array (Supabase returns array) or empty object if no record today\nconst rateRaw = $input.item.json;\n// Handle both array response and empty object\nlet todayCount = 0;\nif (Array.isArray(rateRaw) && rateRaw.length > 0) {\n  todayCount = rateRaw[0].engagement_count || 0;\n} else if (rateRaw && rateRaw.engagement_count !== undefined) {\n  todayCount = rateRaw.engagement_count || 0;\n}\nconst score = analysis.engagement_score || 0;\nconst engType = analysis.engagement_type || 'skip';\nconst underLimit = todayCount < 30;\nconst shouldEngage = score >= 7 && engType !== 'skip' && underLimit;\nreturn {\n  ...analysis,\n  today_count: todayCount,\n  under_limit: underLimit,\n  should_engage: shouldEngage\n};"
+      },
+      "id": "b2000001-0000-0000-0000-000000000006",
+      "name": "Merge Analysis and Rate Limit",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1088,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "cond-engage",
+              "leftValue": "={{ $json.should_engage }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "b2000001-0000-0000-0000-000000000007",
+      "name": "Engagement Filter",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1328,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "cond-comment",
+              "leftValue": "={{ $json.engagement_type }}",
+              "rightValue": "comment",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "b2000001-0000-0000-0000-000000000008",
+      "name": "Comment or Like Router",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1552,
+        -16
+      ]
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4.1-mini",
+          "mode": "list",
+          "cachedResultName": "GPT-4.1-MINI"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "You are writing a LinkedIn comment on behalf of Tyson Venables, founder of Flow OS and Flow States Collective.\n\nTyson's voice and rules:\n- Grounded, direct, adds genuine value\n- Speaks from lived experience, not theory\n- Plain language \u2014 if it wouldn't make sense to a founder at 10pm, it doesn't belong\n- Content pillars: 60% System Clarity (seeing the whole), 25% Sustainable Automation, 15% Translation (tech \u2192 decisions)\n- Language patterns: 'If you zoom out\u2026', 'The part no one checks is\u2026', 'What's actually happening here is\u2026', 'Most automation doesn't fail because the tool is bad\u2026'\n- Anti-hustle, anti-shiny-tool, pro-stability and trust\n- Never: hype, urgency, self-promotion, 'great post!', generic praise, emojis\n- Never mentions Flow OS or Flow States Collective in comments\n- Comments are insights, not advertisements\n\nCOMMENT RULES:\n- 1\u20133 sentences maximum\n- Add a genuine perspective, observation, or question that extends the conversation\n- Sound like a thoughtful practitioner, not a marketer\n- No self-promotion, no CTAs, no links\n- If the post asks a question, answer it with substance\n- If the post makes a claim, either affirm with a specific insight or offer a nuanced counterpoint\n\nRespond with ONLY the comment text. Nothing else.",
+              "role": "system"
+            },
+            {
+              "content": "=Write a comment for this LinkedIn post:\n\nTopic: {{ $json.post_topic }}\nPost text: {{ ($json.text || $json.commentary || '').substring(0, 500) }}\nWhy engaging: {{ $json.analysis_reason }}"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.8
+        }
+      },
+      "id": "b2000001-0000-0000-0000-000000000009",
+      "name": "AI Response Generator",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.8,
+      "position": [
+        1696,
+        -96
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "I9np0X3gCWfXpKEf",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.item.json.message?.content || $input.item.json.choices?.[0]?.message?.content || '';\nconst comment = raw.trim();\n// Quality gate: must be between 20 and 280 characters\nconst isQuality = comment.length >= 20 && comment.length <= 280;\nreturn { ...($input.item.json), comment_text: comment, comment_quality_pass: isQuality };"
+      },
+      "id": "b2000001-0000-0000-0000-000000000010",
+      "name": "Response Quality Gate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1984,
+        -96
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "cond-quality",
+              "leftValue": "={{ $json.comment_quality_pass }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equal"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "b2000001-0000-0000-0000-000000000011",
+      "name": "Quality Check",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2208,
+        -96
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "communityManagement",
+        "resource": "comment"
+      },
+      "id": "b2000001-0000-0000-0000-000000000012",
+      "name": "LinkedIn Comment Creator",
+      "type": "n8n-nodes-base.linkedIn",
+      "typeVersion": 1,
+      "position": [
+        2432,
+        -96
+      ],
+      "credentials": {
+        "linkedInCommunityManagementOAuth2Api": {
+          "id": "5m5ISjqwffFRaUtG",
+          "name": "LinkedIn Community Management account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "communityManagement",
+        "resource": "reaction"
+      },
+      "id": "b2000001-0000-0000-0000-000000000013",
+      "name": "LinkedIn Like Action",
+      "type": "n8n-nodes-base.linkedIn",
+      "typeVersion": 1,
+      "position": [
+        1760,
+        112
+      ],
+      "credentials": {
+        "linkedInCommunityManagementOAuth2Api": {
+          "id": "5m5ISjqwffFRaUtG",
+          "name": "LinkedIn Community Management account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://zshmlgtvhdneekbfcyjc.supabase.co/rest/v1/engagement_activities",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "return=minimal"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={\n  \"post_id\": \"{{ $json.post_id ?? $json.object ?? 'unknown' }}\",\n  \"post_topic\": \"{{ $json.post_topic ?? $json.topic ?? 'general' }}\",\n  \"activity_type\": \"{{ $json.activity_type ?? 'comment' }}\",\n  \"engagement_score\": {{ $json.engagement_score ?? $json.score ?? 5 }},\n  \"comment_text\": {{ JSON.stringify($json.comment_text ?? $json.response ?? '') }}\n}",
+        "options": {},
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi"
+      },
+      "id": "b2000001-0000-0000-0000-000000000014",
+      "name": "Engagement Logger",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2640,
+        0
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "QT6Zi0SSBBSbGPF3",
+          "name": "Supabase account LinkedIn DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://zshmlgtvhdneekbfcyjc.supabase.co/rest/v1/engagement_rate_limits",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "resolution=merge-duplicates"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({ date: $now.format('yyyy-MM-dd'), engagement_count: 1, last_updated: $now.toISO() }) }}",
+        "options": {},
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi"
+      },
+      "id": "b2000001-0000-0000-0000-000000000015",
+      "name": "Rate Limit Tracker",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2864,
+        0
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "QT6Zi0SSBBSbGPF3",
+          "name": "Supabase account LinkedIn DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "linkedin-engagement-webhook",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "b2000001-0000-0000-0000-000000000016",
+      "name": "LinkedIn Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        400
+      ],
+      "webhookId": "linkedin-engagement-webhook"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'received', timestamp: new Date().toISOString() }) }}",
+        "options": {}
+      },
+      "id": "b2000001-0000-0000-0000-000000000017",
+      "name": "Webhook Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        224,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://zshmlgtvhdneekbfcyjc.supabase.co/rest/v1/engagement_weights?order=created_at.desc&limit=1&select=recommended_min_score,top_performing_topics,comment_connection_rate,like_connection_rate",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        },
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi"
+      },
+      "id": "eng-weight-0001",
+      "name": "Fetch Engagement Weights",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        96,
+        0
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "QT6Zi0SSBBSbGPF3",
+          "name": "Supabase account LinkedIn DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// Merge engagement weight data with the post data\nconst postData = $('LinkedIn Feed Monitor').first().json;\nconst weightsRaw = $('Fetch Engagement Weights').first().json;\n\n// Weights may be an array (Supabase returns array) or empty\nconst weights = Array.isArray(weightsRaw) && weightsRaw.length > 0 ? weightsRaw[0] : null;\n\nconst minScore = weights?.recommended_min_score || 7;\nconst topTopics = weights?.top_performing_topics || [];\nconst commentRate = weights?.comment_connection_rate || 0;\nconst likeRate = weights?.like_connection_rate || 0;\n\nreturn [{\n  json: {\n    ...postData,\n    engagement_context: {\n      min_score_threshold: minScore,\n      top_performing_topics: topTopics,\n      comment_connection_rate: commentRate,\n      like_connection_rate: likeRate,\n      has_weight_data: weights !== null\n    }\n  }\n}];\n"
+      },
+      "id": "eng-weight-0002",
+      "name": "Merge Engagement Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        256,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select public.record_heartbeat('{{ $workflow.id }}'::text, 'started'::text, 'LinkedIn Engagement Automation'::text, '{{ $execution.id }}'::text);",
+        "options": {}
+      },
+      "name": "Heartbeat: Start (Schedule)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -72,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "qGUxEHfEZkZGdAcZ",
+          "name": "Supabase Postgres DB"
+        }
+      },
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "id": "e1ef752d-cac3-4487-a819-486f3587165c"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select public.record_heartbeat('{{ $workflow.id }}'::text, 'started'::text, 'LinkedIn Engagement Automation'::text, '{{ $execution.id }}'::text);",
+        "options": {}
+      },
+      "name": "Heartbeat: Start (Webhook)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        200,
+        400
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "qGUxEHfEZkZGdAcZ",
+          "name": "Supabase Postgres DB"
+        }
+      },
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "id": "61161036-57b8-4cfc-a068-3f143389bb57"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select public.record_heartbeat('{{ $workflow.id }}'::text, 'success'::text, 'LinkedIn Engagement Automation'::text, '{{ $execution.id }}'::text);",
+        "options": {}
+      },
+      "name": "Heartbeat: Success",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        3114,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "qGUxEHfEZkZGdAcZ",
+          "name": "Supabase Postgres DB"
+        }
+      },
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "id": "bcfa2554-2155-4847-b46c-2e255f7e29ae"
+    }
+  ],
+  "connections": {
+    "Engagement Monitor Trigger": {
+      "main": [
+        [
+          {
+            "node": "Heartbeat: Start (Schedule)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LinkedIn Feed Monitor": {
+      "main": [
+        [
+          {
+            "node": "Fetch Engagement Weights",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Content Analyzer": {
+      "main": [
+        [
+          {
+            "node": "Parse Content Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Content Analysis": {
+      "main": [
+        [
+          {
+            "node": "Check Engagement Rate Limit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Engagement Rate Limit": {
+      "main": [
+        [
+          {
+            "node": "Merge Analysis and Rate Limit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Analysis and Rate Limit": {
+      "main": [
+        [
+          {
+            "node": "Engagement Filter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Engagement Filter": {
+      "main": [
+        [
+          {
+            "node": "Comment or Like Router",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Comment or Like Router": {
+      "main": [
+        [
+          {
+            "node": "AI Response Generator",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "LinkedIn Like Action",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Response Generator": {
+      "main": [
+        [
+          {
+            "node": "Response Quality Gate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Response Quality Gate": {
+      "main": [
+        [
+          {
+            "node": "Quality Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Quality Check": {
+      "main": [
+        [
+          {
+            "node": "LinkedIn Comment Creator",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "LinkedIn Comment Creator": {
+      "main": [
+        [
+          {
+            "node": "Engagement Logger",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LinkedIn Like Action": {
+      "main": [
+        [
+          {
+            "node": "Engagement Logger",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Engagement Logger": {
+      "main": [
+        [
+          {
+            "node": "Rate Limit Tracker",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LinkedIn Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Heartbeat: Start (Webhook)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Engagement Weights": {
+      "main": [
+        [
+          {
+            "node": "Merge Engagement Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Engagement Context": {
+      "main": [
+        [
+          {
+            "node": "AI Content Analyzer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Heartbeat: Start (Schedule)": {
+      "main": [
+        [
+          {
+            "node": "LinkedIn Feed Monitor",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Heartbeat: Start (Webhook)": {
+      "main": [
+        [
+          {
+            "node": "Webhook Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rate Limit Tracker": {
+      "main": [
+        [
+          {
+            "node": "Heartbeat: Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook Response": {
+      "main": [
+        [
+          {
+            "node": "Heartbeat: Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": true,
+    "timeSavedMode": "fixed"
+  }
+}
