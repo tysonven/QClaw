@@ -3262,3 +3262,76 @@ Pre-slice progress: N8N_WORKFLOW_INDEX.md clusters 9 + 10 + 11 of 12 complete. *
 - **Post-doc-pass cluster-sweep work queued** (separate dispatches from doc pass): timezone correction across 16 workflows (item 7); dormancy re-verification post-API-investigation (4 confirmed dormant: Trading Weekly Analyst, Bot Router, Token Expiry Monitor, GHL Changelog Emails); Crete Content Generator UTC retro-correction; LinkedIn-adjacent recategorisation (Engagement Weighting + Lead Score Re-calibration); V1/V2/V3 cleanup + workflow renames (item 9); webhook signed-request hardening (item 23, new); heartbeat + errorWorkflow sweep (item 3).
 
 Pre-slice progress: **N8N_WORKFLOW_INDEX.md doc pass complete. 12 of 12 clusters documented.** Next: cluster-sweep correction passes + Phase 4 Slice 1 dependency resolution (items 18, 19).
+
+---
+
+## 2026-05-05 — Phase 4 Slice 0 Sub-project A: heartbeat infrastructure foundation
+
+Lays the foundation for heartbeat-on-execute observability per the
+work-list item 19 finding (n8n executions API is unreliable: global FIFO
+buffer of ~10k rows + Morning Light webhook generating ~24k/day evicts
+all other workflow history within ~7 hours; 99.15% of the buffer is one
+workflow). Investigation report: `/tmp/n8n_api_reliability_investigation.md`,
+follow-up dashboard audit: `/tmp/n8nhealth_dashboard_investigation.md`.
+
+Created in main QClaw Supabase (`fdabygmromuqtysitodp` "n8n database",
+ap-southeast-2, Postgres 17):
+
+- **Table** `public.workflow_heartbeats` — id (uuid pk), workflow_id,
+  workflow_name, execution_id, started_at, status (check constraint:
+  started/success/error/partial), metadata (jsonb), created_at.
+- **Indices** — `workflow_id`, `started_at desc`, composite
+  `(workflow_id, started_at desc)`, partial unique
+  `(workflow_id, execution_id) WHERE execution_id IS NOT NULL` for
+  idempotency.
+- **RPC** `record_heartbeat(p_workflow_id, p_status, p_workflow_name,
+  p_execution_id, p_metadata)` returns uuid. `SECURITY DEFINER`, EXECUTE
+  granted only to `service_role`. Idempotent on (workflow_id,
+  execution_id) — repeat calls upsert in place (started → success/error
+  transition reuses the same row id).
+- **RLS** enabled. Anon = no access. Authenticated = read-only.
+  Service role bypasses RLS automatically (writes via the RPC choke
+  point).
+
+Verification (live, against the deployed migration):
+
+- Smoke-tested: first call inserted id `c6df42eb-...`, second call with
+  same `execution_id` and different status returned the same id with
+  `status` updated `started → success` and metadata replaced. Cleanup
+  delete confirmed 0 remaining `TEST_*` rows.
+- Status check constraint rejects bogus values (raised exception in a
+  DO block as expected).
+
+Files added:
+
+- `n8n-workflows/migrations/2026_05_05_workflow_heartbeats.sql` —
+  canonical DDL (also applied via Supabase MCP `apply_migration`).
+- `HEARTBEAT_PATTERN.md` — standard node config (HTTP Request →
+  `/rest/v1/rpc/record_heartbeat` with service-role apikey header,
+  `Continue (using error output)` so heartbeat failure cannot break the
+  workflow), wiring rules (off always-emits parents per the existing
+  empty-input memo), idempotency contract, dashboard read query.
+
+**Out of scope (deferred):**
+
+- Sub-project B (instrument ~20 workflows: the 13 from the original
+  heartbeat sweep + Morning Light + 5 dormant-trigger recoveries).
+- Sub-project C (Kayla iframe migration — repoint
+  n8n-dashboard-one.vercel.app off the n8n executions API onto the
+  heartbeat table; required before flipping Morning Light's
+  `saveDataSuccessExecution: 'none'` so the embedded GHL iframe doesn't
+  visibly break).
+- Heartbeat-table archive / retention job — defer until B+C land and
+  real volume is observable.
+- The Morning Light `saveDataSuccessExecution: 'none'` flip itself —
+  held until A → B → C all land.
+
+**Side notes during the work:**
+
+- Supabase advisory flagged `public.clip_jobs` and `public.charlie_tasks`
+  as having RLS disabled. Out of scope for this sub-project; surfacing
+  for Tyson's decision.
+- The JWT in `n8n-project/n8n-dashboard-server/.env` (iat 2025-09-25)
+  is revoked → 401. Working n8n public-API JWT is in
+  `~/.claude/settings.local.json` (exp 2026-05-22 — needs rotation
+  inside ~17 days regardless of this work).
