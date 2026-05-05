@@ -579,6 +579,11 @@
       "main": [
         [
           {
+            "node": "Parse Reply",
+            "type": "main",
+            "index": 0
+          },
+          {
             "node": "Heartbeat: Start (Telegram)",
             "type": "main",
             "index": 0
@@ -697,6 +702,11 @@
       "main": [
         [
           {
+            "node": "Parse Dashboard Input",
+            "type": "main",
+            "index": 0
+          },
+          {
             "node": "Heartbeat: Start (Dashboard)",
             "type": "main",
             "index": 0
@@ -728,24 +738,12 @@
     },
     "Heartbeat: Start (Telegram)": {
       "main": [
-        [
-          {
-            "node": "Parse Reply",
-            "type": "main",
-            "index": 0
-          }
-        ]
+        []
       ]
     },
     "Heartbeat: Start (Dashboard)": {
       "main": [
-        [
-          {
-            "node": "Parse Dashboard Input",
-            "type": "main",
-            "index": 0
-          }
-        ]
+        []
       ]
     },
     "Confirm Approval": {

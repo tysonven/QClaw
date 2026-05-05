@@ -785,6 +785,11 @@
       "main": [
         [
           {
+            "node": "Get Content",
+            "type": "main",
+            "index": 0
+          },
+          {
             "node": "Heartbeat: Start",
             "type": "main",
             "index": 0
@@ -1052,13 +1057,7 @@
     },
     "Heartbeat: Start": {
       "main": [
-        [
-          {
-            "node": "Get Content",
-            "type": "main",
-            "index": 0
-          }
-        ]
+        []
       ]
     },
     "Heartbeat: Success": {

@@ -4032,3 +4032,152 @@ executions API onto the `workflow_heartbeats` Supabase table). Morning
 Light `saveDataSuccessExecution: 'none'` flip remains held until C
 lands so the embedded GHL iframe doesn't visibly break.
 
+---
+
+## 2026-05-05 — REGRESSION + FIX: Heartbeat: Start serial-interpose broke 9 webhook/Telegram workflows incl. Morning Light (Phase 4 Slice 0 sub-project B post-mortem, part 1)
+
+### Incident
+
+Sub-project C verification on the deployed Kayla iframe surfaced 0%
+success rate on Morning Light. Investigation showed 100% of Morning
+Light executions since 2026-05-05 16:43:19 UTC (the Batch 3 PUT) were
+erroring at `Validate WellnessLiving Webhook` with
+`"Missing x-signature-256 header — request may be unauthorized
+[line 33]"`. Estimated 6,500+ failed executions over ~5 hours of
+silent production breakage on a paying client integration (Kayla's
+Morning Light WL→HL pipeline).
+
+### Root cause
+
+I implemented `Heartbeat: Start` as a **serial-interpose** between
+the trigger node and its first downstream node:
+`Webhook2 → Heartbeat: Start → Validate WellnessLiving Webhook`. The
+`Heartbeat: Start` is an n8n Postgres `executeQuery` node, which
+**replaces** the output items with the SQL query result row
+(`{id: <uuid>}`). The original webhook payload (`headers`, `body`)
+was lost downstream. `Validate` then read `$json.headers
+['x-signature-256']` → `undefined` → threw → workflow halted before
+`Respond 200` and `Heartbeat: Success`.
+
+The same bug pattern was applied across every Sub-project B Start
+heartbeat (insert_after on the trigger). For 13 schedule-triggered
+workflows, the bug was silent because their downstream nodes don't
+read from the trigger's payload. For 9 webhook/Telegram-trigger
+workflows, the downstream depended on the payload — those were all
+broken in production.
+
+### What's worse: the doc was right, the implementation was wrong
+
+`HEARTBEAT_PATTERN.md` actually documents the correct rule:
+
+> "Branch the start heartbeat on a separate path from the main work.
+> Don't put it in the main pipeline — that couples its failure to the
+> workflow's failure. Put it on a parallel branch."
+
+I authored that doc and then proceeded to implement Start heartbeats
+the wrong way across 23 workflows. Documented patterns without lint
+enforcement are not enough. Step 7 of this fix-up is adding a pre-PUT
+validator that catches this class of bug structurally.
+
+### Fix (this commit)
+
+Generic interpose→parallel converter (`/tmp/n8n_inv/fix_interpose.py`)
+that for each `Heartbeat: Start*` node:
+1. Captures what it currently feeds (= what the trigger originally fed).
+2. Captures its single upstream (= the trigger).
+3. Rewires: `trigger → [original_downstream..., Heartbeat: Start*]`
+   (parallel sibling).
+4. Empties the heartbeat's outgoing edges (it becomes a sink, side-
+   effect only).
+
+Idempotent: if the heartbeat already has empty outgoing, no-op.
+
+Applied to Morning Light first (PUT 18:46:07 UTC), then to the 8
+other broken workflows in priority order (PUT 18:58:26-34 UTC).
+
+| Workflow ID | Slug | Heartbeat: Start* nodes rewired |
+|---|---|---|
+| `TikJkWLzpreI6iTa` | morning-light-wl-to-hl | 1 |
+| `zXKBjp3yjW2oR2Mj` | crete-content-publish | 1 |
+| `fonuRTyqepxdyIdf` | ghl-marketing-publisher | 1 |
+| `ptHK2TZq5XppKOOg` | ghl-marketing-approval-handler | 2 (Telegram + Dashboard) |
+| `Qf39NEOEgz2W0uls` | content-studio-pipeline | 1 |
+| `9VqCAnczY5gFJcRE` | gutful-shopify-to-flow-os-v3 | 2 (Customer + Order) |
+| `lf955LDteJ512RQi` | meta-ads-optimisation-agent | 2 (Schedule + Webhook) |
+| `VMqrrhecG2hrpn4C` | linkedin-engagement-automation | 2 (Schedule + Webhook) |
+| `lu39mAN7epBRK3Kw` | meta-ads-telegram-bot-router | 1 |
+| **9 workflows** | | **13 nodes rewired** |
+
+Note: Meta Ads + LI Engagement had both webhook (broken) AND
+schedule (silently working) Start heartbeats. Fixed both for
+consistency rather than leave one workflow with mixed wiring.
+
+### Verification (live)
+
+- **Morning Light structural proof** (test POST at 18:47:31 UTC, no
+  signature): Validate received the original webhook payload (proven
+  by it producing the SAME `"Missing x-signature-256"` error message
+  it had pre-instrumentation). `Heartbeat: Start` fired in parallel
+  (row landed at 18:47:33 UTC).
+- **Morning Light end-to-end live recovery**: real WL fire at
+  2026-05-05 18:52:50 UTC produced `status=success` row in
+  `workflow_heartbeats`. Confirms the entire pipeline now runs
+  Webhook → Validate → … → Respond 200 → Heartbeat: Success while
+  Heartbeat: Start fires in parallel.
+- 8 other workflows: PUT 200 each, post-PUT GET confirms the trigger
+  fans to BOTH the original first downstream AND the heartbeat, and
+  the heartbeat is a sink. Real-traffic recovery on these will confirm
+  on next natural fire (varies per workflow).
+
+### Files updated (9 canonical post-fix JSONs)
+
+- `n8n-workflows/TikJkWLzpreI6iTa-morning-light-wl-to-hl.json`
+- `n8n-workflows/zXKBjp3yjW2oR2Mj-crete-content-publish.json`
+- `n8n-workflows/fonuRTyqepxdyIdf-ghl-marketing-publisher.json`
+- `n8n-workflows/ptHK2TZq5XppKOOg-ghl-marketing-approval-handler.json`
+- `n8n-workflows/Qf39NEOEgz2W0uls-content-studio-pipeline.json`
+- `n8n-workflows/9VqCAnczY5gFJcRE-gutful-shopify-to-flow-os-v3.json`
+- `n8n-workflows/lf955LDteJ512RQi-meta-ads-optimisation-agent.json`
+- `n8n-workflows/VMqrrhecG2hrpn4C-linkedin-engagement-automation.json`
+- `n8n-workflows/lu39mAN7epBRK3Kw-meta-ads-telegram-bot-router.json`
+
+### Out of scope (next commit)
+
+Following commit will land:
+- 13 schedule-only workflows: same structural rewire, no behavioural
+  change (defensive consistency).
+- `b_common.py`: deprecate `insert_after` for trigger-fed Start
+  heartbeats; introduce `parallel_branch_off(trigger, hb)` helper.
+- `HEARTBEAT_PATTERN.md`: explicit anti-pattern code example, citing
+  this incident.
+- `validate_start_heartbeats_are_parallel(wf)` pre-PUT validator —
+  fails any workflow where a `Heartbeat: Start*` node has non-empty
+  outgoing edges (= still serially interposed).
+- Inverse-alerter (`O5ir2Mp0e2AXkUXZ`): fix the same way for
+  consistency. Currently working because all downstream nodes are
+  Postgres queries that don't read from the trigger payload, but
+  cosmetically wrong.
+
+### Architectural lesson
+
+**Documented patterns need lint enforcement, not just docs.** The
+HEARTBEAT_PATTERN.md was correct; the implementation drifted from
+it across 23 workflows. The cost: 5 hours of paying-client
+production breakage that surfaced only because Sub-project C's
+dashboard was looking at the right table at the right time. Without
+the dashboard's "Recent Executions show Running, 0% success" symptom,
+this bug would have persisted for days.
+
+The class of bug is general: any layer in the pipeline (Python
+templating → n8n expression → SQL escaping → Postgres-node behaviour)
+can silently mangle the layer below. Three same-class incidents in
+one Sub-project B (anon-default-grant, n8n =-prefix, Python `{{`
+collapse) all noted in the architectural-notes-for-Phase-4-review
+section earlier in this build log. This is the fourth: n8n Postgres
+executeQuery silently replaces input data.
+
+The remediation pattern (Step 7 of this fix-up) is the same in all
+four cases: encode the rule as code, not prose. Build validators
+that fail-closed on the bad pattern and run them in the fix
+pipeline.
+

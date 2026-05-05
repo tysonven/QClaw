@@ -26,7 +26,7 @@
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2,
       "position": [
-        320,
+        128,
         -608
       ],
       "id": "ec597e4a-2cda-4135-870b-491360c0a1db",
@@ -404,20 +404,20 @@
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.6,
       "position": [
-        520,
+        336,
         -608
       ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "id": "2853cb7b-cf67-4c92-b5bb-81b764b30439",
       "credentials": {
         "postgres": {
           "id": "qGUxEHfEZkZGdAcZ",
           "name": "Supabase Postgres DB"
         }
       },
-      "continueOnFail": true,
-      "retryOnFail": true,
-      "maxTries": 2,
-      "waitBetweenTries": 2000,
-      "id": "2853cb7b-cf67-4c92-b5bb-81b764b30439"
+      "continueOnFail": true
     },
     {
       "parameters": {
@@ -429,26 +429,31 @@
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.6,
       "position": [
-        4010,
+        4016,
         -512
       ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "id": "026559eb-5f30-4eec-8034-f24eacc01169",
       "credentials": {
         "postgres": {
           "id": "qGUxEHfEZkZGdAcZ",
           "name": "Supabase Postgres DB"
         }
       },
-      "continueOnFail": true,
-      "retryOnFail": true,
-      "maxTries": 2,
-      "waitBetweenTries": 2000,
-      "id": "026559eb-5f30-4eec-8034-f24eacc01169"
+      "continueOnFail": true
     }
   ],
   "connections": {
     "Webhook2": {
       "main": [
         [
+          {
+            "node": "Validate WellnessLiving Webhook",
+            "type": "main",
+            "index": 0
+          },
           {
             "node": "Heartbeat: Start",
             "type": "main",
@@ -672,13 +677,7 @@
     },
     "Heartbeat: Start": {
       "main": [
-        [
-          {
-            "node": "Validate WellnessLiving Webhook",
-            "type": "main",
-            "index": 0
-          }
-        ]
+        []
       ]
     },
     "Respond 200": {

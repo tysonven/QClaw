@@ -1206,6 +1206,11 @@
       "main": [
         [
           {
+            "node": "Parse Message",
+            "type": "main",
+            "index": 0
+          },
+          {
             "node": "Heartbeat: Start",
             "type": "main",
             "index": 0
@@ -1588,13 +1593,7 @@
     },
     "Heartbeat: Start": {
       "main": [
-        [
-          {
-            "node": "Parse Message",
-            "type": "main",
-            "index": 0
-          }
-        ]
+        []
       ]
     },
     "Ad Creation Not Authorised": {

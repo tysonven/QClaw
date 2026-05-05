@@ -552,6 +552,11 @@
       "main": [
         [
           {
+            "node": "LinkedIn Feed Monitor",
+            "type": "main",
+            "index": 0
+          },
+          {
             "node": "Heartbeat: Start (Schedule)",
             "type": "main",
             "index": 0
@@ -715,6 +720,11 @@
       "main": [
         [
           {
+            "node": "Webhook Response",
+            "type": "main",
+            "index": 0
+          },
+          {
             "node": "Heartbeat: Start (Webhook)",
             "type": "main",
             "index": 0
@@ -746,24 +756,12 @@
     },
     "Heartbeat: Start (Schedule)": {
       "main": [
-        [
-          {
-            "node": "LinkedIn Feed Monitor",
-            "type": "main",
-            "index": 0
-          }
-        ]
+        []
       ]
     },
     "Heartbeat: Start (Webhook)": {
       "main": [
-        [
-          {
-            "node": "Webhook Response",
-            "type": "main",
-            "index": 0
-          }
-        ]
+        []
       ]
     },
     "Rate Limit Tracker": {

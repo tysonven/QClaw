@@ -759,6 +759,11 @@
       "main": [
         [
           {
+            "node": "Validate Shopify Customer Webhook",
+            "type": "main",
+            "index": 0
+          },
+          {
             "node": "Heartbeat: Start (Customer)",
             "type": "main",
             "index": 0
@@ -769,6 +774,11 @@
     "Shopify Order Webhook1": {
       "main": [
         [
+          {
+            "node": "Validate Shopify Order Webhook",
+            "type": "main",
+            "index": 0
+          },
           {
             "node": "Heartbeat: Start (Order)",
             "type": "main",
@@ -925,24 +935,12 @@
     },
     "Heartbeat: Start (Customer)": {
       "main": [
-        [
-          {
-            "node": "Validate Shopify Customer Webhook",
-            "type": "main",
-            "index": 0
-          }
-        ]
+        []
       ]
     },
     "Heartbeat: Start (Order)": {
       "main": [
-        [
-          {
-            "node": "Validate Shopify Order Webhook",
-            "type": "main",
-            "index": 0
-          }
-        ]
+        []
       ]
     },
     "Respond Customer Success1": {

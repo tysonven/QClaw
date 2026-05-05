@@ -347,6 +347,11 @@
       "main": [
         [
           {
+            "node": "Set Date Range & Accounts",
+            "type": "main",
+            "index": 0
+          },
+          {
             "node": "Heartbeat: Start (Schedule)",
             "type": "main",
             "index": 0
@@ -429,6 +434,16 @@
       "main": [
         [
           {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Set Date Range & Accounts",
+            "type": "main",
+            "index": 0
+          },
+          {
             "node": "Heartbeat: Start (Webhook)",
             "type": "main",
             "index": 0
@@ -449,29 +464,12 @@
     },
     "Heartbeat: Start (Schedule)": {
       "main": [
-        [
-          {
-            "node": "Set Date Range & Accounts",
-            "type": "main",
-            "index": 0
-          }
-        ]
+        []
       ]
     },
     "Heartbeat: Start (Webhook)": {
       "main": [
-        [
-          {
-            "node": "Respond to Webhook",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Set Date Range & Accounts",
-            "type": "main",
-            "index": 0
-          }
-        ]
+        []
       ]
     },
     "Send Report to Tyson (Telegram)": {
