@@ -3335,3 +3335,140 @@ Files added:
   is revoked → 401. Working n8n public-API JWT is in
   `~/.claude/settings.local.json` (exp 2026-05-22 — needs rotation
   inside ~17 days regardless of this work).
+
+---
+
+## 2026-05-05 — Phase 4 Slice 0 Sub-project B Batch 0: inverse-alerter live
+
+Per Sequence Y: Sub-project B replaces per-fire Telegram heartbeats with
+Supabase-RPC heartbeats and adds an inverse "alert when silent" workflow
+that reads `workflow_heartbeats` and pings Telegram. Batch 0 lands the
+alerter so it exists before any of the 22 instrumented workflows go
+quiet during the migration. Cadence-expectation list is hardcoded for
+v1 (16 schedule-driven workflows; webhook-only / Telegram-trigger
+workflows excluded — they have no expected cadence).
+
+Live workflow created in n8n: `O5ir2Mp0e2AXkUXZ` "Workflow Dormancy
+Alerter". 7 nodes: Hourly Schedule → Heartbeat:Start (Postgres) → Get
+Latest Heartbeats (Postgres) → Compute Silent (Code) → Any Silent? (IF)
+→ Telegram Alert (HTTP, true branch only) → Heartbeat:Success
+(Postgres). All three Postgres heartbeat nodes plus Telegram run with
+`continueOnFail: true` per HEARTBEAT_PATTERN.md. Cadence list is
+embedded in the Code node's JS; lift to a `workflow_cadence_expectations`
+table when entries exceed ~30 or change weekly.
+
+Two security/correctness corrections folded into Batch 0:
+
+1. **Closed an anon-access regression introduced by sub-A.** Sub-A's
+   migration ran `revoke all on function record_heartbeat from public`
+   then `grant execute to service_role`, intending only service_role.
+   But Supabase's default privileges (`alter default privileges in
+   schema public grant execute on functions to anon, authenticated,
+   service_role`) silently re-granted EXECUTE to anon. Confirmed live
+   pre-fix: `routine_privileges` showed `anon = EXECUTE`. Combined with
+   `SECURITY DEFINER`, anyone with the anon key could forge heartbeat
+   rows. Fix: explicit `revoke execute ... from anon`. Migration:
+   `n8n-workflows/migrations/2026_05_05_record_heartbeat_grant_authenticated.sql`.
+   Now grantees are exactly: postgres, service_role, authenticated.
+2. **Widened EXECUTE to `authenticated`.** Batch 0 calls
+   `record_heartbeat()` from n8n's Postgres node with the existing
+   `Supabase Postgres DB` credential (`qGUxEHfEZkZGdAcZ`), which
+   connects as a non-`service_role` user. The function is
+   `SECURITY DEFINER`, so widening EXECUTE to `authenticated` does not
+   weaken the security model. Same migration covers both fixes.
+
+**Bug found and fixed mid-flight:** the first scheduled fire at
+2026-05-05 15:00:00 UTC succeeded per n8n executions API (status=success,
+3s runtime), but the row that landed had `workflow_id="=O5ir2Mp0e2AXkUXZ"`
+and `execution_id="=763157"` — leading literal `=` characters. Cause:
+n8n SQL fields are in "fixed" mode unless the *first* character of the
+field is `=`; in fixed mode, `{{...}}` segments are still interpolated
+but a literal `=` adjacent to them is just a `=` character. I had
+written `'={{ $workflow.id }}'::text` thinking the `=` was an
+expression-mode marker; it was a literal. Fix: use
+`'{{ $workflow.id }}'::text` (no leading `=`). Comment in the rebuilt
+JSON documents the gotcha. Bad row was scrubbed before re-test.
+
+After the fix landed via PUT, an accelerated cron (`0 */5 * * * *`,
+every 5 min) was used to verify a clean fire end-to-end without
+waiting an hour, then restored to the canonical hourly cron
+(`0 0 * * * *`).
+
+**Cadence map (16 workflows, embedded in the Compute Silent code node):**
+
+| Workflow ID            | Name                                  | Expected | Slack |
+|------------------------|---------------------------------------|---------:|------:|
+| 3YahxqOguET3pifj       | Trading - Market Scanner              |    4 h   |    2× |
+| tnvXFYvODL1PrhJa       | Crete - Content Generator             |    1 d   |    2× |
+| 9kTWhh9PlxMpyMlp       | Crete - Scheduled Publisher           |    1 h   |    2× |
+| dHceOMijUOcnEowO       | GHL Marketing: Scheduled Publisher    |   15 m   |    2× |
+| Awo65rdSe5BvDHtC       | GHL Marketing: Content Generator      |    3 d   |    2× |
+| jRiiOsWneQAtfVPD       | GHL Marketing: Weekly Report          |    7 d   |    2× |
+| kJ2EdkOeEAwVbMwU       | Infographic Social Media V2           |    3 d   |    2× |
+| TikJkWLzpreI6iTa       | Morning Light WL→HL                   |    1 h   |    2× |
+| UYA0JppH7eqyI7fQ       | Trading - Position Monitor            |   15 m   |    2× |
+| lf955LDteJ512RQi       | Meta Ads Optimisation Agent           |    1 d   |    2× |
+| 44g7cbGz5osQ1pcBVhIoz  | Instagram Trial Reels Auto-Publisher  |    5 h   |    2× |
+| yPt090tPv4FJtwAZ       | LinkedIn analytics and monitoring     |    1 h   |    2× |
+| VMqrrhecG2hrpn4C       | LinkedIn Engagement Automation        |    4 h   |    2× |
+| vjj2uBIPc07FpIxx       | Trading - Weekly Analyst (DORMANT)    |    7 d   |    2× |
+| cP5TjJ3DFle6r6FC       | Instagram Token Expiry Monitor (DORM) |    7 d   |    2× |
+| 3XGcnolBQ7AXMubO       | GHL Changelog Emails (DORMANT)        |   14 d   |    2× |
+
+Excluded (no expected cadence): Crete Content Publish, Content Studio
+Pipeline, GHL Marketing Publisher, GHL Approval Handler, Gutful
+Shopify→FOS V3, Bot Router. They fire on demand and are observed only
+through their heartbeats (when present) — they're alerted via "never
+heartbeated since instrumentation" if needed; for now they're outside
+the cadence checker.
+
+**Expected initial behaviour:** until Batches 1–5 instrument the 16
+workflows, the alerter will fire hourly and Tyson's chat (id
+`1375806243`) will receive an alert listing all 16 as
+`reason: never_heartbeated`. This is correct behaviour and proves the
+alerter works. Noise self-resolves as each batch lands.
+
+**Files added:**
+
+- `n8n-workflows/migrations/2026_05_05_record_heartbeat_grant_authenticated.sql`
+  — closes anon-access regression + grants authenticated EXECUTE.
+  Applied live via Supabase MCP `apply_migration`.
+- `n8n-workflows/O5ir2Mp0e2AXkUXZ-workflow-dormancy-alerter.json` —
+  canonical workflow JSON snapshot per the Sub-project-B file naming
+  convention `<id>-<slug>.json`.
+
+**Process notes:**
+
+- File naming for Batch 0+ is hybrid `<id>-<slug>.json` flat under
+  `n8n-workflows/` per Tyson's choice. Existing name-only files
+  (`trading-market-scanner.json` etc.) stay until they get rewritten
+  in their respective batches.
+- Pre-flight rule confirmed: `git fetch origin && git status` against
+  origin first. Batch 0 pre-flight was 0/0 ahead/behind; clean push.
+- Memory-noted constraint applied: PUT body to n8n API limited to
+  `{name, nodes, connections, settings}` only (rejects extra fields
+  with 400; observed during dev by `apply_migration`'s naming).
+
+**Out of scope (deferred):**
+
+- Per-workflow alert cooldown (v1 spams hourly until silence resolves).
+  Acceptable while the 16 workflows are being instrumented; revisit
+  after Batch 5 if still noisy.
+- Lifting the cadence list from JS-hardcoded to
+  `workflow_cadence_expectations` table — defer until ~30 entries
+  or weekly churn.
+- Morning Light's 14-day retention partition — captured separately
+  (see work-list item).
+
+**Side notes:**
+
+- Telegram alert delivered to chat `1375806243` per existing Crete
+  pattern. If a different ops channel is preferred, swap the
+  hardcoded `chat_id` in the alerter's Telegram Alert node JSON.
+- Existing Crete-cluster Telegram heartbeats (Crete Gen / Pub / Sched
+  / Trading Market Scanner) currently have `continueOnFail=null`
+  (Crete) or `=true` (Scanner). When Batch 1 replaces them with
+  Postgres heartbeats per HEARTBEAT_PATTERN.md, the latent Crete
+  bug (heartbeat failure could fail the workflow) is fixed
+  automatically.
+

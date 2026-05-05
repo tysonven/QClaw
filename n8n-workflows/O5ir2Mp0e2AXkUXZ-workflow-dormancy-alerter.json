@@ -1,0 +1,246 @@
+{
+  "id": "O5ir2Mp0e2AXkUXZ",
+  "name": "Workflow Dormancy Alerter",
+  "description": null,
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 0 * * * *"
+            }
+          ]
+        }
+      },
+      "name": "Hourly Schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        240,
+        300
+      ],
+      "id": "1014217d-5bd7-4ea0-9461-250ea72a1fa6"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select public.record_heartbeat('{{ $workflow.id }}'::text, 'started'::text, 'Workflow Dormancy Alerter'::text, '{{ $execution.id }}'::text);",
+        "options": {}
+      },
+      "name": "Heartbeat: Start",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        460,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "qGUxEHfEZkZGdAcZ",
+          "name": "Supabase Postgres DB"
+        }
+      },
+      "continueOnFail": true,
+      "id": "df58274e-776d-4327-b4b6-817ee36e22f3"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select workflow_id, max(workflow_name) as workflow_name, max(started_at) as last_seen, extract(epoch from (now() - max(started_at)))::bigint as silence_seconds from public.workflow_heartbeats group by workflow_id;",
+        "options": {}
+      },
+      "name": "Get Latest Heartbeats",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        680,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "qGUxEHfEZkZGdAcZ",
+          "name": "Supabase Postgres DB"
+        }
+      },
+      "id": "d0713af0-390e-4779-82f1-ef934a6cccea"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Workflow Dormancy Alerter \u2014 compute which expected workflows have gone silent\n// past their cadence threshold.\n//\n// Input: rows from \"Get Latest Heartbeats\" Postgres node, each\n//   { workflow_id, workflow_name, last_seen, silence_seconds }\n// Output: single summary item\n//   { silent: [...], silent_count, total_expected, checked_at }\n//\n// Cadence list is hardcoded for v1 (16 workflows). When this exceeds ~30 entries\n// or starts changing weekly, lift it to a workflow_cadence_expectations table\n// and replace this constant with a SELECT from the Get Latest Heartbeats node's\n// preceding query.\n\nconst expectations = [\n  {\n    \"workflow_id\": \"3YahxqOguET3pifj\",\n    \"workflow_name\": \"Trading - Market Scanner\",\n    \"expected_seconds\": 14400,\n    \"slack\": 2\n  },\n  {\n    \"workflow_id\": \"tnvXFYvODL1PrhJa\",\n    \"workflow_name\": \"Crete - Content Generator\",\n    \"expected_seconds\": 86400,\n    \"slack\": 2\n  },\n  {\n    \"workflow_id\": \"9kTWhh9PlxMpyMlp\",\n    \"workflow_name\": \"Crete - Scheduled Publisher\",\n    \"expected_seconds\": 3600,\n    \"slack\": 2\n  },\n  {\n    \"workflow_id\": \"dHceOMijUOcnEowO\",\n    \"workflow_name\": \"GHL Marketing: Scheduled Publisher\",\n    \"expected_seconds\": 900,\n    \"slack\": 2\n  },\n  {\n    \"workflow_id\": \"Awo65rdSe5BvDHtC\",\n    \"workflow_name\": \"GHL Marketing: Content Generator\",\n    \"expected_seconds\": 259200,\n    \"slack\": 2\n  },\n  {\n    \"workflow_id\": \"jRiiOsWneQAtfVPD\",\n    \"workflow_name\": \"GHL Marketing: Weekly Report\",\n    \"expected_seconds\": 604800,\n    \"slack\": 2\n  },\n  {\n    \"workflow_id\": \"kJ2EdkOeEAwVbMwU\",\n    \"workflow_name\": \"Infographic Social Media V2\",\n    \"expected_seconds\": 259200,\n    \"slack\": 2\n  },\n  {\n    \"workflow_id\": \"TikJkWLzpreI6iTa\",\n    \"workflow_name\": \"Morning Light WL->HL\",\n    \"expected_seconds\": 3600,\n    \"slack\": 2\n  },\n  {\n    \"workflow_id\": \"UYA0JppH7eqyI7fQ\",\n    \"workflow_name\": \"Trading - Position Monitor\",\n    \"expected_seconds\": 900,\n    \"slack\": 2\n  },\n  {\n    \"workflow_id\": \"lf955LDteJ512RQi\",\n    \"workflow_name\": \"Meta Ads Optimisation Agent\",\n    \"expected_seconds\": 86400,\n    \"slack\": 2\n  },\n  {\n    \"workflow_id\": \"44g7cbGz5osQ1pcBVhIoz\",\n    \"workflow_name\": \"Instagram Trial Reels Auto-Publisher\",\n    \"expected_seconds\": 18000,\n    \"slack\": 2\n  },\n  {\n    \"workflow_id\": \"yPt090tPv4FJtwAZ\",\n    \"workflow_name\": \"LinkedIn analytics and monitoring\",\n    \"expected_seconds\": 3600,\n    \"slack\": 2\n  },\n  {\n    \"workflow_id\": \"VMqrrhecG2hrpn4C\",\n    \"workflow_name\": \"LinkedIn Engagement Automation\",\n    \"expected_seconds\": 14400,\n    \"slack\": 2\n  },\n  {\n    \"workflow_id\": \"vjj2uBIPc07FpIxx\",\n    \"workflow_name\": \"Trading - Weekly Analyst\",\n    \"expected_seconds\": 604800,\n    \"slack\": 2\n  },\n  {\n    \"workflow_id\": \"cP5TjJ3DFle6r6FC\",\n    \"workflow_name\": \"Instagram Token Expiry Monitor\",\n    \"expected_seconds\": 604800,\n    \"slack\": 2\n  },\n  {\n    \"workflow_id\": \"3XGcnolBQ7AXMubO\",\n    \"workflow_name\": \"GHL Changelog Emails\",\n    \"expected_seconds\": 1209600,\n    \"slack\": 2\n  }\n];\n\nconst heartbeats = $input.all().map(i => i.json);\nconst heartMap = Object.fromEntries(heartbeats.map(h => [h.workflow_id, h]));\n\nconst silent = expectations\n  .map(e => {\n    const h = heartMap[e.workflow_id];\n    if (!h) {\n      return {\n        workflow_id: e.workflow_id,\n        workflow_name: e.workflow_name,\n        expected_seconds: e.expected_seconds,\n        last_seen: null,\n        silence_seconds: null,\n        reason: \"never_heartbeated\",\n      };\n    }\n    const silenceSec = parseInt(h.silence_seconds, 10);\n    const threshold = e.expected_seconds * (e.slack || 2);\n    if (silenceSec > threshold) {\n      return {\n        workflow_id: e.workflow_id,\n        workflow_name: e.workflow_name || h.workflow_name,\n        expected_seconds: e.expected_seconds,\n        last_seen: h.last_seen,\n        silence_seconds: silenceSec,\n        reason: \"silent_past_cadence\",\n      };\n    }\n    return null;\n  })\n  .filter(Boolean);\n\nreturn [{\n  json: {\n    silent,\n    silent_count: silent.length,\n    total_expected: expectations.length,\n    checked_at: new Date().toISOString(),\n  },\n}];"
+      },
+      "name": "Compute Silent",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        900,
+        300
+      ],
+      "id": "c72e52c5-130d-4797-83a1-d895f0a33a12"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "silent-check-1",
+              "leftValue": "={{ $json.silent_count }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "name": "Any Silent?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1120,
+        300
+      ],
+      "id": "00f4c638-af27-492c-9652-0e22f4b37ade"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendMessage",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  chat_id: 1375806243,\n  parse_mode: \"Markdown\",\n  text:\n    \"*Workflow Dormancy Alert*\\n\" +\n    $json.silent_count + \" workflow(s) silent past expected cadence (checked \" + $json.checked_at.slice(0,16).replace(\"T\",\" \") + \" UTC):\\n\\n\" +\n    $json.silent.map(function(s) {\n      var lastSeen = s.last_seen ? new Date(s.last_seen).toISOString().slice(0,16).replace(\"T\",\" \") + \" UTC\" : \"never\";\n      var expSec = s.expected_seconds;\n      var expHuman = expSec < 3600 ? Math.round(expSec/60) + \"m\" : expSec < 86400 ? Math.round(expSec/3600) + \"h\" : Math.round(expSec/86400) + \"d\";\n      var silenceHuman = s.silence_seconds == null ? \"n/a\" : (s.silence_seconds < 3600 ? Math.round(s.silence_seconds/60) + \"m\" : s.silence_seconds < 86400 ? (s.silence_seconds/3600).toFixed(1) + \"h\" : (s.silence_seconds/86400).toFixed(1) + \"d\");\n      return \"\u2022 `\" + s.workflow_id + \"` \" + (s.workflow_name || \"\") + \"\\n   last: \" + lastSeen + \" (silence: \" + silenceHuman + \", expected every \" + expHuman + \")\";\n    }).join(\"\\n\\n\")\n}) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "name": "Telegram Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1340,
+        200
+      ],
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "id": "79c6c404-07f5-499f-85e1-5a3a047066ff"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select public.record_heartbeat('{{ $workflow.id }}'::text, 'success'::text, 'Workflow Dormancy Alerter'::text, '{{ $execution.id }}'::text, jsonb_build_object('silent_count', {{ $('Compute Silent').item.json.silent_count }}, 'total_expected', {{ $('Compute Silent').item.json.total_expected }}));",
+        "options": {}
+      },
+      "name": "Heartbeat: Success",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1560,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "qGUxEHfEZkZGdAcZ",
+          "name": "Supabase Postgres DB"
+        }
+      },
+      "continueOnFail": true,
+      "id": "e3760386-0b9b-41d0-9dbd-5fb12314b337"
+    }
+  ],
+  "connections": {
+    "Hourly Schedule": {
+      "main": [
+        [
+          {
+            "node": "Heartbeat: Start",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Heartbeat: Start": {
+      "main": [
+        [
+          {
+            "node": "Get Latest Heartbeats",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Latest Heartbeats": {
+      "main": [
+        [
+          {
+            "node": "Compute Silent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compute Silent": {
+      "main": [
+        [
+          {
+            "node": "Any Silent?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any Silent?": {
+      "main": [
+        [
+          {
+            "node": "Telegram Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Heartbeat: Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram Alert": {
+      "main": [
+        [
+          {
+            "node": "Heartbeat: Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "all",
+    "saveDataErrorExecution": "all",
+    "saveExecutionProgress": false,
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false
+  }
+}
