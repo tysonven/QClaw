@@ -3942,3 +3942,93 @@ cadence.
 heartbeat instrumentation. A summary commit closing out Sub-project B
 follows next.
 
+---
+
+## 2026-05-05 — Phase 4 Slice 0 Sub-project B: closeout summary
+
+Heartbeat instrumentation rolled across all 22 target workflows over 5
+batches. Bot Router dormancy recovery verified live in-session
+(Telegram message at 18:02:12 UTC → heartbeat row landed with
+`workflow_id=lu39mAN7epBRK3Kw, execution_id=763228, status=started`).
+
+| Batch | Workflows | Heartbeats | Notable |
+|---|---|---|---|
+| 0 | Inverse-alerter (Workflow Dormancy Alerter) | 2 | Plus closed an anon-access regression on `record_heartbeat()` |
+| 1 | Trading Market Scanner + 3 Crete | 10 | Replaced existing Telegram-heartbeats; fixed Crete `continueOnFail=null`; removed orphan dead-code in crete-gen |
+| 2 | 5 GHL Marketing | 12 | Multi-trigger pattern (Approval Handler 2 triggers / 4 heartbeats); shared helpers extracted to `b_common.py` |
+| 3 | 5 mission-critical incl. Morning Light | 17 | Append-after-Respond pattern; Morning Light safety-confirmed; settings whitelist |
+| 4 | Meta Ads + IG Reels + 2 LinkedIn | 14 | Fan-in heartbeat pattern; distinct success state for explicit no-work paths |
+| 5 | 4 dormant recoveries | 8 | Deactivate→reactivate cycle; Bot Router verified live |
+| **Total** | **22 + 1 alerter** | **63** | |
+
+**Patterns established (reusable across future workflows):**
+
+1. **Postgres node + `record_heartbeat()` RPC** as the default
+   transport. HTTP/PostgREST is the alternative for workflows without
+   the `Supabase Postgres DB` credential.
+2. **Append-after-`Respond`** for webhook-trigger workflows. Webhook
+   caller latency unchanged; heartbeat fires while caller is happy.
+3. **Fan-in heartbeats** for equivalent terminals (one node, multiple
+   incoming edges). Saves nodes when "did the run complete" is the
+   only question.
+4. **Distinct heartbeats with metadata** for explicit no-work paths
+   (e.g. IG Reels `No Pending Posts`). Concrete answer to work-list
+   item 27.
+5. **Two starts per multi-trigger workflow** with distinct names
+   (e.g. `Heartbeat: Start (Telegram)` / `Heartbeat: Start (Dashboard)`).
+   Each trigger fires its own execution; idempotency partition is
+   correct via execution_id.
+6. **Surgical `replace_node()`** when a Telegram-heartbeat sat
+   mid-graph between predecessor and Respond. Inherits both incoming
+   and outgoing edges so nothing orphans.
+
+**Process improvements landed:**
+
+- `b_common.py` shared helpers (heartbeat_node, _q, replace_node,
+  insert_after, append_after, validators, trim_for_put). v0.5 of the
+  typed-SQL-generator design from Batch 1 layer-collision review.
+- Pre-PUT validators (`validate_no_orphans`,
+  `validate_no_brace_collapse`) catch graph + templating bugs before
+  they reach n8n.
+- `_ALLOWED_SETTINGS_KEYS` whitelist — n8n's PUT API rejects unknown
+  settings keys (`additionalProperties: false`); we filter to known-
+  good keys to avoid per-workflow PUT retries.
+- `git fetch origin && git status` against origin pre-flight rule
+  applied every batch — clean push, no rebase conflicts since Batch 0.
+
+**Bugs fixed in passing:**
+
+- Crete cluster's `continueOnFail=null` on Telegram-heartbeat nodes
+  (Batch 1) — Telegram outage could fail the workflow. New heartbeats
+  are `continueOnFail=true`.
+- Crete Content Generator's `Heartbeat` node was orphaned dead code
+  (no inbound, no outbound) — never executed. Removed in Batch 1.
+
+**Same-class bugs hit and learned from (now in HEARTBEAT_PATTERN.md
+guardrails + the architectural notes for Phase 4 review section):**
+
+- Supabase default-privilege grant overrode `revoke from public`
+  (Batch 0).
+- n8n `=`-prefix two-mode confusion in fixed-mode SQL field (Batch 0).
+- Python `{{` brace-escape collapse in templated SQL (Batch 1).
+
+**Verification status (snapshot at commit time):**
+
+| Workflow | Verified live |
+|---|---|
+| Workflow Dormancy Alerter | ✓ hourly fire 17:00 UTC |
+| Crete Scheduled Publisher | ✓ heartbeat row 17:00 UTC |
+| GHL Marketing Scheduled Publisher | ✓ started rows 17:00 + 17:15 UTC (empty-input pattern: success skipped on no-due-drafts runs) |
+| Trading Position Monitor | ✓ started row 17:15 UTC (empty-input pattern: no open positions) |
+| Morning Light WL→HL | ✓ heartbeat path verified end-to-end via test POST (cleaned up) |
+| Bot Router | ✓ Telegram trigger recovered, heartbeat 18:02:12 UTC |
+
+Awaiting natural fires for the remaining 16 workflows. Inverse-alerter
+will report dormancy if any go silent past 2× cadence.
+
+**Sub-project B is COMPLETE.** Proceeding to Sub-project C (Kayla
+iframe migration: repoint `n8n-dashboard-one.vercel.app` from the n8n
+executions API onto the `workflow_heartbeats` Supabase table). Morning
+Light `saveDataSuccessExecution: 'none'` flip remains held until C
+lands so the embedded GHL iframe doesn't visibly break.
+
