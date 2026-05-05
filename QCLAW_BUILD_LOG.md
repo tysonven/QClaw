@@ -4476,3 +4476,128 @@ resolved through this Slice 0 work — Charlie 2.0 reads
 
 End of session 2026-05-05.
 
+
+---
+
+## 2026-05-05 — Content Studio EP67 second live run; n8n stop-flush gotcha; LinkedIn URL bug isolated
+
+Second end-to-end attempt at the `Qf39NEOEgz2W0uls` Content Studio Pipeline workflow, seven days after EP66. Same dashboard upload-route bypass: file scp'd to qclaw `/tmp`, uploaded directly to R2 via `scripts/upload-to-r2-multipart.mjs`, webhook fired manually. Workflow ran cleanly through Buzzsprout / AssemblyAI / WordPress before deadlocking at the same FFmpeg exit-8 step that killed EP66. Restart-based stop attempt revealed a new gotcha: n8n v2.4.8's shutdown handler does NOT flush in-memory `runData` on `docker restart`, so the "harvest before stop" plan from the EP66 close-out is unworkable on this version.
+
+### Recon (Phase 1)
+
+- R2 multipart-uploads on `emma-content-studio`: 0 orphans (clean from EP66 wrap).
+- `scripts/upload-to-r2-multipart.mjs`: present (2.3K), `4246b6e` in HEAD ancestry, no working-tree drift.
+- `clipper-worker` (root PM2): online, pid 2498141, 5D uptime; `/health` returned `{"status":"ok","service":"clipper"}`.
+- n8n container `TELEGRAM_BOT_TOKEN` sha256 prefix `5520af11…` (matches qclaw — EP66 fix held).
+- ssh-from-qclaw-to-n8n hostname `n8n` doesn't resolve from qclaw shell; needed direct laptop → n8n SSH for the token check.
+- Local file naming: laptop file is `theflowlane-ep67-how_to_beat_imposter_syndrome.mp4.mp4` (double `.mp4` extension). scp renamed in transit so qclaw `/tmp` and the R2 key both end in single `.mp4`.
+
+### Upload + webhook fire
+
+R2 multipart upload via existing script (1.5 GB, 96 parts).
+R2 public URL: `https://pub-70c436931e9e4611a135e7405c596611.r2.dev/episodes/theflowlane-ep67-how_to_beat_imposter_syndrome.mp4`
+
+Webhook fired 2026-05-05T19:39:32Z from qclaw with `chatId: 1375806243`, `r2FileKey: episodes/theflowlane-ep67-how_to_beat_imposter_syndrome.mp4`, `episodeTitle: The Flow Lane - How to beat imposter syndrome`, full UTM-tagged description. Same payload shape as EP66.
+
+### Pipeline progress
+
+n8n execution `763291` started 2026-05-05T19:39:32.924Z. Stages cleared:
+
+```
+T+0s     Webhook Trigger
+T+2s     Create Job Record    — content_studio_jobs db4c6494-1ad2-46ac-aef4-a82b7ef9682f
+T+~2s    Notify Start (Telegram)             — EP66 token fix still in effect
+T<100s   Generate R2 Presigned URL
+T<100s   Upload to Buzzsprout                — episode id 19130665, draft
+T<100s   Save Buzzsprout ID
+T~100s   Send to AssemblyAI / Wait / Poll    — transcript captured
+T+166s   Generate Blog Post / Convert to HTML / Post to WordPress
+                                              — post id 679, draft
+T+166s   Save WordPress URL
+T+198s   Generate Clips                      — clipper job
+                                              3ae4d476-172f-42be-924c-007dbb826564
+                                              status=error 19:43:50Z
+```
+
+Then identical FFmpeg deadlock to EP66.
+
+### Clipper failure — verbatim error
+
+`clip_jobs.error_message` for `3ae4d476-172f-42be-924c-007dbb826564`:
+
+```
+Command '['ffmpeg', '-y', '-threads', '1', '-i', '/tmp/3ae4d476-172f-42be-924c-007dbb826564_clip_0.mp4', '-vf', 'crop=ih*9/16:ih:max(0, min(iw-ih*9/16, 0.3904*iw - ih*9/16/2)):0', '-preset', 'ultrafast', '-c:a', 'copy', '/tmp/3ae4d476-172f-42be-924c-007dbb826564_vertical_0.mp4']' returned non-zero exit status 8.
+```
+
+Same root cause as EP66 (`-c:a copy` + this source's audio codec → "Conversion failed" on the first vertical-crop pass). Pipeline entered the deadlock loop — clipper-worker logs show `GET /clip/3ae4d476…` every ~11s with `status=error`, n8n's `Clip Done?` IF only branches on `complete` so it loops on `Wait 10s Retry` forever.
+
+### Stop attempt — runData NOT flushed on n8n restart
+
+EP66 close-out assumed the n8n editor would show in-flight node outputs for harvest before stop. That assumption is wrong on this n8n version: editor only shows outputs for finished executions. Pivoted to API harvest.
+
+API harvest also fails — `GET /api/v1/executions/763291?includeData=true` returns 38 KB skeleton with `resultData.runData = {}` for the running execution. Postgres `execution_data` row for execution 763291 is 3052 bytes total (just the Webhook Trigger seed) — n8n does not checkpoint per-node runData mid-flight.
+
+Public API on n8n v2.4.8 has no `/executions/:id/stop` route (returned `{"message":"not found"}`); openapi.yml only lists GET, DELETE, retry. Internal `/rest/executions/:id/stop` requires session auth (401 with API key, 401 from inside the container).
+
+Verified only one running execution on the entire instance (763291) before restarting — no collateral damage. PM2 services on qclaw all idle. No recent Supabase writes. Snapshots taken pre-restart:
+
+```
+content_studio_jobs db4c6494…  /tmp/ep67-presnap-csj-20260505T200350Z.json
+clip_jobs           3ae4d476…  /tmp/ep67-presnap-clip-20260505T200350Z.json
+```
+
+`docker restart n8n-project-n8n-1` issued 2026-05-05T20:04:04Z; container `starting → healthy` in 18s. Re-fetched execution: status flipped `running → crashed`, `stoppedAt 2026-05-05T20:04:27.688Z`. **But `resultData.runData` still empty `{}`**. The shutdown handler did not flush in-memory state.
+
+Substack draft (Haiku-generated, runtime-only) is lost. clipper-worker poll delta = 0 over 25s post-restart — confirmed worker truly dead.
+
+Post-restart Supabase snapshots byte-identical to pre-restart:
+
+```
+content_studio_jobs  sha256 0a4faf62e00d1cbf36e6dd64b473c647356222c1d174b7ef3db15772550dbb28
+clip_jobs            sha256 51fc90b186cae44740c681419a7b0a8fa1655d259994b471bb9bbd865240cf5c
+```
+
+content_studio_jobs row preserved per request — Workflow B test input for next session.
+
+### Buzzsprout URL bug isolated from workflow JSON
+
+Without runData, harvested by reading `n8n-workflows/Qf39NEOEgz2W0uls-content-studio-pipeline.json` directly. Three downstream nodes consume Buzzsprout output, two correctly and one with the bug:
+
+| Node | Reference | URL type |
+|---|---|---|
+| Generate LinkedIn Post | `$('Upload to Buzzsprout').first().json.audio_url` | Raw .mp3 — BUG |
+| Generate Substack Draft | `$('Upload to Buzzsprout').first().json.url` | Episode page — correct |
+| Generate Blog Post | `$('Upload to Buzzsprout').first().json.url` | Episode page — correct |
+
+Generate LinkedIn Post body excerpt (verbatim):
+
+```
+'\n\nEnd the post with exactly this line:\n🎧 Listen here: ' + ($('Upload to Buzzsprout').first().json.audio_url || '')
+```
+
+So LinkedIn posts say "Listen here: https://…buzzsprout.com/…mp3" — clicking gives a raw audio download instead of the episode page. Fix: change `audio_url` → `url` in that node's body. Single-character-class change, no other refactor needed.
+
+### Persisted vs lost
+
+Persisted (survives the deadlock):
+
+- Buzzsprout draft 19130665, unpublished
+- WordPress post 679, draft on flowstatescollective.com (separate Sonnet 4.6 generation — not the same text as the lost Substack draft)
+- AssemblyAI transcript (embedded in `clip_jobs.transcript` array)
+- LinkedIn post via Blotato — parallel branch reaches Blotato before clipper deadlock; verify on Emma's LinkedIn / Blotato dashboard
+- YouTube unlisted upload — same parallel branch; verify on Emma's YouTube → Content → Unlisted
+
+Lost:
+
+- Substack draft text — Haiku-generated, only existed in n8n runtime memory, did not survive container restart
+
+### Phase-1 finding correction
+
+R2 orphan check via `source /root/.quantumclaw/.env` bombed on `line 11: YlzT: command not found` — one of the secrets contains a bare `$` that the shell tried to interpolate. Pivoted to a node script that parses `.env` without shell expansion, run from `/root/QClaw/scripts/_tmp-list-orphans.mjs` so `@aws-sdk/client-s3` resolves; cleaned up after. ESM modules don't honour `cwd` for resolution — must live inside `/root/QClaw/` or a child dir.
+
+### P0 update — next session
+
+1. **FFmpeg exit 8 fix** — re-encode audio (`-c:a aac -b:a 128k`) instead of `-c:a copy` in clipper's vertical-crop ffmpeg invocation. Same root cause across EP66 + EP67 confirms it's a generic clipper bug, not source-specific.
+2. **Decoupled Workflow A/B build** — reuse `content_studio_jobs db4c6494-1ad2-46ac-aef4-a82b7ef9682f` as Workflow B test input. Buzzsprout draft, WordPress draft, transcript, clipper error all already populated.
+3. **Generate LinkedIn Post audio_url → url** — single-node body edit in `n8n-workflows/Qf39NEOEgz2W0uls-content-studio-pipeline.json`. PUT body limited to `{name,nodes,connections,settings}`.
+4. **n8n stop-flush gotcha** — n8n v2.4.8 `docker restart` does not flush in-memory runData. Future Content Studio P0 design must not depend on harvesting mid-flight AI text after a forced stop. Either harvest from destination systems or make the AI nodes write their output to Supabase as soon as they complete (defensive checkpointing).
