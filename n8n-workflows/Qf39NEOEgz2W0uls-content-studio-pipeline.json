@@ -458,7 +458,7 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 1024, messages: [{ role: 'user', content: 'You are Emma Maidment writing a LinkedIn post in your own voice. Write in first person as Emma. Professional but warm and direct. Use I, my, I am. Max 200 words.\\n\\nIMPORTANT FORMATTING RULES:\\n- Write in plain text only. No markdown, no asterisks, no bold formatting.\\n- No bullet points with dashes or asterisks. Use line breaks between points.\\n- No hashtags.\\n- Never use em dashes. Use commas, colons, or rewrite sentences instead.\\n- Never write about Emma in third person.\\n\\nEpisode title: ' + $('Generate R2 Presigned URL').first().json.episodeTitle + '\\nTranscript summary: ' + ($('Poll AssemblyAI').first().json.text || '').substring(0, 500) + '\\n\\nFormat: Hook line, then 3 key insights as short punchy lines separated by line breaks, then CTA to listen. Max 200 words.\\n\\nEnd the post with exactly this line:\\n\ud83c\udfa7 Listen here: ' + ($('Upload to Buzzsprout').first().json.audio_url || '') }] }) }}",
+        "jsonBody": "={{ JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 1024, messages: [{ role: 'user', content: 'You are Emma Maidment writing a LinkedIn post in your own voice. Write in first person as Emma. Professional but warm and direct. Use I, my, I am. Max 200 words.\\n\\nIMPORTANT FORMATTING RULES:\\n- Write in plain text only. No markdown, no asterisks, no bold formatting.\\n- No bullet points with dashes or asterisks. Use line breaks between points.\\n- No hashtags.\\n- Never use em dashes. Use commas, colons, or rewrite sentences instead.\\n- Never write about Emma in third person.\\n\\nEpisode title: ' + $('Generate R2 Presigned URL').first().json.episodeTitle + '\\nTranscript summary: ' + ($('Poll AssemblyAI').first().json.text || '').substring(0, 500) + '\\n\\nFormat: Hook line, then 3 key insights as short punchy lines separated by line breaks, then CTA to listen. Max 200 words.\\n\\nEnd the post with exactly this line:\\n\ud83c\udfa7 Listen here: ' + ($('Upload to Buzzsprout').first().json.url || '') }] }) }}",
         "options": {}
       },
       "id": "generate-linkedin",
@@ -495,7 +495,7 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ status: 'a_complete', substack_draft: $('Generate Substack Draft').first().json.content[0].text, linkedin_post: $('Generate LinkedIn Post').first().json.content[0].text, transcript_text: $('Poll AssemblyAI').first().json.text.substring(0, 10000), blog_post: $('Generate Blog Post').first().json.content[0].text, linkedin_post_url: 'https://www.linkedin.com/feed/update/' + ($('Post to LinkedIn').first().json.id || ''), youtube_url: 'https://youtu.be/' + ($('Upload to YouTube').first().json.id || '') }) }}",
+        "jsonBody": "={{ JSON.stringify({ status: 'a_complete', substack_draft: $('Generate Substack Draft').first().json.content[0].text, linkedin_post: $('Generate LinkedIn Post').first().json.content[0].text, transcript_text: $('Poll AssemblyAI').first().json.text.substring(0, 10000), blog_post: $('Generate Blog Post').first().json.content[0].text, youtube_url: 'https://youtu.be/' + ($('Upload to YouTube').first().json.id || '') }) }}",
         "options": {}
       },
       "id": "update-job-record",
@@ -521,7 +521,7 @@
         "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendMessage",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ chat_id: $('Generate R2 Presigned URL').first().json.chatId || 1375806243, text: '\\u2705 Workflow A Complete \\u2014 ' + $('Generate R2 Presigned URL').first().json.episodeTitle + '\\n\\nReady:\\n' + '\\ud83c\\udf99\\ufe0f Buzzsprout: Episode uploaded (draft)\\n' + '\\ud83d\\udcdd Blog post: Published to WordPress\\n' + '\\ud83d\\udce7 Substack: Draft ready\\n' + '\\u2705 LinkedIn: Posted \\u2014 https://www.linkedin.com/feed/update/' + ($('Post to LinkedIn').first().json.id || '') + '\\n' + '\\ud83c\\udfac YouTube: Unlisted \\u2014 https://youtu.be/' + ($('Upload to YouTube').first().json.id || '') + '\\n\\n' + '\\u2702\\ufe0f Clipper: queued (Workflow B will notify on completion)', parse_mode: 'HTML' }) }}",
+        "jsonBody": "={{ JSON.stringify({ chat_id: $('Generate R2 Presigned URL').first().json.chatId || 1375806243, text: '\\u2705 Workflow A Complete \\u2014 ' + $('Generate R2 Presigned URL').first().json.episodeTitle + '\\n\\nReady:\\n' + '\\ud83c\\udf99\\ufe0f Buzzsprout: Episode uploaded (draft)\\n' + '\\ud83d\\udcdd Blog post: Published to WordPress\\n' + '\\ud83d\\udce7 Substack: Draft ready\\n' + '\\ud83d\\udce7 LinkedIn: Draft ready (deferred until Buzzsprout publish \\u2014 Workflow C)\\n' + '\\ud83c\\udfac YouTube: Unlisted \\u2014 https://youtu.be/' + ($('Upload to YouTube').first().json.id || '') + '\\n\\n' + '\\u2702\\ufe0f Clipper: queued (Workflow B will notify on completion)', parse_mode: 'HTML' }) }}",
         "options": {}
       },
       "id": "notify-complete",
@@ -808,7 +808,8 @@
       "position": [
         4480,
         288
-      ]
+      ],
+      "disabled": true
     },
     {
       "parameters": {
@@ -836,7 +837,8 @@
           "id": "Bs2TEAOA9mVKfcR3",
           "name": "Blotato account"
         }
-      }
+      },
+      "disabled": true
     },
     {
       "parameters": {
@@ -1059,6 +1061,42 @@
       "retryOnFail": true,
       "maxTries": 2,
       "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "=https://fdabygmromuqtysitodp.supabase.co/rest/v1/content_studio_jobs?id=eq.{{ $('Generate R2 Presigned URL').first().json.jobId }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ linkedin_post: $('Generate LinkedIn Post').first().json.content[0].text }) }}",
+        "options": {}
+      },
+      "id": "patch-linkedin-text",
+      "name": "Patch: LinkedIn Text",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        4480,
+        400
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "Nd2uuX5t9KEwbQPv",
+          "name": "Supabase FSC"
+        }
+      },
+      "continueOnFail": true
     }
   ],
   "connections": {
@@ -1243,7 +1281,12 @@
       "main": [
         [
           {
-            "node": "Build LinkedIn Payload",
+            "node": "YouTube Init Upload",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Patch: LinkedIn Text",
             "type": "main",
             "index": 0
           }
@@ -1312,13 +1355,7 @@
     },
     "Post to LinkedIn": {
       "main": [
-        [
-          {
-            "node": "YouTube Init Upload",
-            "type": "main",
-            "index": 0
-          }
-        ]
+        []
       ]
     },
     "YouTube Init Upload": {
@@ -1518,6 +1555,11 @@
             "index": 1
           }
         ]
+      ]
+    },
+    "Patch: LinkedIn Text": {
+      "main": [
+        []
       ]
     }
   },
