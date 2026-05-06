@@ -287,7 +287,7 @@ export class Agent {
       relevantKnowledge = memory.knowledge.search(textMessage, 5);
     }
 
-    const systemPrompt = this._buildSystemPrompt(graphContext, knowledgeContext, relevantKnowledge);
+    const systemPrompt = this._buildSystemPrompt(graphContext, knowledgeContext, relevantKnowledge, context?.bootstrap || null);
 
     const MAX_CONTEXT_CHARS = 100000;
     const systemChars = systemPrompt.length;
@@ -467,8 +467,33 @@ You exist to make your human's life easier and their business more profitable. Y
     return history.slice(cutoff);
   }
 
-  _buildSystemPrompt(graphContext, knowledgeContext, relevantKnowledge) {
+  _buildSystemPrompt(graphContext, knowledgeContext, relevantKnowledge, bootstrap = null) {
+    // bootstrap (Charlie 2.0 Slice 1): when present, replaces the per-message
+    // soul/values/skills assembly with the cached BootstrapResult. Falls back
+    // to the legacy this.soul + skills path when null.
     const parts = [this.soul];
+
+    if (bootstrap) {
+      if (bootstrap.identity?.charlie_role) {
+        parts.push(`\n## Charlie Role\n${bootstrap.identity.charlie_role}`);
+      }
+      if (bootstrap.identity?.ceo_operating_model) {
+        parts.push(`\n## CEO Operating Model\n${bootstrap.identity.ceo_operating_model}`);
+      }
+      if (bootstrap.state?.flow_os_state) {
+        parts.push(`\n## Flow OS State\n${bootstrap.state.flow_os_state}`);
+      }
+      if (bootstrap.specialists?.flow_os_specialists) {
+        parts.push(`\n## Specialists\n${bootstrap.specialists.flow_os_specialists}`);
+      }
+      if (bootstrap.state?.recent_build_log) {
+        parts.push(`\n## Recent Build Log (7d)\n${bootstrap.state.recent_build_log}`);
+      }
+      if (bootstrap.probes?.length) {
+        const probeLines = bootstrap.probes.map(p => `- ${p.ok ? '✓' : '✗'} ${p.name} (${p.latency_ms}ms)${p.error ? ` — ${p.error}` : ''}`).join('\n');
+        parts.push(`\n## Live probes (session bootstrap)\n${probeLines}`);
+      }
+    }
 
     // Add agent identity (AGEX AID)
     if (this.aid) {

@@ -210,6 +210,38 @@ export class MemoryManager {
 
     return [];
   }
+
+  /**
+   * Get recent memory entries within a sliding window (default 24h, cap 30).
+   *
+   * Used by Charlie 2.0 bootstrap Layer 4. Reads from the conversations
+   * table when better-sqlite3 is available, falls back to the JSON store
+   * otherwise. The `since` argument supports either an ISO timestamp or
+   * a negative-relative shorthand like '-24h' / '-7d' / '-30m'.
+   */
+  recentEntries({ since = '-24h', limit = 30 } = {}) {
+    const sinceIso = _resolveSince(since);
+
+    if (this.db) {
+      const rows = this.db.prepare(`
+        SELECT agent, role, content, timestamp, model, tier, channel, user_id, username
+        FROM conversations
+        WHERE timestamp >= ?
+        ORDER BY id DESC
+        LIMIT ?
+      `).all(sinceIso, limit);
+      return rows.reverse();
+    }
+
+    if (this._jsonStore) {
+      return this._jsonStore.conversations
+        .filter(m => (m.timestamp || '') >= sinceIso)
+        .slice(-limit);
+    }
+
+    return [];
+  }
+
   /**
    * Get conversation threads (grouped by channel + user)
    */
@@ -751,4 +783,19 @@ export class MemoryManager {
       log.debug(`Cognee cognify trigger failed: ${err.message}`);
     });
   }
+}
+
+// Internal helper: parse '-24h' / '-7d' / '-30m' / ISO into an ISO timestamp.
+function _resolveSince(spec) {
+  if (!spec) return new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  const m = String(spec).match(/^-(\d+)([smhd])$/);
+  if (m) {
+    const n = parseInt(m[1], 10);
+    const unitMs = { s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000 }[m[2]];
+    return new Date(Date.now() - n * unitMs).toISOString();
+  }
+  // Otherwise treat as ISO; if it parses, return canonical form, else fall back to 24h.
+  const t = Date.parse(spec);
+  if (Number.isFinite(t)) return new Date(t).toISOString();
+  return new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
 }

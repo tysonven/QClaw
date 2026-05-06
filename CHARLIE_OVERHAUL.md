@@ -373,8 +373,17 @@ Six vertical slices, each independently auditable and shippable. Slices ship in 
 - `CHARLIE_ROLE.md` written from Phase 1 role spec
 - `KEYWORD_REFERENCE.md` cheat sheet generated
 
-**Slice 1 — Bootstrap and canonical doc loading.**
-Bootstrap mechanism + the always-on canonical docs reading. Ship and observe before next slice.
+**Slice 1 — Bootstrap and canonical doc loading.** ✓ COMPLETE 2026-05-06
+Bootstrap mechanism + the always-on canonical docs reading. Shipped on
+`cc/slice1-bootstrap-mechanism-20260506-1114`. `bootstrap()` cached per
+`(userId, agentName)` with 30-min TTL, 5-layer load (sequential 1-4,
+parallel 5 with 5s per-probe timeout), markdown summary appended to
+`~/.quantumclaw/bootstrap.log` + returned by `/bootstrap-status`,
+`/session` evicts. `_buildSystemPrompt` consumes the cached
+`BootstrapResult` instead of re-reading per message. 4/5 Layer 5 probes
+green at deploy; `heartbeat_freshness` surfaces a clear
+"add SUPABASE_SERVICE_ROLE_KEY" warning until Tyson lands the key by
+hand. Tests: 28 in `tests/bootstrap.test.js`, 24 in `tests/probes.test.js`.
 
 **Slice 2 — Skill loading strategy.**
 `loadSkills(context)` interface, keyword routing, skill audit and re-symlinking, missing skills wired (`build.md`, `qa.md`, `task-queue.md`, `trading.md`, `architecture-pillars.md`, `security.md`).
