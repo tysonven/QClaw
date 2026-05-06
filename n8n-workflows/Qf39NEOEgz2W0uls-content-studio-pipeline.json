@@ -41,7 +41,7 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ r2_file_key: $json.body.r2FileKey, episode_title: $json.body.episodeTitle, episode_description: $json.body.episodeDescription, status: 'processing' }) }}",
+        "jsonBody": "={{ JSON.stringify({ r2_file_key: $json.body.r2FileKey, episode_title: $json.body.episodeTitle, episode_description: $json.body.episodeDescription, status: 'pending' }) }}",
         "options": {}
       },
       "id": "create-job-record",
