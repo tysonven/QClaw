@@ -14,22 +14,24 @@ This file is the second thing every agent reads at session start, after its iden
 ## Identity layer (canonical, rarely changes)
 
 - `CEO_OPERATING_MODEL.md` — operating model and trust gradient (north star)
-- `CHARLIE_ROLE.md` — Charlie's role spec (PENDING — to be written in next pre-slice session)
+- `CHARLIE_ROLE.md` — Charlie's role spec
 - `CHARLIE_OVERHAUL.md` — running architecture doc for Charlie 2.0
 - `LOCATIONS.md` — this file
-- Existing identity files retained for continuity: `SOUL.md`, `VALUES.md`, `IDENTITY.md`
+- Per-agent SOUL: `<config dir>/workspace/agents/<agent>/SOUL.md` (runtime, ~/.quantumclaw/workspace/agents/charlie/SOUL.md in production)
+- Trust kernel VALUES: `<config dir>/VALUES.md` (~/.quantumclaw/VALUES.md in production), loaded by `TrustKernel`
+- Repo-tracked workspace seeds: `workspace/IDENTITY.md`, `workspace/VALUES.md`, `workspace/agents/<agent>/SOUL.md` (snapshots used by `qclaw onboard`)
 
 ## State layer (Charlie writes routine, Tyson approves significant)
 
-- `FLOW_OS_STATE.md` — single source for current business state across Flow OS, FSC, SproutCode, Crete, Personal (PENDING — to be populated)
-- `FLOW_OS_SPECIALISTS.md` — specialist registry (PENDING — to be populated)
-- `N8N_WORKFLOW_INDEX.md` — every active n8n workflow (PENDING — focused Tyson + Claude Code session)
+- `FLOW_OS_STATE.md` — single source for current business state across Flow OS, FSC, SproutCode, Crete, Personal
+- `FLOW_OS_SPECIALISTS.md` — specialist registry
+- `N8N_WORKFLOW_INDEX.md` — every active n8n workflow
 
 ## Operational layer (append-only, never rewritten)
 
 - `QCLAW_BUILD_LOG.md` — chronological build log
-- Bootstrap log: `~/.quantumclaw/bootstrap.log` (file-based, will migrate to Supabase post-Phase-4)
-- Audit log: existing audit DB (location to be confirmed in Phase 4 Slice 3)
+- Bootstrap log: `~/.quantumclaw/bootstrap.log` (file-based, mode 0600, written by `src/agents/bootstrap.js` — file-based per Phase 4 Slice 1; Supabase migration deferred)
+- Audit log: `~/.quantumclaw/audit.db` (SQLite via `better-sqlite3`) with JSONL fallback at `~/.quantumclaw/audit.jsonl` — read interface `AuditLog.recent(limit, agent)` (`src/security/audit.js`)
 - Gate log: `~/.quantumclaw/gate.log` (file-based, will surface in QClaw dashboard post-Phase-5)
 - Skill load log: `~/.quantumclaw/skill-load.log` (file-based, will migrate to Supabase post-Phase-4)
 - Claude Code dispatch log: Supabase table `claude_code_dispatches` (Phase 4 Slice 5)

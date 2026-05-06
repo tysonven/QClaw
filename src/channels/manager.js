@@ -7,6 +7,12 @@
 
 import { run } from '@grammyjs/runner';
 import { log } from '../core/logger.js';
+import {
+  bootstrap,
+  clearCache as clearBootstrapCache,
+  formatStatusMarkdown as formatBootstrapStatusMarkdown,
+  isCached as isBootstrapCached
+} from '../agents/bootstrap.js';
 
 // Anchored at start of message. Matches "✅ 37", "✅37", "✅ 37 thanks",
 // "approve 37", "yes 37", and the deny variants. Trailing chars after the
@@ -146,6 +152,10 @@ class TelegramChannel {
     this.bot = null;
     this._runner = null;
     this.pendingPairings = new Map();
+    // Slice 1: per-(userId, agentName) flag tracking whether the
+    // first-fire bootstrap warning has already surfaced in this session.
+    // Cleared by /session and by clearBootstrapCache invocations.
+    this.bootstrapWarningShown = new Map();
   }
 
   _generatePairingCode() {
@@ -303,6 +313,43 @@ class TelegramChannel {
       log.info(`Approval ${id} denied by ${denier}: ${reason}`);
     });
 
+    // Slice 1: /bootstrap-status returns the cached BootstrapResult as
+    // a markdown summary. If no cache exists for (userId, primary agent),
+    // a fresh bootstrap is fired so the user always gets a current view.
+    this.bot.command('bootstrap-status', async (ctx) => {
+      if (allowedUsers.length > 0 && !allowedUsers.includes(ctx.from.id)) return;
+      const userId = ctx.from.id;
+      const agent = this.agents.primary();
+      const agentName = agent?.name || 'charlie';
+      try {
+        const result = await bootstrap({
+          userId,
+          agentName,
+          services: agent?.services,
+          config: this.rootConfig
+        });
+        const md = formatBootstrapStatusMarkdown(result);
+        const chunks = md.length <= 4096 ? [md] : this._chunkMessage(md, 4096);
+        for (const chunk of chunks) await this._sendTelegramReply(ctx, chunk);
+      } catch (err) {
+        log.warn(`/bootstrap-status failed: ${err.message}`);
+        await ctx.reply(`Bootstrap status error: ${err.message}`);
+      }
+    });
+
+    // Slice 1: /session evicts every cached bootstrap entry for this user
+    // (across all agents) and resets the warning-surfaced flag so the next
+    // message will re-fire bootstrap and re-surface any warnings.
+    this.bot.command('session', async (ctx) => {
+      if (allowedUsers.length > 0 && !allowedUsers.includes(ctx.from.id)) return;
+      const userId = ctx.from.id;
+      clearBootstrapCache(userId);
+      for (const k of [...this.bootstrapWarningShown.keys()]) {
+        if (k.startsWith(`${userId}:`)) this.bootstrapWarningShown.delete(k);
+      }
+      await ctx.reply('Session reset. Next message triggers a fresh bootstrap.');
+    });
+
     // Inline approval replies. Registered as bot.hears (separate handler from
     // message:text) so the runner can dispatch concurrently — emoji replies
     // are not blocked by an in-flight agent.process() call inside message:text.
@@ -367,13 +414,48 @@ await ctx.reply(
       try {
         await ctx.replyWithChatAction('typing');
 
+        // Slice 1: session bootstrap. Sequential before agent.process() so the
+        // agent's _buildSystemPrompt receives a populated BootstrapResult.
+        // Failure is non-fatal — agent.process falls back to legacy assembly.
+        const wasCached = isBootstrapCached(ctx.from.id, agent.name);
+        let bootstrapResult = null;
+        try {
+          bootstrapResult = await bootstrap({
+            userId: ctx.from.id,
+            agentName: agent.name,
+            services: agent.services,
+            config: this.rootConfig
+          });
+        } catch (bootstrapErr) {
+          log.warn(`Bootstrap failed for ${agent.name}/${ctx.from.id}: ${bootstrapErr.message}`);
+        }
+
         const result = await agent.process(messageText, {
           channel: 'telegram',
           userId: ctx.from.id,
-          username: ctx.from.username
+          username: ctx.from.username,
+          bootstrap: bootstrapResult
         });
 
-        const content = result?.content || '(empty response)';
+        let content = result?.content || '(empty response)';
+
+        // First-fire warning surface: prepend a one-line notice the first
+        // message after a fresh bootstrap if any layer/probe failed. Reset
+        // by /session, clearBootstrapCache, or natural TTL expiry.
+        if (bootstrapResult) {
+          const wKey = `${ctx.from.id}:${agent.name}`;
+          if (!wasCached) this.bootstrapWarningShown.set(wKey, false);
+          const failedProbes = bootstrapResult.probes.filter((p) => !p.ok).length;
+          const totalIssues = bootstrapResult.warnings.length + failedProbes;
+          if (totalIssues > 0 && !this.bootstrapWarningShown.get(wKey)) {
+            const wCount = bootstrapResult.warnings.length;
+            content =
+              `⚠️ Bootstrap: ${wCount} warning${wCount === 1 ? '' : 's'}, ` +
+              `${failedProbes} probe failure${failedProbes === 1 ? '' : 's'} ` +
+              `— see /bootstrap-status\n\n` + content;
+            this.bootstrapWarningShown.set(wKey, true);
+          }
+        }
 
         const maxLen = 4096;
         const chunks = content.length <= maxLen

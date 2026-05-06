@@ -4764,3 +4764,200 @@ remains canonical for future paying-client integrations.
     a churn-time runbook (deactivate / archive / deprecate), and
     a "what's still wired to this client" probe Charlie can run
     when given a client name. Phase 4 design dependency.
+
+
+---
+
+## 2026-05-06 — Phase 4 Slice 1 — Bootstrap mechanism
+
+Charlie 2.0 Component 1 implemented and shipped on
+`cc/slice1-bootstrap-mechanism-20260506-1114`. Audit landed at
+`/tmp/slice1_bootstrap_audit.md` 2026-05-06 morning, design lock
+captured at commit `2beb3a7`, implementation feature branch
+followed Tyson's "go" with all four open-question resolutions
+(T1/T2/T6/T7).
+
+### What landed
+
+**New files:**
+
+- `src/agents/bootstrap.js` — exports `bootstrap(sessionContext) → BootstrapResult`,
+  `clearCache(userId, agentName?)`, `clearAllCaches()`, `isCached(userId, agentName)`,
+  `cacheSize()`, `formatStatusMarkdown(result)`. In-memory `Map<\`${userId}:${agentName}\`, ...>`,
+  30-min TTL, force-reload via `options: { force: true }`. JSONL + markdown
+  appended to `~/.quantumclaw/bootstrap.log` (mode 0600). Repo-root
+  resolved via `import.meta.url`, no hardcoded `/root/QClaw`.
+- `src/agents/bootstrap-types.d.ts` — JSDoc-ish TypeScript ambient types.
+  Documentation-only; consumers use plain JS objects.
+- `src/agents/probes/n8n.js` — `GET https://webhook.flowos.tech/healthz`,
+  unauthenticated. Returns `{"status":"ok"}` 200 against the live LB.
+- `src/agents/probes/heartbeat-freshness.js` — `SELECT` against
+  `public.workflow_heartbeats` ordered by `created_at desc limit 200`,
+  reduces to one entry per `workflow_id`. Per audit T2 resolution: prefers
+  `SUPABASE_SERVICE_ROLE_KEY`, falls back to `SUPABASE_ANON_KEY`. The anon
+  fallback returns 0 rows under the table's RLS, and the probe surfaces
+  a precise `"add SUPABASE_SERVICE_ROLE_KEY to /root/.quantumclaw/.env"`
+  message rather than masking the gap.
+- `src/agents/probes/pm2.js` — wraps `pm2 jlist` (`child_process.execSync`,
+  4.5s timeout); checks the four expected processes — `quantumclaw,
+  trading-worker, clipper-worker, charlie-watcher` — all confirmed live
+  via `pm2 jlist` 2026-05-06 12:00 UTC. `agex-hub` reported as an extra.
+- `src/agents/probes/supabase.js` — `GET /auth/v1/health` with anon
+  apikey. Cheapest target that returns 200 unauthenticated; `/rest/v1`
+  returns `"service_role only"` 401 for anon and is deliberately not
+  probed.
+- `src/agents/probes/memory-layer.js` — `GET ${cogneeUrl}/health`
+  (transport-only reachability check; `/api/v1/health` requires
+  cognee bearer auth and would conflate transport with session liveness).
+- `src/core/env.js` — shared `.env` parser (no shell expansion, handles
+  `$`-containing JWTs). Replaces the inline parser at
+  `dashboard/server.js:1518`. Module-level cache; `clearEnvCache()` for
+  tests.
+- `tests/bootstrap.test.js` — 28 assertions covering cache miss/hit/
+  force/partition, `clearCache(userId)` and `clearCache(userId, agent)`,
+  layer fail-soft (missing SOUL.md → warning, other layers intact),
+  `formatStatusMarkdown` shape, Layer 5 wall-clock budget.
+- `tests/probes.test.js` — 24 assertions covering each probe's result-
+  shape contract and one synthetic broken-target case proving probes
+  never throw.
+
+**Modified files:**
+
+- `src/memory/manager.js` — adds `recentEntries({ since, limit })` for
+  Layer 4. Supports `'-24h'`/`'-7d'`/`'-30m'` shorthand and ISO. SQLite
+  default path; JSON-store fallback follows the existing pattern.
+  47 net lines.
+- `src/agents/registry.js` — `_buildSystemPrompt(graphContext,
+  knowledgeContext, relevantKnowledge, bootstrap = null)` accepts an
+  optional `BootstrapResult`. When passed, embeds CHARLIE_ROLE,
+  CEO_OPERATING_MODEL, FLOW_OS_STATE, FLOW_OS_SPECIALISTS, recent
+  build log, and Layer 5 probe summary as labelled sections in the
+  system prompt. `null` preserves legacy behaviour. Call site at
+  `_processNonReflex` threads `context.bootstrap`. 27/2 lines.
+- `src/channels/manager.js` — imports the bootstrap module; adds
+  `this.bootstrapWarningShown = new Map()` to the TelegramChannel
+  constructor; new `/bootstrap-status` and `/session` slash commands;
+  text handler runs `bootstrap(...)` between `replyWithChatAction`
+  and `agent.process(...)`, then surfaces a one-line `⚠️ Bootstrap…`
+  notice on the first message after a fresh load if any warnings or
+  probe failures exist. Bootstrap failure is logged but never blocks
+  message processing — the agent falls back to legacy assembly.
+  84/2 lines.
+- `package.json` — `scripts.test` now chains all 7 test files. Closes
+  audit T5 drift where only `smoke.test.js` ran under `npm test`.
+
+**Doc updates (in this PR):**
+
+- `LOCATIONS.md` — clears PENDING flags for `CHARLIE_ROLE.md`,
+  `FLOW_OS_STATE.md`, `FLOW_OS_SPECIALISTS.md`, `N8N_WORKFLOW_INDEX.md`
+  (all present at repo root by Slice 0 close); declares actual
+  workspace-rooted SOUL/VALUES/IDENTITY paths (per audit T1
+  resolution); confirms `audit.db` location for Layer 4 audit-log
+  probe (the brief's "to be confirmed in Phase 4 Slice 3" note is
+  resolved early).
+- `CHARLIE_OVERHAUL.md` — Slice 1 status flipped to ✓ COMPLETE
+  2026-05-06 in the Phase 4 slicing section.
+
+### What verified
+
+**Sandbox driver against live infra** (`/tmp/sandbox_bootstrap.mjs`,
+run as root with the production qclaw services bag):
+
+```
+bootstrap() wall-clock: 703ms cold, 0ms cache-hit, 818ms force-reload
+
+identity.soul:                973 chars
+identity.values:              915 chars (from TrustKernel)
+identity.identity_doc:       1031 chars
+identity.ceo_operating_model: 8565 chars
+identity.charlie_role:      13521 chars
+state.flow_os_state:        19049 chars
+state.recent_build_log:    158798 chars (last 7d, capped at 50 entries)
+specialists.flow_os_specialists: 26715 chars
+recent.memory:              sqlite (6 entries from 24h window)
+recent.audit_log:           sqlite (50 entries)
+
+probes:
+  ✓ n8n_reachable        (626ms)
+  ✗ heartbeat_freshness  (572ms)  workflow_heartbeats returned 0 rows —
+                                  anon role likely RLS-blocked; add
+                                  SUPABASE_SERVICE_ROLE_KEY
+  ✓ pm2_processes        (259ms)
+  ✓ supabase_reachable   (327ms)
+  ✓ memory_layer          (37ms)
+
+isCached after fire: true        cacheSize: 1
+second fire: 0ms (cache hit, loaded_at unchanged)
+force reload: 818ms (loaded_at advanced)
+clearCache(userId): cacheSize → 0
+```
+
+**Test suite** — all 7 files green via `npm test`:
+
+```
+smoke                      (every QClaw module imports cleanly,
+                            including bootstrap.js + 5 probes)
+agent-mutex                (registry concurrency)
+approval-parser-handler    29/29
+approval-gate-notifier     13/13
+approvals                  13/13
+bootstrap                  28/28
+probes                     24/24
+```
+
+`bootstrap.log` 0600 verified post-fire on the sandbox driver.
+
+### What deferred / followups
+
+1. **`SUPABASE_SERVICE_ROLE_KEY` in `/root/.quantumclaw/.env`.** Audit
+   T2 resolution: Tyson adds by hand. Probe is wired to flip green
+   automatically on next fire once present. No code change needed
+   from this end.
+
+2. **`~/.quantumclaw/VALUES.md` duplicate** of `workspace/VALUES.md`.
+   Identified during T1 audit. Logged for separate small dispatch —
+   reconcile authoritative copy, decide migration direction.
+
+3. **`recentEntries` doesn't yet read Cognee.** Today the helper hits
+   the SQLite conversations table only. Once the memory layer's
+   `cogneeConnected` path is reliable, extend `recentEntries` to
+   merge the Cognee window. Out of Slice 1 scope.
+
+4. **n8n public API JWT rotation 2026-05-22.** ~16 days from today.
+   Separate small dispatch, not in this slice.
+
+5. **PM2 reload.** Post-merge step. Tyson observes one live bootstrap
+   fire end-to-end (a single Telegram message lands a populated
+   first-fire warning if `heartbeat_freshness` still fails) and
+   confirms `~/.quantumclaw/bootstrap.log` looks right, then this
+   slice is closed.
+
+### Architectural note — bootstrap as module singleton
+
+The cache lives as module-level state inside `src/agents/bootstrap.js`
+rather than threaded through ChannelManager → TelegramChannel
+constructor. Two small wins:
+
+- `src/index.js` did not need any change — fewer wiring touchpoints,
+  fewer regressions risk.
+- `/bootstrap-status` and `/session` commands and the text handler
+  share one cache view without passing references around.
+
+Trade-off: process-restart wipes the cache (acceptable per spec; v1
+explicitly accepts this). Future Supabase migration replaces the Map
+with a Supabase-backed cache while keeping the exported function
+signatures unchanged — interface-first design pattern from Phase 3.
+
+### Ready for merge
+
+Implementation green, sandbox green, tests green, docs updated. PR
+opens against current `main` (`2beb3a7` — the design lock + Morning
+Light flip stack from earlier today). No conflict surface with the
+parallel `cc-csput1-20260506-1100` Content Studio session — that
+session works on `main` directly and touches different files (Content
+Studio pipeline + clipper).
+
+After Tyson's merge approval: PM2 reload of `quantumclaw` (per Rule:
+never restart without approval; reload only). One live message in
+Telegram fires the first bootstrap, `bootstrap.log` shows the run,
+slice is closed.
