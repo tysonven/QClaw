@@ -495,7 +495,7 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ status: 'completed', substack_draft: $('Generate Substack Draft').first().json.content[0].text, linkedin_post: $('Generate LinkedIn Post').first().json.content[0].text, transcript_text: $('Poll AssemblyAI').first().json.text.substring(0, 10000), blog_post: $('Generate Blog Post').first().json.content[0].text, clip_selections: JSON.stringify((() => { try { return $('Poll Clip Status').first().json.clips || []; } catch(e) { return []; } })()), clip_job_id: (() => { try { return $('Generate Clips').first().json.job_id; } catch(e) { return null; } })(), linkedin_post_url: 'https://www.linkedin.com/feed/update/' + ($('Post to LinkedIn').first().json.id || ''), youtube_url: 'https://youtu.be/' + ($('Upload to YouTube').first().json.id || '') }) }}",
+        "jsonBody": "={{ JSON.stringify({ status: 'a_complete', substack_draft: $('Generate Substack Draft').first().json.content[0].text, linkedin_post: $('Generate LinkedIn Post').first().json.content[0].text, transcript_text: $('Poll AssemblyAI').first().json.text.substring(0, 10000), blog_post: $('Generate Blog Post').first().json.content[0].text, linkedin_post_url: 'https://www.linkedin.com/feed/update/' + ($('Post to LinkedIn').first().json.id || ''), youtube_url: 'https://youtu.be/' + ($('Upload to YouTube').first().json.id || '') }) }}",
         "options": {}
       },
       "id": "update-job-record",
@@ -521,7 +521,7 @@
         "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendMessage",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ chat_id: $('Generate R2 Presigned URL').first().json.chatId || 1375806243, text: '\\u2705 Content Studio Complete \\u2014 ' + $('Generate R2 Presigned URL').first().json.episodeTitle + '\\n\\nHere\\'s what\\'s ready:\\n\\ud83c\\udf99\\ufe0f Buzzsprout: Episode uploaded (draft)\\n\\ud83d\\udcdd Blog post: Published to WordPress\\n\\ud83d\\udce7 Substack: Draft ready\\n\\u2705 LinkedIn: Posted \\u2014 https://www.linkedin.com/feed/update/' + ($('Post to LinkedIn').first().json.id || '') + '\\n\\ud83c\\udfac YouTube: Unlisted \\u2014 https://youtu.be/' + ($('Upload to YouTube').first().json.id || '') + '\\n\\n\\u2702\\ufe0f Clips:\\n' + (() => { try { const j = $('Poll Clip Status').first().json; if (j.clips && j.clips.length) return j.clips.map((c,i) => (i+1) + '. ' + (c.hook_title || 'Clip') + ': ' + c.public_url).join('\\n'); return 'No clips generated'; } catch(e) { return 'Clips unavailable'; } })(), parse_mode: 'HTML' }) }}",
+        "jsonBody": "={{ JSON.stringify({ chat_id: $('Generate R2 Presigned URL').first().json.chatId || 1375806243, text: '\\u2705 Workflow A Complete \\u2014 ' + $('Generate R2 Presigned URL').first().json.episodeTitle + '\\n\\nReady:\\n' + '\\ud83c\\udf99\\ufe0f Buzzsprout: Episode uploaded (draft)\\n' + '\\ud83d\\udcdd Blog post: Published to WordPress\\n' + '\\ud83d\\udce7 Substack: Draft ready\\n' + '\\u2705 LinkedIn: Posted \\u2014 https://www.linkedin.com/feed/update/' + ($('Post to LinkedIn').first().json.id || '') + '\\n' + '\\ud83c\\udfac YouTube: Unlisted \\u2014 https://youtu.be/' + ($('Upload to YouTube').first().json.id || '') + '\\n\\n' + '\\u2702\\ufe0f Clipper: queued (Workflow B will notify on completion)', parse_mode: 'HTML' }) }}",
         "options": {}
       },
       "id": "notify-complete",
@@ -870,7 +870,8 @@
         2848,
         576
       ],
-      "webhookId": "6b419486-583e-4589-b316-982a635b223e"
+      "webhookId": "6b419486-583e-4589-b316-982a635b223e",
+      "disabled": true
     },
     {
       "parameters": {
@@ -886,7 +887,8 @@
       "position": [
         3072,
         576
-      ]
+      ],
+      "disabled": true
     },
     {
       "parameters": {
@@ -918,7 +920,8 @@
       "position": [
         3296,
         576
-      ]
+      ],
+      "disabled": true
     },
     {
       "parameters": {
@@ -932,7 +935,8 @@
         3520,
         720
       ],
-      "webhookId": "4db9d3bc-b8ab-466d-8cdb-de1e0987bff6"
+      "webhookId": "4db9d3bc-b8ab-466d-8cdb-de1e0987bff6",
+      "disabled": true
     },
     {
       "parameters": {
@@ -967,7 +971,8 @@
           "id": "Nd2uuX5t9KEwbQPv",
           "name": "Supabase FSC"
         }
-      }
+      },
+      "disabled": true
     },
     {
       "parameters": {},
@@ -1029,6 +1034,31 @@
       "maxTries": 2,
       "waitBetweenTries": 2000,
       "id": "40598ca2-9ff7-4b55-9c7c-b1d24846f65e"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "update public.content_studio_jobs\nset status = 'clipper_pending',\n    clip_job_id = '{{ $json.job_id }}'::uuid,\n    updated_at = now()\nwhere id = '{{ $('Generate R2 Presigned URL').first().json.jobId }}'::uuid;",
+        "options": {}
+      },
+      "id": "patch-clipper-pending",
+      "name": "Patch: Clipper Pending",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        2848,
+        576
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "qGUxEHfEZkZGdAcZ",
+          "name": "Supabase Postgres DB"
+        }
+      },
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
     }
   ],
   "connections": {
@@ -1383,7 +1413,7 @@
       "main": [
         [
           {
-            "node": "Wait 10s Clip Poll",
+            "node": "Patch: Clipper Pending",
             "type": "main",
             "index": 0
           }
@@ -1475,6 +1505,17 @@
             "node": "Heartbeat: Success",
             "type": "main",
             "index": 0
+          }
+        ]
+      ]
+    },
+    "Patch: Clipper Pending": {
+      "main": [
+        [
+          {
+            "node": "Merge Before Notify",
+            "type": "main",
+            "index": 1
           }
         ]
       ]
