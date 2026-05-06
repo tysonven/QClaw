@@ -696,6 +696,7 @@
     "executionOrder": "v1",
     "saveExecutionProgress": true,
     "callerPolicy": "workflowsFromSameOwner",
-    "availableInMCP": true
+    "availableInMCP": true,
+    "saveDataSuccessExecution": "none"
   }
 }

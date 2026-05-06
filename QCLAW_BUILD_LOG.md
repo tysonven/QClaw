@@ -4601,3 +4601,166 @@ R2 orphan check via `source /root/.quantumclaw/.env` bombed on `line 11: YlzT: c
 2. **Decoupled Workflow A/B build** — reuse `content_studio_jobs db4c6494-1ad2-46ac-aef4-a82b7ef9682f` as Workflow B test input. Buzzsprout draft, WordPress draft, transcript, clipper error all already populated.
 3. **Generate LinkedIn Post audio_url → url** — single-node body edit in `n8n-workflows/Qf39NEOEgz2W0uls-content-studio-pipeline.json`. PUT body limited to `{name,nodes,connections,settings}`.
 4. **n8n stop-flush gotcha** — n8n v2.4.8 `docker restart` does not flush in-memory runData. Future Content Studio P0 design must not depend on harvesting mid-flight AI text after a forced stop. Either harvest from destination systems or make the AI nodes write their output to Supabase as soon as they complete (defensive checkpointing).
+
+
+---
+
+## 2026-05-06 — Morning Light `saveDataSuccessExecution` flip executed; Kayla churn reframes the slice's operational lifespan
+
+Phase 4 Slice 0's planned final step (flipping
+`TikJkWLzpreI6iTa` Morning Light's `saveDataSuccessExecution` from
+default `all` to `none`) was executed and verified working. Mid-
+session, Kayla — the Morning Light client — emailed cancelling her
+subscription. Final payment 25 May 2026, full churn end of June 2026
+(~7 weeks from today) for migration off WellnessLiving onto Momence
+and off GHL entirely. The flip stays in (it's harmless and works as
+designed); this entry captures the technical change AND the new
+operational reality so the slice's framing reflects the truth.
+
+### Change applied to n8n
+
+Single workflow setting on `TikJkWLzpreI6iTa`:
+
+```
+PRE  settings: {"availableInMCP": true, "callerPolicy": "workflowsFromSameOwner", "executionOrder": "v1", "saveExecutionProgress": true}
+PUT  settings: {"availableInMCP": true, "callerPolicy": "workflowsFromSameOwner", "executionOrder": "v1", "saveDataSuccessExecution": "none", "saveExecutionProgress": true}
+PUT status: 200
+POST active: True
+POST settings: {"availableInMCP": true, "callerPolicy": "workflowsFromSameOwner", "executionOrder": "v1", "saveDataSuccessExecution": "none", "saveExecutionProgress": true}
+OK
+```
+
+n8n `updatedAt` post-flip: `2026-05-06T08:51:08.674Z`.
+
+Driver `/tmp/flip_ml.py` (qclaw) used `b_common.assert_clean_for_put`
++ `b_common.trim_for_put`. PUT body limited to
+`{name, nodes, connections, settings}` with `settings` filtered to
+the `_ALLOWED_SETTINGS_KEYS` whitelist. All three pre-PUT validators
+(orphans, brace-collapse, start-heartbeats-parallel-branch) passed.
+
+Error executions still saved (only the success path is silenced).
+Workflow execution itself unaffected — data still flows WL → GHL.
+
+### Verification — success path silenced, heartbeats unaffected
+
+Pre-flip latest Morning Light `success` row in n8n executions API:
+id `776575` at `2026-05-06T08:50:44.928Z`.
+
+Verifier captured T+0 / T+10 / T+30 snapshots (full log at
+`/tmp/ml_verify.log` on qclaw):
+
+```
+==== T+0min  2026-05-06T09:03:07Z ====
+776575 success 2026-05-06T08:50:44.928Z   ← unchanged from pre-flip
+... (older fires)
+
+==== T+10min 2026-05-06T09:13:08Z ====
+776575 success 2026-05-06T08:50:44.928Z   ← unchanged
+
+==== T+30min 2026-05-06T09:33:09Z ====
+776575 success 2026-05-06T08:50:44.928Z   ← unchanged, 42 min after flip
+...
+```
+
+Concurrent heartbeats query against `public.workflow_heartbeats`:
+
+```
+ml_heartbeats_post_flip = 3
+first_id  = 776581
+last_id   = 776585
+first_at  = 2026-05-06 09:01:26.271604+00
+last_at   = 2026-05-06 09:25:27.822421+00
+```
+
+Three distinct successful Morning Light fires (execution_ids 776581
+→ 776585) ran post-flip, all wrote `success` heartbeat rows, **none**
+appeared in n8n's executions API for `TikJkWLzpreI6iTa`. The
+heartbeat is appended after `Respond 200` so its presence proves the
+WL→GHL upsert path completed end-to-end. Other workflows continue to
+land in n8n's executions API normally — Crete Scheduled Publisher
+`9kTWhh9PlxMpyMlp` fired at 09:00:00Z and is visible at id 776577.
+
+### Verification — buffer rebalance
+
+The task spec proposed checking the comparator workflow's executions
+count over 30 min. With Crete on hourly cadence, a 30-min window
+doesn't catch a new comparator fire — Crete count was stable at 10
+visible entries pre and post. A stronger instance-wide signal is the
+buffer head/tail (paginated full sweep of the executions API):
+
+```
+==== T+0  2026-05-06T09:16:39Z ====
+total_visible = 10003
+newest_id     = 776583  startedAt 2026-05-06T09:15:45.019Z
+oldest_id     = 5035    startedAt 2025-09-17T07:15:41.760Z
+
+==== T+30 2026-05-06T09:33:30Z ====
+total_visible = 10005
+newest_id     = 776587  startedAt 2026-05-06T09:30:45.031Z
+oldest_id     = 5035    startedAt 2025-09-17T07:15:41.760Z   ← unchanged
+```
+
+Buffer was at cap (~10003) pre-flip. Across 17 min post-flip, head
+advanced only 4 ids (system-wide non-ML rate ≈ 14/hr), and the tail
+did not move at all — total grew 10003 → 10005 instead of rolling
+forward. Eviction pressure dropped to zero over the window. Other
+workflows' rows will now retain for a much longer observation
+window.
+
+### Operational reality update — Kayla churn collapses the lifespan
+
+Kayla emailed cancelling her Morning Light subscription mid-session.
+Confirmed timeline:
+
+- Last payment 25 May 2026.
+- Service continues through end of June 2026 for data migration off
+  WellnessLiving onto Momence and off GHL entirely.
+- After end of June: Morning Light workflow + heartbeat
+  instrumentation + Kayla iframe (`n8n-dashboard-one.vercel.app`)
+  all sunset.
+
+Slice 0's planned 6+ months of buffer-health benefit collapses to
+~7 weeks. The slice is **architecturally complete** — heartbeat
+infra, instrumentation pattern, iframe path, and the flip itself
+all landed and verified. The pattern remains canonical for future
+paying-client integrations; only this specific implementation
+sunsets with Kayla's churn. The flip stays in because it's
+harmless and works as designed.
+
+### Phase 4 Slice 0 status
+
+| Component | State |
+|---|---|
+| Sub-project A — heartbeat infra | ✓ done (2026-05-05) |
+| Sub-project B — 22 workflows + 1 inverse-alerter instrumented | ✓ done (2026-05-05, regression fixed same day) |
+| Sub-project C — Kayla iframe migrated to heartbeats | ✓ done (2026-05-05) |
+| Final flip — `saveDataSuccessExecution: 'none'` on Morning Light | ✓ done (2026-05-06) |
+| Operational lifespan of the live system | ~7 weeks until Kayla's churn end of June 2026 |
+
+Architecturally complete. Operationally short-lived. Pattern
+remains canonical for future paying-client integrations.
+
+### New work-list items
+
+28. **Morning Light + Kayla iframe sunset plan.** Late June 2026.
+    On Kayla's full churn (after end-of-June migration to Momence
+    + off-GHL): deactivate workflow `TikJkWLzpreI6iTa`, deprecate
+    Vercel deployment `n8n-dashboard-one.vercel.app`, archive
+    `tysonven/n8n-dashboard` repo. Cancellation timeline: last
+    payment 25 May 2026, churn end of June 2026. Bundle with any
+    other Kayla-specific cleanup (GHL FSC sub-account contact
+    purge if applicable; nginx route deprecation if a custom
+    subdomain points at the iframe).
+
+29. **Architecture note for Phase 4 design — active workflows
+    tied to active clients.** When a paying client churns, the
+    workflows specific to that client become deadweight and the
+    observability hooks attached to them (heartbeats, dashboards,
+    alerts) become noise. Charlie 2.0's design must surface
+    dependent workflows on client churn so the cleanup decision
+    is explicit, not silently drifting. Kayla's churn is the
+    first instance; pattern will recur. Concrete asks: a
+    client→workflow mapping (`LOCATIONS.md` partly does this),
+    a churn-time runbook (deactivate / archive / deprecate), and
+    a "what's still wired to this client" probe Charlie can run
+    when given a client name. Phase 4 design dependency.
