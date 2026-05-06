@@ -4948,16 +4948,31 @@ explicitly accepts this). Future Supabase migration replaces the Map
 with a Supabase-backed cache while keeping the exported function
 signatures unchanged — interface-first design pattern from Phase 3.
 
-### Ready for merge
+### Verified Live
 
-Implementation green, sandbox green, tests green, docs updated. PR
-opens against current `main` (`2beb3a7` — the design lock + Morning
-Light flip stack from earlier today). No conflict surface with the
-parallel `cc-csput1-20260506-1100` Content Studio session — that
-session works on `main` directly and touches different files (Content
-Studio pipeline + clipper).
+Verified live 2026-05-06 13:07 UTC. PM2 reload of `quantumclaw` clean
+(restart count 42 → 43). Two consecutive Telegram messages fired
+bootstrap correctly: 13:01:35Z cold load (5/5 probes green, all
+identity/state/specialist layers populated, Cognee returned 12
+memory entries), 13:07:42Z fresh load after `/session` eviction
+(5/5 probes green, Cognee 14 entries). `/session` and
+`/bootstrap-status` slash commands routed. `bootstrap.log` mode
+0600 verified, 493 lines, JSON+markdown structure intact.
+Three followups captured below.
 
-After Tyson's merge approval: PM2 reload of `quantumclaw` (per Rule:
-never restart without approval; reload only). One live message in
-Telegram fires the first bootstrap, `bootstrap.log` shows the run,
-slice is closed.
+### Followups captured during verification
+
+1. Ghost bootstrap entry user 6666 at 12:10:19Z — predates first
+   Telegram fire, identity char counts (16/11/20) suggest synthetic
+   workspace resolution. Source unknown. Track down before Slice 2
+   to rule out a startup self-test firing with bad context.
+
+2. PM2 probe non-JSON parse error in entry 1, success in entry 2.
+   Same probe, same server, ~50min apart. PM2 likely emitted
+   deprecation warning before JSON output. Harden probe: strip
+   leading non-JSON lines before parse, regression test with
+   synthetic warning prepended.
+
+3. FLOW_OS_STATE.md reports memory layer DEGRADED but live bootstrap
+   shows Cognee returning 12-14 entries cleanly per fire. State doc
+   is stale on this dimension. Update at next state-doc sweep.
