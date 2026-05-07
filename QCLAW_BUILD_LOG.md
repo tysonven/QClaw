@@ -6238,6 +6238,45 @@ matches.
    here for future env-touching work on PM2-managed Python
    workers.
 
+### ζ.3 — Charlie Task Handler workflow auth switch (afternoon)
+
+Workflow dHoqL8Ph8kmFHwyx "Charlie - Task Handler" — replaced
+all 8 references to $env.SUPABASE_ANON_KEY with
+$env.SUPABASE_SERVICE_ROLE_KEY in the Handle Command jsCode
+block. PUT clean, all validators green (assert_clean_for_put
+passed orphans + brace-collapse + start-heartbeat-parallel).
+availableInMCP preserved through PUT (n8n version on this host
+doesn't reset it — different from yesterday's behavior).
+
+Verification path was synthetic POST instead of Telegram round-
+trip. Synthetic curl POST to /webhook/charlie-tasks executed the
+full code path under service_role (Webhook → Handle Command →
+Supabase supaGet → Respond) and returned the canonical
+empty-state reply. Per-node status green, zero 401/403 in n8n
+logs since PUT. Auth swap confirmed working.
+
+### Telegram → Charlie webhook bridge: pre-existing gap exposed
+
+Diagnostic during ζ.3 verification surfaced that the
+@tyson_quantumbot Telegram bot has no webhook URL set
+($getWebhookInfo.url = "", pending_update_count = 0). This means
+Telegram messages to /tasks /tasks /done /run silently go
+nowhere — they don't accumulate undelivered, they just don't
+reach n8n. Pre-existing condition unrelated to ζ.3, ζ.0, or any
+recent work.
+
+The Charlie Task Handler workflow has always assumed Telegram
+delivers via webhook to /webhook/charlie-tasks, but the
+setWebhook call was either never made or cleared at some point.
+charlie-watcher PM2 is a Supabase poller, not a Telegram
+poller — it cannot substitute for the missing bridge.
+
+Fix: single Telegram API call (setWebhook) pointing the bot at
+the n8n webhook URL. Out of scope for ζ.3 — its own dispatch
+because: (a) needs scoping confirmation that no other consumer
+expects this bot's updates, (b) is a one-shot config change
+distinct from the auth-switch work.
+
 ### Followups (this dispatch + carry-over)
 
   | Priority | Item                                                                      | Source     |
