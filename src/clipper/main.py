@@ -46,10 +46,13 @@ R2_SECRET_ACCESS_KEY = os.environ.get("R2_SECRET_ACCESS_KEY", "")
 R2_BUCKET_NAME = os.environ.get("R2_BUCKET_NAME", "")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://fdabygmromuqtysitodp.supabase.co")
-SUPABASE_ANON_KEY = os.environ.get(
-    "SUPABASE_ANON_KEY",
-    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZkYWJ5Z21yb211cXR5c2l0b2RwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTk2NjI2OTQsImV4cCI6MjA3NTIzODY5NH0.6JJMkPXBufpLxlisH1ig32Xm8YM3p0jcXRlBzx5x8Dk",
-)
+SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+if not SUPABASE_SERVICE_ROLE_KEY:
+    raise RuntimeError(
+        "SUPABASE_SERVICE_ROLE_KEY not set — clipper-worker "
+        "requires service_role auth as of ζ.1 (2026-05-07). "
+        "See QCLAW_BUILD_LOG.md."
+    )
 
 R2_PUBLIC_BASE = "https://pub-70c436931e9e4611a135e7405c596611.r2.dev"
 
@@ -78,8 +81,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 # ---------------------------------------------------------------------------
 
 SUPA_HEADERS = {
-    "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
-    "apikey": SUPABASE_ANON_KEY,
+    "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+    "apikey": SUPABASE_SERVICE_ROLE_KEY,
     "Content-Type": "application/json",
 }
 
