@@ -6320,6 +6320,99 @@ auth mixing.
   bucket. Tracked as low-priority followup; doesn't affect
   real episode fires.
 
+### ζ.5 + ζ.6 — security gate close (afternoon)
+
+Migration 2026_05_07_close_security_gate.sql — drops
+allow_anon_all on content_studio_jobs (was permissive RLS
+theatre), adds content_studio_jobs_service_role_all (explicit
+service-role-only policy), and re-enables RLS on clip_jobs +
+charlie_tasks (rolled back yesterday in 3bda7f2 because the
+consumers — clipper-worker, Charlie Task Handler — were on
+anon and would have been blocked; ζ.1 + ζ.3 fixed both
+consumers earlier today). Migration applied clean via
+Supabase MCP apply_migration → success.
+
+Inverse probe immediately confirmed the gate is closed
+against anon: anon SELECT on clip_jobs returns 200/[] (RLS
+row-level filter), anon INSERT on each of clip_jobs,
+charlie_tasks, content_studio_jobs returns 401 with code
+42501 'new row violates row-level security policy'.
+
+### ζ.5 verification fail then forward-fix
+
+First Content Studio fire after migration FAILED at Create
+Job Record with the same 42501 RLS violation. Workflow ran
+the new credential XTzNI4kxIpHcVjlB 'Supabase Main Service
+Role' but the INSERT was still treated as anon by
+PostgREST.
+
+Root cause confirmed via n8n CLI export:credentials
+--decrypted: the JWT in the credential decoded correctly to
+role=service_role. But the credential is type httpHeaderAuth,
+which sends ONE header only (in this case 'apikey:
+<jwt>'). Supabase PostgREST reads the JWT role from
+'Authorization: Bearer <jwt>'; without it, the request falls
+through to anon regardless of the apikey value. Pre-ζ.5
+this was masked by allow_anon_all (anon was permitted to
+write); post-ζ.5 the anon write was correctly rejected.
+
+This means ζ.4's credential swap was a no-op for role
+context — both the old FSC credential and the new
+'Main Service Role' credential were sending only 'apikey'
+and being treated as anon. ζ.4 PUT 1+2 verification fires
+worked because allow_anon_all covered for them.
+
+Fix path chosen (option b refined): keep credential
+XTzNI4kxIpHcVjlB intact (still supplies apikey:
+<service_role_jwt>), add explicit Authorization header per
+node sourced from $env. Each of the 9 nodes re-pointed in
+ζ.4 gained:
+
+  name:  Authorization
+  value: =Bearer {{$env.SUPABASE_SERVICE_ROLE_KEY}}
+
+The leading '=' makes n8n evaluate as expression at
+runtime; the JWT pulls from the n8n container's env (added
+in ζ.0). PUT 4 applied via the same trim_for_put pattern.
+availableInMCP preserved.
+
+Re-verification: two independent fires both ran clean
+(execution 798060 1m47s, 798061 2m), 36/36 nodes green per
+fire, csj rows 6926608e and 9e134312 both reached
+a_complete with all platform fields populated, Telegram
+'Workflow A Complete' message delivered twice. Zero 401/403
+in n8n exec data, zero 401/403 in pm2 logs. Inverse probe
+re-run: gate still closed.
+
+Pillar 3 (Databases — RLS enabled, parameterised queries,
+migrations tracked) now fully satisfied for the in-scope
+tables.
+
+### Followups + lessons banked from ζ.5/ζ.6
+
+- **n8n httpHeaderAuth credentials send ONE header.** This
+  is by design but easy to miss. For Supabase REST writes
+  under RLS, this credential type alone is insufficient —
+  always pair it with an explicit per-node Authorization
+  header (or migrate to httpCustomAuth). Documented for
+  future credential dispatches.
+- **Brief assertions about n8n credential type behavior
+  must be verified against an actual node request, not
+  against the credential schema.** ζ.4 brief assumed
+  swapping the JWT in an httpHeaderAuth credential would
+  flip the role. It didn't, because the credential was
+  sending the JWT in the wrong header all along. Verifying
+  via 'inverse probe blocks anon' is necessary but not
+  sufficient — also need 'legitimate consumer reaches
+  service_role context' as a positive probe before declaring
+  pass.
+- **Future cleanup:** replace XTzNI4kxIpHcVjlB with an
+  httpCustomAuth credential carrying both apikey +
+  Authorization headers; re-point the 9 nodes; remove the
+  inline expression Authorization header from each node.
+  Cleaner long-term, not blocking. Tracked as a separate
+  followup dispatch.
+
 ### Followups (this dispatch + carry-over)
 
   | Priority | Item                                                                      | Source     |
