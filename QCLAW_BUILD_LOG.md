@@ -6144,3 +6144,22 @@ post-merge per brief.
   the live Telegram-fire verification.
 
 Sequence next: this entry awaits Tyson's reload + live verify → Slice 2.
+
+### Verified live
+
+Verified live 2026-05-07 12:56 UTC (15:56 Athens). PM2 reload of
+`quantumclaw` clean (restart count 54 → 57 across two reloads).
+Telegram message from Tyson at 12:56:38Z showed all 5 probes green
+with zero warnings. Layer 1 char counts confirm canonical-source
+swap: SOUL=3937 (was 979 pre-symlink, +303% content), VALUES=915
+(917 minus trailing newline, within ±2 tolerance), IDENTITY=1386
+(1388 minus trailing newline). Cognee returned 26 memory entries
+(continuing growth from yesterday's 12-14 baseline). Charlie's
+reply demonstrated genuine canonical-content grounding — quoted
+"research once, execute correctly" and "co-founder who handles
+operations" phrases from the new SOUL.md verbatim. Curl smoke
+against dashboard PUT returned 401 Unauthorised (auth layer fires
+before symlink gate check, repo file mtime unchanged, write
+correctly blocked). Slice 1 followup #6 closed; #11 (sub-agent
+canonical-source extension for 6 runtime-only agents) and #12
+(.bak.20260507-1243 cleanup ~2026-05-14) carried forward.
