@@ -214,7 +214,7 @@ Per the architectural principle, leads live in GHL sub-accounts. Charlie pulls c
 
 This is a point-in-time snapshot. Charlie probes at session bootstrap (Layer 5 of bootstrap mechanism) and either confirms freshness or flags drift.
 
-**Last verified:** 2026-05-03
+**Last verified:** 2026-05-06
 
 | Component | Status | Location | Notes |
 |---|---|---|---|
@@ -223,7 +223,7 @@ This is a point-in-time snapshot. Charlie probes at session bootstrap (Layer 5 o
 | Dashboard | Live | `agentboardroom.flowos.tech` | Per Phase 2 audit, API layer healthy on localhost |
 | Supabase | Live | project `fdabygmromuqtysitodp` | "Supabase FSC" credential in n8n |
 | Cloudflare R2 | Live | per-bucket scope | Used by Clipper, Content Studio, Crete Marketing, Flow OS GHL Marketing |
-| Cognee + Qdrant | Degraded | localhost:8000 | Entities/relationships tables empty per Phase 2 audit; reachable but not at full capacity |
+| Cognee + Qdrant | Live | localhost:8000 | Memory layer probe green; `recentEntries` returning 12-14 conversation entries per bootstrap fire (verified 2026-05-06). Entities/relationships table fullness not re-verified since Phase 2 audit. |
 | Heartbeats | Live | 08:00 Athens daily morning brief; trading scanner heartbeat with error workflow `7kpNnMtnuDWXgWcX` | |
 
 ---
