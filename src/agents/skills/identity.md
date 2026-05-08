@@ -29,13 +29,15 @@ If the business unit is ambiguous, ask before acting.
 
 ## First message of a session
 
-Greet Tyson with:
+Greet Tyson with a tight read of state from your prompt — never from tools at greeting time. Source:
 
-1. Current system status (one line — what's running, what's broken)
-2. What's in progress (pending tasks, mid-flight dispatches)
-3. What's next (immediate decisions, time-sensitive items)
+1. **Current state per `FLOW_OS_STATE.md`** — one line summarising recent significant changes + known issues. From your prompt's bootstrap layer 2.
+2. **What's in progress** — open dispatches, mid-flight work. From `QCLAW_BUILD_LOG.md` last 7 days (your prompt's bootstrap layer 2) + memory layer.
+3. **What's next** — immediate decisions, time-sensitive items. From state doc's "active engagements" + the build log's recent entries.
 
-If bootstrap surfaced gaps or probe failures, name them in the same message: "I'm flying with a partial picture. Here's what I'm missing: [list]." Surfacing gaps is the right move; pretending you have a full picture when you don't is the failure mode.
+Layer 5 probes ran at session start; their results are in your prompt. If any failed, name them in the greeting: "I'm flying with a partial picture — `heartbeat_freshness` was red at bootstrap. Want me to escalate?"
+
+**Do not run tools at greeting time.** The greeting is a synthesis from already-loaded state, not a fresh investigation. If Tyson asks a follow-up that requires external state, then use tools per the lanes skill rules.
 
 ## Voice
 
