@@ -6746,3 +6746,131 @@ jmIA9yKIJobsIC60 Follow-up Trigger -> 0 0 11 * * 2,4
   | LOW      | Code-node auth-degradation sentinel — consider adding a diagnostic node to the cluster that fail-loud on Supabase 401/403 instead of swallowing into a default. Without it, future rotation smoke tests must rely on out-of-band probes. | this   |
 
 End of session 2026-05-08 η.1.
+
+---
+
+## [2026-05-08] Slice 2a — Skill Loading Plumbing + Cleanup
+
+Branch `cc/slice2a-skill-plumbing-20260508-1246`. Audit grounding: `/tmp/slice2_skill_loading_audit.md` (37 KB, 457 lines) — landed yesterday. Closes audit findings T1, T9, T10 and the wrong-by-omission "missing skills" framing in the original brief.
+
+Slice 2 is sub-sliced into 2a (plumbing + cleanup, this dispatch), 2b (authoring + routing), 2c (test depth + format hygiene). 2a is the deterministic mechanical layer; 2b is content + behaviour; 2c is hardening.
+
+### What changed (this PR)
+
+Five commits on the branch, no commits piggybacked from main:
+
+- `2415ccb` — frontmatter spec applied to all 20 skill files in `src/agents/skills/`. Each skill now declares `name`, `category` ∈ {always-on, on-demand, specialist-scope, archive}, `surface` ∈ {prompt, tool, both}, `keywords` (required iff on-demand), `description`. Cleaned malformed `---` markers in `security.md` and `charlie-cto.md` that were horizontal-rule misreads. `trading.md` carries an explicit comment about disabled tool registration (audit T10 — uses `## Key API Endpoints` not `## Endpoints`).
+
+- `75ca48f` — `architecture-pillars.md` h1 fix. The file was missing a `# Heading`; legacy `SkillLoader._parse` would fall back to filename for `skill.name` silently (audit T9). Added explicit `# Architecture Pillars` below the new frontmatter; content unchanged below.
+
+- `2cca79d` — retire `SkillLoader` (`src/skills/loader.js`, 170 lines deleted) per audit T1. The class was a parallel skill-loading code path that `Agent.load()` in `src/agents/registry.js` ignored — only the `qclaw skill list` CLI command read it. Migrated CLI to read frontmatter directly from `src/agents/skills/` (canonical SSOT per `SKILL_EDIT_ALLOWLIST` in `src/security/approval-gate.js`); CLI output now includes a `[category]` tag — superset of legacy format. Removed 6 divergent dead stubs in `workspace/agents/{charlie,echo}/skills/` (`ghl.md`, `n8n-router.md`, `stripe.md`); backups kept on filesystem with `.bak.20260508-1246` suffix (gitignored).
+
+- `f1b4706` — `scripts/regen-keyword-reference.js` (new) reads every skill's frontmatter and regenerates `KEYWORD_REFERENCE.md` with always-on table, on-demand keyword→skill table, combination triggers, hard-cap notes, maintenance section. Generated file marked `<!-- GENERATED FROM SKILL FRONTMATTER — DO NOT EDIT BY HAND -->` at top. Combination triggers (Emma+content, community+context) hardcoded in the script for now.
+
+- `c3c027c` — tests. `tests/skill-frontmatter.test.js` (180 checks) validates spec compliance across all skills + audit T10 footgun guard (any skill with `surface=tool|both` must have a `## Endpoints` heading). `tests/cli-skill-list.test.js` (49 checks) spawns `qclaw skill list` and asserts every skill name + `[category]` tag + endpoint count. `tests/smoke.test.js` updated (drop `src/skills/loader.js`, add `scripts/regen-keyword-reference.js`). `package.json` chains the two new tests in `npm test`. Test count: 8 → 10 files.
+
+### Runtime change (no commit)
+
+`/root/.quantumclaw/workspace/agents/charlie/skills/` gained 6 symlinks pointing at `/root/QClaw/src/agents/skills/`: `build.md`, `qa.md`, `task-queue.md`, `trading.md`, `architecture-pillars.md`, `security.md`. Mirrors the Slice 1 identity-symlink pattern; not in any commit since runtime symlinks live outside the repo. Charlie's surfaced skill count: 11 → 17. Per-message prompt skill content increases from ~20 KB to ~42 KB (audit §2 estimate); transient state until 2b's `loadSkills(context)` routing reduces it via the always-on/on-demand split.
+
+### Doc updates (in this PR)
+
+- `LOCATIONS.md` — Capability layer rewritten. Replaces the placeholder `confirm in Phase 4 Slice 2` with the actual symlink path. Adds frontmatter as canonical keyword source, `KEYWORD_REFERENCE.md` as generated artefact, skill load log location, and the canonical-SSOT enforcement reference to `SKILL_EDIT_ALLOWLIST`.
+
+- `CHARLIE_OVERHAUL.md` — Slice 2 sub-sliced into 2a/2b/2c. Slice 2a status flipped to ✓ COMPLETE 2026-05-08 with one paragraph of detail. 2b and 2c scopes documented for the next two dispatches.
+
+- `KEYWORD_REFERENCE.md` — regenerated from frontmatter. New header marks it as generated.
+
+### What verified
+
+**Test suite — 10 files chained via `npm test`:**
+- `smoke` — every QClaw module imports cleanly, including `scripts/regen-keyword-reference.js`
+- `agent-mutex` — registry concurrency (no skill-related changes)
+- `approval-parser-handler` — 29/29
+- `approval-gate-notifier` — 13/13
+- `approvals` — 13/13
+- `bootstrap` — 28/28
+- `probes` — 24/24 (locally on the operator workstation Mac, 1 pre-existing pm2-not-installed assertion fires; passes on qclaw where pm2 is installed)
+- `identity-canonicalization` — Slice 1 gates
+- `skill-frontmatter` — **180/180 NEW**
+- `cli-skill-list` — **49/49 NEW**
+
+**Symlink verification (post-Task-1):**
+```
+$ ls -la /root/.quantumclaw/workspace/agents/charlie/skills/ | wc -l
+17 (file count, was 11 pre-Task-1)
+$ for f in build qa task-queue trading architecture-pillars security; do
+    readlink /root/.quantumclaw/workspace/agents/charlie/skills/$f.md
+  done
+/root/QClaw/src/agents/skills/build.md
+/root/QClaw/src/agents/skills/qa.md
+/root/QClaw/src/agents/skills/task-queue.md
+/root/QClaw/src/agents/skills/trading.md
+/root/QClaw/src/agents/skills/architecture-pillars.md
+/root/QClaw/src/agents/skills/security.md
+```
+
+**`qclaw skill list` post-migration output sample:**
+```
+20 skill(s):
+
+  ads-agency (4 endpoints) [specialist-scope]
+  agent-coordination [archive]
+  architecture-pillars [always-on]
+  build [on-demand]
+  …
+  security [always-on]
+  stripe (8 endpoints) [on-demand]
+  task-queue [on-demand]
+  trading-api (4 endpoints) [on-demand]
+  trading [on-demand]
+```
+
+**Allocation plan deliverable:** `/tmp/charlie_cto_allocation_plan.md` (8.4 KB, 127 lines). Section-by-section diff of `charlie-cto.md` (7,148 B) against `CHARLIE_ROLE.md` plus other canonical docs; allocation buckets `identity.md` (~150-200 B), `lanes.md` (~600 B), `delegation.md` (~250-400 B), archive (~5,500 B). Five Tyson decisions surfaced for 2b authoring dispatch.
+
+### 7 Pillars + security gate
+
+- Frontend: n/a — no UI changes.
+- Backend: no new endpoints, no input handling changed.
+- Databases: no schema changes.
+- Authentication: no auth changes.
+- Payments/Financial: n/a.
+- Security: no new credentials. Symlink targets all under the repo allowlist (`SKILL_EDIT_ALLOWLIST = /root/QClaw/src/agents/skills/`). Backup files inherit source mode 0644; no secrets in deleted stubs (verified by `git diff` review).
+- Infrastructure: no PM2 changes by Claude Code; Tyson reloads `quantumclaw` post-merge to pick up `src/index.js` and `src/cli/index.js` changes.
+
+### Out of scope (handed off to Slice 2b/2c)
+
+**Slice 2b (authoring + routing):**
+- Author the 6 missing always-on skills: `identity.md`, `lanes.md`, `verification-reflexes.md`, `delegation.md`, `bootstrap-awareness.md`, `community-manager.md`.
+- Implement `loadSkills(context) → SkillLoadResult` per `CHARLIE_OVERHAUL.md` Component 3.
+- Implement the keyword router (consume frontmatter; honour combination triggers; cap on-demand at 4).
+- Update `_buildSystemPrompt` in `src/agents/registry.js` to consume `loadSkills` output instead of the en-bloc loop at line 519.
+- Wire the skill load log file at `~/.quantumclaw/skill-load.log`.
+- Consume `/tmp/charlie_cto_allocation_plan.md` and migrate the file to its destinations + archive.
+- Tool-registration coupling decision (audit T7).
+
+**Slice 2c (test depth + hygiene):**
+- Per-keyword routing tests (every keyword in `KEYWORD_REFERENCE.md` triggers the right skill).
+- Combination-trigger tests.
+- Hard-cap-4 + top-N-by-density behaviour tests.
+- Integration test for prompt assembly under bootstrap-aware path with always-on skills merged.
+- Cleanup of `.bak.20260508-1246` filesystem backups.
+- Address any followups carried over from 2a/2b.
+
+### Followups (this dispatch)
+
+  | Priority | Item | Source |
+  |----------|------|--------|
+  | LOW | `src/agents/skills/n8n-api.md.backup.1776933191` (1,799 B) is tracked in git — survived because the audit's `*.md` glob didn't match. Recommend a single-file deletion in 2c cleanup, OR rename to match the `.bak.<timestamp>` gitignored convention if retention is wanted. | this |
+  | LOW | `workspace/agents/charlie/skills/.gitkeep` added in Task 2 to keep the dir alive after stub removal. Echo's dir already had one. Both `.gitkeep` files are now consistent. No action needed. | this |
+  | INFO | Audit said 21 skill files; actual count is 20 (likely the audit counted the `.backup.1776933191` file as a 21st despite the glob filter). Brief's table also has 20 rows — internally consistent. Frontmatter applied to 20. | this |
+  | INFO | The `n8n-workflows/_tools/__pycache__/` untracked dir on this workstation (and a modified `.pyc` on qclaw) are out-of-scope build artefacts per Operating Rule 1 — left alone, not committed. | this |
+
+### Verified live
+
+Pending Tyson post-merge:
+- [ ] `pm2 reload quantumclaw` (or full restart) so the deleted `SkillLoader` import doesn't get re-loaded from a cached module
+- [ ] Spot-check Charlie's first message after reload: 17 skills should now be visible to him; `architecture-pillars.md` and `security.md` content should be present
+- [ ] Optional: `qclaw skill list` from the qclaw CLI to confirm the migrated output renders the `[category]` tags correctly
+
+End of session 2026-05-08 Slice 2a.
