@@ -35,7 +35,6 @@ async function loadAgent() {
   const { MemoryManager } = await import('../memory/manager.js');
   const { ModelRouter } = await import('../models/router.js');
   const { AgentRegistry } = await import('../agents/registry.js');
-  const { SkillLoader } = await import('../skills/loader.js');
 
   const config = await loadConfig();
   const secrets = new SecretStore(config);
@@ -56,12 +55,10 @@ async function loadAgent() {
   const memory = new MemoryManager(config, credentials);
   await memory.connect();
   const router = new ModelRouter(config, credentials);
-  const skills = new SkillLoader(config);
-  await skills.loadAll();
-  const agents = new AgentRegistry(config, { memory, router, skills, trustKernel, audit, secrets: credentials });
+  const agents = new AgentRegistry(config, { memory, router, trustKernel, audit, secrets: credentials });
   await agents.loadAll();
 
-  return { config, secrets, credentials, trustKernel, audit, memory, router, skills, agents };
+  return { config, secrets, credentials, trustKernel, audit, memory, router, agents };
 }
 
 switch (command) {
@@ -956,21 +953,57 @@ switch (command) {
   // ─── SKILL ────────────────────────────────────────────────────
   case 'skill': {
     smallBanner();
-    const { config } = await loadCore();
 
     if (subcommand === 'list' || !subcommand) {
-      const { SkillLoader } = await import('../skills/loader.js');
-      const skills = new SkillLoader(config);
-      const count = await skills.loadAll();
+      const { readdirSync, readFileSync, existsSync } = await import('fs');
+      const __filename = fileURLToPath(import.meta.url);
+      const skillsDir = join(dirname(__filename), '..', 'agents', 'skills');
 
-      if (count === 0) {
+      if (!existsSync(skillsDir)) {
+        console.log('No skill directory found.');
+        console.log(`Expected: ${skillsDir}`);
+        break;
+      }
+
+      // Minimal frontmatter parser — only fields we display.
+      const parseFront = (content, fallbackName) => {
+        const m = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+        if (!m) return { name: fallbackName, category: null };
+        const body = m[1];
+        const get = (key) => {
+          const line = body.split(/\r?\n/).find(l => l.match(new RegExp(`^${key}:\\s`)));
+          return line ? line.replace(new RegExp(`^${key}:\\s*`), '').trim() : null;
+        };
+        return { name: get('name') || fallbackName, category: get('category') };
+      };
+
+      // Endpoint count: lines under "## Endpoints" matching METHOD /path
+      const countEndpoints = (content) => {
+        const lines = content.split(/\r?\n/);
+        let inSection = false;
+        let count = 0;
+        for (const line of lines) {
+          if (/^##\s+Endpoints\b/.test(line)) { inSection = true; continue; }
+          if (inSection && /^##\s+/.test(line)) break;
+          if (inSection && /^(GET|POST|PUT|PATCH|DELETE)\s+\//.test(line.trim())) count++;
+        }
+        return count;
+      };
+
+      const files = readdirSync(skillsDir).filter(f => f.endsWith('.md'));
+
+      if (files.length === 0) {
         console.log('No skills installed.');
-        console.log('Drop a SKILL.md into workspace/agents/<agent>/skills/');
+        console.log(`Drop a SKILL.md into ${skillsDir}`);
       } else {
-        console.log(`\n  ${count} skill(s):\n`);
-        for (const skill of skills.list()) {
-          const endpoints = skill.endpoints.length ? ` (${skill.endpoints.length} endpoints)` : '';
-          console.log(`  ${skill.name}${endpoints}`);
+        console.log(`\n  ${files.length} skill(s):\n`);
+        for (const file of files.sort()) {
+          const content = readFileSync(join(skillsDir, file), 'utf-8');
+          const { name, category } = parseFront(content, file.replace(/\.md$/, ''));
+          const endpointCount = countEndpoints(content);
+          const tag = category ? ` [${category}]` : '';
+          const endpoints = endpointCount > 0 ? ` (${endpointCount} endpoints)` : '';
+          console.log(`  ${name}${endpoints}${tag}`);
         }
         console.log('');
       }

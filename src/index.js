@@ -15,7 +15,6 @@ import { AuditLog } from './security/audit.js';
 import { MemoryManager } from './memory/manager.js';
 import { ModelRouter } from './models/router.js';
 import { AgentRegistry } from './agents/registry.js';
-import { SkillLoader } from './skills/loader.js';
 import { ChannelManager } from './channels/manager.js';
 import { DashboardServer } from './dashboard/server.js';
 import { Heartbeat } from './core/heartbeat.js';
@@ -47,7 +46,6 @@ class QuantumClaw {
     this.memory = null;
     this.router = null;
     this.agents = null;
-    this.skills = null;
     this.tools = null;
     this.toolExecutor = null;
     this.db = null;
@@ -197,16 +195,6 @@ class QuantumClaw {
       log.error('Cannot start without at least one working model.');
       log.info('Run `qclaw onboard` to set up an AI provider.');
       process.exit(1);
-    }
-
-    // ── Layer 4: Skills (non-fatal) ──
-    try {
-      this.skills = new SkillLoader(this.config);
-      const skillCount = await this.skills.loadAll();
-      log.success(`${skillCount} skills loaded`);
-    } catch (err) {
-      log.warn(`Skill loading failed: ${err.message} — continuing without skills`);
-      this.skills = { loadAll() { return 0; }, list() { return []; }, forAgent() { return []; } };
     }
 
     // ── Layer 4.5: Tools — MCP servers, API tools, built-ins (non-fatal) ──
@@ -390,7 +378,6 @@ class QuantumClaw {
       this.agents = new AgentRegistry(this.config, {
         memory: this.memory,
         router: this.router,
-        skills: this.skills,
         toolRegistry: this.tools,
         trustKernel: this.trustKernel,
         audit: this.audit,
