@@ -1,3 +1,12 @@
+---
+name: architecture-pillars
+category: always-on
+surface: prompt
+description: 7 Pillars architecture framework + security gate checklist applied to every build
+---
+
+# Architecture Pillars
+
 MANDATORY ARCHITECTURE FRAMEWORK — 7 PILLARS
 
 Every build session must address all 7 pillars before shipping:

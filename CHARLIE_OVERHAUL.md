@@ -387,8 +387,17 @@ green at deploy; `heartbeat_freshness` surfaces a clear
 "add SUPABASE_SERVICE_ROLE_KEY" warning until Tyson lands the key by
 hand. Tests: 28 in `tests/bootstrap.test.js`, 24 in `tests/probes.test.js`.
 
-**Slice 2 — Skill loading strategy.**
-`loadSkills(context)` interface, keyword routing, skill audit and re-symlinking, missing skills wired (`build.md`, `qa.md`, `task-queue.md`, `trading.md`, `architecture-pillars.md`, `security.md`).
+**Slice 2 — Skill loading strategy.** Sub-sliced into 2a (plumbing + cleanup), 2b (authoring + routing), 2c (test depth + format hygiene).
+
+**Slice 2a — Plumbing + cleanup.** ✓ COMPLETE 2026-05-08
+
+YAML frontmatter spec applied to all 20 skill files in `src/agents/skills/` (`name`, `category` ∈ {always-on, on-demand, specialist-scope, archive}, `surface` ∈ {prompt, tool, both}, `keywords` if on-demand, `description`). Six unwired skills (`build`, `qa`, `task-queue`, `trading`, `architecture-pillars`, `security`) symlinked into Charlie's runtime skills dir (11 → 17). `SkillLoader` (`src/skills/loader.js`) retired; the `qclaw skill list` CLI now reads frontmatter directly from the canonical SSOT path. Six divergent dead stubs in `workspace/agents/{charlie,echo}/skills/` removed (backups gitignored, retained until 2c close). `architecture-pillars.md` got a missing h1 heading. `KEYWORD_REFERENCE.md` is now generated from skill frontmatter via `scripts/regen-keyword-reference.js` and marked GENERATED at the top. New tests: `skill-frontmatter.test.js` (180 checks) and `cli-skill-list.test.js` (49 checks). Audit ref: `/tmp/slice2_skill_loading_audit.md`. `charlie-cto.md` allocation plan landed at `/tmp/charlie_cto_allocation_plan.md` for 2b consumption.
+
+**Slice 2b — Authoring + routing.**
+Author the 6 missing always-on skills (`identity.md`, `lanes.md`, `verification-reflexes.md`, `delegation.md`, `bootstrap-awareness.md`, `community-manager.md`). Implement `loadSkills(context) → SkillLoadResult`. Implement keyword router consuming frontmatter + combination triggers. Update `_buildSystemPrompt` to consume `loadSkills` output instead of the en-bloc loop. Wire the skill load log file at `~/.quantumclaw/skill-load.log`. Migrate `charlie-cto.md` per the 2a allocation plan and archive.
+
+**Slice 2c — Test depth + hygiene.**
+Routing tests (every keyword in `KEYWORD_REFERENCE.md` triggers the right skill; combination triggers; hard-cap-4 behaviour). Integration test for prompt assembly under bootstrap-aware path with always-on skills merged. Cleanup of the `.bak.20260508-1246` files retained from 2a.
 
 **Slice 3 — Tool surface overhaul.**
 Narrow tools added (`read_file`, `grep_repo`, `pm2_status`, `n8n_workflow_get`, etc.). `shell_exec` narrowed. `spawn_agent` and broken filesystem MCP removed. Tool registration interface with scope.

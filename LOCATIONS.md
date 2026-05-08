@@ -58,8 +58,10 @@ files and are still mutable via the dashboard. Reconciliation TBD.
 
 ## Capability layer
 
-- Skill files: `/root/QClaw/src/agents/skills/`
-- Symlinks for loaded skills: `/root/QClaw/<workspace path — confirm in Phase 4 Slice 2>`
+- Skill files (canonical SSOT): `/root/QClaw/src/agents/skills/` — enforced by `SKILL_EDIT_ALLOWLIST` in `src/security/approval-gate.js`. Edits go through git, not via runtime mutation.
+- Skill frontmatter (canonical keyword source): each skill `.md` declares `name`, `category` (always-on | on-demand | specialist-scope | archive), `surface` (prompt | tool | both), `keywords` (required iff on-demand), `description`. Spec landed in Slice 2a.
+- Generated keyword reference: `KEYWORD_REFERENCE.md` at repo root — generated from skill frontmatter via `node scripts/regen-keyword-reference.js`. Marked GENERATED at top; do not hand-edit. Will be retired when intent classification replaces keyword routing (Phase 5+).
+- Skill symlinks (Charlie runtime): `/root/.quantumclaw/workspace/agents/charlie/skills/` — every file is a symlink into `/root/QClaw/src/agents/skills/`. 17 symlinks as of Slice 2a (11 prior + 6 added: `build`, `qa`, `task-queue`, `trading`, `architecture-pillars`, `security`).
 - Tool registry: code-defined in `src/agents/tools/` (Phase 4 Slice 3)
 
 ## Reference docs (Tyson and Claude Code)

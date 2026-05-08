@@ -1,3 +1,11 @@
+---
+name: stripe
+category: on-demand
+surface: both
+keywords: [stripe, customer, invoice, payment]
+description: Stripe billing read surface — customers, invoices, payment intents, subscriptions
+---
+
 # Stripe Billing
 
 ## Auth

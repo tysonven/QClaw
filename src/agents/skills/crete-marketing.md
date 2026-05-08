@@ -1,3 +1,10 @@
+---
+name: crete-marketing
+category: specialist-scope
+surface: prompt
+description: Crete Projects marketing content queue — pending review surfacing for Crete dashboard
+---
+
 # Crete Marketing
 
 ## Overview

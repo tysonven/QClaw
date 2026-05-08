@@ -1,5 +1,9 @@
 ---
-title: Task Queue
+name: task-queue
+category: on-demand
+surface: prompt
+keywords: [schedule, task, delegate, queue]
+description: charlie_tasks Supabase queue — receive, track, and orchestrate work items across agents
 ---
 
 # Task Queue Skill

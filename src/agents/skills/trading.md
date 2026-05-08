@@ -1,5 +1,10 @@
 ---
-title: Trading Room
+name: trading
+category: on-demand
+surface: prompt
+keywords: [trade, trading, scanner, position]
+description: Polymarket prediction-market trading system — three-agent architecture, safety rules, system health
+# tool-registration intentionally disabled — see Slice 2 audit T10 (uses "## Key API Endpoints" not "## Endpoints")
 ---
 
 # Trading Room Skill

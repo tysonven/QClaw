@@ -1,3 +1,11 @@
+---
+name: ghl
+category: on-demand
+surface: both
+keywords: [ghl, contacts, opportunities, conversations]
+description: GoHighLevel CRM HTTP surface — contacts, opportunities, tasks, notes, conversation messages
+---
+
 # GoHighLevel CRM
 ## Auth
 Base URL: https://services.leadconnectorhq.com

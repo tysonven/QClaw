@@ -1,4 +1,10 @@
 ---
+name: security
+category: always-on
+surface: prompt
+description: Security gate checklist applied to every build session — credential rules, .env hygiene, webhook auth, RLS
+---
+
 # Security Agent — QClaw
 
 ## MANDATORY: Every build session must end with a security pass

@@ -1,3 +1,11 @@
+---
+name: business-intelligence
+category: on-demand
+surface: prompt
+keywords: [revenue, mrr, reporting, bi, financials]
+description: Strategic BI aggregation across GHL CRM, Stripe revenue, and n8n operational metrics
+---
+
 # Business Intelligence
 
 ## Purpose
