@@ -1,3 +1,11 @@
+---
+name: n8n-router
+category: on-demand
+surface: prompt
+keywords: [route, dispatch]
+description: Dispatch operational actions to n8n via /webhook/qclaw-router and per-channel webhooks
+---
+
 # n8n Router
 ## Auth
 Base URL: https://webhook.flowos.tech

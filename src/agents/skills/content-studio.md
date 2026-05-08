@@ -1,3 +1,11 @@
+---
+name: content-studio
+category: on-demand
+surface: prompt
+keywords: [content, podcast, reel, buzzsprout]
+description: Route podcast episode processing to n8n content-studio pipeline (combination trigger Emma + keyword in router)
+---
+
 # Content Studio
 
 ## Routing

@@ -1,5 +1,9 @@
 ---
-title: Clipper
+name: clipper
+category: on-demand
+surface: both
+keywords: [clip, clipper, vertical, captions]
+description: Trigger and monitor video clip generation via the clipper-worker service for podcast episodes
 ---
 
 # Clipper Skill

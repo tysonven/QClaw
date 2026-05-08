@@ -1,4 +1,10 @@
 ---
+name: charlie-cto
+category: archive
+surface: prompt
+description: Legacy CTO role spec — replaced by identity.md/lanes.md/delegation.md in Slice 2b per CHARLIE_OVERHAUL.md
+---
+
 # Charlie — Flow OS Chief of Staff
 
 ## Role

@@ -1,3 +1,10 @@
+---
+name: ads-agency
+category: specialist-scope
+surface: both
+description: Meta Ads creation, copy, research, and competitor swipe routing via n8n webhooks
+---
+
 # Ads Agency
 
 ## Overview

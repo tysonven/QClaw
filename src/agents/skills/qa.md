@@ -1,5 +1,9 @@
 ---
-title: QA Agent
+name: qa
+category: on-demand
+surface: prompt
+keywords: [qa, test, audit, verify]
+description: QA review of completed tasks — completeness, security, correctness, commit, testing checks
 ---
 
 # QA Agent Skill

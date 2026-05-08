@@ -1,5 +1,7 @@
 ---
 name: ghl-marketing
+category: specialist-scope
+surface: prompt
 description: >
   GHL Support Specialist marketing skill. Activate when generating any marketing
   content for the GHL Support Specialist product — organic posts, paid ad copy,

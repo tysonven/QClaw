@@ -1,3 +1,11 @@
+---
+name: trading-api
+category: on-demand
+surface: both
+keywords: [trade, trading, scanner, position]
+description: Trading room HTTP surface — simulations, positions, config, Monte Carlo runs (localhost:4000)
+---
+
 # Trading Room
 
 ## Auth

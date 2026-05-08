@@ -1,5 +1,9 @@
 ---
-title: Build
+name: build
+category: on-demand
+surface: prompt
+keywords: [build, modify, fix, implement, deploy, ship]
+description: Build orchestration — scoping, task breakdown, Claude Code delegation, progress tracking
 ---
 
 # Build Skill

@@ -1,3 +1,10 @@
+---
+name: agent-coordination
+category: archive
+surface: prompt
+description: Sub-agent coordination via Echo audit log queries and task assignment (folds into delegation.md in Slice 2b)
+---
+
 # Agent Coordination
 
 ## Purpose

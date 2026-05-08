@@ -1,3 +1,11 @@
+---
+name: qclaw-dev
+category: on-demand
+surface: prompt
+keywords: [qclaw, build, modify, fix, implement, deploy, ship]
+description: Direct read/edit access to /root/QClaw for QClaw self-improvement and debugging
+---
+
 # qclaw-dev skill
 #
 # Target: ssh qclaw (138.68.138.214), NOT local Mac

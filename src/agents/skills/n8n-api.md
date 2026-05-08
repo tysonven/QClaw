@@ -1,3 +1,11 @@
+---
+name: n8n-api
+category: on-demand
+surface: both
+keywords: [n8n, workflow, webhook]
+description: n8n REST API — list workflows, inspect node configs, query execution history for diagnostics
+---
+
 # n8n API
 
 ## Auth
