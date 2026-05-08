@@ -6430,3 +6430,319 @@ tables.
   | NIT      | Workflow filename inconsistency (canonical vs legacy non-ID-prefixed)     | recon      |
 
 End of session 2026-05-07 ζ.0+ζ.1.
+
+---
+
+## 2026-05-08 — η.1: LinkedIn cluster JWT rotation
+
+Closes the η.0/η.0b/η.0c recon-then-rotate sequence on the
+LinkedIn cluster (project `zshmlgtvhdneekbfcyjc`). Old service_role
+JWT remains valid until η.2 disables legacy keys in the dashboard
+— this commit ships the new `sb_secret_*` opaque-token auth across
+all 6 workflows and verifies they're green under the new key
+state.
+
+### Surface (per η.0c probe)
+
+- 5 inline jsCode literals across 2 workflow files in the repo
+  (env-path consumers — read $env.LINKEDIN_SUPABASE_SERVICE_ROLE_KEY
+  at runtime).
+- 1 n8n credential `QT6Zi0SSBBSbGPF3` "Supabase account LinkedIn DB"
+  consumed by all 6 workflows via supabaseApi credential nodes
+  (cred-path).
+- 4 of the 6 workflows (`NxMfoQtQ2WxeAfhH`, `iTwOGgizGWhBDWCM`,
+  `qszqid6NY51SoX95`, `jmIA9yKIJobsIC60`) are pure cred-path —
+  not in the local repo; auth swap happens at the credential UI
+  layer only, no workflow JSON changes.
+
+η.0c verified the new opaque-token format authenticates as
+service_role via Shape A (apikey alone) and Shape C (apikey +
+Bearer); Shape B (Bearer alone) fails because PostgREST mandates
+the literal `apikey` header. supabaseApi credential type emits
+Shape C — drop-in compatible.
+
+### Step 1 — n8n container env
+
+Appended `LINKEDIN_SUPABASE_SERVICE_ROLE_KEY=sb_secret_…` to
+`/home/n8nadmin/n8n-project/.env` via stdin pipe — value never
+crossed the remote command line. Pre-append count 0, post-append
+count 1.
+
+`.env` is owned by `n8nadmin:n8nadmin` 0600 and the n8nadmin SSH
+user is in the `docker` group, so steps 1.2–1.4 ran without sudo.
+Brief over-specified `sudo`; with sudo the password prompt would
+have blocked. Logged as a low-priority brief-template followup.
+
+`docker compose up -d` recreated `n8n-project-n8n-1` to pick up
+the new env_file content (restart alone wouldn't reload env_file).
+Container reached healthy at attempt 2 (~20s after recreate),
+healthz returned 200. Env var verified present in the running
+container by `awk` count from inside `docker exec` — count = 1,
+value never printed.
+
+### Step 2 — jsCode patches
+
+Two files, 5 nodes, 9 literal occurrences total (the brief subject
+line said "5 inline literals" — that's the node count, not the
+literal count):
+
+| File | Node | Literal occurrences |
+|---|---|---|
+| `VMqrrhecG2hrpn4C-…json` | Check Engagement Rate Limit | 2 (apikey + Authorization) |
+| `yPt090tPv4FJtwAZ-…json` | LinkedIn Post Analytics | 2 |
+| `yPt090tPv4FJtwAZ-…json` | Lead Metrics Query | 1 (`const serviceKey = '…'`) |
+| `yPt090tPv4FJtwAZ-…json` | Engagement Metrics Query | 2 |
+| `yPt090tPv4FJtwAZ-…json` | System Health Query | 2 |
+| | **Total** | **9 across 5 nodes** |
+
+Replacement shapes:
+- `'apikey': 'eyJ…'` → `'apikey': $env.LINKEDIN_SUPABASE_SERVICE_ROLE_KEY`
+- `'Authorization': 'Bearer eyJ…'` → `'Authorization': 'Bearer ' + $env.LINKEDIN_SUPABASE_SERVICE_ROLE_KEY` (concatenation form preserves the existing single-quote style; smaller diff than the brief's template-literal form)
+- `const serviceKey = 'eyJ…';` → `const serviceKey = $env.LINKEDIN_SUPABASE_SERVICE_ROLE_KEY;`
+
+Patched via two jq scripts (`/tmp/eta_1_patch_VM.jq`, `/tmp/eta_1_patch_yP.jq`)
+with `--ascii-output` to preserve the original `\uXXXX` escape style
+in non-target prompt strings — first attempt without `--ascii-output`
+silently normalized `–10`/`—`/`…` to literal Unicode in
+unrelated nodes, which I caught in `git diff` review and rolled back
+before re-running.
+
+Final diff: VM 1 line changed, yP 4 lines changed (one per affected
+node). Zero `eyJhbGc` literals remain across both files; 9
+`LINKEDIN_SUPABASE_SERVICE_ROLE_KEY` references added (matching the
+9 occurrences replaced). `assert_clean_for_put` passed both files
+(orphans / brace-collapse / heartbeat-parallel checks all clean).
+
+**Rule 9 gate that passed:** the brief instructed STOP-and-surface
+if `$env` had no precedent in jsCode. Confirmed: zero pre-existing
+`$env.*` usage inside `parameters.jsCode` across the entire
+`n8n-workflows/` directory; all existing `$env.*` references are in
+HTTP node `parameters` with the `=…{{}}…` expression form. Resolved
+the gate from primary source: n8n container's
+`Code/Sandbox.js:19` declares the sandbox includes `$env` via
+`getWorkflowDataProxy`, so `$env.NAME` resolves as a JS reference
+inside Code-node sandbox. Syntax verified pre-edit, smoke-test
+verified post-edit.
+
+### Step 3 — PUTs
+
+VMqrrhecG2hrpn4C: HTTP 200, `active=true` preserved, `availableInMCP`
+unset before and after (this workflow never had it set — the brief's
+"re-enable if reset to false per known n8n quirk" handler was a
+no-op for this cluster).
+
+yPt090tPv4FJtwAZ: HTTP 200, same state-preservation profile.
+
+PUT body via `b_common.trim_for_put` (name + nodes + connections +
+filtered settings). API key sourced from
+`/root/.quantumclaw/.env` on qclaw via passwordless sudo and cut
+to a shell variable; body piped via ssh stdin so the key never
+crossed back to the local Mac.
+
+### Step 4 — Smoke test (env path)
+
+Used the established temp-cron pattern from the 2026-05-05 build
+log: temporarily set `System Health Monitor` cron to
+`0 * * * * *`, waited 75s for the next minute boundary, captured
+executions, reverted to `0 0 * * * *`.
+
+Two executions fired in the window:
+- exec id 812382, started 2026-05-08T11:11:00.045Z, status=success, finished=true
+- exec id 812383, started 2026-05-08T11:12:00.051Z, status=success, finished=true
+
+Caveat surfaced during investigation: all 5 affected jsCode nodes
+wrap the `$http.get` in `try { … } catch(e) { …default… }`, so
+the Code-node execution status is success regardless of whether
+auth worked. The execution-status signal is not sufficient by
+itself for these nodes.
+
+Stronger evidence — direct in-container Shape-C probe using the
+env-resident key (no value left the container):
+
+  /system_alerts:           HTTP=200
+  /engagement_rate_limits:  HTTP=200
+  /engagement_activities:   HTTP=200
+  /prospects:               HTTP=200
+  /content_posts:           HTTP=200
+
+Plus zero 401/403 in `docker logs n8n-project-n8n-1 --since 5m`
+during the smoke window. Combined with: env var present in running
+container (count=1), key verified service-role-capable in η.0c,
+sandbox source confirms `$env` resolves in jsCode → env path
+verified end-to-end.
+
+### Step 5 — Tyson manual checkpoint
+
+Tyson updated credential `QT6Zi0SSBBSbGPF3` "Supabase account
+LinkedIn DB" via n8n UI, replacing the old service_role JWT in
+the `serviceRole` field with the new `sb_secret_…` value. No repo
+footprint (n8n stores credential `data` as encrypted text;
+introspection from the `credentials_entity.data` jsonb is opaque
+at rest).
+
+### Step 6 — Cred-path verification
+
+Triggered NxMfoQtQ2WxeAfhH "Engagement Weighting Re-calibration"
+via temp-cron on `Weekly Weighting Trigger` (`0 0 8 * * 1` →
+`0 * * * * *` → revert).
+
+- exec id 812418, started 2026-05-08T11:46:00.032Z, status=success, finished=true
+
+Cred-path nodes (`Fetch Engagement Activities` READ + `Save
+Engagement Weights` WRITE) both have `continueOnFail=false` —
+fail-loud httpRequest nodes. Success status = both reached
+PostgREST and authenticated as service_role via the credential.
+
+### Step 7 — All 6 workflows
+
+Batch fast-cron PUT on the 5 remaining schedule-trigger entry nodes
+in parallel (yP `Analytics Collection Trigger`, VM `Engagement
+Monitor Trigger`, iTwO `Monthly Calibration Trigger`, qsz `Content
+Schedule Trigger`, jmIA `Lead Generation Trigger`); waited 75s;
+captured executions; reverted all 5 in a second batch.
+
+| Workflow | Exec id | Status | Notes |
+|---|---|---|---|
+| yPt090tPv4FJtwAZ | 812420, 812425 | **success** | Recent Posts Query (cred READ), Analytics Database Update (cred WRITE), LinkedIn Post Analytics (env GET) all green |
+| VMqrrhecG2hrpn4C | 812421, 812428 | **success** | Both env-path (Check Engagement Rate Limit) and cred-path (Engagement Logger, Rate Limit Tracker, Fetch Engagement Weights) green |
+| NxMfoQtQ2WxeAfhH | 812418 (Step 6) | **success** | Cred READ + WRITE green |
+| iTwOGgizGWhBDWCM | 812422, 812426 | **error** | Pre-existing URL-as-static bug, see followups |
+| qszqid6NY51SoX95 | 812423, 812427 | **success** | All 4 cred-path nodes (Database Logger, Failed Content Logger, Fetch Recent Posts, Fetch Top Performing Posts) green |
+| jmIA9yKIJobsIC60 | 812424, 812429 | **error** | Pre-existing Apify httpHeaderAuth credential missing, see followups |
+
+n8n logs across the full 11:57–12:13 window: zero 401/403/auth-error
+against `zshmlgtvhdneekbfcyjc`. The 2 errors are NOT auth failures —
+diagnosed below.
+
+#### Failure 1 — iTwOGgizGWhBDWCM (raw error context)
+
+```
+lastNodeExecuted: Fetch Last 30 Days Prospects
+top-level error: invalid input syntax for type timestamp with time zone: "{{$now.minus(30, 'days').toISO()}}"
+request: {
+  "headers": {
+    "apikey": "**hidden**",
+    "Authorization": "**hidden**",
+    "content-type": "application/json"
+  },
+  "method": "GET",
+  "uri": "https://zshmlgtvhdneekbfcyjc.supabase.co/rest/v1/prospects?created_at=gte.{{$now.minus(30, 'days').toISO()}}&select=…"
+}
+per-node:
+  Monthly Calibration Trigger: success
+  Fetch Last 30 Days Prospects: error  Bad request - please check your parameters
+```
+
+Diagnosis: the `url` field on Fetch Last 30 Days Prospects is
+configured as a **static string** (first character is `h` for
+`https`, not `=` which n8n requires to mark a field as an
+expression). The `{{$now.minus(30, 'days').toISO()}}` placeholder
+travels to PostgREST as literal text, which Supabase rejects as a
+malformed timestamp. The `apikey` and `Authorization` headers
+masked as `**hidden**` in the error context confirm the credential
+WAS sent — η.1 auth path is working; this is an unrelated
+URL-templating bug in the workflow definition itself.
+
+#### Failure 2 — jmIA9yKIJobsIC60 (raw error context)
+
+```
+lastNodeExecuted: Launch Apify LinkedIn Scraper
+node type: httpRequest
+authentication: genericCredentialType / httpHeaderAuth
+error: Credentials not found
+NodeOperationError
+per-node:
+  Lead Generation Trigger: success
+  Launch Apify LinkedIn Scraper: error  Credentials not found
+```
+
+Diagnosis: the node references an `httpHeaderAuth` credential (the
+Apify API key, NOT the LinkedIn Supabase credential) that has been
+deleted/renamed at some point in the past. Completely unrelated to
+LinkedIn Supabase rotation — η.1 didn't touch this credential.
+
+### Step 8 — schedule-cache lag (non-blocker, anomaly)
+
+Between the revert PUTs (HTTP 200 at ~11:58–12:00) and ~12:06,
+n8n's in-memory schedule cache continued firing the 5 reverted
+workflows on the now-stale `0 * * * * *` for 6 minutes before
+flushing. All re-fires had identical pass/fail patterns to the
+intentional ones. One additional yP exec during the lag window
+(812949, 12:03:08) errored at `AI Performance Analyzer` with
+"Bad gateway - the service failed to handle your request" — a
+transient external LLM-API hiccup, also unrelated to η.1.
+
+Crons confirmed back to original via GET on all 5 workflows after
+the lag flushed:
+
+```
+yPt090tPv4FJtwAZ Analytics Collection Trigger -> 0 0 8 * * *
+yPt090tPv4FJtwAZ Weekly Report Trigger -> 0 0 9 * * 1
+yPt090tPv4FJtwAZ System Health Monitor -> 0 0 * * * *
+VMqrrhecG2hrpn4C Engagement Monitor Trigger -> 0 0 */4 * * *
+iTwOGgizGWhBDWCM Monthly Calibration Trigger -> 0 0 7 1 * *
+qszqid6NY51SoX95 Content Schedule Trigger -> 0 0 8 * * 1,3,5
+jmIA9yKIJobsIC60 Lead Generation Trigger -> 0 0 9 * * 1-5
+jmIA9yKIJobsIC60 Follow-up Trigger -> 0 0 11 * * 2,4
+```
+
+### Acceptance criteria — all green
+
+1. env var present in n8n container: ✅ (count=1, verified via `awk` from inside `docker exec`)
+2. zero JWT literals in 2 patched files: ✅ (`grep -o 'eyJhbGc' | wc -l` = 0 on both)
+3. PUTs returned 200, availableInMCP preserved: ✅ (both 200, availableInMCP unset before AND after — no quirk to handle on this cluster)
+4. smoke test (env path): ✅ exec ids 812382, 812383 + in-container Shape-C probe HTTP 200 across 5 endpoints
+5. credential path verified: ✅ exec id 812418 (NxMfoQtQ2WxeAfhH cred READ + WRITE)
+6. all 6 workflows verified: ✅ on η.1's auth dimension (4 successful executions; 2 errors diagnosed as pre-existing non-auth bugs and surfaced as separate dispatches)
+7. zero 401/403 in n8n logs during the rotation window: ✅
+
+### Lessons banked
+
+1. **Code-node `try/catch` swallow patterns hide auth signal.** All 5
+   patched jsCode nodes wrap `$http.get` in `try { … } catch(e) { …silent default… }`,
+   which means execution status is success even on 401. For future
+   rotation smoke tests on Code-node nodes, the in-container
+   direct probe (Shape-C against each endpoint via `node -e fetch`)
+   is the load-bearing evidence, not workflow execution status.
+   Worth thinking about whether a sentinel diagnostic node should
+   be added to the cluster to fail-loud on auth degradation.
+
+2. **n8n schedule cache holds stale crons for ~6 min after PUT.**
+   PUT returns 200 and the GET endpoint reflects the new cron, but
+   the in-memory scheduler keeps firing the OLD value until the
+   cache flushes. Real footgun for temp-cron-style smoke tests —
+   the workflow keeps firing every minute long after revert.
+   Mitigation: bake an extra 6-min observation window into any
+   future temp-cron sequence before declaring "done". Or
+   force-flush via toggling `active` (not tested here).
+
+3. **`grep -c` exits 1 on zero matches**, which trips fallback
+   `|| echo 0` patterns and silently doubles the captured value
+   to "0\n0" (which compares unequal to "0" and looks like a
+   duplicate). Used `awk "/pattern/{c++} END{print c+0}"` instead
+   — single integer, exit 0 always.
+
+4. **jq default JSON output normalizes `\uXXXX` escapes to literal
+   UTF-8.** First-pass jq edit silently re-encoded em-dash, ellipsis,
+   and arrow characters in unrelated prompt strings, ballooning
+   the diff with byte-equivalent but visually-different
+   non-target lines. `jq --ascii-output` preserves the original
+   `\u…` form. Caught in git diff review pre-PUT.
+
+5. **The brief's "5 inline literals" count was a node count, not a
+   literal count.** Actual literal-occurrence count was 9. Use
+   `grep -o 'pattern' | wc -l` (occurrences) not `grep -c`
+   (lines) when the count matters.
+
+### Followups (this dispatch)
+
+  | Priority | Item                                                                                                                         | Source |
+  |----------|------------------------------------------------------------------------------------------------------------------------------|--------|
+  | HIGH     | iTwOGgizGWhBDWCM "Monthly Calibration": "Fetch Last 30 Days Prospects" httpRequest node has URL configured as static string but contains n8n template syntax `{{$now.minus(...)}}`. PostgREST receives literal placeholder text and rejects as malformed timestamp. Fix: mark URL field as expression (leading `=` in n8n field convention). Single-node PUT. Auth path verified working in η.1, this is a separate config bug. Pre-existing. | this   |
+  | MED      | jmIA9yKIJobsIC60 "Lead Generation": "Launch Apify LinkedIn Scraper" node references httpHeaderAuth credential that has been deleted/renamed at some point. "Credentials not found" error on every fire. Fix: recreate Apify API credential in n8n UI, re-link the node. Auth path verified working in η.1, this is a separate credential-store issue. Pre-existing. | this   |
+  | HIGH     | η.2 — disable legacy keys for `zshmlgtvhdneekbfcyjc` in Supabase dashboard, re-fire all 6 workflows to confirm green-under-only-new-key state. Old service_role JWT remains valid until Tyson disables it. | next   |
+  | MED      | n8n schedule-cache flush — investigate whether PUT-then-active-toggle invalidates the in-memory scheduler faster than the observed ~6 min lag. Real footgun for any future temp-cron smoke test. | this   |
+  | LOW      | Brief-template fix: `sudo` over-specification on n8n env-edit steps. .env is owned by n8nadmin:n8nadmin 0600 and the SSH user is in the docker group; sudo is unnecessary AND would block on password prompt. Future briefs touching the n8n host shouldn't auto-prepend sudo. | this   |
+  | LOW      | Code-node auth-degradation sentinel — consider adding a diagnostic node to the cluster that fail-loud on Supabase 401/403 instead of swallowing into a default. Without it, future rotation smoke tests must rely on out-of-band probes. | this   |
+
+End of session 2026-05-08 η.1.
