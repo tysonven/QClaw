@@ -6874,3 +6874,123 @@ Pending Tyson post-merge:
 - [ ] Optional: `qclaw skill list` from the qclaw CLI to confirm the migrated output renders the `[category]` tags correctly
 
 End of session 2026-05-08 Slice 2a.
+
+---
+
+## 2026-05-08 — η.2: legacy JWT disable verified
+
+Closes the η rotation arc. Tyson disabled the legacy JWT-based
+API keys for project `zshmlgtvhdneekbfcyjc` in the Supabase
+dashboard at `2026-05-08T14:16:38.792895+00:00` (timestamp
+sourced from the dashboard's own response — see negative probe
+below) and deleted the unused "default" `sb_secret_*` key (the
+one transmitted in chat during η.0c probing). The new
+"linkedin_cluster" `sb_secret_*` (live in n8n env
+`LINKEDIN_SUPABASE_SERVICE_ROLE_KEY` and credential
+`QT6Zi0SSBBSbGPF3` from η.1) is now the **only** path that
+authenticates against this project.
+
+### Pre-flight
+
+- env var present in `/home/n8nadmin/n8n-project/.env`: count=1
+- env var present in running container `n8n-project-n8n-1`: count=1
+- credential `QT6Zi0SSBBSbGPF3` `updatedAt = 2026-05-08
+  11:34:01.322+00`, confirming Tyson's η.1-Step-5 UI update
+  landed before legacy disable
+
+### Negative probe — leak surface closed
+
+Pulled the legacy service_role JWT directly from git history
+(`git show 085b6fa:n8n-workflows/VMqrrhecG2hrpn4C-…json`) and
+fired Shape-C against all 5 endpoints the cluster touches:
+
+```
+/system_alerts:           HTTP=401
+/engagement_rate_limits:  HTTP=401
+/engagement_activities:   HTTP=401
+/prospects:               HTTP=401
+/content_posts:           HTTP=401
+```
+
+All 5 returned the canonical Supabase response:
+```
+{"message":"Legacy API keys are disabled","hint":"Your legacy
+ API keys (anon, service_role) were disabled on
+ 2026-05-08T14:16:38.792895+00:00. Re-enable them in the Supabase
+ dashboard, or use the new ..."}
+```
+
+The legacy JWT in commits `085b6fa` and earlier — which was the
+load-bearing concern of the η-arc — is now structurally invalid.
+Git history retention of the leaked credential is no longer a
+live exposure, just a historical record.
+
+### Step 2 — 4 known-good workflows re-fired
+
+Same temp-cron pattern as η.1 Step 7, batched. iTwO + jmIA
+skipped (separate followups, pre-existing non-auth bugs).
+
+| Workflow | Trigger | Exec ids | Status |
+|---|---|---|---|
+| yPt090tPv4FJtwAZ | Analytics Collection | 820345 (14:21:06), 820494 (14:22:07) | success |
+| VMqrrhecG2hrpn4C | Engagement Monitor | 820622 (14:23:08), 820757 (14:24:08) | success |
+| NxMfoQtQ2WxeAfhH | Weekly Weighting | 820623 (14:23:08), 820758 (14:24:08) | success |
+| qszqid6NY51SoX95 | Content Schedule | 820624 (14:23:08), 820759 (14:24:08) | success |
+
+8/8 successful executions under sb_secret-only state. Crons all
+confirmed back to original via GET after revert PUTs.
+
+### Step 3 — Direct Shape-C probe (per η.1 lesson #1)
+
+In-container probe via `node -e fetch` reading
+`process.env.LINKEDIN_SUPABASE_SERVICE_ROLE_KEY` (value never
+left the container):
+
+```
+key length: 41  prefix: sb_secret_a
+/system_alerts:           HTTP=200
+/engagement_rate_limits:  HTTP=200
+/engagement_activities:   HTTP=200
+/prospects:               HTTP=200
+/content_posts:           HTTP=200
+```
+
+This is the load-bearing evidence that the new key still resolves
+to service_role context post-legacy-disable. Together with the
+negative probe above: **only the new sb_secret_* authenticates.**
+
+### Step 4 — n8n logs grep
+
+`docker logs n8n-project-n8n-1 --since 15m | grep -cE "401|403"`
+returned **0** across the entire η.2 window (14:16 disable →
+14:30 verification). No noise from iTwO/jmIA either — those
+workflows' next scheduled fires are not within the 15-min window
+(iTwO is monthly on the 1st; jmIA is weekday 9am UTC and today's
+9am fire predated the disable).
+
+### Acceptance criteria — all green
+
+1. Pre-flight env + credential state intact: ✅
+2. 4 known-good workflows re-fired green under sb_secret-only: ✅ (8 successful executions, exec ids above)
+3. Shape-C probe with new key returns 200 across 5 endpoints: ✅
+4. Negative probe with legacy JWT returns 401 across same 5 endpoints: ✅ (Supabase confirms disable timestamp `2026-05-08T14:16:38.792895Z`)
+5. Zero 401/403 in n8n logs since legacy disable: ✅
+
+### Pre-existing followups (unchanged by η.2)
+
+The 2 known-broken-pre-η.1 workflows are not affected by η.2:
+- iTwOGgizGWhBDWCM Monthly Calibration: URL-as-static templating bug (η.1 followup, HIGH).
+- jmIA9yKIJobsIC60 Lead Generation: missing Apify httpHeaderAuth credential (η.1 followup, MED).
+
+Both were already broken under the legacy key; both remain broken
+under sb_secret. η.2 didn't introduce new regressions on either.
+
+### Followups (this dispatch)
+
+  | Priority | Item                                                                                                                         | Source |
+  |----------|------------------------------------------------------------------------------------------------------------------------------|--------|
+  | INFO     | Main Supabase project `fdabygmromuqtysitodp` still on legacy JWT auth — separate rotation surface, separate dispatch when prioritised. The η-arc was scoped to LinkedIn cluster only. | recon  |
+  | LOW      | Add a single-fire `auth-canary` workflow on each Supabase project (5-min cron, hits `?limit=1` on a known-good table, fail-loud + Telegram on 401/403). Catches future credential decay/disable events within minutes instead of waiting for a real workflow run. Generalises η.1 lesson #1 + the probe pattern used in η.0c/η.1/η.2. | this   |
+  | LOW      | The "default" sb_secret key Tyson deleted in η.2 is the one transmitted in chat during η.0c. Its full lifecycle (mint → probe → never consumed → delete) is now closed; no remediation needed beyond what just happened. Historical record only. | this   |
+
+End of session 2026-05-08 η.2.
