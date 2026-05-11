@@ -7403,3 +7403,265 @@ rightValue-type bug surfaced via exec 929037 dump → PUT 200 with fix → all
 5 branch tests green (exec ids 929061/929065/929068/929070/929072) → active
 state confirmed → DB clean of test fixtures (csj WB Test rows = 0,
 clip_jobs WB Test rows = 0, clipper_pending rows = 0).
+
+## 2026-05-11 — Content Studio Workflow C: Publish + Distribution (build + branch tests)
+
+Webhook-triggered finisher for the Content Studio pipeline. POST
+`/webhook/content-studio-publish` with body `{csj_id: <uuid>}` and
+`X-Auth-Token` header → C reads csj, validates `status IN
+(clipper_complete, clipper_error, clipper_timeout)`, then fires three
+parallel publish surfaces:
+
+- **WordPress:** POST `/wp-json/wp/v2/posts/{wordpress_post_id}` body
+  `{status:'publish'}` (cred `wordpressApi` id `9wJkjOmNNLH3lh4w` "WordPress FSC").
+- **LinkedIn:** Blotato community node `@blotato/n8n-nodes-blotato.blotato`
+  (cred `blotatoApi` id `Bs2TEAOA9mVKfcR3` "Blotato account"), account
+  17146 "Emma Maidment". Text source is `csj.linkedin_post` (verbatim, with
+  defensive fallback to substitute `csj.buzzsprout_url` if a trailing
+  `🎧 Listen here:` line is missing its URL).
+- **YouTube:** PUT `youtube/v3/videos?part=status` body
+  `{id,status:{privacyStatus:'public'}}` (cred `youTubeOAuth2Api` id
+  `zQZfoOUGdhExsQCX` "Emma YouTube Oauth2").
+
+Substack remains manual (unofficial API too unstable to automate).
+Continue-on-error semantics: csj.status='full_complete' regardless of
+per-surface result; failures captured in `csj.publish_metadata.failed_surfaces`
++ surfaced in Telegram.
+
+Workflow id: **`yu3gEaDsd6d1E9e8`** (n8n), active, webhook-trigger.
+File: `n8n-workflows/yu3gEaDsd6d1E9e8-content-studio-publish.json`.
+errorWorkflow: `7kpNnMtnuDWXgWcX`.
+
+### Step 0 — recon findings (read against `Qf39NEOEgz2W0uls-content-studio-pipeline.json`)
+
+(0.4) **LinkedIn placeholder doesn't exist as a placeholder.** Workflow A's
+`Generate LinkedIn Post` node embeds Buzzsprout URL inline at A-time via
+Claude (system prompt ends with `End the post with exactly this line:\n🎧
+Listen here: ' + ($('Upload to Buzzsprout').first().json.url || '')`). By
+the time C runs, `csj.linkedin_post` already contains the final text.
+Workflow C posts verbatim; the only fallback is: if the trailing
+`/🎧\s*Listen here:\s*$/` regex matches (URL was empty at A-time),
+substitute `csj.buzzsprout_url`.
+
+(0.5) **csj schema gap.** Probe found
+`published_at` and `publish_metadata` columns missing — verbatim:
+
+```
+{"code":"42703","details":null,"hint":null,"message":"column content_studio_jobs.published_at does not exist"}
+{"code":"42703","details":null,"hint":null,"message":"column content_studio_jobs.publish_metadata does not exist"}
+```
+
+Tyson approved adding the columns as part of this dispatch. Migration
+`2026_05_11_workflow_c_csj_publish_columns.sql` adds both with `IF NOT
+EXISTS`; applied via Supabase MCP `apply_migration` and verified:
+
+```sql
+SELECT column_name, data_type, column_default
+FROM information_schema.columns
+WHERE table_schema='public'
+  AND table_name='content_studio_jobs'
+  AND column_name IN ('published_at','publish_metadata');
+-- => publish_metadata jsonb default '{}'::jsonb
+--    published_at     timestamp with time zone
+```
+
+(0.6) **`csj.status='full_complete'` accepted** — PATCH probe returned
+HTTP 200; the status column is plain `text` with no CHECK constraint
+(existing distinct values include the ad-hoc `a_complete`).
+
+### Step 0.5 — auth token
+
+`CONTENT_STUDIO_PUBLISH_TOKEN` (48-char hex from `openssl rand -hex 24`)
+added to:
+
+- `/home/n8nadmin/n8n-project/.env` on n8n host, then
+  `docker compose up -d` recreated `n8n-project-n8n-1` (verified
+  in-container: `TOKEN_LEN=48`).
+- `/root/.quantumclaw/.env` on qclaw (mirror, for outbound curls).
+
+httpHeaderAuth credential `ekVxS05c4wasuBlc` "Content Studio Publish
+Token" created in n8n UI by Tyson (header name `X-Auth-Token`); webhook
+trigger uses it.
+
+### Workflow shape (20 nodes)
+
+```
+Webhook Trigger  ──┬──→ Heartbeat: Start (parallel-branch sink off
+                   │       trigger; metadata={trigger:'webhook',
+                   │       csj_id})
+                   │
+                   └──→ SELECT csj
+                          │
+                          v
+                      Eligible Status?  (IF status IN
+                                         clipper_complete|error|timeout)
+                          │
+                          ├─false ──→ Heartbeat: Skipped → Telegram:
+                          │            Skipped → Respond: 422
+                          │
+                          └─true  ──→ THREE PARALLEL BRANCHES
+                                       │
+                                       ├──→ WordPress: Publish  ──→ Set: WP Shape ──┐
+                                       │
+                                       ├──→ Build LinkedIn Text  (Code) ──→
+                                       │     Blotato: LinkedIn Post  ──→ Set: LI Shape ──┤
+                                       │
+                                       └──→ YouTube: Make Public  ──→ Set: YT Shape ──┤
+                                                                                       │
+                                       Merge Branches (3 inputs, combine-by-position) ←┘
+                                            │
+                                            v
+                                       Build Publish Summary (Code)
+                                            │
+                                            v
+                                       PATCH csj (PostgREST,
+                                       Supabase Main Service Role cred)
+                                            │
+                                            v
+                                       Telegram: Publish Done
+                                            │
+                                            v
+                                       Heartbeat: Success
+                                            │
+                                            v
+                                       Respond: 200
+```
+
+Each surface httpRequest uses `onError: continueRegularOutput` so errors
+land inline in `$json.error`; per-branch Set nodes use conditional
+expressions `={{ $json.error ? 'error' : 'success' }}`. validators
+(`assert_clean_for_put`) clean.
+
+### Bugs found mid-test (verbatim evidence)
+
+**Bug 1: Brief's `POST /api/v1/workflows/{id}/execute` returns 405.** Same
+as Workflow B; not a regression. Switched Step 3 to activate-and-curl per
+brief's fallback.
+
+**Bug 2: Initial dual-output continueErrorOutput pattern lost the error
+shape.** First-pass build used `onError: continueErrorOutput` with
+per-branch `Set: <X> Result` + `Set: <X> Error` nodes. n8n v4.2 emits the
+INPUT item (not the error response) to the error output, with `error`
+metadata at the item-object level not at `$json.error`. Dump of exec
+`929675` runData for `YouTube: Make Public`:
+
+```
+main[0] (branch len=0)        ← success output empty
+main[1] (branch len=1)         ← error output got the upstream input
+  item[0] keys=['json','pairedItem']    ← no `error` key on item
+  json: {... csj fields ...}   ← INPUT item passed through
+```
+
+Fix: switched to `onError: continueRegularOutput` so error info comes
+through main output as `$json.error`. Per-branch Set node uses
+`{{ $json.error ? 'error' : 'success' }}`. Cuts node count from 23 → 20
+(one Set per branch instead of two).
+
+**Bug 3: n8n expression parser closes at the first `}}` even when nested
+JS braces are open.** Initial YT body template (concatenated):
+
+```
+={{ JSON.stringify({id: ..., status: { privacyStatus: 'public' }}) }}
+```
+
+n8n treated the inner `}}` (status's close + outer obj close, adjacent)
+as the expression-close marker, leaving JS truncated and throwing
+`SyntaxError: invalid syntax`. Surfaced verbatim in the rerun output:
+
+```
+yt_status=error
+yt_error=invalid syntax
+yt_raw_response={"error":"invalid syntax"}
+```
+
+Workflow A's `YouTube Init Upload` body has spaces between consecutive
+closing braces (`...selfDeclaredMadeForKids: false } }) }}`) which avoids
+the issue. Fix: add a space — `status: { privacyStatus: 'public' } }`.
+Post-fix YT request returns 200 + the Video resource with
+`privacyStatus:public`.
+
+**Bug 4: Blotato response shape — `{postSubmissionId: "<uuid>"}` only.** No
+post URL returned. `li_url` left empty in `publish_metadata`; `li_post_id`
+captures `postSubmissionId`. No way to construct the LinkedIn URL from
+Blotato's response without an extra Blotato lookup call. Flagged for
+followup.
+
+### Step 3 — branch tests, 4/4 green
+
+| Test | csj_id | webhook | result |
+|---|---|---|---|
+| 2 — auth rejection (no token AND wrong token) | n/a | **403** "Authorization data is wrong!" both attempts | **PASS** — n8n header auth enforced before any node fires |
+| 3 — invalid status (csj.status='pending') | `3f45625b-…` | **422** `{"ok":false,"reason":"csj status not eligible","csj_status":"pending",…}` | **PASS** — csj unchanged, Skipped Telegram fired |
+| 4 — partial fail (wp_post_id=NULL; real LI+YT fixtures) | `7e18435b-…` | **200** | **PASS** — csj→full_complete; failed_surfaces=['wordpress']; LI postSubmissionId=`b62dcd3f-…`; YT G0xXhfHljJk flipped public (verified via response `privacyStatus:public`) |
+| 1 — happy path (WP=696, YT=6C9iD-LzWcY, real LI) | `f8bd46ab-…` | **200** | **PASS** — csj→full_complete; all_success=true; failed_surfaces=[]; WP post 696 verified `status:publish` via live re-fetch + auto-reverted to draft after; LI postSubmissionId=`8a68c62c-…`; YT 6C9iD-LzWcY flipped public (verified) |
+
+WP cleanup automated via direct WP REST `POST /wp-json/wp/v2/posts/696
+{status:'draft'}` using app-password creds from `/root/.quantumclaw/.env`.
+LinkedIn + YouTube cleanup is manual (Tyson via UI).
+
+### Step 4 — activation + external curl verification
+
+`POST /api/v1/workflows/yu3gEaDsd6d1E9e8/activate` → 200, `active=true`.
+External webhook hit from outside qclaw (the test runner ran on qclaw
+calling `https://webhook.flowos.tech/webhook/content-studio-publish`)
+succeeded with 403 for no/wrong token and 200 for valid token — confirms
+the production webhook is live + auth enforcement is real.
+
+### Followups (Rule 4)
+
+1. **Buzzsprout webhook integration.** Brief mentions as TODO; not in
+   scope here. When Buzzsprout has a "published" webhook available,
+   Workflow C could be triggered from it automatically. For now, Tyson
+   triggers manually via curl after reviewing csj output.
+2. **Dashboard wiring for Workflow C trigger button** — separate session.
+3. **Substack publish path** stays manual. Unofficial Substack API is too
+   unstable; Emma publishes from the Substack UI using `csj.substack_draft`.
+4. **Blotato → LinkedIn URL.** Blotato's create-post response only
+   contains `{postSubmissionId}`. Need an extra GET (Blotato post-status
+   endpoint) to retrieve the LinkedIn URL. Implement when needed.
+5. **`POST /api/v1/workflows/{id}/execute` returns 405** on this n8n —
+   already noted on Workflow B's followup list; n8n public API limitation.
+6. **`csj.status` is plain text, not enum.** No CHECK constraint
+   prevents typos like `clipper_compleet`. Optional hardening: add a
+   CHECK constraint in a follow-up migration once the full status set is
+   settled (`clipper_pending`, `clipper_complete`, `clipper_error`,
+   `clipper_timeout`, `full_complete`, plus historical `a_complete`,
+   `error`, `pending`).
+7. **continueRegularOutput hides true HTTP response body on error.** n8n
+   wraps the error as `{error: "<n8n message>"}` — for example a WP 404
+   surfaces as `{"error":"Bad request - please check your parameters"}`,
+   not the original WP REST body `{"code":"rest_post_invalid_id",…}`. If
+   the original response body is needed for diagnosis, enable
+   `options.response.fullResponse: true` on the httpRequest node.
+
+### Trigger contract (for Tyson)
+
+```
+curl -X POST https://webhook.flowos.tech/webhook/content-studio-publish \
+  -H "X-Auth-Token: <CONTENT_STUDIO_PUBLISH_TOKEN from /root/.quantumclaw/.env>" \
+  -H "Content-Type: application/json" \
+  -d '{"csj_id": "<uuid>"}'
+```
+
+- **Pre-condition:** `csj.status IN
+  ('clipper_complete','clipper_error','clipper_timeout')`. Other statuses
+  return 422 + Skipped Telegram.
+- **Post-condition:** `csj.status='full_complete'` regardless of
+  per-surface outcome.
+- **Side effects:** WordPress post flipped to publish; LinkedIn post
+  created via Blotato; YouTube video flipped to public.
+- **Failure mode:** failed surfaces captured in
+  `csj.publish_metadata.failed_surfaces` (text[]) + surfaced in Telegram
+  with ✅/❌ per surface and the error message. Workflow C is
+  idempotent-safe to re-fire — second call sees `status='full_complete'`
+  (not in the eligible set), routes to Skipped path, returns 422 without
+  publishing anything again.
+
+verified: workflow `yu3gEaDsd6d1E9e8` created (POST 200) → continueRegularOutput
+pattern + brace-spacing fix landed via two successive PUT 200s →
+4/4 controlled branch tests green → external curl reachable + auth
+enforced → `csj.publish_metadata` populated on each test exec → migration
+`2026_05_11_workflow_c_csj_publish_columns.sql` applied via Supabase MCP
+and `published_at`+`publish_metadata` columns confirmed via
+`information_schema.columns` → DB clean of `WC %` test rows post-cleanup
+(`SELECT … WHERE episode_title LIKE 'WC %'` returns `[]`).
