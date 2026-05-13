@@ -9293,3 +9293,177 @@ failure.
 - Slice 2 (PR #10, merged `c482013...d63e855`) — predecessor on this
   workflow (Compute Final `error.description` promotion).
 - Memory: `project_n8n_qclaw_topology.md` (PUT body shape).
+
+## 2026-05-13 — Slice 4: Crete Bug 2 fix (Generator + Publisher media wiring + Validate Media expansion)
+
+Per `/tmp/marketing_image_audit_20260513.md` Bug 2 verdict for the Crete
+pipeline. Two-layer fix: the Generator's `Image Router` previously
+early-returned for any non-Instagram row (FB and LinkedIn rows arrived at
+the Publisher with `media_url=NULL`); the Publisher's `Facebook Post` and
+`LinkedIn Post (Blotato)` nodes had no media-field wiring even if a
+`media_url` were present. Closes the wiring gap end-to-end for Crete.
+
+**Branch:** `cc/slice4-crete-media-wiring-20260513` (created from `main` @
+`18c500e`, after Slice 3 PR #12 merged).
+
+### Workflows touched (both via PUT through `https://webhook.flowos.tech/api/v1`)
+
+**`tnvXFYvODL1PrhJa` — Crete - Content Generator (19 → 19 nodes, 1 node modified)**
+
+- **`Image Router` Code node rewritten.** Pre-Slice-4: `if (!isInstagram)
+  return row` skipped image generation for FB/LinkedIn. Post-Slice-4:
+  `NEEDS_IMAGE = ['instagram','facebook','linkedin']` opens the gate to
+  all three; non-supported platforms (e.g. `'other'`) still pass through
+  untouched. Default `imageType` is `'text_card'` for all supported
+  platforms (matches IG's pre-Slice-4 default); `'photo'` branch
+  preserved verbatim for any row whose calendar slot explicitly sets
+  `image_type='photo'`. The downstream chain (`Generate Text Card` →
+  `Merge Image URL` → `Insert to Supabase`, plus the
+  `Photo Fallback` → `Fetch Photo Library` → `Select Random Photo`
+  failure branch added Apr 30) is platform-agnostic and required no
+  changes — confirmed by static read.
+
+**`zXKBjp3yjW2oR2Mj` — Crete - Content Publish (27 → 27 nodes, 3 nodes modified)**
+
+- **`LinkedIn Post (Blotato)`** — added one parameter:
+  `postContentMediaUrls: "={{ $('Extract Item').item.json.media_url }}"`.
+  Byte-for-byte mirror of the IG node's expression on the same workflow,
+  same pattern as Slice 3 used on the GHL Publisher. Account 11109
+  (Tyson Venables LinkedIn) unchanged.
+- **`Facebook Post`** — endpoint changed from Graph `/feed` to `/photos`
+  (mirror of GHL Publisher's FB pattern from the Apr 27 morning
+  hardening). Body changed from `{message, access_token}` to
+  `{url, caption, access_token}` with `url: $json.media_url` and
+  `caption: $json.body`. Env vars unchanged: still uses Crete-side
+  `META_PAGE_ID` / `META_PAGE_ACCESS_TOKEN` (NOT GHL's `FLOWOS_META_*`
+  vars — confirmed by static read before edit, the two business units
+  have separate Meta page credentials per `LOCATIONS.md`).
+- **`Validate Media`** — `NEEDS_MEDIA = ['instagram','facebook','linkedin']`
+  expanded from instagram-only. `_failure_reason` now dynamic:
+  `'missing_media_for_' + platform`. So a LinkedIn row arriving with
+  `media_url=NULL` post-Slice-4 will be marked
+  `status='failed', last_error='missing_media_for_linkedin'` via the
+  existing `Mark Failed (Validation)` PATCH — same audit trail the
+  Apr 30 hardening built for IG.
+
+### PUT verification (live)
+
+- **tnvXFYvODL1PrhJa:** PUT `HTTP=200` @ `2026-05-13T21:20:10.940Z`.
+  Static post-PUT GET: no `if (!isInstagram)` early-return, supports
+  FB+LI+IG, default `imageType='text_card'`, photo+text-card branches
+  preserved, non-supported-platform passthrough preserved.
+  `settings.availableInMCP=true`.
+- **zXKBjp3yjW2oR2Mj:** PUT `HTTP=200` @ `2026-05-13T21:21:00.887Z`.
+  Static post-PUT GET: Validate Media covers all three platforms with
+  dynamic `_failure_reason`; FB Post endpoint is `/photos` with `url` +
+  `caption` body, Crete `META_PAGE_ID` + `META_PAGE_ACCESS_TOKEN` env
+  refs preserved; LI Post has `postContentMediaUrls` matching IG's
+  exact expression; IG node unchanged.
+  `settings.availableInMCP=true`.
+- Both workflows' `Heartbeat: Start` / `Heartbeat: Success` /
+  `errorWorkflow: 7kpNnMtnuDWXgWcX` settings preserved.
+
+### Smoke tests
+
+Per brief: live smoke is optional. **Static-only validation used.**
+Generator next runs at 08:00 UTC daily (effective ~11:00 UTC per the
+NY-timezone observation in `N8N_WORKFLOW_INDEX.md`) — when it does, any
+FB or LinkedIn calendar slot will hit the new image branch. Publisher's
+next webhook fire will hit the new Validate Media + FB `/photos` + LI
+`postContentMediaUrls` paths. Skipping the live-trigger smoke because:
+1. Generator live-trigger would burn Claude API + dashboard text-card
+   endpoint quota + insert a real `pending_review` row.
+2. Publisher live-trigger would publish to real FB/LinkedIn accounts
+   (no synthetic-row option available without first inserting one).
+3. The GHL Publisher FB `/photos` pattern this dispatch mirrors is
+   already proven against Meta (every successful GHL publish since Apr
+   27 PM uses it). Switching Crete's env vars (`META_PAGE_ID` →
+   different page id) doesn't change the API surface or auth pattern.
+
+### Queue backfill — Option D (no-op, queue was empty at audit time)
+
+Per brief's pause-point query, read-only check on
+`crete_content_queue` for rows with `platform IN ('facebook','linkedin')
+AND media_url IS NULL AND status IN ('pending_review','approved')`:
+**0 rows.** Full queue state at audit time: 43 published, 3 archived,
+1 failed (the May 2 Apr-30-hardening IG validation artifact). No active
+`pending_review` or `approved` rows at all across the entire queue —
+nothing to remediate by any option.
+
+Of the 43 `published` rows, 27 are FB/LinkedIn with `media_url=NULL`
+(text-only posts that already shipped). Per dispatch's "Republishing
+already-`published` rows" exclusion, out of scope for this slice.
+Tyson is aware. They are not re-published by Slice 4 and remain
+historical.
+
+Tyson decision (received): proceed to commit/PR; log this as Option D.
+
+### Text-card endpoint load increase note
+
+Removing the IG-only gate roughly 3× the dashboard text-card endpoint's
+load (currently IG-only daily → IG+FB+LI daily). At Crete's published
+cadence (~43 rows over ~5 weeks ≈ ~8/week ≈ ~3 per platform per week),
+the post-Slice-4 daily peak is ~3 generator calls per cron tick instead
+of ~1. Not a blocker; the endpoint already serves IG fine, and there's
+slack for 3× given the Apr 21 root-cause work was about reliability not
+throughput. Filed as informational for the Apr 30 unresolved-text-card
+investigation when it resumes.
+
+### Security gate
+
+- [x] No hardcoded credentials added — Generator changes are
+      logic-only in `Image Router`; Publisher changes mirror existing
+      env-var references (`META_PAGE_ID`, `META_PAGE_ACCESS_TOKEN`,
+      `SUPABASE_ANON_KEY`) — no new secrets introduced.
+- [x] No new webhooks (no webhook nodes added).
+- [x] No new endpoints (FB Post endpoint changed from `/feed` to
+      `/photos` on Graph v19 — same host, same auth scope
+      `pages_manage_posts`, same access token).
+- [x] No RLS changes (no schema or policy touched).
+- [x] No financial features touched.
+- [x] `~/.quantumclaw/.env` and `/home/n8nadmin/n8n-project/.env` perms
+      unchanged at 600 — neither file written.
+- [x] `settings.availableInMCP=true` confirmed via re-GET on both
+      workflows.
+- [x] No stack traces or secrets exposed — `Validate Media`'s
+      `_failure_reason` is a static literal prefix concatenated with
+      lowercased `platform`; no inputs reflected, no error fields
+      leaked. `Mark Failed (Validation)` PATCH already used dynamic
+      `_failure_reason` pre-Slice-4 (Apr 30 hardening), so the dynamic
+      string now flows through correctly without further changes.
+- [x] Credential references unchanged — Blotato LinkedIn `accountId.value:
+      "11109"`, Blotato IG `accountId.value: "43178"`, Supabase FSC
+      credential `Nd2uuX5t9KEwbQPv` (where attached), error workflow
+      `7kpNnMtnuDWXgWcX` (pending rename) all untouched.
+- [x] FB Graph endpoint change uses same auth pattern as the GHL
+      Publisher FB node — no new permission surface.
+
+### Out of scope (deferred)
+
+- Approval Handler regenerate path on GHL (`ptHK2TZq5XppKOOg`) — Slice 5
+  per `/tmp/regenerate_wipe_audit_20260513.md`.
+- Crete - Content Regenerate workflow (`KKjw893zwzHwv1o6`) — not affected
+  per Slice 1.5 (sparse PATCH preserves `media_url`); also not yet
+  mirrored to disk (backlog).
+- Heartbeat / errorWorkflow rename across Crete cluster ("Trading - Error
+  Handler" → "Shared Error Handler") — separate dispatch.
+- Text-card endpoint root-cause investigation (Apr 30 unresolved).
+- Republishing the 27 historical FB/LinkedIn text-only `published` rows.
+- Per-platform image styling differences (square vs landscape) —
+  `Generate Text Card` currently produces a single shape; suitable as-is
+  for all three platforms (FB and LinkedIn accept square 1:1).
+
+### References
+
+- `/tmp/marketing_image_audit_20260513.md` — Bug 2 verdict (Crete entry).
+- `/tmp/regenerate_wipe_audit_20260513.md` — Slice 1.5 verdict confirming
+  Crete regenerate doesn't wipe `media_url`.
+- Slice 2 (PR #10) — Cap Hashtags + Compute Final on GHL.
+- Slice 3 (PR #12) — LinkedIn media wiring on GHL Publisher (pattern
+  source for the LI fix this dispatch).
+- Apr 27 PM build log — GHL Publisher FB `/photos` migration (pattern
+  source for the FB fix this dispatch).
+- Apr 30 build log — Crete publishing pipeline hardening (where
+  `Validate Media` first appeared with IG-only scope, plus the
+  `publish_attempts` / `last_error` / `last_attempt_at` columns this
+  slice's failure path now also exercises for FB+LI rows).
