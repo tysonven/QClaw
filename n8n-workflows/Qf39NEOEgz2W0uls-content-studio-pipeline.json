@@ -511,7 +511,7 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ status: 'a_complete', transcript_text: $('Poll AssemblyAI').first().json.text.substring(0, 10000) }) }}",
+        "jsonBody": "={{ JSON.stringify({ transcript_text: $('Poll AssemblyAI').first().json.text.substring(0, 10000) }) }}",
         "options": {}
       },
       "id": "update-job-record",
