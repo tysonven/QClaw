@@ -2,7 +2,7 @@
 
 **Project:** QClaw — Self-hosted Claude agent runtime (Fork of QuantumClaw/QClaw)
 **Owner:** Tyson Venables / Flow OS
-**Last updated:** 12 May 2026
+**Last updated:** 13 May 2026
 **Repo:** https://github.com/tysonven/QClaw
 
 ---
@@ -7975,3 +7975,123 @@ staged; csj_id, buzzsprout_episode_id, clip_job_id, LinkedIn
 postSubmissionId, WP URL, YT URL transcribed verbatim from brief; one
 unfilled `[TIME]` marker preserved for Workflow C trigger time (not
 known to this session — Tyson to fill in next session).
+
+## 2026-05-13 — Bug 2 fix: Workflow A status overwrite eliminated
+
+Bug 2 from yesterday's Ep 68 production fire: Workflow A's terminal
+`Update Job Record` node was writing `csj.status='a_complete'` AFTER
+`Patch: Clipper Pending` wrote `csj.status='clipper_pending'`,
+overwriting the state Workflow B's polling filter
+(`WHERE status='clipper_pending'`) depends on. Result: Workflow B
+blind to clipper outcomes for every run that went through Workflow A.
+
+Reproduced via recon against the canonical Workflow A JSON
+(`n8n-workflows/Qf39NEOEgz2W0uls-content-studio-pipeline.json`) and
+Supabase: 4/4 prior csj rows with `clip_job_id` ended at `a_complete`
+instead of `clipper_pending` (ζ.4 Probe, ζ.4 Test, ζ.5+ζ.6 Re-fire,
+ζ.5+ζ.6 Re-fire 2 — all 2026-05-07). Ep 68 was the 5th and only
+escape because Workflow C ran via manual status patch.
+
+### Fix shape
+
+Path (b) per the brief — restrict `Update Job Record` to non-status
+writes. One-key removal from the node's `parameters.jsonBody`:
+
+```diff
+- "jsonBody": "={{ JSON.stringify({ status: 'a_complete', transcript_text: $('Poll AssemblyAI').first().json.text.substring(0, 10000) }) }}"
++ "jsonBody": "={{ JSON.stringify({ transcript_text: $('Poll AssemblyAI').first().json.text.substring(0, 10000) }) }}"
+```
+
+Cleanest separation of concerns:
+
+- `Update Job Record` owns A-output data (`transcript_text`).
+- `Patch: Clipper Pending` owns the A → B handoff state
+  (`status='clipper_pending'`, `clip_job_id`, `updated_at`).
+
+Path (a) reorder rejected — Update Job Record's input is the Merge
+node whose `index=1` is fed by `Patch: Clipper Pending`. Reordering
+required restructuring the merge, far more invasive than a one-string
+edit. Path (c) (Patch: Clipper Pending as terminal sink after Notify)
+rejected — overengineering for a one-key write.
+
+### Recon contradictions surfaced vs the dispatch brief
+
+- **`Update Job Record` is `n8n-nodes-base.httpRequest` (PATCH PostgREST), not `n8n-nodes-base.postgres`** as the brief asserted. Edit target was `parameters.jsonBody` (single string template), not `parameters.columns` / `parameters.updateKey`. Patch shape unchanged; fix-path decision tree held.
+- **Clipper polling subgraph (Wait 10s Clip Poll → Poll Clip Status → Clip Done? → Wait 10s Retry → Save Clip URLs) is orphaned** — `Wait 10s Clip Poll` has no incoming connection. The whole 5-node subgraph has been dead since at least the PUT cycle that introduced Workflow B (2026-05-11). Not Bug 2 related; flagged as a cleanup followup.
+- **`N8N_WORKFLOW_INDEX.md` says 38 nodes for Workflow A; actual is 45.** Index doc is stale (last-verified date 2026-05-05); needs refresh.
+
+### Patch + verification
+
+- Backup: `/tmp/workflow_a_backup_1778661069.json` (52,534 B, pre-edit copy).
+- Local Edit: single-line diff (`1 insertion, 1 deletion`), JSON validates.
+- `_tools/b_common.py` validators all green: `orphans=[]`, `brace_collapse=[]`, `start_heartbeats_serial=[]`.
+- PUT body trimmed to `{name, nodes, connections, settings}` per the n8n PUT quirk; `settings.availableInMCP=true` preserved.
+- `PUT https://webhook.flowos.tech/api/v1/workflows/Qf39NEOEgz2W0uls` → **HTTP 200**, `updatedAt: 2026-05-13T08:32:20.687Z`.
+- Independent GET back confirms:
+  - `status:` token absent from `Update Job Record.parameters.jsonBody`
+  - n8n expression evaluates to a single-key JSON object: `{transcript_text}` (length capped at 10000 chars as before)
+  - `Patch: Clipper Pending.parameters` byte-identical local-vs-remote
+  - node count 45/45 preserved
+  - `active=true` preserved
+  - `settings.availableInMCP=true` preserved
+
+### Followups for next session (HIGH → LOW)
+
+**HIGH:**
+
+- Diagnose Bug 1 (Clipper FFmpeg exit-8) — still open from yesterday's
+  fire. Once Bug 2 is verified live, the next end-to-end run will hit
+  this and Workflow B will now correctly fire its Telegram alert
+  about the clipper failure.
+- Workflow C v2: re-fetch `buzzsprout_url` at trigger time (carried
+  over from yesterday's Issue 3).
+
+**MEDIUM:**
+
+- **Workflow A orphaned clipper-polling subgraph cleanup** — 5 dead
+  nodes (`Wait 10s Clip Poll`, `Poll Clip Status`, `Clip Done?`,
+  `Wait 10s Retry`, `Save Clip URLs`) plus the dead edge from
+  `Save Clip URLs → Merge Before Notify (index 1)`. Disabled in
+  topology since at least the 2026-05-11 PUT cycle but JSON still
+  carries them. Separate dispatch — not in Bug 2 scope (Rule 4).
+- **`N8N_WORKFLOW_INDEX.md` refresh** — Workflow A node count drift
+  (38 → 45), plus Workflow B and Workflow C entries don't exist in
+  the index yet.
+- Workflow A `responseMode` → `onReceived` (carried from yesterday).
+- Workflow A duplicate Telegram notification fix (carried).
+- Workflow A Substack `draft_id` write-back (carried).
+- YouTube `embeddable=true` flip in Workflow C (carried).
+- Blotato → LinkedIn URL lookup (carried).
+
+**LOW:**
+
+- "Published to WordPress" → "WordPress draft created" copy fix (carried).
+- 405 on `/api/v1/workflows/{id}/execute` on this n8n (carried).
+
+### Brief-author lesson 31
+
+> "Bump 'Last updated' header in QCLAW_BUILD_LOG.md as part of the
+> session close-out ritual. Discovered this morning when the header
+> still read 12 May 2026 after pushing the Ep 68 entry yesterday."
+
+Updated the header to 13 May 2026 as part of this commit.
+
+### Status
+
+Workflow B is now unblocked. Next end-to-end run (whenever the next
+real episode is processed) will exit Workflow A with
+`status='clipper_pending'` as the terminal write, Workflow B's
+30-second poll picks it up, and the clipper-failure Telegram alert
+fires correctly — providing the observability that was silently
+broken since Workflow B was first built. Bug 1 (FFmpeg exit-8) is
+still open, but with Bug 2 fixed, it now surfaces visibly rather
+than silently.
+
+verified: live PUT against `webhook.flowos.tech/api/v1/workflows/Qf39NEOEgz2W0uls`
+returned HTTP 200; independent GET-back confirmed `status:` absent
+from `Update Job Record.parameters.jsonBody`, single-key JSON object
+evaluates correctly, `Patch: Clipper Pending.parameters` unchanged,
+node count 45/45 + `active=true` + `settings.availableInMCP=true` all
+preserved; all `_tools/b_common.py` validators green pre-PUT;
+`Last updated` header bumped to 13 May 2026; followups carry forward
+items left open from the Ep 68 entry.
