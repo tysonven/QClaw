@@ -1973,6 +1973,7 @@ log line ever fired (catch never hit). Independent verification:
 - The same call from inside the long-running QClaw process → no error,
   no delivery.
 
+
 Root cause is suspected to be an interaction between the runner's
 update-fetch loop and the bot's outbound API client (possibly an
 internal queue / abort signal / connection-pool state). **Tracked as
@@ -9027,3 +9028,22 @@ Pending Tyson post-merge:
   installed).
 
 End of session 2026-05-13 Slice 2c.
+
+## [2026-05-13] Trading cluster — operational deactivation
+
+All 5 Trading workflows deactivated pending Polymarket fund investigation and trading-worker diagnostic:
+
+- Trading - Position Monitor
+- Trading - Market Scanner
+- Trading - Weekly Analyst
+- Trading - Trade Executor
+- Trading - Error Handler
+
+Context: Market Scanner has been failing 5 consecutive scheduled runs since 2026-05-11 with "Invalid JSON in response body" at the Run Market Simulations node. Root cause hypothesis: trading-worker (PM2, port 4001) crashed or returning non-JSON error pages. Separately, Polymarket wallet funds not appearing despite confirmed MetaMask transfer transactions — under investigation by Tyson.
+
+Edge alerts firing into Charlie Telegram channel while trading room is broken — noise, no value. Deactivation silences the alerts at the source.
+
+Reactivation gated on:
+1. Polymarket fund situation resolved
+2. trading-worker diagnostic + restart dispatch landed
+3. Confirmation that at least one Market Scanner manual run returns valid JSON end-to-end
