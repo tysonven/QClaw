@@ -9467,3 +9467,148 @@ investigation when it resumes.
   `Validate Media` first appeared with IG-only scope, plus the
   `publish_attempts` / `last_error` / `last_attempt_at` columns this
   slice's failure path now also exercises for FB+LI rows).
+
+## 2026-05-13 — Slice 5: GHL regenerate fixes (image_url forward + Cap Hashtags + Telegram Draft ID)
+
+Per `/tmp/regenerate_wipe_audit_20260513.md` (Slice 1.5). Bundled three
+defects on the same workflow — image_url wipe (W2), Cap Hashtags bypass,
+empty-Draft-ID Telegram bug — into a single PUT. Both trigger tracks
+(Telegram-feedback via `Route Action` and Dashboard-webhook via
+`Parse Dashboard Input`) converge at `Normalize Trigger` and share the
+downstream chain, so all three fixes apply to both paths in one PR.
+
+**Branch:** `cc/slice5-ghl-regenerate-fixes-20260513` (created from `main`
+@ `77cfbb5`, after Slice 4 PR #13 merged).
+
+### Workflow touched
+
+**`ptHK2TZq5XppKOOg` — GHL Marketing: Approval Handler (19 → 20 nodes,
+3 nodes modified + 1 added + connections rewired)**
+
+- **`Parse Regenerated` (Code) — modified.** Now extracts `imageUrl` from
+  `Fetch Original Draft` data using the same array-or-object unwrap
+  pattern already used for `postType` (Supabase returns arrays from
+  `?select=*`), and emits `image_url: imageUrl ?? null` alongside the
+  existing `post_type` / `status` / `draftId` fields. Closes Slice 1.5
+  failure shape W2 (Option F1 — carry original's image forward).
+- **`Cap Hashtags` (Code) — added.** Byte-for-byte mirror of Slice 2's
+  `Awo65rdSe5BvDHtC > Cap Hashtags` node. `MAX_HASHTAGS = 5`. Same
+  `/#\w+/g` replace, same whitespace cleanup, same pass-through for
+  empty/missing/≤5 captions, same `_hashtag_cap_applied` metadata
+  (stripped before persistence by Save New Draft's field whitelist).
+  Inserted between `Parse Regenerated` and `Save New Draft`. Comment
+  notes the pattern source.
+- **`Save New Draft` (HTTP POST) — modified.** Appended
+  `image_url: $json.image_url` to the JSON body's field whitelist. No
+  other fields changed; `hooks_used: [$json.instagram_hook_text]` and
+  the existing 10 copy fields are byte-identical.
+- **`Send Revised to Telegram` — modified.** Single text-template
+  substitution: `Draft ID: {{ $json[0].id }}` → `Draft ID: {{ $json.id }}`.
+  Fixes Slice 1.5 side-finding #1 (Supabase `Prefer: return=representation`
+  emits an array of one which n8n unwraps to an object at the next
+  node, so `$json[0].id` is undefined → renders as empty).
+
+### Connection rewiring
+
+Before: `Regenerate Content (Claude) → Parse Regenerated → Save New Draft → Send Revised to Telegram → Heartbeat: Success (Revise)`
+
+After: `Regenerate Content (Claude) → Parse Regenerated → Cap Hashtags → Save New Draft → Send Revised to Telegram → Heartbeat: Success (Revise)`
+
+Only the segment between `Parse Regenerated` and `Save New Draft` was
+re-wired. The Telegram trigger path (`Route Action → Normalize Trigger →
+Save Feedback to Supabase → Fetch Original Draft → Regenerate Content
+(Claude)`) and the Dashboard webhook path
+(`Parse Dashboard Input → Normalize Trigger`) both feed into this same
+segment unchanged, so both tracks pick up all four fixes.
+
+### Track B coverage check (brief-conflict reflex)
+
+Per the brief: "If Track B has the same wipe pattern, surface it as a
+follow-up but don't fix in this dispatch." Reading the live connections:
+both `Route Action[1]` (Telegram-feedback branch) and
+`Parse Dashboard Input` converge at `Normalize Trigger`, which then
+feeds `Save Feedback to Supabase → Fetch Original Draft → Regenerate
+Content (Claude) → Parse Regenerated → ...`. The downstream chain is
+shared, so Track B is fixed by the same Slice 5 PUT. No follow-up needed.
+
+### PUT verification (live)
+
+- PUT `HTTP=200` @ `2026-05-13T21:34:58.551Z`.
+- Re-GET confirms:
+  - 20 nodes (was 19 — Cap Hashtags added).
+  - `Parse Regenerated.parameters.jsCode` contains `imageUrl ?? null`
+    (image_url forwarded).
+  - `Save New Draft.parameters.jsonBody` contains
+    `image_url: $json.image_url` (whitelist extended).
+  - `Send Revised to Telegram.parameters.text` contains `$json.id` and
+    no longer contains `$json[0].id`.
+  - `Cap Hashtags` node exists (type `n8n-nodes-base.code`,
+    `MAX_HASHTAGS = 5`).
+  - Connections: `Parse Regenerated → Cap Hashtags → Save New Draft`.
+  - `settings.availableInMCP=true`.
+
+### Smoke tests
+
+Per brief: live smoke optional, **skipped** because (a) a regen would
+burn a Claude API call + a Telegram message + insert a real
+`pending_approval` row, and (b) all four changes are statically
+verifiable from the post-PUT GET. Next natural regenerate (Tyson rejects
+any pending draft with feedback, or fires the dashboard regenerate
+endpoint) will exercise all four paths end-to-end. Expected behaviour:
+- New row's `image_url` matches the original draft's `image_url`
+  verbatim (NULL preserved as NULL, populated URL preserved as URL —
+  Slice 1.5 Option F1).
+- New row's `instagram_caption` has ≤5 hashtags (Cap Hashtags).
+- Telegram revised-draft message has `Draft ID: <uuid>` populated (no
+  longer empty).
+
+### Security gate
+
+- [x] No hardcoded credentials added — Cap Hashtags is pure JS logic,
+      Parse Regenerated / Save New Draft additions are field-reference
+      changes only, Send Revised to Telegram change is a 4-character
+      template substitution.
+- [x] No new webhooks (no webhook nodes added).
+- [x] No new endpoints (no new HTTP nodes; Save New Draft still POSTs
+      to the same Supabase REST URL).
+- [x] No RLS changes — `marketing_drafts` table is untouched
+      structurally.
+- [x] No financial features touched.
+- [x] `~/.quantumclaw/.env` and `/home/n8nadmin/n8n-project/.env` perms
+      unchanged at 600 — neither file written.
+- [x] `settings.availableInMCP=true` re-confirmed via post-PUT GET.
+- [x] No stack traces or secrets exposed — Cap Hashtags writes only
+      integer counts + ISO timestamp into `_hashtag_cap_applied`; that
+      field is stripped before persistence by Save New Draft's
+      whitelist; Parse Regenerated still throws raw error messages only
+      for "Failed to parse" (existing behaviour, not changed).
+- [x] Credential references unchanged — Supabase anon-key headers,
+      Anthropic credential, Telegram bot chat id, errorWorkflow refs
+      all untouched.
+
+### Out of scope (deferred)
+
+- Crete Content Regenerate (`KKjw893zwzHwv1o6`) — clean per Slice 1.5
+  verdict (sparse PATCH preserves `media_url`).
+- Bot identity split between `flowstatesads_bot` and `@tyson_quantumbot`
+  — separate dispatch (per `N8N_WORKFLOW_INDEX.md` cluster note).
+- Heartbeat / errorWorkflow wiring on the regenerate path — cluster-wide
+  backlog.
+- Content Generator's `Send to Telegram` has the SAME `{{ $json[0].id }}`
+  bug as the regenerate path fixed here — `Awo65rdSe5BvDHtC > Send to
+  Telegram > text` contains `Draft ID: <code>{{ $json[0].id }}</code>`.
+  Sanity-checked in this session but explicitly out of scope per
+  dispatch ("Don't touch Content Generator"). Filed as a trivial
+  follow-up dispatch — same one-character fix (`$json.id`), same
+  workflow class, single-PUT.
+
+### References
+
+- `/tmp/regenerate_wipe_audit_20260513.md` — Slice 1.5 verdict (W2 +
+  side-findings #1 + #2).
+- `/tmp/marketing_image_audit_20260513.md` — original audit that flagged
+  `f442f66a` as the regenerated row with NULL image_url.
+- Slice 2 (PR #10) — Cap Hashtags pattern source on
+  `Awo65rdSe5BvDHtC`.
+- `N8N_WORKFLOW_INDEX.md` line 248 — original Bug (b) note on
+  empty-Draft-ID Telegram pattern (same shape now fixed here).
