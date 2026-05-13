@@ -8267,3 +8267,214 @@ during recon (HTTP 200, 21 response keys, none of them named `.url`);
 deterministic URL pattern probed and returned HTTP 200 directly with
 zero redirects; `Last updated` header unchanged from 13 May 2026
 (already set in the Bug 2 commit earlier today).
+
+## 2026-05-13 — Bug 1 fix: clipper FFmpeg exit-8 root cause (comma escaping)
+
+Last open HIGH followup from yesterday's Ep 68 fire. Pure diagnostic
+ahead of patch; the recon turned up a different root cause than
+yesterday's build-log entry had hypothesised.
+
+### What was wrong
+
+`src/clipper/main.py:get_smart_crop_filter` (face-detected path) built
+an FFmpeg crop expression with literal unescaped commas:
+
+```python
+crop_x_expr = (
+    f"max(0, min(iw-ih*9/16, "
+    f"{face_x_ratio:.4f}*iw - ih*9/16/2))"
+)
+return f"crop=ih*9/16:ih:{crop_x_expr}:0"
+```
+
+When face_x_ratio is interpolated (e.g. 0.4546 for Ep 68 clip_0), the
+result is:
+
+```
+crop=ih*9/16:ih:max(0, min(iw-ih*9/16, 0.4546*iw - ih*9/16/2)):0
+```
+
+**FFmpeg's filtergraph parser uses `,` as the filter-chain separator.**
+Unescaped commas inside an expression are parsed as filter-chain
+boundaries. The expression fragments after the first comma; the next
+fragment, `min(iw-ih*9/16`, is interpreted as a filter name; lookup
+fails:
+
+```
+[AVFilterGraph @ 0x...] No such filter: 'min(iw-ih*9/16'
+[vost#0:0/libx264 @ 0x...] Error initializing a simple filtergraph
+Error opening output file ...
+Error opening output files: Filter not found
+```
+
+…and ffmpeg exits with code 8. This is what clipper-worker surfaced
+on the Ep 68 fire and on the May 7 ζ probes before that.
+
+### Why this hid for three weeks
+
+Three orthogonal coincidences kept it invisible until Ep 68:
+
+1. Branch tests for the clipper exercised the no-face path
+   (`return "crop=ih*9/16:ih:(iw-ih*9/16)/2:0"`), which has no commas
+   at all and parses cleanly. Without a fixture that triggers face
+   detection, the broken path never fired in CI/local tests.
+2. The fallback inside `crop_to_vertical` (when `crop_filter=None`)
+   already correctly escapes its commas
+   (`crop=min(iw\,ih*9/16):min(ih\,iw*16/9):...`). The escape pattern
+   was visibly correct one function over, just not applied to the
+   smart-crop f-string by whoever wrote that path.
+3. Commit `457d120` (May 7) fixed a **distinct** exit-8 variant
+   (audio codec, `-c:a copy` → `-c:a aac`). It shipped with the
+   correct verified-line for that fix. Yesterday's Ep 68 entry noted
+   "exit-8 has multiple root causes" — accurate, but framed today's
+   bug as a continuation of 457d120's territory when it's actually
+   a separate filtergraph-parser-level bug introduced by the
+   face-detection feature.
+
+### Cause classification
+
+Brief's predicted causes (A: invalid crop math; B: pix_fmt mismatch;
+C: audio codec) all ruled out by recon:
+
+- Source format ffprobe is mundane: H.264 High @ L4.1, 1920×1080,
+  yuv420p, 30/1 CFR, 8-bit, bt709, AAC LC 44.1 kHz stereo.
+- Crop math: `1080 * 9/16 = 607.5` (non-integer). FFmpeg's crop
+  filter rounds to 608 internally — the output IS even and libx264
+  encodes it cleanly. My "odd-width" hypothesis was wrong.
+- pix_fmt is yuv420p source → yuv420p output, no conversion needed.
+- Audio: AAC LC source → AAC encode at 128k/stereo, both supported.
+
+Real cause: **Cause D — filtergraph parser splits expression on
+unescaped comma**. Not on the brief's list because it's a filter
+syntax bug, not an FFmpeg execution-time error.
+
+### Patch (single-line semantic change)
+
+```diff
+     # Horizontal: center crop on face x position
+-    # Clamp to valid range so we don't go out of bounds
++    # Clamp to valid range so we don't go out of bounds.
++    # Commas inside the FFmpeg expression MUST be backslash-escaped
++    # because FFmpeg's filtergraph parser treats unescaped commas as
++    # filter-chain separators (Bug 1, 2026-05-13).
+     crop_x_expr = (
+-        f"max(0, min(iw-ih*9/16, "
++        f"max(0\\, min(iw-ih*9/16\\, "
+         f"{face_x_ratio:.4f}*iw - ih*9/16/2))"
+     )
+```
+
+Each `\\` in Python source produces a single `\` in the runtime
+string, which FFmpeg's parser interprets as `\,` = escaped-comma =
+literal-comma-inside-expression. Center-crop fallback unchanged
+(no commas to escape). `crop_to_vertical`'s own None-filter fallback
+unchanged (already escaped).
+
+### Regression test (new)
+
+`tests/clipper/test_smart_crop_filter.py` — stdlib unittest, 3 cases:
+
+1. `test_no_face_returns_center_crop_no_commas` — `detect_face_position`
+   mocked to `None`. Asserts exact center-crop string returned and
+   contains no `,` at all.
+2. `test_face_detected_returns_escaped_commas` — face mocked to
+   `(0.4546, 0.5)` (the Ep 68 case). Asserts the face_x_ratio is
+   interpolated and both inner commas are backslash-escaped; the bare
+   unescaped fragments `max(0, ` and `ih*9/16, ` are forbidden.
+3. `test_face_detected_edge_ratios` — same invariant across
+   `face_x_ratio ∈ {0.0, 0.5, 1.0}`.
+
+The test stubs the worker's heavy runtime deps
+(`fastapi`, `pydantic`, `anthropic`, `boto3`, `httpx`) at module-load
+time via `sys.modules` so `import main` works on a vanilla Python 3
+install (the worker uses these libs but `get_smart_crop_filter`
+itself doesn't). `os.environ` is pre-populated with stub values for
+the env vars `main.py` validates on import.
+
+**Run locally (Mac, Python 3.13):**
+
+```bash
+python3 -m unittest tests.clipper.test_smart_crop_filter -v
+```
+
+**Run on qclaw (Ubuntu Python 3.12 — `-m unittest`'s namespace-package
+discovery behaves differently; use direct file invocation):**
+
+```bash
+sudo python3 /root/QClaw/tests/clipper/test_smart_crop_filter.py -v
+```
+
+Both paths run all three cases green.
+
+### Verification
+
+| Step | Outcome |
+|---|---|
+| 0.7 reproduction on /tmp/ep68_clip_0_test.mp4 (30s stream-copy of live Ep 68) | EXIT=8 with `No such filter: 'min(iw-ih*9/16'` |
+| 0.7b same command with backslash-escaped commas | EXIT=0, h264 608×1080 yuv420p output, 14 MB |
+| Local unittest (Mac) | 3/3 PASS |
+| Push 8b88072 → qclaw `git pull` + `pm2 restart clipper-worker` | clipper-worker online, 3s uptime, no error |
+| Live Python import on qclaw with face mocked to (0.4546, 0.5) | Returned `crop=ih*9/16:ih:max(0\, min(iw-ih*9/16\, 0.4546*iw - ih*9/16/2)):0` |
+| End-to-end FFmpeg using that returned string against test clip | EXIT=0, 608×1080 yuv420p output |
+| qclaw unittest direct invocation | 3/3 PASS |
+
+### Followups (HIGH → LOW)
+
+**HIGH:**
+
+- (none currently) — Bug 1 + Bug 2 + Workflow C v2 all landed. The
+  pipeline is functionally complete for the next end-to-end episode.
+
+**MEDIUM:**
+
+- Probe failure → 422-Skipped routing in Workflow C (carried).
+- Orphaned clipper-polling subgraph in Workflow A — 5 dead nodes
+  (carried).
+- `N8N_WORKFLOW_INDEX.md` refresh (carried).
+- Workflow A `responseMode` → `onReceived` (carried).
+- Workflow A duplicate Telegram notification (carried).
+- Workflow A Substack `draft_id` write-back (carried).
+- YouTube `embeddable=true` flip in Workflow C (carried).
+- Blotato → LinkedIn URL lookup (carried).
+- **Add a clipper test fixture that exercises face detection
+  end-to-end** — current `test_smart_crop_filter.py` mocks
+  `detect_face_position`; a separate fixture with a real cv2 run
+  against a known-face test image would catch regressions deeper in
+  the smart-crop path. Out of scope for this slice.
+- **`tests/clipper/` discovery polish** — `python3 -m unittest tests.clipper.<file>`
+  works on Python 3.13 but fails on 3.12 with
+  `ModuleNotFoundError: No module named 'tests.clipper'` despite
+  namespace-package support being unchanged between versions. Likely
+  benign Python 3.12 quirk with implicit-namespace package discovery
+  under `-m unittest`. Add `tests/__init__.py` + `tests/clipper/__init__.py`
+  next time someone touches tests/ — or document the
+  direct-invocation pattern more prominently.
+
+**LOW:**
+
+- "Published to WordPress" → "WordPress draft created" copy fix
+  (carried).
+- 405 on `/api/v1/workflows/{id}/execute` on this n8n (carried).
+
+### Status
+
+Three days of work (Ep 68 fire → Bug 2 fix → Workflow C v2 → Bug 1
+fix) close out the architectural debt that yesterday's production
+fire surfaced. The clipper-worker now handles face-detected videos
+correctly. Workflow A's terminal state correctly hands off to
+Workflow B. Workflow C constructs and verifies Buzzsprout URLs at
+trigger time. The next episode should run through A → B → C without
+manual UPDATEs.
+
+verified: 8b88072 landed on origin/main; qclaw pulled to 8b88072 and
+clipper-worker pm2-restarted clean; live import of patched
+get_smart_crop_filter on qclaw with face mocked to (0.4546, 0.5)
+returns the correctly escaped expression; live FFmpeg invocation
+using that returned string against /tmp/ep68_clip_0_test.mp4 produced
+EXIT=0 and a clean h264 608×1080 yuv420p output; tests pass via both
+local Mac `python3 -m unittest tests.clipper.test_smart_crop_filter`
+and qclaw direct invocation `python3 tests/clipper/test_smart_crop_filter.py`;
+the May 7 fix (commit 457d120) was a different exit-8 variant (audio
+codec) — that fix remains valid and is unaffected by this slice;
+`Last updated` header unchanged from 13 May 2026 (set earlier today
+in the Bug 2 docs commit).
