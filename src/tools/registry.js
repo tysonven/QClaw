@@ -96,20 +96,6 @@ export const PRESET_SERVERS = {
 
   // ─── MCP SERVERS (stdio — run as local processes) ──────────
 
-  filesystem: {
-    name: 'Filesystem',
-    type: 'mcp',
-    description: 'Read, write, search files on your device',
-    transport: 'stdio',
-    npm: '@modelcontextprotocol/server-filesystem',
-    command: 'npx',
-    args: ['-y', '@modelcontextprotocol/server-filesystem', '{workspace}'],
-    envKey: null,
-    secretKey: null,
-    setup: 'Gives your agent access to read/write files in your workspace.',
-    requiresKey: false,
-  },
-
   brave: {
     name: 'Brave Search',
     type: 'mcp',

@@ -549,7 +549,7 @@ You exist to make your human's life easier and their business more profitable. Y
 
     // Add agent identity (AGEX AID)
     if (this.aid) {
-      parts.push(`\n## Identity\n- **Agent ID (AID):** ${this.aid.aid_id}\n- **Trust Tier:** ${this.aid.trust_tier}\n- **Type:** ${this.aid.agent?.type || 'worker'}\n- You can spawn sub-agents using the spawn_agent tool. Each gets its own AID with delegated permissions.`);
+      parts.push(`\n## Identity\n- **Agent ID (AID):** ${this.aid.aid_id}\n- **Trust Tier:** ${this.aid.trust_tier}\n- **Type:** ${this.aid.agent?.type || 'worker'}`);
     }
 
     // Slice 2b: route skills. Always-on portion reuses bootstrap.skills.always_on
