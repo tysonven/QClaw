@@ -297,13 +297,30 @@ export class Agent {
       context?.userId
     );
 
-    const MAX_CONTEXT_CHARS = 100000;
+    // H2 fix (2026-05-14): char-budget raised 100k → 300k. Charlie calls
+    // Claude (typically Opus 4.x, 200k-token context ≈ ~800k chars).
+    // 300k chars ≈ ~75k tokens — leaves ~125k tokens of model headroom
+    // for the response and tool round-trips. _truncateHistory below is
+    // the real ceiling on what reaches the model.
+    const MAX_CONTEXT_CHARS = 300000;
     const systemChars = systemPrompt.length;
     const messageChars = textMessage.length;
     const availableForHistory = MAX_CONTEXT_CHARS - systemChars - messageChars;
 
-    const historyLimit = knowledgeContext.length > 100 ? 8 : 20;
-    const fullHistory = memory.getHistory(this.name, historyLimit);
+    // H2 fix (2026-05-14): flat 24 (was `knowledgeContext.length > 100 ? 8 : 20`).
+    // The prior ternary was a band-aid for prompt-bloat under heavy knowledge;
+    // _truncateHistory(availableForHistory) is the actual char-budget ceiling,
+    // making the message-count cap redundant. 8-message cap (4 turns) was
+    // confirmed too tight by the 2026-05-12 context-loss diagnostic.
+    const historyLimit = 24;
+    // H1 fix (2026-05-14): scope history to the (channel, userId) of the
+    // current message so heartbeat / CLI / dashboard writes can't pollute
+    // the Telegram conversation a user is mid-flight in. Pre-fix this was
+    // an unfiltered agent-level fetch; see /tmp/memory_drop_diagnostic_audit.md.
+    const fullHistory = memory.getHistory(this.name, historyLimit, {
+      channel: context?.channel,
+      userId: context?.userId,
+    });
     const truncatedHistory = this._truncateHistory(fullHistory, availableForHistory);
 
     // Build user message — multimodal if images provided
@@ -506,6 +523,27 @@ You exist to make your human's life easier and their business more profitable. Y
       if (bootstrap.probes?.length) {
         const probeLines = bootstrap.probes.map(p => `- ${p.ok ? '✓' : '✗'} ${p.name} (${p.latency_ms}ms)${p.error ? ` — ${p.error}` : ''}`).join('\n');
         parts.push(`\n## Live probes (session bootstrap)\n${probeLines}`);
+      }
+      // H3 fix (2026-05-14): Layer 4 fold-in. recent.audit_log + recent.memory
+      // were populated by bootstrap but never reached the prompt — closes the
+      // dead wiring. Both are capped at 30 entries at the bootstrap source.
+      // Audit ref: /tmp/memory_drop_diagnostic_audit.md.
+      if (bootstrap.recent?.audit_log?.entries?.length) {
+        const auditLines = bootstrap.recent.audit_log.entries.map(e => {
+          const ts = (e.timestamp || '').slice(0, 19);
+          const detail = (e.detail || '').replace(/\s+/g, ' ').slice(0, 80);
+          return `- ${ts} ${e.agent}/${e.action}${detail ? `: ${detail}` : ''}`;
+        }).join('\n');
+        parts.push(`\n## Recent activity (audit log, last ${bootstrap.recent.audit_log.entries.length})\n${auditLines}`);
+      }
+      if (bootstrap.recent?.memory?.entries?.length) {
+        const memLines = bootstrap.recent.memory.entries.map(e => {
+          const ts = (e.timestamp || '').slice(0, 19);
+          const ch = e.channel || 'unknown';
+          const content = (e.content || '').replace(/\s+/g, ' ').slice(0, 120);
+          return `- ${ts} [${ch}] ${e.role}: ${content}`;
+        }).join('\n');
+        parts.push(`\n## Recent context (conversation memory, last ${bootstrap.recent.memory.entries.length})\n${memLines}`);
       }
     }
 
