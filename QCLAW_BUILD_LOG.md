@@ -9877,6 +9877,87 @@ pre-existing probes workstation failure unchanged.
 - Confirm: send Charlie a normal Telegram message, no new dump file
   should land in `/tmp/`.
 
+## [2026-05-14] Dashboard offline incident — stale Telegram token surfaced in PM2 crash loop
+
+### Symptom
+
+`agentboardroom.flowos.tech` showing **Offline** badge in the dashboard
+header. WebSocket connection failing; HTTP intermittently returning
+**502 Bad Gateway** via Nginx.
+
+### Investigation
+
+PM2 visibility gap first. `pm2 list` as the `flowos` user returned an
+empty table — PM2 daemons are scoped per-user and the production fleet
+runs under `root`. `sudo -n pm2 list` showed `quantumclaw` reporting
+`online` but with a restart counter climbing during the observation
+window — i.e. a crash loop, not a healthy process.
+
+Nginx error log showed continuous upstream-refused entries from
+19:19 onward, e.g.:
+
+```
+connect() failed (111: Connection refused) while connecting to upstream,
+  client: …, server: agentboardroom.flowos.tech,
+  upstream: "http://127.0.0.1:4000/…"
+```
+
+Nginx side healthy; upstream `127.0.0.1:4000` gone. Lines up with the
+climbing PM2 restart count.
+
+`out.log` carried two `SIGINT` entries:
+
+- `19:20:30` — SIGINT received, shutting down
+- `19:36:24` — SIGINT received, shutting down
+
+The crash loop was driven by **external SIGINT**, not internal Telegram
+/ MCP init failures. The 16-minute interval between the two signals is
+suspiciously cron-like; tracked as the top followup below.
+
+Separately, a stale `TELEGRAM_BOT_TOKEN` was visible in
+`quantumclaw-error.log`. grammY logs the **full request URL** on fetch
+failure, and the bot token sits in the URL path
+(`https://api.telegram.org/bot<TOKEN>/...`) — so any 4xx/5xx from the
+Telegram API writes the token to PM2's error log in plaintext. Once a
+secret has been written to a log file, it has to be treated as
+compromised regardless of who has read access.
+
+### Action
+
+- **Rotated** `@tyson_quantumbot` token via `@BotFather` (`/revoke` →
+  fresh token issued). Old token now invalid.
+- **Updated** the new token in:
+  - `/root/.quantumclaw/.env` on `ssh qclaw`
+  - n8n `.env` on `ssh n8n` (separate copy used by direct Telegram
+    nodes outside the QClaw runtime)
+- **Truncated** `/root/.pm2/logs/quantumclaw-error.log` so the leaked
+  token no longer sits in plaintext on disk.
+- Confirmed Charlie's channel init **gracefully degrades** on token
+  failure: process stays up, Telegram channel is marked failed in the
+  channel registry, dashboard / CLI channels remain functional. So
+  the dashboard offline state was the SIGINT crash loop itself, not
+  the token failure — the token issue was the *exposure* surfaced
+  while diagnosing the loop.
+
+### Verified live
+
+- `sudo pm2 list` — `quantumclaw` online; restart counter stable.
+- `agentboardroom.flowos.tech` — Online badge restored, WebSocket
+  reconnecting cleanly.
+- Telegram message to `@tyson_quantumbot` — response on the new token.
+
+### Followups
+
+| Priority | Item |
+|----------|------|
+| HIGH | **SIGINT source investigation.** 16-minute interval (19:20:30 → 19:36:24) suggests a cron job or systemd timer signalling the wrong PID. Scan `crontab -l` for root + `flowos`, `systemctl list-timers`, `/etc/cron.*`. Without identifying the source, the next crash loop is a matter of time. |
+| MED | `pm2 reset quantumclaw` to baseline the restart counter so the next anomaly is detectable against zero. |
+| MED | **grammY logs the full token URL on fetch failure.** Either upstream patch / issue, or a local logger wrapper that scrubs the `bot<TOKEN>` path segment before the line goes to stderr. Current behaviour means any Telegram-API fetch failure leaks the token into PM2 logs. |
+| LOW | MCP `filesystem` server init timeout during Charlie bootstrap — either fix the timeout or drop it from the default MCP list. Loud, load-bearing on nothing. |
+| LOW | Nginx `default_server` returning 444 on unknown `Host` — scanner noise in access logs. Either suppress that vhost's access log or rate-limit it. Cosmetic. |
+
+End of session 2026-05-14 dashboard offline incident.
+
 End of session 2026-05-14 prompt-dump diagnostic episode.
 
 ---
