@@ -194,6 +194,27 @@ Hard cap of 4 on-demand skills per prompt. If more match, top 4 by keyword densi
 
 This checklist applies to authoring and to skill-content review. Slice 2b hotfix (2026-05-08) demonstrated the cost of skipping it.
 
+**Skill frontmatter `tools:` field (Slice 3b).** A skill may declare an optional `tools: [...]` array listing the names of tools it owns. The list contains tool-name strings; tool *definitions* live in `src/tools/registry.js`, not in skill `.md` files (skills declare ownership, the registry defines).
+
+```yaml
+---
+name: ghl
+category: on-demand
+surface: both
+keywords: [ghl, contacts, opportunities, conversations]
+tools:
+  - ghl__search_contacts
+  - ghl__get_contact
+  - ghl__list_opportunities
+  - ghl__list_pipelines
+description: GoHighLevel CRM HTTP surface
+---
+```
+
+The frontmatter field is **explicit ownership** — used when a skill claims preset / MCP / built-in tools whose names don't follow the implicit-prefix convention. **Implicit ownership** covers everything else: a skill named `X` automatically owns every tool whose name is `<agent>__X__*` or `X__*` (preset prefix). Skill HTTP tools generated from `## Endpoints` always match the implicit pattern and therefore don't need to be listed.
+
+The skill loader collects declared `tools` arrays into `SkillLoadResult.tools.{always_on, on_demand}`; the ToolRegistry combines these with implicit ownership and `scope: 'shared'` to compute the per-request active tool set (see Component 4).
+
 ### Component 4 — Tool surface overhaul
 
 **Purpose:** Encode lane discipline at the tool level. Closes failure patterns D (phantom tool use) and E (lane violations) structurally.
