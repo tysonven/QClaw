@@ -1300,6 +1300,23 @@ export class ToolRegistry {
   }
 
   /**
+   * Returns true if a tool with this name is registered anywhere
+   * (built-in, MCP, or skill/API).
+   */
+  has(name) {
+    return this._builtins.has(name) || this._apiTools.has(name) || this._tools.has(name);
+  }
+
+  /**
+   * Returns the registered built-in entry for inspection (e.g. when
+   * index.js wants to keep description/inputSchema while overriding
+   * the fn body). Returns undefined if the name is not a built-in.
+   */
+  getBuiltin(name) {
+    return this._builtins.get(name);
+  }
+
+  /**
    * Public registration API for built-in tools.
    *
    * Replaces the Slice-2-era pattern of mutating ToolRegistry._builtins

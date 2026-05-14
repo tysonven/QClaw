@@ -203,18 +203,19 @@ class QuantumClaw {
       const toolStatus = await this.tools.init();
 
       // Wire the search_knowledge built-in to the live memory graph
-      if (this.tools._builtins.has('search_knowledge') && this.memory.graphQuery) {
-        const originalEntry = this.tools._builtins.get('search_knowledge');
-        const originalFn = originalEntry?.fn || (typeof originalEntry === 'function' ? originalEntry : null);
-        this.tools._builtins.set('search_knowledge', {
-          description: originalEntry?.description || 'Search the knowledge graph for entities, relationships, and stored memories',
-          inputSchema: originalEntry?.inputSchema || { type: 'object', properties: { query: { type: 'string', description: 'Natural language search query' } }, required: ['query'] },
+      if (this.tools.has('search_knowledge') && this.memory.graphQuery) {
+        const originalEntry = this.tools.getBuiltin('search_knowledge');
+        const originalFn = originalEntry?.fn;
+        this.tools.registerBuiltin('search_knowledge', {
+          scope: 'shared',
+          description: originalEntry.description,
+          inputSchema: originalEntry.inputSchema,
           fn: async (args) => {
             const graphResult = await this.memory.graphQuery(args.query || args.q || '');
             if (graphResult.results?.length > 0) {
               return graphResult.results.map(r => r.content || r).join('\n\n');
             }
-            // Fall back to original built-in if no graph results
+            // Fall back to the registry stub if no graph results
             return originalFn ? await originalFn(args) : 'No knowledge found.';
           }
         });
@@ -334,12 +335,14 @@ class QuantumClaw {
 
       // Register execution tools — shell_exec + n8n_workflow_update.
       // Both declare longRunning so the executor waits up to 11 min for approval.
-      this.tools._builtins.set('shell_exec', createShellExecTool({
-        approvalGate, audit: this.audit, auditActor: 'charlie',
-      }));
-      this.tools._builtins.set('n8n_workflow_update', createN8nWorkflowUpdateTool({
-        approvalGate, audit: this.audit, auditActor: 'charlie',
-      }));
+      this.tools.registerBuiltin('shell_exec', {
+        scope: 'shared',
+        ...createShellExecTool({ approvalGate, audit: this.audit, auditActor: 'charlie' }),
+      });
+      this.tools.registerBuiltin('n8n_workflow_update', {
+        scope: 'shared',
+        ...createN8nWorkflowUpdateTool({ approvalGate, audit: this.audit, auditActor: 'charlie' }),
+      });
       const rateLimiter = new RateLimiter({
         _dir: workspaceDir,
         rateLimits: {
