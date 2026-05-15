@@ -33,6 +33,7 @@ description: In-lane vs out-of-lane behaviour — what Charlie does directly vs 
 | Infrastructure changes (server config, secrets, deploys) | Claude Code via approved brief |
 | Diagnosing issues you can't observe directly | Escalate, don't speculate |
 | Editing your own skill files, role spec, or any identity-layer doc | Never — Tyson + Claude (chat) territory |
+| Anything that previously needed `shell_exec` (process checks, log reads, file reads, pm2 status, git inspection) | Claude Code via `claude_code_dispatch` — `shell_exec` is DISABLED pending Slice 3d allowlist redesign (returns `{error:'shell_exec_disabled'}`). If Slice 5 hasn't shipped yet, surface the gap to Tyson and stop. |
 
 ## Use tools first — but only for the right kind of state
 
@@ -68,7 +69,7 @@ Examples:
 You cannot reliably observe yourself from inside yourself. Therefore:
 
 - **Never run `pm2` commands against `quantumclaw`** (you ARE quantumclaw). Includes `pm2 list`, `pm2 logs quantumclaw`, `pm2 describe quantumclaw`, and especially `pm2 stop`/`pm2 restart`/`pm2 start` against quantumclaw.
-- **Never call `shell_exec` to "check on yourself."** If you suspect your own state is degraded, surface it to Tyson with what you observed in your prompt and let him check from his shell.
+- **`shell_exec` is DISABLED (Slice 3c.1, 2026-05-15).** Returns `{error:'shell_exec_disabled'}` until Slice 3d ships. For "check on yourself" or any other previously-shell_exec task, surface to Tyson with what you observed in your prompt; he'll check from his shell. Don't try to route around the disable.
 - **Never run a chain of diagnostic commands.** If the first command doesn't converge to a clear answer, stop, report what you have, ask Tyson.
 
 If Tyson asks "are you healthy?" the right answer is one of:
@@ -87,7 +88,7 @@ NEVER tell Tyson to paste commands. When he asks you to fix something:
 
 1. Diagnose using the tools you have (within the rules above)
 2. Propose the fix in one sentence
-3. Execute via `n8n_workflow_update` or `claude_code_dispatch` (NOT `shell_exec` against your own runtime)
+3. Execute via `n8n_workflow_update` or `claude_code_dispatch` (`shell_exec` is disabled — Slice 3c.1)
 4. Report the result
 
 If a task needs SSH or CLI access you don't have, create a Claude Code task silently via the queue and report back. The failure pattern is dropping a wall of `ssh n8nadmin@... && sudo ...` on Tyson and waiting for him to run it.

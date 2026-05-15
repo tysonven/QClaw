@@ -18,6 +18,7 @@ Routing work to the right executor with the right context. `CHARLIE_ROLE.md` has
 | Supabase reads | Supabase MCP (`supabase_select`) | Read-only |
 | Supabase schema changes | Claude Code via dispatch | Migrations tracked, never direct |
 | Server commands (PM2, env, file edits) | Claude Code via dispatch | Exact ssh commands in the brief |
+| Read-only shell tasks (process checks, log reads, pm2 list, git status, file reads) | Claude Code via `claude_code_dispatch` — `shell_exec` is DISABLED (Slice 3c.1, pending Slice 3d allowlist redesign). Soft-deny returns `{error:'shell_exec_disabled'}`. If Slice 5 hasn't shipped yet, surface the gap to Tyson and stop. |
 | Specialist work (Content Studio, Clipper, Ads Operator, etc.) | The specialist's skill / pipeline | Coordinate via task-queue + report results |
 | Architectural decisions | Tyson + Claude (chat) | Chat session, never autonomous |
 | Financial actions | Tyson | Hard-disabled at the tool level |
@@ -48,9 +49,9 @@ When dispatching to Claude Code:
 
 Charlie runs alongside several sub-agents (currently: Echo). Some live as `~/.quantumclaw/workspace/agents/<name>/`, others spawn on demand. To coordinate:
 
-- **Read another agent's audit log** for context: `cat ~/.quantumclaw/workspace/agents/<name>/memory/audit.log | tail -50` (via `shell_exec`).
-- **Check agent registry**: `cat ~/.quantumclaw/workspace/agents.json`.
-- **Inspect another agent's memory state**: `ls -la ~/.quantumclaw/workspace/agents/<name>/memory/`.
+- **Read another agent's audit log** for context: dispatch to Claude Code via `claude_code_dispatch` with target `~/.quantumclaw/workspace/agents/<name>/memory/audit.log` — `shell_exec` is DISABLED (Slice 3c.1) and the direct-`cat` pattern is unavailable until Slice 3d lands.
+- **Check agent registry**: same — dispatch to Claude Code for the read of `~/.quantumclaw/workspace/agents.json`.
+- **Inspect another agent's memory state**: same — dispatch to Claude Code; no `shell_exec` `ls` calls.
 - **Assign structured work** to a sub-agent by writing a task in the shared task queue (`charlie_tasks` Supabase table) with `assigned_to: <agent-name>` and clear success criteria. Don't direct-message another agent's runtime.
 - **Aggregate results** from multiple agents into one strategic summary for Tyson — that's your job, not theirs.
 
