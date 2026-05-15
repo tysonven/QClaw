@@ -20,6 +20,12 @@
  *      the allowlist → not_allowlisted error. The DESTRUCTIVE_PATTERNS
  *      inside shell-exec.js exist for cases like a redirect inside an
  *      allowlisted verb, not for the verb itself.)
+ *   4. Newline-injection regression (Slice 3c.1 adversarial review):
+ *      `pm2 list\necho pwned` style commands must be rejected with
+ *      error=not_allowlisted (reason=chain_or_substitution,
+ *      pattern=newline) when driven through the live executor
+ *      sequence — real ApprovalGate, real ToolRegistry, real
+ *      shell-exec via registerBuiltin. Notifier never fires.
  *
  * Run: node tests/approval-gate-allowlist-ordering.test.js
  */
@@ -29,6 +35,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ExecApprovals } from '../src/security/approvals.js';
 import { ApprovalGate } from '../src/security/approval-gate.js';
+import { ToolRegistry } from '../src/tools/registry.js';
+import { createShellExecTool } from '../src/tools/shell-exec.js';
 
 let passed = 0;
 let failed = 0;
@@ -154,6 +162,67 @@ async function main() {
   check('autoApproveTools=[shell_exec] forces requiresApproval=false',
     auto.requiresApproval === false,
     JSON.stringify(auto));
+
+  // ── 7. Newline-injection regression (Slice 3c.1 adversarial review) ──
+  //
+  // Pre-fix repro (2026-05-15 adversarial review): the post-3c.1 gate
+  // ordering meant `shell_exec({command: "pm2 list\necho pwned"})` was
+  // pre-approved by the new early branch in ApprovalGate.check() and
+  // then executed verbatim under `execAsync(command, {shell:'/bin/bash'})`,
+  // which treats `\n` like `;` — both lines ran as root with NO approval
+  // prompt. CHAIN_REJECT_PATTERNS handled `;`, `&&`, `||`, `&`, `$(`,
+  // backtick — but not `\n` or `\r`.
+  //
+  // Fix: add `{ name: 'newline', re: /[\r\n]/ }` to CHAIN_REJECT_PATTERNS.
+  // Below we drive the same executor sequence the production
+  // ToolExecutor.run() uses (approvalGate.check → tools.executeTool)
+  // against real ApprovalGate + real ToolRegistry + real shell_exec, and
+  // assert the injected newline / carriage-return commands are rejected
+  // with error=not_allowlisted (reason=chain_or_substitution,
+  // pattern=newline) and the notifier never fires.
+  console.log('\n-- Newline-injection regression (Slice 3c.1 adversarial review) --');
+
+  let injNotifierFired = 0;
+  const injGate = new ApprovalGate(approvals);
+  injGate.setNotifier(async () => { injNotifierFired++; });
+
+  const injTools = new ToolRegistry({});
+  injTools.registerBuiltin('shell_exec', {
+    scope: 'shared',
+    ...createShellExecTool({ approvalGate: injGate, audit: null, auditActor: 'newline-injection-test' }),
+  });
+
+  const injectionCases = [
+    { label: 'pm2 list\\necho pwned (LF after allowlisted verb)', command: 'pm2 list\necho pwned' },
+    { label: 'pm2 list\\rls /tmp (CR after allowlisted verb)', command: 'pm2 list\rls /tmp' },
+    { label: 'ls /tmp\\nwhoami (LF, simple verb)', command: 'ls /tmp\nwhoami' },
+    { label: 'cat /tmp/foo\\r\\nrm /tmp/bar (CRLF)', command: 'cat /tmp/foo\r\nrm /tmp/bar' },
+  ];
+
+  for (const { label, command } of injectionCases) {
+    // Mirror the executor sequence: gate.check first, then executeTool.
+    const gateRes = await injGate.check('shell_exec', { command });
+    check(`injection: "${label}" -> gate requiresApproval=false (early-bypass path)`,
+      gateRes.requiresApproval === false,
+      JSON.stringify(gateRes));
+
+    const execRes = await injTools.executeTool('shell_exec', { command });
+    check(`injection: "${label}" -> tool returns error=not_allowlisted`,
+      execRes?.error === 'not_allowlisted',
+      JSON.stringify(execRes).slice(0, 200));
+    check(`injection: "${label}" -> reason=chain_or_substitution`,
+      execRes?.reason === 'chain_or_substitution',
+      `reason=${execRes?.reason}`);
+    check(`injection: "${label}" -> suggestion mentions newline`,
+      typeof execRes?.suggestion === 'string' && /newline/.test(execRes.suggestion),
+      `suggestion=${execRes?.suggestion}`);
+    check(`injection: "${label}" -> exit_code=-1`,
+      execRes?.exit_code === -1);
+  }
+
+  check('newline-injection cases: notifier fired zero times',
+    injNotifierFired === 0,
+    `got ${injNotifierFired}`);
 
   rmSync(dir, { recursive: true, force: true });
 }
