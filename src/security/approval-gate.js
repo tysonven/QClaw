@@ -6,26 +6,45 @@
  *
  * Decision order in check():
  *   0. autoApproveTools short-circuit
- *   1. Verb-scoped destructive-pattern match (shell tools only)
- *   2. Skill-dir allowlist bypass (shell tools with cwd targeting
+ *   1. shell_exec read-only allowlist early-bypass (Slice 3c.1)
+ *   2. Verb-scoped destructive-pattern match (shell tools only)
+ *   3. Skill-dir allowlist bypass (shell tools with cwd targeting
  *      /root/QClaw/src/agents/skills/)
- *   3. Gated tool list
- *   4. Stripe charge special-case
+ *   4. Gated tool list
+ *   5. Stripe charge special-case
  *
- * Verb-scoping (step 1) replaces the old JSON.stringify(args).includes()
+ * Verb-scoping (step 2) replaces the old JSON.stringify(args).includes()
  * keyword scan, which false-triggered on any sed script / file content
  * that happened to contain words like "truncate" or "delete". Now we
  * only inspect the first command token (or first two for patterns like
  * "pm2 stop"), never args bodies.
  *
- * Skill-dir allowlist (step 2) lets Charlie edit his own skill files
+ * Skill-dir allowlist (step 3) lets Charlie edit his own skill files
  * under /root/QClaw/src/agents/skills/ without Telegram approval. Scope
  * is tight: that exact directory, not /root/QClaw/** — source code edits
  * still require approval via the gatedTools rules.
+ *
+ * Slice 3c.1 ordering fix (2026-05-15):
+ *   Slice 3c added a read-only allowlist inside shell-exec.js at the top
+ *   of the tool function. The intent was "allowlist as primary defence,
+ *   approval gates as second-line". But executor.run() invokes
+ *   approvalGate.check() BEFORE the tool function runs — and
+ *   `shell_exec` is in gatedTools, so step 4 (then numbered 3) caught
+ *   every shell_exec call (including `pm2 list`) and gated for approval
+ *   before the inner allowlist ever ran. Live smoke test 2026-05-15
+ *   17:00 Athens confirmed: "check pm2 status" triggered an approval
+ *   prompt for `pm2 list`. Fix: add step 1 here — if toolName ===
+ *   'shell_exec' and the command is allowlisted, return
+ *   requiresApproval:false immediately. If not allowlisted, also return
+ *   requiresApproval:false so the inner allowlist check in
+ *   shell-exec.js produces the structured `not_allowlisted` error —
+ *   single source of truth for the error shape. The inner allowlist
+ *   check becomes a redundant second-line defence (defence in depth).
  */
 
 import path from 'path';
 import { log } from '../core/logger.js';
+import { checkAllowlist } from '../tools/shell-exec-allowlist.js';
 
 const SKILL_EDIT_ALLOWLIST = '/root/QClaw/src/agents/skills/';
 
@@ -142,7 +161,37 @@ export class ApprovalGate {
       return { requiresApproval: false };
     }
 
-    // 1. Destructive verb match (shell tools only) — always gates, even
+    // 1. shell_exec read-only allowlist early-bypass (Slice 3c.1)
+    //
+    // The executor invokes this gate BEFORE the shell_exec tool function
+    // runs. Pre-fix: `shell_exec` is in gatedTools, so step 4 (numbered
+    // 3 before this slice) gated every shell_exec call for approval,
+    // including read-only verbs like `pm2 list` that Slice 3c added to
+    // the inner allowlist. The inner allowlist check was unreachable
+    // because the gate fired first.
+    //
+    // Post-fix: if the command is on the allowlist, bypass the gate so
+    // the tool function runs. If it is NOT allowlisted, also bypass —
+    // the inner allowlist check in shell-exec.js owns the
+    // `{error:'not_allowlisted', ...}` response shape (single source of
+    // truth). The inner check now functions as a redundant second-line
+    // defence (defence in depth), which is fine.
+    if (toolName === 'shell_exec') {
+      const command = toolArgs?.command;
+      if (typeof command === 'string' && command.trim().length > 0) {
+        const allowlistResult = checkAllowlist(command);
+        if (allowlistResult.allowed) {
+          log.debug(`shell_exec allowlist bypass: ${command.slice(0, 80)}`);
+        } else {
+          log.debug(`shell_exec NOT allowlisted at gate (will surface as not_allowlisted in tool fn): ${command.slice(0, 80)}`);
+        }
+        return { requiresApproval: false };
+      }
+      // Empty / missing command — fall through to legacy path, where the
+      // tool function will reject with {error:'Missing command'}.
+    }
+
+    // 2. Destructive verb match (shell tools only) — always gates, even
     // when the target is inside the skill-edit allowlist. `rm` on a
     // skill file still requires approval.
     const destructiveHit = this._matchDestructivePattern(toolName, toolArgs);
