@@ -57,6 +57,12 @@ const CHAIN_REJECT_PATTERNS = [
   { name: 'background', re: /(^|[^&])&(?!&)/ },
   { name: 'command substitution $()', re: /\$\(/ },
   { name: 'command substitution backtick', re: /`/ },
+  // bash treats \n / \r exactly like ';' — without this, an attacker
+  // who can land an embedded newline in `command` ships a second
+  // statement past every allowlist check (Slice 3c.1 adversarial-review
+  // finding 2026-05-15: `pm2 list\necho pwned` executed both lines as
+  // root with no approval prompt under the post-3c.1 gate ordering).
+  { name: 'newline', re: /[\r\n]/ },
 ];
 
 export function listAllowedVerbs() {

