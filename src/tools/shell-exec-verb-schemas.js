@@ -365,6 +365,17 @@ export const VERB_SCHEMAS = Object.freeze({
     allowedFlags: [],
     positional: { min: 0, max: 0 },
     maxArgvLength: 2,
+    // Slice 3d.1 — `safe.directory` prepend. SAFE_ENV sets
+    // GIT_CONFIG_GLOBAL=/dev/null (to neutralise user-level aliases
+    // in /root/.gitconfig), which also disables safe.directory
+    // resolution from /root/.gitconfig. Per-invocation `-c
+    // safe.directory=/root/QClaw` re-grants ownership trust for the
+    // single spawned git WITHOUT re-enabling /root/.gitconfig (so
+    // the alias-neutralisation property from Slice 3d is preserved).
+    // The parser does NOT accept `-c` from users (see git log flag
+    // list — it's not in allowedFlags, and `git -c X log` rejects as
+    // unknown_verb at dispatch). The prefix is spawn-side only.
+    spawnArgvPrefix: ['-c', 'safe.directory=/root/QClaw'],
   },
   'git log': {
     allowedFlags: [
@@ -386,6 +397,8 @@ export const VERB_SCHEMAS = Object.freeze({
     ],
     positional: { min: 0, max: 0 },
     maxArgvLength: 7,
+    // Slice 3d.1 — see `git status` note above.
+    spawnArgvPrefix: ['-c', 'safe.directory=/root/QClaw'],
   },
   'pm2 list': {
     allowedFlags: [],

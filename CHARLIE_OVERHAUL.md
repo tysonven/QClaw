@@ -704,8 +704,39 @@ Deleted: `src/tools/shell-exec-allowlist.js`,
 `tests/approval-gate-shell-exec-parser.test.js`).
 Verification: `scripts/verify-shell-exec-parser.js`.
 
+**Slice 3d.1 — git verb safe.directory prepend — ✓ COMPLETE 2026-05-17.**
+Post-deploy smoke surfaced "dubious ownership" failures on `git status`
+/ `git log` through `shell_exec`. Root cause: `SAFE_ENV.GIT_CONFIG_GLOBAL
+=/dev/null` (set in Slice 3d Round 2 to neutralise user-level aliases
+in `/root/.gitconfig`) also disables `safe.directory` resolution from
+the same file — the spawned git refuses to operate on `/root/QClaw`
+because it can't see the safe.directory entry. The three-gate
+dangerous-git-config-key model in Slice 3d didn't anticipate this:
+`safe.directory` wasn't on the dangerous list because it isn't an
+attack surface — but it was needed for legitimate operation under the
+sanitised env.
+
+Fix (Tyson's Option A): generic `spawnArgvPrefix?: string[]` field on
+verb schemas. `git status` and `git log` get `['-c',
+'safe.directory=/root/QClaw']`. The spawn module inserts the prefix
+between the binary and the verb-stripped user argv. Per-invocation
+trust, no config-file dependency, SAFE_ENV unchanged
+(alias-neutralisation property from Slice 3d preserved).
+
+Adversarial property preserved: user-supplied `-c` is rejected at the
+parser layer in both positions. `git -c X log` → `unknown_verb` (the
+two-token verb prefix `git -c` isn't a known verb). `git log -c X` →
+`invalid_flag/flag_not_in_v1` (`-c` isn't in git log's allowedFlags).
+Six new adversarial assertions in `tests/shell-exec-schemas.test.js`
+§F.1; nine spawn-argv assertions in `tests/shell-exec-env-isolation
+.test.js` §B/§B.1/§B.2.
+
+Files: `src/tools/shell-exec-verb-schemas.js`,
+`src/tools/shell-exec-spawn.js`, `tests/shell-exec-env-isolation.test.js`,
+`tests/shell-exec-schemas.test.js`.
+
 **Slice 3 family closure (2026-05-16):** 3a + 3b + 3b.1 + 3c + 3c.1 +
-3d all ✓ COMPLETE.
+3d all ✓ COMPLETE. Slice 3d.1 (2026-05-17) — post-merge fix — ✓ COMPLETE.
 
 Code-round adversarial review pending after Unit 3 push.
 
