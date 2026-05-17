@@ -118,7 +118,7 @@ async function runEnvShapeTest() {
 }
 
 async function runArgvSliceTest() {
-  console.log('\n=== B. argv passed to spawn excludes the verb token ===');
+  console.log('\n=== B. argv passed to spawn excludes argv[0] and prepends schema spawnArgvPrefix (Slice 3d.1) ===');
   const captured = {};
   const spy = setupSpy(captured);
   try {
@@ -126,7 +126,65 @@ async function runArgvSliceTest() {
     check('parses', validated.ok);
     await spawnWithCaps(validated);
     check('bin = /usr/bin/git', captured.bin === '/usr/bin/git');
-    check("argv === ['log','--oneline','-n','5']", JSON.stringify(captured.argv) === JSON.stringify(['log', '--oneline', '-n', '5']));
+    // Slice 3d.1 — schema-level spawnArgvPrefix prepends
+    // `-c safe.directory=/root/QClaw` for git verbs (works around
+    // GIT_CONFIG_GLOBAL=/dev/null neutralising safe.directory from
+    // /root/.gitconfig along with the user aliases).
+    const expectedArgv = ['-c', 'safe.directory=/root/QClaw', 'log', '--oneline', '-n', '5'];
+    check(
+      `argv === ${JSON.stringify(expectedArgv)}`,
+      JSON.stringify(captured.argv) === JSON.stringify(expectedArgv),
+      captured.argv,
+    );
+    // Tyson's required structural assertion: argv[1]/argv[2] are
+    // the prepended safe.directory tokens for any git invocation.
+    check("argv[0] === '-c' (prepend, position 0)", captured.argv[0] === '-c');
+    check("argv[1] === 'safe.directory=/root/QClaw' (prepend, position 1)", captured.argv[1] === 'safe.directory=/root/QClaw');
+  } finally {
+    spy.mock.restore();
+  }
+}
+
+async function runGitStatusSpawnArgvTest() {
+  console.log('\n=== B.1 git status spawn argv includes safe.directory prepend (Slice 3d.1) ===');
+  const captured = {};
+  const spy = setupSpy(captured);
+  try {
+    const validated = parseAndValidate('git status');
+    check('parses', validated.ok);
+    await spawnWithCaps(validated);
+    check('bin = /usr/bin/git', captured.bin === '/usr/bin/git');
+    const expectedArgv = ['-c', 'safe.directory=/root/QClaw', 'status'];
+    check(
+      `argv === ${JSON.stringify(expectedArgv)}`,
+      JSON.stringify(captured.argv) === JSON.stringify(expectedArgv),
+      captured.argv,
+    );
+    check("argv[0] === '-c'", captured.argv[0] === '-c');
+    check("argv[1] === 'safe.directory=/root/QClaw'", captured.argv[1] === 'safe.directory=/root/QClaw');
+  } finally {
+    spy.mock.restore();
+  }
+}
+
+async function runNonGitNoPrefixTest() {
+  console.log('\n=== B.2 non-git verbs do NOT receive spawnArgvPrefix (Slice 3d.1) ===');
+  const captured = {};
+  const spy = setupSpy(captured);
+  try {
+    // Synthesise a validated `ls` (no fixture realpath needed —
+    // schema has no spawnArgvPrefix, so spawn argv should be
+    // exactly argv.slice(1)).
+    const validated = {
+      ok: true,
+      argv: ['ls'],
+      schemaKey: 'ls',
+      verbTokens: 1,
+      resolvedPaths: new Map(),
+    };
+    await spawnWithCaps(validated);
+    check('bin = /bin/ls', captured.bin === '/bin/ls');
+    check("argv === [] (no prefix for ls)", JSON.stringify(captured.argv) === JSON.stringify([]), captured.argv);
   } finally {
     spy.mock.restore();
   }
@@ -159,6 +217,8 @@ async function runResolvedPathsSubstitutionTest() {
   try {
     await runEnvShapeTest();
     await runArgvSliceTest();
+    await runGitStatusSpawnArgvTest();
+    await runNonGitNoPrefixTest();
     await runResolvedPathsSubstitutionTest();
     console.log(`\n=== shell-exec-env-isolation.test.js: ${passed} passed, ${failed} failed ===\n`);
     if (failed > 0) process.exit(1);

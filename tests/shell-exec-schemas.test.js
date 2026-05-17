@@ -149,6 +149,24 @@ rej('git log --format=anything (forbidden)', 'git log --format=raw', 'invalid_fl
 rej('git log --output=/tmp/x', 'git log --output=/tmp/x', 'invalid_flag');
 rej('git log -c user.name=foo', 'git log -c user.name=foo', 'invalid_flag');
 
+// Slice 3d.1 — adversarial. The schema prepends `-c
+// safe.directory=/root/QClaw` to the spawn argv for git verbs, so we
+// must verify the parser refuses to accept any user-supplied `-c`
+// (neither at git-level nor as a git log flag). This is the same
+// flag-injection concern from Slice 3d Round 1.
+console.log('\n=== F.1 Slice 3d.1 adversarial: user-supplied -c is rejected ===');
+// `git -c <kv> log` — parser tokenises into ['git','-c','...','log'];
+// dispatch tries the two-token verb prefix `git -c`, which isn't a
+// known verb → unknown_verb. (Verified by /tmp/slice3d1_adhoc.js.)
+rej('git -c alias.log=evil log (git-level -c)', "git -c alias.log=evil log", 'unknown_verb');
+rej('git -c safe.directory=/x log (git-level -c)', 'git -c safe.directory=/x log', 'unknown_verb');
+rej('git -c http.sslVerify=false log', 'git -c http.sslVerify=false log', 'unknown_verb');
+// `git log -c X` — `-c` not in git log's allowedFlags.
+rej('git log -c X (subcommand-level -c)', 'git log -c X', 'invalid_flag', 'flag_not_in_v1');
+rej('git log -c alias.log=evil', 'git log -c alias.log=evil', 'invalid_flag', 'flag_not_in_v1');
+// Same for git status.
+rej('git -c X status (git-level -c)', 'git -c safe.directory=/x status', 'unknown_verb');
+
 console.log('\n=== G. pm2 verb dispatch ===');
 ok('pm2 list (parse + dispatch only)', 'pm2 list', 'pm2 list');
 ok('pm2 ls (alias)', 'pm2 ls', 'pm2 list');

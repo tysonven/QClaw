@@ -11578,3 +11578,147 @@ fixture helper. The lesson: pre-PR verification on Tyson's Mac is
 necessary but not sufficient — every code change that touches
 filesystem paths in tests needs explicit non-root / no-/root validation
 before declaring ready-for-review.
+
+## 2026-05-17 — Slice 3d.1 — git verb safe.directory prepend (fix dubious-ownership post-Slice-3d)
+
+### Failure
+
+Post-deploy smoke after Slice 3d merge (PR #25, commit f79523a). Through
+Telegram → executor → shell_exec → spawnWithCaps, git verbs (`git
+status`, `git log`) fail with "dubious ownership". `sudo git -C
+/root/QClaw log` works fine as root on the qclaw host;
+`sudo git config --global --get-all safe.directory` returns
+`/root/QClaw`. Only the sanitised-env spawn path through shell_exec is
+blocked.
+
+Verbatim from Tyson's post-deploy report:
+
+```
+git verbs (git status, git log) fail with "dubious ownership"
+through shell_exec
+- sudo git -C /root/QClaw log works fine as root
+- sudo git config --global --get-all safe.directory returns
+  /root/QClaw
+- the repo is fully accessible — only shell_exec's sanitised env
+  path is blocked
+```
+
+### Root cause
+
+`SAFE_ENV.GIT_CONFIG_GLOBAL=/dev/null` (set in Slice 3d Round-2 to
+neutralise user-level aliases in `/root/.gitconfig` — see
+`src/tools/shell-exec-verb-schemas.js` line 36) ALSO disables
+`safe.directory` resolution from `/root/.gitconfig`. The same single
+env-var setting controls two unrelated behaviours:
+
+  - alias-neutralisation (the property Slice 3d wanted)
+  - safe.directory resolution (the property git needs for legitimate
+    cross-uid ownership of /root/QClaw — Charlie runs as a non-root
+    user under PM2, the repo is owned by root)
+
+Slice 3d's three-gate dangerous-git-config-key model
+(DANGEROUS_GIT_CONFIG_EXACT_KEYS / LEAVES / SECTIONS) caught attack
+surfaces but did not catch defensive surfaces — `safe.directory`
+wasn't on any dangerous list because it isn't an attack key, but it
+was needed for git to operate at all under the sanitised env.
+
+### Fix (Option A — Tyson's decision)
+
+Add a generic `spawnArgvPrefix?: string[]` field to the verb schemas
+(`src/tools/shell-exec-verb-schemas.js`). For `git status` and `git log`,
+the prefix is `['-c', 'safe.directory=/root/QClaw']`. The spawn module
+(`src/tools/shell-exec-spawn.js`) reads the schema's `spawnArgvPrefix`
+and inserts it BETWEEN argv[0] (the binary) and argv.slice(1) (the
+verb-stripped user argv). Per-invocation safe.directory trust, no
+config-file dependency.
+
+SAFE_ENV is NOT modified — `GIT_CONFIG_GLOBAL=/dev/null` stays. The
+alias-neutralisation property from Slice 3d is preserved (the spawned
+git still does not read /root/.gitconfig). Only the single needed
+safe.directory key is re-injected per-invocation.
+
+### Adversarial property preserved
+
+User-supplied `-c` MUST NOT be accepted at any layer. Same flag-injection
+concern from Slice 3d Round 1. Verified by ad-hoc probe
+(`/tmp/slice3d1_adhoc.js`):
+
+```
+[git -c alias.log=evil log] command='git -c alias.log=evil log'
+           result={"ok":false,"error":"unknown_verb","reason":"verb_not_in_v1","detail":{"verb":"git -c"}}
+[git -c safe.directory=/x log] command='git -c safe.directory=/x log'
+           result={"ok":false,"error":"unknown_verb","reason":"verb_not_in_v1","detail":{"verb":"git -c"}}
+[git -c http.sslVerify=false status] command='git -c http.sslVerify=false status'
+           result={"ok":false,"error":"unknown_verb","reason":"verb_not_in_v1","detail":{"verb":"git -c"}}
+[git log -c X] command='git log -c X'
+           result={"ok":false,"error":"invalid_flag","reason":"flag_not_in_v1","detail":{"token":"-c","verb":"git log"}}
+[git log -c user.name=foo] command='git log -c user.name=foo'
+           result={"ok":false,"error":"invalid_flag","reason":"flag_not_in_v1","detail":{"token":"-c","verb":"git log"}}
+```
+
+Two structural protections:
+  - `git -c X log` → parser dispatch tries the two-token verb prefix
+    `git -c` → `unknown_verb/verb_not_in_v1` (no such verb in
+    VERB_SCHEMAS). The `-c` token cannot reach the subcommand from
+    the git-level position.
+  - `git log -c X` → `-c` is not in `git log`'s allowedFlags → 
+    `invalid_flag/flag_not_in_v1`.
+
+The structural invariant: user input → parse → schema validate → spawn
+prepends its own flags AFTER validation. User input never contains `-c`
+in any accepted form, so the prefix can ONLY come from the schema's
+spawnArgvPrefix array.
+
+### Spawn argv verified
+
+```
+[git log] command='git log -n 5 --oneline'
+           bin=/usr/bin/git
+           argv=["-c","safe.directory=/root/QClaw","log","-n","5","--oneline"]
+[git status] command='git status'
+           bin=/usr/bin/git
+           argv=["-c","safe.directory=/root/QClaw","status"]
+[ls (no args)] command='ls'
+           bin=/bin/ls
+           argv=[]
+```
+
+Non-git verbs (ls, cat, pm2) do NOT receive a spawnArgvPrefix —
+schema-absent, argv passthrough is unchanged.
+
+### Local verification (post-fix)
+
+```
+shell-exec-parser.test.js:                64 passed, 0 failed
+shell-exec-schemas.test.js:               66 passed, 0 failed   (+6 adversarial -c assertions)
+shell-exec-path-resolve.test.js:          46 passed, 0 failed
+shell-exec-env-isolation.test.js:         34 passed, 0 failed   (+9 spawnArgvPrefix assertions)
+shell-exec-git-config-safety.test.js:     22 passed, 0 failed
+approval-gate-shell-exec-parser.test.js:  81 passed, 0 failed
+shell-exec-spawn-limits.test.js:          12 passed, 0 failed
+verify-shell-exec-parser.js:              47 passed, 0 failed
+```
+
+Tyson's required assertion (`argv[1] === '-c'` and `argv[2] ===
+'safe.directory=/root/QClaw'` for any git invocation) implemented in
+`tests/shell-exec-env-isolation.test.js` §B and §B.1, captured at the
+spawn boundary via the node:test `mock.method(child_process, 'spawn',
+…)` spy.
+
+### Files changed
+
+- `src/tools/shell-exec-verb-schemas.js` — `spawnArgvPrefix` field
+  added to `git status` and `git log` schemas
+- `src/tools/shell-exec-spawn.js` — imports VERB_SCHEMAS, reads
+  schema.spawnArgvPrefix, prepends to spawn argv (between binary and
+  argv.slice(1))
+- `tests/shell-exec-env-isolation.test.js` — existing argv-slice
+  assertion updated for the new prefix; +B.1 git status spawn argv;
+  +B.2 non-git verbs do NOT receive prefix
+- `tests/shell-exec-schemas.test.js` — +§F.1 Slice 3d.1 adversarial
+  battery: 6 user-supplied `-c` rejection assertions
+
+### Post-deploy smoke (1 step)
+
+`show me recent git log` through Telegram should return log output
+(not dubious-ownership). Tyson's responsibility post-merge.

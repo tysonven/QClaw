@@ -22,6 +22,7 @@ import {
   SPAWN_TIMEOUT_MS,
   MAX_OUTPUT_BYTES,
   VERB_BINARY,
+  VERB_SCHEMAS,
 } from './shell-exec-verb-schemas.js';
 
 function decodeOutput(buf) {
@@ -54,6 +55,33 @@ export async function spawnWithCaps(validated) {
     };
   }
 
+  // Slice 3d.1 — schema-level spawnArgvPrefix.
+  //
+  // Some verbs need a binary-level option prepended that users must
+  // NEVER be able to inject themselves. Today: `git status` and
+  // `git log` need `-c safe.directory=/root/QClaw` because SAFE_ENV's
+  // GIT_CONFIG_GLOBAL=/dev/null disables safe.directory resolution
+  // from /root/.gitconfig (the same setting that neutralises user
+  // aliases — both properties live in the same file).
+  //
+  // The prefix is read from VERB_SCHEMAS[schemaKey].spawnArgvPrefix
+  // and inserted BETWEEN the binary and the verb-stripped argv. The
+  // parser/schema never accepts `-c` from user input (not in any
+  // allowed-flags list, and `git -c X log` rejects at dispatch as
+  // unknown_verb because `git -c` isn't a two-token verb prefix).
+  // The structural property: user input → parse → schema validate →
+  // spawn prepends its own flags AFTER validation. User cannot
+  // inject their own `-c`.
+  const schema = VERB_SCHEMAS[validated.schemaKey] || {};
+  const spawnArgvPrefix = Array.isArray(schema.spawnArgvPrefix)
+    ? schema.spawnArgvPrefix
+    : [];
+  // Strip argv[0] (the binary verb, e.g. 'git') — the subcommand and
+  // any positional/flag tokens remain in argv.slice(1). For `git
+  // status`/`git log`, the prefix is inserted BEFORE the subcommand
+  // so the spawned process sees `git -c safe.directory=... status`.
+  const spawnArgs = [...spawnArgvPrefix, ...argv.slice(1)];
+
   const startedAt = Date.now();
   // Build SAFE_ENV — make a fresh object (don't pass the frozen one to
   // spawn so Node can't mutate; also so the spy can deep-equal).
@@ -66,7 +94,7 @@ export async function spawnWithCaps(validated) {
       // mock.method(child_process, 'spawn', …) can intercept. A
       // top-level `import { spawn }` would snapshot the binding and
       // dodge the spy.
-      child = child_process.spawn(binary, argv.slice(1), {
+      child = child_process.spawn(binary, spawnArgs, {
         shell: false,
         cwd: ALLOWED_CWD,
         env,
