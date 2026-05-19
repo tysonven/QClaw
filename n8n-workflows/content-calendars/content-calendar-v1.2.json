@@ -1,0 +1,254 @@
+{
+  "meta": {
+    "version": "1.2",
+    "updated_at": "2026-04-17T00:00:00Z",
+    "notes": "v1.2: LinkedIn on Tue/Thu only (avoids Flow OS posts on Mon/Wed/Fri). Instagram Mon/Wed/Fri. Facebook Wed/Fri."
+  },
+  "monthly_themes": [
+    {
+      "month": "2026-04",
+      "theme": "Launch & Awareness",
+      "description": "Introduce the project, explain the three pillars, drive EOI registrations"
+    },
+    {
+      "month": "2026-05",
+      "theme": "Land Sourcing",
+      "description": "Behind the scenes of finding the right land in Crete. Soil, water, climate, village proximity."
+    }
+  ],
+  "weekly_cadence": {
+    "instagram": "Mon, Wed, Fri",
+    "linkedin": "Tue, Thu",
+    "facebook": "Wed, Fri"
+  },
+  "content_slots": [
+    {
+      "id": "slot-001",
+      "date": "2026-04-21",
+      "platform": "instagram",
+      "content_type": "instagram_post",
+      "theme": "Launch & Awareness",
+      "image_type": "text_card",
+      "image_style": "quote",
+      "brief": "Introduce the project. Three pillars: agricultural land, village restoration, health and wellness. One ecosystem in Crete. The land feeds the village, the village houses the people, the wellness centre supports their health.",
+      "cta": "Link in bio to register your interest at creteprojects.com",
+      "content_mix": "educational"
+    },
+    {
+      "id": "slot-002",
+      "date": "2026-04-22",
+      "platform": "linkedin",
+      "content_type": "linkedin_post",
+      "theme": "Launch & Awareness",
+      "brief": "Professional introduction to the Crete Projects opportunity. Three interconnected ventures under one ecosystem. Position it as a tangible alternative asset with lifestyle alignment. Mention the EOI process. Speak to investors and entrepreneurs.",
+      "cta": "Register your interest at creteprojects.com",
+      "content_mix": "direct_cta"
+    },
+    {
+      "id": "slot-003",
+      "date": "2026-04-23",
+      "platform": "instagram",
+      "content_type": "instagram_post",
+      "theme": "Launch & Awareness",
+      "image_type": "photo",
+      "image_theme": "lifestyle",
+      "brief": "Why Crete specifically. Year-round Mediterranean climate, affordable land compared to mainland Europe, deep cultural heritage of village life and food, growing interest from digital nomads and travelling families.",
+      "cta": "More at creteprojects.com",
+      "content_mix": "educational"
+    },
+    {
+      "id": "slot-004",
+      "date": "2026-04-23",
+      "platform": "facebook",
+      "content_type": "facebook_post",
+      "theme": "Launch & Awareness",
+      "brief": "Introduce the project to a community-oriented audience. Emphasise the worldschooling angle: premium accommodation for travelling families, agricultural workshops for kids, community spaces. Not a commune, not a hostel. Private, premium, curated.",
+      "cta": "Find out more at creteprojects.com",
+      "content_mix": "community_lifestyle"
+    },
+    {
+      "id": "slot-005",
+      "date": "2026-04-24",
+      "platform": "linkedin",
+      "content_type": "linkedin_post",
+      "theme": "Launch & Awareness",
+      "brief": "The investment case for regenerative agriculture in Crete. Multiple revenue streams from one asset: produce sales, agro-tourism, workshop fees, member access. Biodynamic principles building soil health and long-term land value.",
+      "cta": "Expression of Interest open at creteprojects.com",
+      "content_mix": "educational"
+    },
+    {
+      "id": "slot-006",
+      "date": "2026-04-25",
+      "platform": "instagram",
+      "content_type": "instagram_post",
+      "theme": "Launch & Awareness",
+      "image_type": "text_card",
+      "image_style": "editorial",
+      "brief": "The agricultural pillar explained. Regenerative agroforestry and biodynamic principles. Diversified produce: olives, herbs, vegetables, citrus, honey, livestock. Farm-to-table supply chain. This is a working farm, not a decorative garden.",
+      "cta": "Register your interest at creteprojects.com",
+      "content_mix": "educational"
+    },
+    {
+      "id": "slot-007",
+      "date": "2026-04-25",
+      "platform": "facebook",
+      "content_type": "facebook_post",
+      "theme": "Launch & Awareness",
+      "brief": "The ecosystem explained simply. The land grows the food. The village houses the people. The wellness centre supports their health. Three diversified revenue streams that reinforce each other.",
+      "cta": "Register at creteprojects.com",
+      "content_mix": "educational"
+    },
+    {
+      "id": "slot-008",
+      "date": "2026-04-28",
+      "platform": "instagram",
+      "content_type": "instagram_post",
+      "theme": "Launch & Awareness",
+      "image_type": "photo",
+      "image_theme": "village",
+      "brief": "Village restoration explained. Traditional Cretan stone buildings transformed into premium private accommodation. Thick stone walls, courtyards, arched doorways, timber beams. Heritage architecture with contemporary comfort.",
+      "cta": "Learn more at creteprojects.com",
+      "content_mix": "behind_the_scenes"
+    },
+    {
+      "id": "slot-009",
+      "date": "2026-04-29",
+      "platform": "linkedin",
+      "content_type": "linkedin_post",
+      "theme": "Launch & Awareness",
+      "brief": "The practitioner model. Wellness practitioners come to the facility, use the space and the built-in audience, and pay a facility fee. Quality and range of services scale without employing a full clinical team. Write about this as a business model.",
+      "cta": "Expression of Interest at creteprojects.com",
+      "content_mix": "educational"
+    },
+    {
+      "id": "slot-010",
+      "date": "2026-04-30",
+      "platform": "instagram",
+      "content_type": "instagram_post",
+      "theme": "Launch & Awareness",
+      "image_type": "text_card",
+      "image_style": "quote",
+      "brief": "The wellness facility. Gym, cold plunge, sauna, physiotherapy, sports recovery. Yoga, pilates, breathwork, movement classes. Visiting and resident practitioners. This is what turns accommodation into a destination.",
+      "cta": "Register your interest at creteprojects.com",
+      "content_mix": "educational"
+    },
+    {
+      "id": "slot-011",
+      "date": "2026-04-30",
+      "platform": "facebook",
+      "content_type": "facebook_post",
+      "theme": "Launch & Awareness",
+      "brief": "What does a worldschooling hub look like at Crete Projects? Groups of 10-30 families staying 2-8 weeks. Private accommodation, dedicated learning spaces, agricultural immersion programmes, wellness facility access.",
+      "cta": "If you run a worldschooling hub, we'd like to hear from you. creteprojects.com",
+      "content_mix": "community_lifestyle"
+    },
+    {
+      "id": "slot-012",
+      "date": "2026-05-01",
+      "platform": "linkedin",
+      "content_type": "linkedin_post",
+      "theme": "Launch & Awareness",
+      "brief": "What we're NOT building. Not a commune, co-living collective, shared dormitory, budget destination, or volunteer exchange. Private and premium accommodation. Community curated through investment and membership, not self-selection.",
+      "cta": "creteprojects.com — Expression of Interest open",
+      "content_mix": "educational"
+    },
+    {
+      "id": "slot-013",
+      "date": "2026-05-02",
+      "platform": "instagram",
+      "content_type": "instagram_post",
+      "theme": "Launch & Awareness",
+      "image_type": "photo",
+      "image_theme": "agriculture",
+      "brief": "The founder story. 20 years in the building industry before pivoting to health, wellness, and mentoring. Wife Emma with a long history in health and wellness, now business coaching. Two lenses on this project: build quality and human experience.",
+      "cta": "Read the full EOI at creteprojects.com",
+      "content_mix": "behind_the_scenes"
+    },
+    {
+      "id": "slot-014",
+      "date": "2026-05-02",
+      "platform": "facebook",
+      "content_type": "facebook_post",
+      "theme": "Launch & Awareness",
+      "brief": "Month-end recap. Foundation phase progress: EOI campaign running, legal entity in progress, land and property sourcing underway. Next month: land sourcing deep dives. Real updates, not manufactured excitement.",
+      "cta": "Follow along and register at creteprojects.com",
+      "content_mix": "behind_the_scenes"
+    },
+    {
+      "id": "slot-015",
+      "date": "2026-05-05",
+      "platform": "instagram",
+      "content_type": "instagram_post",
+      "theme": "Land Sourcing",
+      "image_type": "text_card",
+      "image_style": "editorial",
+      "brief": "What we look for in agricultural land in Crete. Soil quality, water access, sun exposure, proximity to a village, road access, existing olive groves or orchards. Walk through the actual criteria.",
+      "cta": "creteprojects.com",
+      "content_mix": "educational"
+    },
+    {
+      "id": "slot-016",
+      "date": "2026-05-06",
+      "platform": "linkedin",
+      "content_type": "linkedin_post",
+      "theme": "Land Sourcing",
+      "brief": "Agricultural land acquisition in Greece: what you need to know. Legal considerations for foreign buyers, the process of purchasing agricultural land, due diligence requirements, zoning and planning.",
+      "cta": "Register your interest at creteprojects.com",
+      "content_mix": "educational"
+    },
+    {
+      "id": "slot-017",
+      "date": "2026-05-07",
+      "platform": "instagram",
+      "content_type": "instagram_post",
+      "theme": "Land Sourcing",
+      "image_type": "photo",
+      "image_theme": "agriculture",
+      "brief": "Crete's growing seasons. What you can grow and when. Olive harvest in autumn, citrus in winter, herbs and vegetables year-round, honey production cycles.",
+      "cta": "Learn more at creteprojects.com",
+      "content_mix": "educational"
+    },
+    {
+      "id": "slot-018",
+      "date": "2026-05-07",
+      "platform": "facebook",
+      "content_type": "facebook_post",
+      "theme": "Land Sourcing",
+      "brief": "Regenerative agroforestry explained. What it means in practice: no monoculture, diverse planting systems, building soil health, integrating animals, working with natural cycles.",
+      "cta": "creteprojects.com",
+      "content_mix": "educational"
+    },
+    {
+      "id": "slot-019",
+      "date": "2026-05-08",
+      "platform": "linkedin",
+      "content_type": "linkedin_post",
+      "theme": "Land Sourcing",
+      "brief": "Due diligence on agricultural land in Crete. What we're checking: land registry (cadastre) status, zoning, access rights, water rights, environmental protections, proximity to infrastructure. The unsexy but critical work that protects investor capital.",
+      "cta": "Expression of Interest open at creteprojects.com",
+      "content_mix": "behind_the_scenes"
+    },
+    {
+      "id": "slot-020",
+      "date": "2026-05-09",
+      "platform": "instagram",
+      "content_type": "instagram_post",
+      "theme": "Land Sourcing",
+      "image_type": "text_card",
+      "image_style": "quote",
+      "brief": "Water in Crete. How water access works for agricultural land: bore holes, natural springs, seasonal rainfall, irrigation systems. Why water is the single most important factor in land selection.",
+      "cta": "creteprojects.com",
+      "content_mix": "behind_the_scenes"
+    },
+    {
+      "id": "slot-021",
+      "date": "2026-05-09",
+      "platform": "facebook",
+      "content_type": "facebook_post",
+      "theme": "Land Sourcing",
+      "brief": "What a day on the Crete Projects farm could look like. Morning harvest, workshop with visiting families, produce prep for the village kitchen, afternoon maintenance. A realistic picture, not a fantasy.",
+      "cta": "Be part of it at creteprojects.com",
+      "content_mix": "community_lifestyle"
+    }
+  ]
+}

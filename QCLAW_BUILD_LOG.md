@@ -11938,3 +11938,364 @@ operations were already live on n8n at the time of this commit (executed
   contents of `credentials.txt`, `wl_token.txt`, `fetch_token.sh`,
   `newman_output.json`, and the `n8n_data/config` encryption key
   remain unaudited — P1 follow-up.
+
+---
+
+## 2026-05-19 — Crete content calendar v1.3 refill + Build Prompt hardening (3 prompt iterations)
+
+**Dispatcher:** Tyson — Track 1 Step B (follows Step A schema audit on
+2026-05-18, ref `/tmp/crete_calendar_schema_20260518.md`).
+
+**Branch:** `cc/crete-calendar-v1.3-20260519` (forked from `main` at
+`44e78f2`, not stacked on `cc/n8n-workflow-index-sms-gateway-heartbeat-20260519`).
+
+**Status:** R2 calendar live, workflow updated in production, smoke
+test green on mechanics, 6 test rows generated and all 6 deleted.
+One residual past-participle on FB accepted — relies on the existing
+`pending_review` review gate.
+
+### What changed
+
+1. **R2 `crete-projects/content-calendar.json`:** v1.2 (21 slots,
+   2026-04-21 → 2026-05-09) overwritten with v1.3 (40 slots,
+   2026-05-20 → 2026-06-26). 6-week theme arc: Weeks 1-2
+   Launch & Awareness + Founder POV, Week 3 Agricultural Land, Week 4
+   Village Restoration, Week 5 Health & Wellness, Week 6 Investor
+   Case + EOI Mechanics. Cadence: IG Mon/Wed/Fri, FB Wed/Fri,
+   LinkedIn Tue/Thu. Platform mix: IG 17, FB 12, LinkedIn 11.
+2. **n8n workflow `tnvXFYvODL1PrhJa` (Crete - Content Generator),
+   `Build Prompt` Code node, `SYSTEM_PROMPT` constant only:**
+   appended/restructured to add a no-fabrication rule + URL-in-body
+   rule + anti-past-participle rule, and to purge embedded em-dashes
+   from the prompt itself. Three iterations needed (see below).
+
+Everything else in the workflow — connections, other 18 nodes,
+schedule trigger cron (`0 0 8 * * *`, server-local), `errorWorkflow:
+7kpNnMtnuDWXgWcX`, `settings.availableInMCP: true`,
+`settings.callerPolicy: workflowsFromSameOwner`,
+`settings.executionOrder: v1` — preserved byte-for-byte across all
+PUTs.
+
+### Audit-first reflex (Step 0)
+
+- GET `tnvXFYvODL1PrhJa` from `${N8N_BASE_URL}/api/v1/workflows/...`
+  with `X-N8N-API-KEY` from `/root/.quantumclaw/.env`.
+- Hashed `parameters.jsCode` of all 7 Code nodes (Filter Due Slots,
+  Build Prompt, Build Row, Image Router, Merge Image URL, Select
+  Random Photo, Photo Fallback) — every md5 matched
+  `/tmp/crete_content_generator_workflow.json` byte-for-byte. No
+  drift since the 2026-05-18 schema audit.
+- Workflow `updatedAt: 2026-05-13T21:20:10.940Z` — 6 days old, no
+  parallel-session conflict.
+- Live calendar HEAD: 11784 bytes, `etag:
+  "9bf8323645143d71d8829981d80d6c3d"`, `last-modified: Thu, 23 Apr
+  2026 14:59:25 GMT`, `cf-cache-status: DYNAMIC` (CDN not caching) —
+  matches schema-audit snapshot.
+
+### v1.3 calendar construction
+
+Built locally via Python builder (`/tmp/build_calendar_v13.py`, not
+committed). Verbatim transcription of the dispatch's 40-slot table.
+Sanity checks at build time:
+
+- 40 slots, ids `slot-022` through `slot-061` (continuing v1.2's
+  `slot-001`…`slot-021`).
+- All `image_theme` values ∈ {agriculture, village, wellness, lifestyle}.
+- All `image_style` values ∈ {quote, editorial} (only set on
+  `text_card` slots; `photo` slots omit `image_style` matching v1.2
+  pattern).
+- All 40 have `image_type` set (22 photo, 18 text_card) — **change
+  from v1.2** where only 9/21 had `image_type`. Every post in v1.3
+  routes through image generation via `Needs Image?` IF node. This
+  is the dispatcher's explicit choice per the 40-row table — every
+  slot lists an image_type.
+- Default CTA `"Register at creteprojects.com"` applied to all 40
+  (no per-slot overrides specified).
+- Top-level `meta` / `monthly_themes` / `weekly_cadence` scaffolding
+  preserved per v1.2 schema; not consumed by workflow but kept for
+  human-editor UX (see `/tmp/crete_calendar_schema_20260518.md` §9).
+
+Local repo mirror at
+`n8n-workflows/content-calendars/content-calendar-v1.3.json` (22017
+bytes, md5 `84a619fddeee7bc0b34acf1f62b2aa6a`). v1.2 archived as
+`content-calendar-v1.2.json` (11784 bytes) immediately before
+overwrite.
+
+### R2 upload
+
+Performed on qclaw via `boto3` (server has no `rclone`/`aws`/`mc`/
+`wrangler` — only `python3` + boto3 1.34.46 + `curl` + `jq`).
+S3-compatible endpoint
+`https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com`, bucket
+`${CRETE_R2_BUCKET_NAME}` = `crete-projects`, key
+`content-calendar.json`, `ContentType=application/json`. Pre-flight
+HEAD captured prior etag for rollback reference; PUT returned HTTP
+200 with `ETag: "84a619fddeee7bc0b34acf1f62b2aa6a"` matching local
+md5 (single-PUT etag = md5, no multipart). No `Cache-Control` set
+on the new object (matches v1.2 — no `Cache-Control` header in
+existing R2 metadata; CDN responded `cf-cache-status: DYNAMIC`
+post-upload, so no purge required).
+
+Public verification via `https://media.creteprojects.com/content-calendar.json`:
+
+```
+HTTP/2 200
+content-type: application/json
+content-length: 22017
+etag: "84a619fddeee7bc0b34acf1f62b2aa6a"
+last-modified: Tue, 19 May 2026 12:50:06 GMT
+cf-cache-status: DYNAMIC
+```
+
+Byte-for-byte md5 match between local repo mirror, R2 object body,
+and CDN-served body. JSON parses, `meta.version === "1.3"`,
+`content_slots.length === 40`, `first.date === "2026-05-20"`,
+`last.date === "2026-06-26"`.
+
+### SYSTEM_PROMPT evolution — 3 iterations
+
+PUT body shape strict per `[[project_n8n_qclaw_topology]]` — only
+`{name, nodes, connections, settings}` accepted by n8n public API
+PUT. Read-only fields (`id`, `versionId`, `triggerCount`, etc.)
+stripped on each PUT. `availableInMCP: true` re-verified via post-PUT
+GET on every iteration.
+
+**Iteration 1 (versionId `3182401c-7174-45da-bb67-7c9c55de5566`,
+PUT @ 12:53:13Z, jsCode 2887 chars):** appended two paragraphs to
+the end of the existing single-line `SYSTEM_PROMPT` string literal,
+preserving everything before byte-for-byte. New text: the no-fab
+list of forbidden categories + the URL-in-body rule, joined with
+single-space to the prior `Never fabricate milestones.` boundary.
+Smoke fired via cron-nudge — execution `958151` — produced
+fabricated FB content:
+
+> *"Three years ago, we started something different in Crete."*
+
+> *"The land is secured, initial restoration work has begun, and
+> we're having conversations with early investors and future
+> members."*
+
+> *"We're selective about who we work with, and early registration
+> helps us understand what this community actually needs."*
+
+Three explicit violations of the rule that had just been deployed:
+fabricated past date, fabricated current project state, fabricated
+positioning. IG body was cleaner. Both bodies had `creteprojects.com`
+in body text — URL-in-body rule landed cleanly. Stopped per
+dispatch's "If running the test produces undesirable rows … surface
+immediately before committing." Test rows `2f5a0216-…` and
+`378ef61d-…` deleted via Supabase service-role key on
+`crete_content_queue`.
+
+**Iteration 2 (versionId `e8cd32f3-8122-4fa7-92e5-e15e38760a03`,
+PUT @ 13:14Z, jsCode 3350 chars):** Tyson directed full replacement
+moving the no-fab paragraph to the **front** of `SYSTEM_PROMPT` (per
+his exact text, salience-by-position). Also added the
+"If unsure whether something is a fact or an invention — LEAVE IT
+OUT" closer and the "Speak in present-tense vision and intent …
+rather than past-tense achievement" guidance. Smoke fired via
+cron-nudge — execution `958205` — three-category audit on FB came
+back clean (no "three years ago", no "land is secured", no "we're
+selective"); IG body was clean on those three but introduced **soft
+past-participle constructions** implying completed work:
+
+> *"Agricultural land restored through regenerative practices.
+> Traditional village buildings brought back to life as premium
+> accommodation. Health and wellness facilities designed for
+> families who've chosen location independence."*
+
+Strict reading: violation of the rule's spirit. Lenient reading:
+descriptive of the model/method. Test rows `cb425e85-…` and
+`edf69c40-…` deleted.
+
+**Iteration 3 (versionId `d8cfe9ac-726f-404a-b02c-6fdb95c3d00b` for
+the PUT then reverted-cron versionId `76cbb688-4f19-4f3a-93c5-8e5314b28576`
+for the production-restored state, PUT @ 13:24Z, jsCode 3777 chars):**
+Tyson directed two changes:
+
+- **CHANGE A**: append an explicit anti-past-participle rule at the
+  end of the no-fab paragraph naming the exact failure patterns
+  ("land restored", "buildings brought back to life", "facilities
+  designed for X", "system built") and prescribing the alternatives
+  ("present-continuous" e.g. "land being regenerated"; "future-intent"
+  e.g. "the wellness centre will…").
+- **CHANGE B**: walk through the entire `SYSTEM_PROMPT` and replace
+  every em-dash (`—`) with a comma, colon, or sentence break.
+  Self-contradiction fix — the prompt had been instructing "No em
+  dashes" while itself using six em-dashes, giving the model a
+  contradictory in-context demonstration. Post-PUT verification:
+  `em-dashes in jsCode: 0`.
+
+Smoke fired via cron-nudge — execution `958231` — four-category
+audit:
+
+| Category | IG (slot-022) | FB (slot-023) |
+|---|---|---|
+| Fab past dates | clean | clean |
+| Fab project state | mild ("brings together") | mild ("pillar transforms / provides / supports") |
+| Past-participle implying completion | **clean** — model wrote *"Traditional Cretan stone buildings **are being restored** into premium accommodation"* (exact prescribed present-continuous form) | one slip: *"**Designed for** location-independent families, particularly those worldschooling, these properties support 2-8 week stays."* |
+| Em-dashes in body | 0 (model substituted plain hyphens) | 0 (same) |
+| URL in body | yes | yes |
+| IG hashtag cap (≤5) | 5 | n/a |
+
+Accept-and-ship decision on the FB residual per Tyson — the
+trend across 3 iterations is dramatic improvement (from "Three
+years ago, we started" → "Designed for X" single phrase), and the
+`pending_review` review gate catches the remainder. Test rows
+`a28c28d4-…` and `654c152e-…` deleted.
+
+### Smoke-test mechanism (cron-nudge revert pattern)
+
+Scheduled trigger uses `cronExpression: 0 0 8 * * *`. To smoke-test
+on-demand without modifying connections or adding a webhook trigger:
+defensive Python script (`/tmp/smoke_test_crete.py`, run on qclaw)
+that:
+
+1. GETs current workflow + snapshots execution-list ids.
+2. PUTs with `cronExpression: 0 * * * * *` (fire at :00 of every
+   minute in server-local TZ).
+3. Polls executions list every 8 s until a new id appears (≤130s
+   deadline).
+4. **Always reverts** in `finally:` clause — PUTs the original cron
+   back even if step 3 errors out. Production cron post-revert
+   verified `0 0 8 * * *` after all three smoke fires.
+5. Returns the new execution id; downstream `read_bodies.py` /
+   `get_inserted_ids.py` extract Build Prompt outputs, Build Row
+   outputs, and Insert-to-Supabase response IDs for audit + deletion.
+
+Could not use the in-container CLI (`docker exec n8n-project-n8n-1
+n8n execute --id`) because the container's `N8N_RUNNERS_ENABLED=true`
+makes the CLI subprocess collide with the daemon on port 5679
+(`n8n Task Broker's port 5679 is already in use`). Public API
+endpoints `/api/v1/workflows/:id/run` and `…/execute` both return
+HTTP 405. Cron-nudge is the cleanest non-disruptive path.
+
+### Heartbeat status
+
+Pre-slice: Crete `Heartbeat: Success` had been skipped for 10
+consecutive days (calendar exhaustion → Filter Due Slots returning
+`[]` → downstream nodes including Heartbeat: Success skipped per
+n8n's empty-input behaviour, see `[[feedback_n8n_heartbeat_empty_input]]`).
+Post-slice smoke test (execution `958231`): `Heartbeat: Success`
+ran 2 times (once per due slot, since it's wired downstream of the
+per-slot fanout). First crete heartbeat fire since 2026-05-09.
+
+### Test rows generated and deleted
+
+6 rows total inserted into `crete_content_queue` (status:
+`pending_review`) and all 6 deleted via Supabase service-role key
+on `${SUPABASE_URL}/rest/v1/crete_content_queue?id=eq.<uuid>`:
+
+| Iter | Exec ID | IG row id | FB row id |
+|---|---|---|---|
+| 1 | 958151 | `2f5a0216-a3c5-4ada-8ff9-7160e867a9dc` | `378ef61d-02ea-461c-bfa4-0edae0a4833d` |
+| 2 | 958205 | `cb425e85-02d8-477e-9be6-7da8d9d54c17` | `edf69c40-d883-45fc-b253-abd411c42016` |
+| 3 | 958231 | `a28c28d4-8bed-4b90-b8a4-9e618559989b` | `654c152e-0d61-4738-b33e-f613023119aa` |
+
+All post-delete `GET ?id=eq.<uuid>&select=id` returned `[]`. Clean
+state for tomorrow's natural 12:00 UTC cron fire (which will pick
+up `slot-022` IG + `slot-023` FB as `today` + `slot-024` LinkedIn as
+`tomorrow`, three slots due).
+
+### Final production state (verified via fresh GET)
+
+- Workflow `tnvXFYvODL1PrhJa` versionId
+  `76cbb688-4f19-4f3a-93c5-8e5314b28576`, updatedAt
+  `2026-05-19T13:30:15.819Z`, active: true.
+- Build Prompt jsCode md5 `dbbba6b8875843ab19d88f8d141b9a7c`, 3777
+  chars, 0 em-dashes.
+- `settings.availableInMCP: true` preserved.
+- `settings.errorWorkflow: 7kpNnMtnuDWXgWcX` preserved (shared error
+  handler routing intact).
+- `settings.executionOrder: v1` preserved.
+- `settings.callerPolicy: workflowsFromSameOwner` preserved.
+- Nodes count: 19 (unchanged from pre-slice).
+- Schedule cron: `0 0 8 * * *` (production state, post-revert).
+- R2: `etag: "84a619fddeee7bc0b34acf1f62b2aa6a"`, 22017 bytes,
+  `content-type: application/json`, `cf-cache-status: DYNAMIC`,
+  v1.3 / 40 slots.
+
+### Security gate
+
+- [x] No hardcoded credentials added — R2 access uses existing
+      `R2_*` env on `/root/.quantumclaw/.env` (perms 600 root:root,
+      unchanged); N8N access uses existing `N8N_API_KEY` /
+      `N8N_BASE_URL`; Supabase test-row deletion uses existing
+      `SUPABASE_SERVICE_ROLE_KEY`.
+- [x] No new webhooks added (workflow has 0 webhook triggers, still 0).
+- [x] No new endpoints added.
+- [x] No RLS changes.
+- [x] No financial features touched.
+- [x] `~/.quantumclaw/.env` perms remain `600 root:root` (verified
+      post-slice via `sudo stat`).
+- [x] `settings.availableInMCP: true` preserved (verified in 3
+      separate post-PUT GETs).
+- [x] No stack traces or secrets in any prompt text — the new
+      SYSTEM_PROMPT additions are about content-generation rules
+      only.
+- [x] Calendar JSON contains no real names, real dates of past
+      events, real financial figures, or unverified claims — slot
+      content is project-level only, no individuals named.
+- [x] R2 object Content-Type is `application/json` (verified HEAD).
+- [x] R2 object publicly readable via `media.creteprojects.com`
+      (verified HEAD 200 + byte-perfect GET).
+- [x] Secret pattern scan on the 3 staged repo files
+      (v1.2 + v1.3 + workflow mirror) for `sb_secret|sbp_|sk-ant-|
+      sk_live|sk_test|AKIA|password|secret_key|bearer ey` — zero
+      matches.
+
+### References
+
+- `/tmp/crete_calendar_schema_20260518.md` — Step A schema audit
+  (read-only) which mapped v1.2 schema, identified the 10-day
+  Heartbeat silence, and confirmed every slot field is consumed by
+  the workflow.
+- `/tmp/crete_content_generator_workflow.json` — workflow dump used
+  for byte-for-byte drift check (md5-matched live workflow on every
+  Code node).
+- `/tmp/crete_content_calendar_v12_dump.json` — pre-slice v1.2 dump
+  (referenced in schema audit, also re-archived to repo as
+  `content-calendar-v1.2.json` immediately before R2 overwrite).
+- May 18 marketing-silence-probe Fix 1 ("Crete content calendar
+  exhaustion replenishment") which had been on backlog — this slice
+  closes it.
+
+### Out of scope / backlog flagged
+
+- **Sonnet 4.6 model upgrade.** Current Claude API node calls
+  `claude-sonnet-4-20250514` (May 2025 vintage). Instruction-following
+  on newer Sonnet 4.6 is materially better. Single-field change to
+  the Claude API node's `jsonBody.model`. Separate dispatch.
+- **Few-shot examples in SYSTEM_PROMPT.** If FB simple-present
+  state-claim slips ("the pillar transforms / provides / supports")
+  keep appearing on natural fires, add 2-3 brief good/bad example
+  pairs inline. Next prompt-hardening slice, gated on observation
+  from the next 5–7 natural fires.
+- **Prompt caching on the Claude API call.** Current Claude API
+  request has `cache_creation_input_tokens: 0` and
+  `cache_read_input_tokens: 0` — SYSTEM_PROMPT (now 2922 runtime
+  chars / ~700 tokens) is sent fresh every call. Adding a
+  `cache_control: {type: "ephemeral"}` block on the system content
+  would cut cost ~90% on cache-hit reads. Separate dispatch.
+- **`Insert to Supabase` node uses inline `$env.SUPABASE_ANON_KEY`
+  rather than a credential binding** — consistent with
+  `[[project_n8n_supabase_fsc_credential]]` (FSC credential is
+  empty-httpHeaderAuth no-op; Crete + GHL use inline auth via
+  `$env`). Not in scope to migrate; documented.
+- **Image generator endpoint root-cause from 2026-04-30** still
+  unresolved per dispatch. This slice's smoke test showed
+  Generate-Text-Card + Fetch-Photo-Library both worked (IG row had
+  `media_url: media.creteprojects.com/images/<uuid>.png`, FB row had
+  `media_url: media.creteprojects.com/photos/village/stone-archway-01.jpg`)
+  — so the pipeline appears functional in observable behaviour, but
+  the root-cause investigation is still backlog.
+- **Calendar editing UI on the dashboard.** v1.3 was hand-built from
+  a verbatim slot table in the dispatch. Sustainable cadence will
+  need an editor on the dashboard so refills don't require a Claude
+  Code dispatch each month.
+- **Cron-nudge smoke-test mechanism** worked but is invasive (two
+  PUTs per smoke). If repeated runs become routine, consider adding
+  a separate `manual-trigger.json` companion workflow with a
+  no-auth-required private webhook URL, or wire a manual-trigger
+  node in parallel to the Schedule trigger inside this workflow.
+  Backlog if needed.
