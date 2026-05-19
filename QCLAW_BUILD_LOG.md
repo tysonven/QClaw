@@ -11722,3 +11722,219 @@ spawn boundary via the node:test `mock.method(child_process, 'spawn',
 
 `show me recent git log` through Telegram should return log output
 (not dubious-ownership). Tyson's responsibility post-merge.
+
+## 2026-05-19 — Shared Error Handler rename + reactivate (close-out)
+
+Closes the silent-error-swallow gap that opened on 2026-05-13 when the
+Trading cluster was operationally deactivated and `7kpNnMtnuDWXgWcX`
+("Trading - Error Handler") was swept up alongside the four actual
+Trading workflows — see the May 13 entry above and audit
+`/tmp/error_workflow_deactivation_audit_20260518.md`. The error handler
+itself had no Trading-specific logic; it was acting as the `errorWorkflow`
+for three active Crete workflows and was named "Trading - Error Handler"
+only because the pending rename to "Shared Error Handler" (Tyson
+decision 2026-05-04, [build log line 2944](#)) never shipped. The May 13
+batch deactivation therefore silently dropped error-alerting on the
+Crete pipeline.
+
+### Pre / post state (workflow `7kpNnMtnuDWXgWcX`)
+
+| field | pre (2026-05-19T10:14 UTC GET) | post (2026-05-19T10:16 UTC PUT + POST /activate) |
+|---|---|---|
+| `name` | `Trading - Error Handler` | `Shared Error Handler` |
+| `active` | `false` | `true` |
+| `settings.availableInMCP` | `false` | `true` |
+| `settings.executionOrder` | `v1` | `v1` (unchanged) |
+| `settings.callerPolicy` | `workflowsFromSameOwner` | `workflowsFromSameOwner` (unchanged) |
+| `updatedAt` | `2026-04-29T20:00:29.021Z` | `2026-05-19T10:16:36.336Z` |
+| `versionId` | `0f44bfdc-d177-4283-baeb-d073a5a41914` | unchanged (nodes/connections byte-identical, only settings + name changed) |
+| node count | 2 (Error Trigger + Notify Telegram) | 2 (byte-identical) |
+| connection topology | Error Trigger → Notify Telegram | unchanged |
+
+Operations:
+1. `PUT /api/v1/workflows/7kpNnMtnuDWXgWcX` with body `{name, nodes,
+   connections, settings}` (per memory `project_n8n_qclaw_topology.md`
+   — PUT body limited to those 4 fields). HTTP 200, `updatedAt:
+   2026-05-19T10:16:36.336Z`.
+2. `POST /api/v1/workflows/7kpNnMtnuDWXgWcX/activate`. HTTP 200,
+   response `active=true`.
+
+`availableInMCP` flipped from `false` → `true` per Tyson decision in
+this dispatch (the dispatch literal spec said `true (preserve)` but live
+state was `false`; Tyson confirmed flip rather than preserve). The error
+handler is still only fired by n8n's internal error routing; the
+`availableInMCP=true` change has no functional effect beyond surfacing
+the workflow in the MCP catalog.
+
+### Forensic publishHistory confirmation
+
+Post-activation GET response included `activeVersion.workflowPublishHistory`:
+
+```
+[
+  { event: "activated",    createdAt: "2026-05-19T10:16:45.146Z", id: 972, userId: b1512bca-... },
+  { event: "deactivated",  createdAt: "2026-05-13T13:36:50.462Z", id: 963, userId: b1512bca-... },
+  { event: "activated",    createdAt: "2026-04-29T20:01:52.442Z", id: 807, userId: b1512bca-... }
+]
+```
+
+The 2026-05-13T13:36:50 deactivation event corroborates the May 13
+Trading cluster operational-deactivation entry above. Same `userId`
+(Tyson) on all three events.
+
+### errorWorkflow reference resolution
+
+n8n resolves `settings.errorWorkflow` by workflow id, not name, so the
+rename is invisible to dependent workflows. Live GET via MCP after the
+PUT confirmed all three active Crete workflows still carry the
+reference:
+
+| id | name | live `settings.errorWorkflow` | `active` |
+|---|---|---|---|
+| `tnvXFYvODL1PrhJa` | Crete - Content Generator | `7kpNnMtnuDWXgWcX` | `true` |
+| `zXKBjp3yjW2oR2Mj` | Crete - Content Publish | `7kpNnMtnuDWXgWcX` | `true` |
+| `9kTWhh9PlxMpyMlp` | Crete - Scheduled Publisher | `7kpNnMtnuDWXgWcX` | `true` |
+
+Two further references exist in the repo (Content Studio Workflow B
+`qeE2hCSFoB6fU926` and Workflow C `yu3gEaDsd6d1E9e8`) but those
+workflows are `active: false` per their JSON files — their references
+are inert and out of scope for this close-out.
+
+### Smoke test — initial fail, post-token-rotation re-pass
+
+Approach: dispatcher option 1 (synthetic broken input, no production
+PUT). Webhook `POST https://webhook.flowos.tech/webhook/crete-content-publish`
+with body `{"content_id":"smoke-test-shared-error-handler-not-a-uuid"}` —
+malformed UUID causes `Get Content` Supabase GET to 400, n8n marks the
+workflow `error`, errorWorkflow `7kpNnMtnuDWXgWcX` is invoked.
+
+**First attempt @ 2026-05-19T10:19:30Z (exec `957792`):** errorWorkflow
+fired correctly (`mode=error`, both nodes `executionStatus=success`),
+but `Notify Telegram` httpRequest body output captured the underlying
+failure verbatim:
+
+```
+{
+  "error": {
+    "message": "401 - \"{\\\"ok\\\":false,\\\"error_code\\\":401,\\\"description\\\":\\\"Unauthorized\\\"}\"",
+    "name": "AxiosError",
+    "code": "ERR_BAD_REQUEST",
+    "status": 401
+  }
+}
+```
+
+`continueOnFail: true` on the node masked the HTTP 401 as a node-level
+"success" — so the workflow completed and the alert silently dropped.
+Smoke test gate FAILED. No commit, no PR. See
+`/tmp/error_workflow_deactivation_audit_20260518.md` for the original
+audit and `/tmp/telegram_silence_blast_radius_20260519.md` for the
+follow-on infra probe.
+
+Root cause traced (via /tmp/telegram_silence_blast_radius_20260519.md
+later the same morning) to a token-rotation gap: `@tyson_quantumbot`
+(bot id `8588434821`) had been rotated on qclaw's `.env`
+(2026-05-15T14:40 mtime) but not propagated to n8n's compose env_file
+(`/home/n8nadmin/n8n-project/.env`, 2026-05-14T19:35 mtime — still
+holding the revoked secret). 18 nodes across 10 workflows using
+`$env.TELEGRAM_BOT_TOKEN` were 401-silent. 29 credential-based nodes
+using `@flowstatesads_bot` were unaffected. Workflow Dormancy Alerter
+showed 79 of 79 retained executions = 401.
+
+Token propagated via a separate dispatch later that morning (qclaw .env
+→ n8n .env, `docker compose up -d` not `restart`). Direct probe
+`getMe` returned 200 OK / `@tyson_quantumbot` / bot_id 8588434821.
+
+**Re-run @ 2026-05-19T11:33:35Z (exec `957953`):** smoke test re-fired
+with body `{"content_id":"smoke-test-token-rotation-20260519"}`. Notify
+Telegram runData:
+
+```
+{
+  "ok": true,
+  "result": {
+    "message_id": 4157,
+    "from": {"id": 8588434821, "is_bot": true, "first_name": "QuantumClaw", "username": "tyson_quantumbot"},
+    "chat": {"id": 1375806243, "first_name": "Tyson", "username": "tysonven", "type": "private"},
+    "date": 1779190417,
+    "text": "🚨 Workflow error\n\nWorkflow: Crete - Content Publish\nExecution: 957952\nMode: webhook\nNode: Get Content\nMessage: Bad request - please check your parameters\nLast node: Get Content"
+  }
+}
+```
+
+Telegram message_id `4157` delivered to chat `1375806243` (Tyson
+private DM). Smoke test gate PASSED.
+
+Bonus: triggered Workflow Dormancy Alerter manually via MCP
+`execute_workflow` (exec `957955`) — `Telegram Alert` returned
+`message_id 4158`. First 200 OK after 79 consecutive 401s. Hourly
+silent-failure loop closed.
+
+### Files touched
+
+- `n8n-workflows/7kpNnMtnuDWXgWcX-shared-error-handler.json` — new
+  canonical mirror (6-key shape: id, name, description, nodes,
+  connections, settings) matching the live state.
+- `n8n-workflows/trading-error-handler.json` — deleted (single source
+  of truth: the new slug).
+- `QCLAW_BUILD_LOG.md` — this entry.
+
+No source code or workflow internals changed. The rename + activate
+operations were already live on n8n at the time of this commit (executed
+2026-05-19T10:16 UTC); this commit is the repo close-out.
+
+### Security gate
+
+- [x] No hardcoded credentials added — only a rename + flag changes.
+- [x] No new webhooks added.
+- [x] No new endpoints added.
+- [x] No RLS changes.
+- [x] No financial features touched.
+- [x] `~/.quantumclaw/.env` perms unchanged at 600 — not written by
+      this dispatch.
+- [x] `settings.availableInMCP: true` re-confirmed via post-activate
+      GET.
+- [x] No stack traces or secrets exposed in the workflow's Telegram
+      payload (workflow's Notify Telegram body unchanged
+      byte-for-byte; payload reads error context from upstream
+      `$json.execution.error.message` — n8n's standard error context,
+      no secrets injected).
+- [x] Credential references unchanged — `availableInMCP` toggle does
+      not affect credential bindings.
+- [x] Smoke test passed post-token-rotation (message_id 4157).
+
+### References
+
+- `/tmp/error_workflow_deactivation_audit_20260518.md` — pre-fix audit
+  verdict.
+- `/tmp/telegram_silence_blast_radius_20260519.md` — infra-layer probe
+  that surfaced the token-rotation gap.
+- May 13 entry above — original Trading cluster deactivation that
+  swept in the error handler.
+- May 14 "Dashboard offline incident — stale Telegram token surfaced
+  in PM2 crash loop" — earlier instance of the same
+  token-rotation-not-propagated pattern (PM2 side that time, n8n side
+  this time).
+
+### Out of scope (separate dispatches)
+
+- The 4 Trading workflows (`3YahxqOguET3pifj`, `UYA0JppH7eqyI7fQ`,
+  `vjj2uBIPc07FpIxx`, plus Trade Executor) stay deactivated per the
+  May 13 decision — gated on trading-worker fix + Polymarket
+  resolution.
+- Hardcoded literal bot token `bot8622820007:AAFBlHVe2igbSGDKfgWal-BW_Vv0_HkvuQI`
+  in `lrGcirtmOHb1xTq8` Meta Ads Ad Creation Agent `Get Telegram File
+  URL` — P2 backlog, security hygiene.
+- Migration of the 18 env-token httpRequest nodes onto credential
+  bindings (consolidate with the 29 `@flowstatesads_bot` nodes) — P1
+  backlog (telegram-silence-blast-radius doc Fix B).
+- Workflow Dormancy Alerter structural blind-spot (succeeds on entry
+  heartbeat alone, never checks `status='success'`) — yesterday's
+  marketing-silence-probe Fix 2, still backlog.
+- Crete content calendar exhaustion replenishment — yesterday's
+  marketing-silence-probe Fix 1, still P0 separate dispatch.
+- n8n host repo (`/home/n8nadmin/n8n-project`) secret-content audit —
+  gitignore hardening just landed (`tysonven/n8nrepos#1`), but the
+  contents of `credentials.txt`, `wl_token.txt`, `fetch_token.sh`,
+  `newman_output.json`, and the `n8n_data/config` encryption key
+  remain unaudited — P1 follow-up.
