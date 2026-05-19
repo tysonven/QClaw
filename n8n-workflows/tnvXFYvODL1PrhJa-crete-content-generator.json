@@ -1,5 +1,5 @@
 {
-  "updatedAt": "2026-05-13T21:20:10.940Z",
+  "updatedAt": "2026-05-19T13:30:15.819Z",
   "createdAt": "2026-04-11T07:17:27.368Z",
   "id": "tnvXFYvODL1PrhJa",
   "name": "Crete - Content Generator",
@@ -63,7 +63,7 @@
     {
       "parameters": {
         "mode": "runOnceForEachItem",
-        "jsCode": "const SYSTEM_PROMPT = \"You are the content engine for Crete Projects (creteprojects.com) \\u2014 a premium land, property, and wellness development in Crete, Greece. Three interconnected pillars: Agricultural Land (regenerative agroforestry, biodynamic farming, olives/herbs/citrus/honey, workshops, agro-tourism), Village Restoration (traditional Cretan stone buildings restored to premium private accommodation for worldschooling families, 2-8 week stays), Health & Wellness (gym, cold plunge, sauna, physiotherapy, yoga, pilates, breathwork, visiting practitioners). Target: medium-to-high income location-independent families, entrepreneurs, investors. NOT a commune or budget destination. Voice: premium but not pretentious, direct, confident, grounded. No cliches, no \\\"live your best life\\\" fluff. British English. No hashtags on LinkedIn or Facebook. Instagram posts may include up to 5 relevant hashtags at the end of the post, separated from the main text by a blank line. No em dashes. Every piece needs a clear CTA (register at creteprojects.com, reply, share). Currently in Foundation phase \\u2014 be honest about the stage. Never fabricate milestones.\";\nconst slot = $input.item.json;\nconst userPrompt = [\n  'Generate a ' + slot.content_type + ' for ' + slot.platform + '.',\n  'Theme: ' + (slot.theme || 'general'),\n  'Brief: ' + (slot.brief || ''),\n  'CTA: ' + (slot.cta || 'register at creteprojects.com'),\n  'Content mix: ' + (slot.content_mix || 'mixed'),\n  '',\n  'Return ONLY the post body text. No markdown headers, no commentary, no JSON wrapper.'\n].join('\\n');\nreturn {\n  slot_id: slot.id,\n  image_type: slot.image_type || null,\n  image_style: slot.image_style || null,\n  image_theme: slot.image_theme || null,\n  scheduled_for: slot.date,\n  content_type: slot.content_type,\n  platform: slot.platform,\n  theme: slot.theme || null,\n  cta: slot.cta || null,\n  system_prompt: SYSTEM_PROMPT,\n  user_prompt: userPrompt\n};"
+        "jsCode": "const SYSTEM_PROMPT = \"You are the content engine for Crete Projects (creteprojects.com): a premium land, property, and wellness development in Crete, Greece.\\n\\nCRITICAL: DO NOT FABRICATE. Never invent or embellish: land size (hectares/acres), property count, square metres, investor names, partner names, meeting attendees, dates of past events, project timeline (\\\"three years ago\\\", \\\"since 2023\\\", etc.), current project state (\\\"land is secured\\\", \\\"restoration has begun\\\", \\\"we have N investors\\\"), financial figures, projected returns, yields, member count, EOI count, or any specific number, date, milestone, or positioning claim that hasn't been explicitly provided in the slot brief. If a fact isn't in the brief, write around it or speak in qualitative terms (e.g. \\\"a working agricultural property\\\" not \\\"an 80-hectare estate\\\"; \\\"early investor conversations\\\" not \\\"discussions with three family offices\\\"). If unsure whether something is a fact or an invention, LEAVE IT OUT. Speak in present-tense vision and intent (\\\"the wellness centre will include...\\\", \\\"the model rests on three pillars...\\\") rather than past-tense achievement (\\\"we built...\\\", \\\"we have...\\\", \\\"three years ago...\\\"). Avoid past-participle constructions that imply completed work. Do NOT write \\\"land restored\\\", \\\"buildings brought back to life\\\", \\\"facilities designed for X\\\", \\\"system built\\\", etc. These imply the work is done. Use present-continuous (\\\"land being regenerated\\\", \\\"buildings being restored\\\", \\\"facilities planned for X\\\") or future-intent (\\\"the wellness centre will...\\\", \\\"the village will house...\\\") constructions instead.\\n\\nEVERY POST must include the URL creteprojects.com in the body text (not just the CTA). Natural integration preferred. For example, \\\"More at creteprojects.com\\\" or \\\"Register at creteprojects.com\\\". Don't bolt it on awkwardly. For Instagram, this is in addition to any \\\"link in bio\\\" language; for LinkedIn and Facebook, the URL goes directly in the post body.\\n\\nThree interconnected pillars: Agricultural Land (regenerative agroforestry, biodynamic farming, olives/herbs/citrus/honey, workshops, agro-tourism), Village Restoration (traditional Cretan stone buildings restored to premium private accommodation for worldschooling families, 2-8 week stays), Health & Wellness (gym, cold plunge, sauna, physiotherapy, yoga, pilates, breathwork, visiting practitioners). Target: medium-to-high income location-independent families, entrepreneurs, investors. NOT a commune or budget destination. Voice: premium but not pretentious, direct, confident, grounded. No cliches, no \\\"live your best life\\\" fluff. British English. No hashtags on LinkedIn or Facebook. Instagram posts may include up to 5 relevant hashtags at the end of the post, separated from the main text by a blank line. No em dashes. Every piece needs a clear CTA (register at creteprojects.com, reply, share). Currently in Foundation phase: be honest about the stage. Never fabricate milestones.\";\nconst slot = $input.item.json;\nconst userPrompt = [\n  'Generate a ' + slot.content_type + ' for ' + slot.platform + '.',\n  'Theme: ' + (slot.theme || 'general'),\n  'Brief: ' + (slot.brief || ''),\n  'CTA: ' + (slot.cta || 'register at creteprojects.com'),\n  'Content mix: ' + (slot.content_mix || 'mixed'),\n  '',\n  'Return ONLY the post body text. No markdown headers, no commentary, no JSON wrapper.'\n].join('\\n');\nreturn {\n  slot_id: slot.id,\n  image_type: slot.image_type || null,\n  image_style: slot.image_style || null,\n  image_theme: slot.image_theme || null,\n  scheduled_for: slot.date,\n  content_type: slot.content_type,\n  platform: slot.platform,\n  theme: slot.theme || null,\n  cta: slot.cta || null,\n  system_prompt: SYSTEM_PROMPT,\n  user_prompt: userPrompt\n};"
       },
       "id": "0dd3fa32-155b-4b14-b1ef-e9380d7cf24f",
       "name": "Build Prompt",
@@ -172,7 +172,7 @@
         "url": "=https://api.telegram.org/bot{{$env.TELEGRAM_BOT_TOKEN}}/sendMessage",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={\n  \"chat_id\": 1375806243,\n  \"text\": \"\ud83c\udd95 New Crete content for review: {{ $('Build Row').item.json.title }} ({{ $('Build Row').item.json.content_type }}). Review at agentboardroom.flowos.tech\",\n}",
+        "jsonBody": "={\n  \"chat_id\": 1375806243,\n  \"text\": \"🆕 New Crete content for review: {{ $('Build Row').item.json.title }} ({{ $('Build Row').item.json.content_type }}). Review at agentboardroom.flowos.tech\",\n}",
         "options": {}
       },
       "id": "b826bc5d-bd77-4b56-82b7-9a6de17a2c09",
@@ -188,7 +188,7 @@
     {
       "parameters": {
         "mode": "runOnceForEachItem",
-        "jsCode": "// Route row to image generation based on platform + image_type.\n// Pre-Slice-4: early-returned for any non-Instagram row (FB/LinkedIn rows got media_url=null).\n// Slice 4: open to Instagram + Facebook + LinkedIn. Rows on other platforms still pass through\n// untouched (no _needsImage / _needsPhoto flags \u2192 straight to Insert with media_url=null per Build Row).\nconst row = $input.item.json;\nconst platform = (row.platform || '').toLowerCase();\nconst NEEDS_IMAGE = ['instagram', 'facebook', 'linkedin'];\n\nif (!NEEDS_IMAGE.includes(platform)) {\n  return row;\n}\n\nconst imageType = row.image_type || 'text_card';\n\nif (imageType === 'photo') {\n  return { ...row, _needsPhoto: true, _photoTheme: row.image_theme || '' };\n}\n\nconst style = row.image_style || 'quote';\nconst body = row.body || '';\nconst sentences = body.match(/[^.!?]+[.!?]+/g) || [body.slice(0, 200)];\n\nlet apiBody;\nif (style === 'editorial') {\n  apiBody = {\n    style: 'editorial',\n    headline: (sentences[0] || '').trim().slice(0, 200),\n    body: (sentences[1] || '').trim().slice(0, 300)\n  };\n} else {\n  const quoteText = sentences.slice(0, 2).join(' ').trim().slice(0, 400);\n  apiBody = { style: 'quote', text: quoteText };\n}\n\nreturn { ...row, _needsImage: true, _apiBody: apiBody };"
+        "jsCode": "// Route row to image generation based on platform + image_type.\n// Pre-Slice-4: early-returned for any non-Instagram row (FB/LinkedIn rows got media_url=null).\n// Slice 4: open to Instagram + Facebook + LinkedIn. Rows on other platforms still pass through\n// untouched (no _needsImage / _needsPhoto flags → straight to Insert with media_url=null per Build Row).\nconst row = $input.item.json;\nconst platform = (row.platform || '').toLowerCase();\nconst NEEDS_IMAGE = ['instagram', 'facebook', 'linkedin'];\n\nif (!NEEDS_IMAGE.includes(platform)) {\n  return row;\n}\n\nconst imageType = row.image_type || 'text_card';\n\nif (imageType === 'photo') {\n  return { ...row, _needsPhoto: true, _photoTheme: row.image_theme || '' };\n}\n\nconst style = row.image_style || 'quote';\nconst body = row.body || '';\nconst sentences = body.match(/[^.!?]+[.!?]+/g) || [body.slice(0, 200)];\n\nlet apiBody;\nif (style === 'editorial') {\n  apiBody = {\n    style: 'editorial',\n    headline: (sentences[0] || '').trim().slice(0, 200),\n    body: (sentences[1] || '').trim().slice(0, 300)\n  };\n} else {\n  const quoteText = sentences.slice(0, 2).join(' ').trim().slice(0, 400);\n  apiBody = { style: 'quote', text: quoteText };\n}\n\nreturn { ...row, _needsImage: true, _apiBody: apiBody };"
       },
       "id": "c1a2b3d4-e5f6-7890-abcd-100000000001",
       "name": "Image Router",
@@ -645,9 +645,9 @@
   },
   "meta": null,
   "pinData": {},
-  "versionId": "45672940-47df-4448-a6ae-74276b5c9e8d",
-  "activeVersionId": "45672940-47df-4448-a6ae-74276b5c9e8d",
-  "versionCounter": 97,
+  "versionId": "76cbb688-4f19-4f3a-93c5-8e5314b28576",
+  "activeVersionId": "76cbb688-4f19-4f3a-93c5-8e5314b28576",
+  "versionCounter": 126,
   "triggerCount": 1,
   "shared": [
     {
@@ -672,7 +672,7 @@
             "userId": "b1512bca-25b8-4b8b-add0-b86540e5144d",
             "projectId": "KwpTDWcFWL3DfyW3",
             "user": {
-              "updatedAt": "2026-05-13T02:04:11.362Z",
+              "updatedAt": "2026-05-19T11:33:42.710Z",
               "createdAt": "2025-06-06T11:27:13.858Z",
               "id": "b1512bca-25b8-4b8b-add0-b86540e5144d",
               "email": "tysonvenables@protonmail.com",
@@ -699,7 +699,7 @@
               },
               "disabled": false,
               "mfaEnabled": false,
-              "lastActiveAt": "2026-05-13",
+              "lastActiveAt": "2026-05-19",
               "isPending": false
             }
           }
@@ -709,9 +709,9 @@
   ],
   "tags": [],
   "activeVersion": {
-    "updatedAt": "2026-05-13T21:20:10.942Z",
-    "createdAt": "2026-05-13T21:20:10.942Z",
-    "versionId": "45672940-47df-4448-a6ae-74276b5c9e8d",
+    "updatedAt": "2026-05-19T13:30:15.821Z",
+    "createdAt": "2026-05-19T13:30:15.821Z",
+    "versionId": "76cbb688-4f19-4f3a-93c5-8e5314b28576",
     "workflowId": "tnvXFYvODL1PrhJa",
     "nodes": [
       {
@@ -770,7 +770,7 @@
       {
         "parameters": {
           "mode": "runOnceForEachItem",
-          "jsCode": "const SYSTEM_PROMPT = \"You are the content engine for Crete Projects (creteprojects.com) \\u2014 a premium land, property, and wellness development in Crete, Greece. Three interconnected pillars: Agricultural Land (regenerative agroforestry, biodynamic farming, olives/herbs/citrus/honey, workshops, agro-tourism), Village Restoration (traditional Cretan stone buildings restored to premium private accommodation for worldschooling families, 2-8 week stays), Health & Wellness (gym, cold plunge, sauna, physiotherapy, yoga, pilates, breathwork, visiting practitioners). Target: medium-to-high income location-independent families, entrepreneurs, investors. NOT a commune or budget destination. Voice: premium but not pretentious, direct, confident, grounded. No cliches, no \\\"live your best life\\\" fluff. British English. No hashtags on LinkedIn or Facebook. Instagram posts may include up to 5 relevant hashtags at the end of the post, separated from the main text by a blank line. No em dashes. Every piece needs a clear CTA (register at creteprojects.com, reply, share). Currently in Foundation phase \\u2014 be honest about the stage. Never fabricate milestones.\";\nconst slot = $input.item.json;\nconst userPrompt = [\n  'Generate a ' + slot.content_type + ' for ' + slot.platform + '.',\n  'Theme: ' + (slot.theme || 'general'),\n  'Brief: ' + (slot.brief || ''),\n  'CTA: ' + (slot.cta || 'register at creteprojects.com'),\n  'Content mix: ' + (slot.content_mix || 'mixed'),\n  '',\n  'Return ONLY the post body text. No markdown headers, no commentary, no JSON wrapper.'\n].join('\\n');\nreturn {\n  slot_id: slot.id,\n  image_type: slot.image_type || null,\n  image_style: slot.image_style || null,\n  image_theme: slot.image_theme || null,\n  scheduled_for: slot.date,\n  content_type: slot.content_type,\n  platform: slot.platform,\n  theme: slot.theme || null,\n  cta: slot.cta || null,\n  system_prompt: SYSTEM_PROMPT,\n  user_prompt: userPrompt\n};"
+          "jsCode": "const SYSTEM_PROMPT = \"You are the content engine for Crete Projects (creteprojects.com): a premium land, property, and wellness development in Crete, Greece.\\n\\nCRITICAL: DO NOT FABRICATE. Never invent or embellish: land size (hectares/acres), property count, square metres, investor names, partner names, meeting attendees, dates of past events, project timeline (\\\"three years ago\\\", \\\"since 2023\\\", etc.), current project state (\\\"land is secured\\\", \\\"restoration has begun\\\", \\\"we have N investors\\\"), financial figures, projected returns, yields, member count, EOI count, or any specific number, date, milestone, or positioning claim that hasn't been explicitly provided in the slot brief. If a fact isn't in the brief, write around it or speak in qualitative terms (e.g. \\\"a working agricultural property\\\" not \\\"an 80-hectare estate\\\"; \\\"early investor conversations\\\" not \\\"discussions with three family offices\\\"). If unsure whether something is a fact or an invention, LEAVE IT OUT. Speak in present-tense vision and intent (\\\"the wellness centre will include...\\\", \\\"the model rests on three pillars...\\\") rather than past-tense achievement (\\\"we built...\\\", \\\"we have...\\\", \\\"three years ago...\\\"). Avoid past-participle constructions that imply completed work. Do NOT write \\\"land restored\\\", \\\"buildings brought back to life\\\", \\\"facilities designed for X\\\", \\\"system built\\\", etc. These imply the work is done. Use present-continuous (\\\"land being regenerated\\\", \\\"buildings being restored\\\", \\\"facilities planned for X\\\") or future-intent (\\\"the wellness centre will...\\\", \\\"the village will house...\\\") constructions instead.\\n\\nEVERY POST must include the URL creteprojects.com in the body text (not just the CTA). Natural integration preferred. For example, \\\"More at creteprojects.com\\\" or \\\"Register at creteprojects.com\\\". Don't bolt it on awkwardly. For Instagram, this is in addition to any \\\"link in bio\\\" language; for LinkedIn and Facebook, the URL goes directly in the post body.\\n\\nThree interconnected pillars: Agricultural Land (regenerative agroforestry, biodynamic farming, olives/herbs/citrus/honey, workshops, agro-tourism), Village Restoration (traditional Cretan stone buildings restored to premium private accommodation for worldschooling families, 2-8 week stays), Health & Wellness (gym, cold plunge, sauna, physiotherapy, yoga, pilates, breathwork, visiting practitioners). Target: medium-to-high income location-independent families, entrepreneurs, investors. NOT a commune or budget destination. Voice: premium but not pretentious, direct, confident, grounded. No cliches, no \\\"live your best life\\\" fluff. British English. No hashtags on LinkedIn or Facebook. Instagram posts may include up to 5 relevant hashtags at the end of the post, separated from the main text by a blank line. No em dashes. Every piece needs a clear CTA (register at creteprojects.com, reply, share). Currently in Foundation phase: be honest about the stage. Never fabricate milestones.\";\nconst slot = $input.item.json;\nconst userPrompt = [\n  'Generate a ' + slot.content_type + ' for ' + slot.platform + '.',\n  'Theme: ' + (slot.theme || 'general'),\n  'Brief: ' + (slot.brief || ''),\n  'CTA: ' + (slot.cta || 'register at creteprojects.com'),\n  'Content mix: ' + (slot.content_mix || 'mixed'),\n  '',\n  'Return ONLY the post body text. No markdown headers, no commentary, no JSON wrapper.'\n].join('\\n');\nreturn {\n  slot_id: slot.id,\n  image_type: slot.image_type || null,\n  image_style: slot.image_style || null,\n  image_theme: slot.image_theme || null,\n  scheduled_for: slot.date,\n  content_type: slot.content_type,\n  platform: slot.platform,\n  theme: slot.theme || null,\n  cta: slot.cta || null,\n  system_prompt: SYSTEM_PROMPT,\n  user_prompt: userPrompt\n};"
         },
         "id": "0dd3fa32-155b-4b14-b1ef-e9380d7cf24f",
         "name": "Build Prompt",
@@ -879,7 +879,7 @@
           "url": "=https://api.telegram.org/bot{{$env.TELEGRAM_BOT_TOKEN}}/sendMessage",
           "sendBody": true,
           "specifyBody": "json",
-          "jsonBody": "={\n  \"chat_id\": 1375806243,\n  \"text\": \"\ud83c\udd95 New Crete content for review: {{ $('Build Row').item.json.title }} ({{ $('Build Row').item.json.content_type }}). Review at agentboardroom.flowos.tech\",\n}",
+          "jsonBody": "={\n  \"chat_id\": 1375806243,\n  \"text\": \"🆕 New Crete content for review: {{ $('Build Row').item.json.title }} ({{ $('Build Row').item.json.content_type }}). Review at agentboardroom.flowos.tech\",\n}",
           "options": {}
         },
         "id": "b826bc5d-bd77-4b56-82b7-9a6de17a2c09",
@@ -895,7 +895,7 @@
       {
         "parameters": {
           "mode": "runOnceForEachItem",
-          "jsCode": "// Route row to image generation based on platform + image_type.\n// Pre-Slice-4: early-returned for any non-Instagram row (FB/LinkedIn rows got media_url=null).\n// Slice 4: open to Instagram + Facebook + LinkedIn. Rows on other platforms still pass through\n// untouched (no _needsImage / _needsPhoto flags \u2192 straight to Insert with media_url=null per Build Row).\nconst row = $input.item.json;\nconst platform = (row.platform || '').toLowerCase();\nconst NEEDS_IMAGE = ['instagram', 'facebook', 'linkedin'];\n\nif (!NEEDS_IMAGE.includes(platform)) {\n  return row;\n}\n\nconst imageType = row.image_type || 'text_card';\n\nif (imageType === 'photo') {\n  return { ...row, _needsPhoto: true, _photoTheme: row.image_theme || '' };\n}\n\nconst style = row.image_style || 'quote';\nconst body = row.body || '';\nconst sentences = body.match(/[^.!?]+[.!?]+/g) || [body.slice(0, 200)];\n\nlet apiBody;\nif (style === 'editorial') {\n  apiBody = {\n    style: 'editorial',\n    headline: (sentences[0] || '').trim().slice(0, 200),\n    body: (sentences[1] || '').trim().slice(0, 300)\n  };\n} else {\n  const quoteText = sentences.slice(0, 2).join(' ').trim().slice(0, 400);\n  apiBody = { style: 'quote', text: quoteText };\n}\n\nreturn { ...row, _needsImage: true, _apiBody: apiBody };"
+          "jsCode": "// Route row to image generation based on platform + image_type.\n// Pre-Slice-4: early-returned for any non-Instagram row (FB/LinkedIn rows got media_url=null).\n// Slice 4: open to Instagram + Facebook + LinkedIn. Rows on other platforms still pass through\n// untouched (no _needsImage / _needsPhoto flags → straight to Insert with media_url=null per Build Row).\nconst row = $input.item.json;\nconst platform = (row.platform || '').toLowerCase();\nconst NEEDS_IMAGE = ['instagram', 'facebook', 'linkedin'];\n\nif (!NEEDS_IMAGE.includes(platform)) {\n  return row;\n}\n\nconst imageType = row.image_type || 'text_card';\n\nif (imageType === 'photo') {\n  return { ...row, _needsPhoto: true, _photoTheme: row.image_theme || '' };\n}\n\nconst style = row.image_style || 'quote';\nconst body = row.body || '';\nconst sentences = body.match(/[^.!?]+[.!?]+/g) || [body.slice(0, 200)];\n\nlet apiBody;\nif (style === 'editorial') {\n  apiBody = {\n    style: 'editorial',\n    headline: (sentences[0] || '').trim().slice(0, 200),\n    body: (sentences[1] || '').trim().slice(0, 300)\n  };\n} else {\n  const quoteText = sentences.slice(0, 2).join(' ').trim().slice(0, 400);\n  apiBody = { style: 'quote', text: quoteText };\n}\n\nreturn { ...row, _needsImage: true, _apiBody: apiBody };"
         },
         "id": "c1a2b3d4-e5f6-7890-abcd-100000000001",
         "name": "Image Router",
@@ -1345,10 +1345,10 @@
     "autosaved": false,
     "workflowPublishHistory": [
       {
-        "createdAt": "2026-05-13T21:20:11.110Z",
-        "id": 969,
+        "createdAt": "2026-05-19T13:30:15.930Z",
+        "id": 985,
         "workflowId": "tnvXFYvODL1PrhJa",
-        "versionId": "45672940-47df-4448-a6ae-74276b5c9e8d",
+        "versionId": "76cbb688-4f19-4f3a-93c5-8e5314b28576",
         "event": "activated",
         "userId": "b1512bca-25b8-4b8b-add0-b86540e5144d"
       }
