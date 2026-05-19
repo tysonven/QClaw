@@ -4,7 +4,7 @@ This is the canonical workflow registry for every active workflow on `webhook.fl
 
 This file is the sixth canonical doc Charlie reads at session start, after `CEO_OPERATING_MODEL.md`, `CHARLIE_ROLE.md`, `LOCATIONS.md`, `FLOW_OS_STATE.md`, and `FLOW_OS_SPECIALISTS.md`.
 
-**Last updated:** 2026-05-04
+**Last updated:** 2026-05-19
 
 ## Maintenance rules
 
@@ -37,9 +37,9 @@ This file is the sixth canonical doc Charlie reads at session start, after `CEO_
 | Flow OS Blog | 1 | documented |
 | Flow OS Infographics | 1 | documented |
 | FSC Content Studio | 1 | documented |
-| Various utilities and standalone | 10 | documented |
+| Various utilities and standalone | 11 | documented |
 
-Total: 46 active workflows.
+Total: 47 active workflows.
 
 ---
 
@@ -778,7 +778,7 @@ Cluster-level findings:
 
 ## Various utilities and standalone cluster
 
-10 workflows. Heterogeneous cluster of single-purpose webhooks, calibration jobs, payment-update link generators, intake forms, infrastructure routers, and one dormant newsletter automation. No shared trigger, no shared owner, no shared data path — grouped by elimination after the 11 themed clusters.
+11 workflows. Heterogeneous cluster of single-purpose webhooks, calibration jobs, payment-update link generators, intake forms, infrastructure routers, one dormant newsletter automation, and one device-health probe. No shared trigger, no shared owner, no shared data path — grouped by elimination after the 11 themed clusters.
 
 **Cluster-level findings:**
 
@@ -940,10 +940,27 @@ Cluster-level findings:
 - **Last verified:** 2026-05-05
 - **Notes:** `createdAt: 2026-03-26T09:01 UTC`, `updatedAt: 2026-03-26T09:44 UTC` — built and last touched same day late-March (stable scaffolding, never extended). 4 nodes total (most minimal workflow in the index). No external services detected. **No skill file**. **Phase 4 dependency:** Slice 5 (Claude Code dispatcher) target architecture decides this workflow's fate alongside Charlie - Task Handler.
 
+### SMS Gateway Device Heartbeat Monitor
+
+- **ID:** `yIFBw3eLj9WOimWR`
+- **Belongs to:** Cross-cutting (infrastructure). Probes two Termux/SMS Gateway phones — Device 1 (Flow OS brand) and Device 2 (Emma brand) — that serve as the SMS send/receive surface for both business units.
+- **Specialist owner:** None — infrastructure monitor. Tyson directly responsible.
+- **Trigger:** `scheduleTrigger` "Every 5 Minutes" (`minutesInterval: 5`) — fires at 5-minute intervals from activation.
+- **Purpose:** Polls each device's IETF-style health endpoint (`https://device{1,2}.flowos.tech/health`) every 5 minutes, evaluates the response, and Telegrams Tyson the moment either device looks unhealthy. `Check Device 1` + `Check Device 2` (httpRequest, `onError: continueRegularOutput`, `alwaysOutputData: true`, 10s timeout) issue the GETs; `Evaluate Health` (code) inspects each response for (a) network/timeout error envelope, (b) top-level `status: "fail"`, or (c) `checks['connection:status'].observedValue === 0` (Termux SMS gateway local server down — the most common Termux failure mode); `Alert?` (IF) gates on `alert === true`; on true, `Telegram Alert` (httpRequest to `api.telegram.org/bot{{$env.TELEGRAM_BOT_TOKEN}}/sendMessage` with `chat_id: $env.TELEGRAM_TRADING_CHAT_ID` — Tyson's personal Telegram, same chat as Dormancy Alerter and Trading Scanner) posts the templated alert listing each device's status + remediation hint (open Termux, toggle SMS Gateway local server). On both-healthy, IF false branch → silent pass (deliberate — no notification noise).
+- **Heartbeat:** N (the workflow is itself a high-frequency probe — the device health endpoint IS the heartbeat target; a separate workflow-level heartbeat would be redundant. If the workflow itself goes silent, the existing Workflow Dormancy Alerter `O5ir2Mp0e2AXkUXZ` should surface it via execution-count drop.)
+- **Error workflow:** none. Per-node `continueRegularOutput` + `alwaysOutputData` + 10s timeouts keep the chain progressing past either device's network failure so the Code node can evaluate both responses; this is the failure path the alert exists to catch, not a silent-skip risk.
+- **Recent activity:** Created and activated 2026-05-19. First execution at `2026-05-19T11:25:00 UTC` succeeded (both devices `status=pass`, `connection:status observedValue=1`) — IF false branch took, no Telegram fired (correct silent-pass behaviour).
+- **Bucket:** M (SMS gateway is shared revenue-path infrastructure for both Flow OS and Emma/FSC; silent device failure means outbound/inbound SMS stops without warning, which lands as a customer-trust event on whichever brand was mid-conversation).
+- **Known issues:** None at creation. **Chat ID env-var name is misleading** — uses `$env.TELEGRAM_TRADING_CHAT_ID` because that's the only env-resident Tyson chat ID (set per `[[project_n8n_qclaw_topology]]`); the variable predates the broader alerting use case. Worth renaming/duplicating to `TELEGRAM_ALERT_CHAT_ID` in the env-file when the next env edit happens, but not worth a standalone recreate cycle. **No errorWorkflow** — if every alert path is structurally guarded (continueOnFail on both HTTP probes), the only thing left to fail is the Code node itself (logic bug) or the Telegram send (Tyson would notice). Worth adding `7kpNnMtnuDWXgWcX` (Shared Error Handler) in the same sweep that adds heartbeat+errorWorkflow across the broader cluster gap.
+- **Last verified:** 2026-05-19
+- **Notes:** `createdAt: 2026-05-19T11:24:03 UTC`. 6 nodes total: Schedule → Check Device 1 → Check Device 2 → Evaluate Health → Alert? → Telegram Alert. Linear chain (not parallel) — Device 2 runs after Device 1 returns; with 10s timeouts each, worst-case run is ~20s before the IF gates the Telegram. Talks to: `device1.flowos.tech` + `device2.flowos.tech` (the Termux SMS gateway phones, no auth — endpoints are read-only health probes), Telegram (`api.telegram.org`). **Health endpoint response format (confirmed by direct probe 2026-05-19):** IETF health-check JSON with top-level `status: "pass" | "fail"`, `releaseId`, `version`, and a `checks` object containing per-check entries (`messages:failed`, `connection:status`, `connection:transport`, `connection:cellular`, `battery:level`, `battery:charging`) each with `observedValue` + `status`. The `connection:status` check is the canonical "Termux SMS Gateway local server reachable" probe and is the primary failure signal this workflow keys off. **No skill file** (single-purpose monitor; topology is fully captured in this entry).
+
 
 ## Maintenance log
 
 This section captures changes to the workflow index over time. Most recent at top.
+
+- **2026-05-19 — Added SMS Gateway Device Heartbeat Monitor (`yIFBw3eLj9WOimWR`) to Various utilities cluster.** New every-5-minute scheduleTrigger workflow that probes `device1.flowos.tech/health` + `device2.flowos.tech/health` and Telegrams Tyson on `status=fail`, `connection:status observedValue=0`, or network/timeout. Both HTTP probes use `onError: continueRegularOutput` + `alwaysOutputData: true` so the Code node sees both responses regardless of either device's failure. Silent-pass when both healthy. Created and activated 2026-05-19; first execution at 11:25 UTC succeeded with both devices `status=pass`. Various utilities count: 10 → 11. Total workflows: 46 → 47.
 
 - **2026-05-04 — Pending cluster-sweep tracked: schedule timezone correction across N clusters.** n8n cron evaluation runs in America/New_York (UTC-4 EDT) not UTC despite node names. Affects at minimum: Crete Content Generator (committed, technically-misleading UTC claim), GHL Marketing Content Generator + Weekly Report (this commit). Likely affects unevaluated clusters too. Sweep correction post-cluster-11 will decide between: rename nodes (cosmetic), compensate cron (functional), or change n8n timezone config (cleanest fix). Tracked as work-list item.
 
