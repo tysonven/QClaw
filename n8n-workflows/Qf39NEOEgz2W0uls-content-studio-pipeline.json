@@ -330,7 +330,10 @@
           "name": "Anthropic - QuantumClaw"
         }
       },
-      "notes": "NEEDS: ANTHROPIC_API_KEY env var (placeholder)"
+      "notes": "NEEDS: ANTHROPIC_API_KEY env var (placeholder)",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
     },
     {
       "parameters": {
@@ -447,7 +450,10 @@
           "name": "Anthropic - QuantumClaw"
         }
       },
-      "notes": "NEEDS: ANTHROPIC_API_KEY env var (placeholder)"
+      "notes": "NEEDS: ANTHROPIC_API_KEY env var (placeholder)",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
     },
     {
       "parameters": {
@@ -488,7 +494,10 @@
           "name": "Anthropic - QuantumClaw"
         }
       },
-      "notes": "NEEDS: ANTHROPIC_API_KEY env var (placeholder)"
+      "notes": "NEEDS: ANTHROPIC_API_KEY env var (placeholder)",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
     },
     {
       "parameters": {
@@ -614,7 +623,10 @@
           "id": "LUUeAdpObQjzRbct",
           "name": "Anthropic - QuantumClaw"
         }
-      }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
     },
     {
       "parameters": {
