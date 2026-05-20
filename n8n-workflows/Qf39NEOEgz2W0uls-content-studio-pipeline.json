@@ -326,8 +326,8 @@
       "notesInFlow": true,
       "credentials": {
         "httpHeaderAuth": {
-          "id": "JYejjBR2H2EMmdGy",
-          "name": "Anthropic"
+          "id": "LUUeAdpObQjzRbct",
+          "name": "Anthropic - QuantumClaw"
         }
       },
       "notes": "NEEDS: ANTHROPIC_API_KEY env var (placeholder)"
@@ -443,8 +443,8 @@
       "notesInFlow": true,
       "credentials": {
         "httpHeaderAuth": {
-          "id": "JYejjBR2H2EMmdGy",
-          "name": "Anthropic"
+          "id": "LUUeAdpObQjzRbct",
+          "name": "Anthropic - QuantumClaw"
         }
       },
       "notes": "NEEDS: ANTHROPIC_API_KEY env var (placeholder)"
@@ -484,8 +484,8 @@
       "notesInFlow": true,
       "credentials": {
         "httpHeaderAuth": {
-          "id": "JYejjBR2H2EMmdGy",
-          "name": "Anthropic"
+          "id": "LUUeAdpObQjzRbct",
+          "name": "Anthropic - QuantumClaw"
         }
       },
       "notes": "NEEDS: ANTHROPIC_API_KEY env var (placeholder)"
@@ -611,8 +611,8 @@
       ],
       "credentials": {
         "httpHeaderAuth": {
-          "id": "JYejjBR2H2EMmdGy",
-          "name": "Anthropic"
+          "id": "LUUeAdpObQjzRbct",
+          "name": "Anthropic - QuantumClaw"
         }
       }
     },
