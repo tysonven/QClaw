@@ -2,7 +2,7 @@
 
 **Project:** QClaw — Self-hosted Claude agent runtime (Fork of QuantumClaw/QClaw)
 **Owner:** Tyson Venables / Flow OS
-**Last updated:** 14 May 2026
+**Last updated:** 20 May 2026
 **Repo:** https://github.com/tysonven/QClaw
 
 ---
@@ -12355,3 +12355,63 @@ Model switch (Sonnet 4.5 → Haiku 4.5) reduces per-call token cost ~90%. Agent 
 5. ✅ **Payments/Financial** — no financial features in scope
 6. ✅ **Security** — no hardcoded secrets, backup files with exposed keys deleted
 7. ✅ **Infrastructure** — all processes PM2-managed, CI/CD from main only
+
+---
+
+## 2026-05-20 — Workflow A: credential sync + Anthropic retry hardening
+
+Pre-Ep-69 hardening session. Two slices on a single feature branch
+(`cc/wfa-cred-sync-retry-hardening-20260520-1336`).
+
+**Slice A — credential sync (commit `4dea639`):**
+- Workflow A's 4 Anthropic httpRequest nodes' credential pointers
+  synced in repo from `JYejjBR2H2EMmdGy` ("Anthropic") to
+  `LUUeAdpObQjzRbct` ("Anthropic - QuantumClaw"). Live n8n already had
+  the correct state from the May 19 rotation; commit `c70b472`
+  (incident closure) PUT the change to n8n but did not write it back
+  to the repo JSON. This commit closes that gap.
+- No PUT needed for Slice A — read-only catch-up.
+
+**Slice B — Anthropic retry hardening (commit `3a14b85`):**
+- Added `retryOnFail: true, maxTries: 3, waitBetweenTries: 5000` to all
+  4 Anthropic nodes (Generate Blog Post, Generate Substack Draft,
+  Generate LinkedIn Post, Select Clip Segments) in both repo and via
+  PUT to n8n.
+- May 8 followup, closed. Prior config: no retry on any of the 4 nodes
+  — a single transient 529 hard-failed the whole pipeline mid-run.
+  5s × 3 tries = ~10s retry window per node; sustained outages still
+  fail loud, which is correct (partial AI-generated content would
+  corrupt downstream state).
+
+**Verification:**
+- PUT response HTTP 200, post-PUT GET shows all 4 nodes carry the
+  retry config.
+- Invariants preserved: `active=true`, node count 40, 39 connection
+  sources, `settings.availableInMCP=true`, `callerPolicy`,
+  `executionOrder`, `timeSavedMode=fixed`.
+- Repo file matches live structurally (zero `jq -S` diff).
+- No live fire — Ep 69 upload (next user-triggered webhook) will
+  exercise the retry path naturally.
+
+**Followups discovered this session (filed for new dispatches, not
+silent scope creep):**
+
+- **HIGH (NEW):** `Meta Ads Optimisation Agent` (`lf955LDteJ512RQi`)
+  failing daily at 09:00 UTC since 2026-05-20 — references deleted
+  credential `eXhIwRbh7FBgb6O3`. Workflow active and cron-scheduled,
+  so will fail on every run until repointed. Needs either a repoint
+  to `LUUeAdpObQjzRbct` (if a header-auth pattern works) or creation
+  of a native `anthropicApi`-type credential (the error message
+  requests type `anthropicApi` specifically). Missed by the May 19
+  5-workflow rotation. `Trading - Weekly Analyst`
+  (`vjj2uBIPc07FpIxx`) also references `eXhIwRbh7FBgb6O3` but is
+  inactive — lower urgency.
+- **LOW (NEW):** Canonical qclaw `/root/QClaw` has an unpushed merge
+  commit `7c51d12` (PR #32 merge) ahead of
+  `origin/docs/incident-closure-2026-05-19`. Left untouched per
+  Operating Rule 1 (not authored this session).
+- **INFO / lesson:** Credential deletion needs a reverse-pointer audit
+  before deletion is final. n8n stores credential references in
+  `workflow_entity.nodes` JSON; a simple `nodes::text LIKE '%<id>%'`
+  scan catches orphans pre-delete. Consider adding to the rotation
+  runbook.

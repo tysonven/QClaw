@@ -326,11 +326,14 @@
       "notesInFlow": true,
       "credentials": {
         "httpHeaderAuth": {
-          "id": "JYejjBR2H2EMmdGy",
-          "name": "Anthropic"
+          "id": "LUUeAdpObQjzRbct",
+          "name": "Anthropic - QuantumClaw"
         }
       },
-      "notes": "NEEDS: ANTHROPIC_API_KEY env var (placeholder)"
+      "notes": "NEEDS: ANTHROPIC_API_KEY env var (placeholder)",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
     },
     {
       "parameters": {
@@ -443,11 +446,14 @@
       "notesInFlow": true,
       "credentials": {
         "httpHeaderAuth": {
-          "id": "JYejjBR2H2EMmdGy",
-          "name": "Anthropic"
+          "id": "LUUeAdpObQjzRbct",
+          "name": "Anthropic - QuantumClaw"
         }
       },
-      "notes": "NEEDS: ANTHROPIC_API_KEY env var (placeholder)"
+      "notes": "NEEDS: ANTHROPIC_API_KEY env var (placeholder)",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
     },
     {
       "parameters": {
@@ -484,11 +490,14 @@
       "notesInFlow": true,
       "credentials": {
         "httpHeaderAuth": {
-          "id": "JYejjBR2H2EMmdGy",
-          "name": "Anthropic"
+          "id": "LUUeAdpObQjzRbct",
+          "name": "Anthropic - QuantumClaw"
         }
       },
-      "notes": "NEEDS: ANTHROPIC_API_KEY env var (placeholder)"
+      "notes": "NEEDS: ANTHROPIC_API_KEY env var (placeholder)",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
     },
     {
       "parameters": {
@@ -611,10 +620,13 @@
       ],
       "credentials": {
         "httpHeaderAuth": {
-          "id": "JYejjBR2H2EMmdGy",
-          "name": "Anthropic"
+          "id": "LUUeAdpObQjzRbct",
+          "name": "Anthropic - QuantumClaw"
         }
-      }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
     },
     {
       "parameters": {
