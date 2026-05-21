@@ -746,6 +746,66 @@ console.log('\nSection 15: _appendChannelEvent scrubs every string field (findin
     `raw match in: ${raw2.slice(0, 300)}`);
 }
 
+// ── Section 16: finding 10 regression — _scheduleRecovery jitters the tick
+console.log('\nSection 16: _scheduleRecovery passes jittered ms to setTimeout (finding 10)');
+{
+  clearLog();
+  const RECOVERY_TICK_MS = 5 * 60 * 1000;
+  const LO = 0.75 * RECOVERY_TICK_MS; // 225000
+  const HI = 1.25 * RECOVERY_TICK_MS; // 375000
+
+  // Spy on global setTimeout to capture the ms argument _scheduleRecovery
+  // passes in. Restore after, so the rest of the test process is unaffected.
+  const origSetTimeout = globalThis.setTimeout;
+  const seenDelays = [];
+  globalThis.setTimeout = function (fn, ms, ...rest) {
+    seenDelays.push(ms);
+    // Coerce all timers to fire effectively never in this test (we never
+    // want them to run — we only care about the ms argument).
+    return origSetTimeout(fn, 24 * 60 * 60 * 1000, ...rest);
+  };
+  try {
+    const ch = await makeChannel();
+    ch.status = 'degraded';
+    // Drive 200 schedule cycles; pre-fixup all would be exactly
+    // RECOVERY_TICK_MS, post-fixup spread across [LO, HI].
+    const cycles = 200;
+    for (let i = 0; i < cycles; i++) {
+      ch._recoveryAttempts = 0;
+      ch._recoveryTimer = null;
+      ch._scheduleRecovery();
+    }
+    // Filter to recovery-tick-magnitude delays (in [LO, HI]). Other
+    // setTimeouts may fire elsewhere (none should in this scoped block,
+    // but be defensive).
+    const recoveryDelays = seenDelays.filter((d) => d >= LO * 0.5 && d <= HI * 1.5);
+    check(`captured ${cycles} recovery-tick delays`,
+      recoveryDelays.length === cycles,
+      `got ${recoveryDelays.length} / ${cycles}`);
+    let allInRange = true;
+    let minObs = Infinity;
+    let maxObs = -Infinity;
+    let countAtExactBase = 0;
+    for (const d of recoveryDelays) {
+      if (d < minObs) minObs = d;
+      if (d > maxObs) maxObs = d;
+      if (d === RECOVERY_TICK_MS) countAtExactBase += 1;
+      if (d < LO || d > HI) allInRange = false;
+    }
+    check(`all ${cycles} recovery-tick delays in [${LO}, ${HI}]`,
+      allInRange, `observed range [${minObs}, ${maxObs}]`);
+    // Spread sanity: with ±25% jitter, the chance of all 200 samples
+    // landing exactly at RECOVERY_TICK_MS is astronomically small —
+    // sub-1% empirically. Pre-fixup all 200 would equal base exactly.
+    check(`recovery-tick delays are jittered (not all === ${RECOVERY_TICK_MS})`,
+      countAtExactBase < cycles,
+      `${countAtExactBase}/${cycles} delays equal base exactly`);
+    await ch.stop();
+  } finally {
+    globalThis.setTimeout = origSetTimeout;
+  }
+}
+
 // ── Summary ───────────────────────────────────────────────────────────
 try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
 

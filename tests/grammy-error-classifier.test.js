@@ -219,6 +219,37 @@ for (const [attempt, base] of [[1, 1000], [2, 2000], [3, 4000], [4, 8000], [5, 1
   check('100 random samples at attempt-1 all in [750, 1250]', allInRange);
 }
 
+// ── Section 7b: applyJitter at recovery-tick magnitude (Slice 3e fixup-2 #10)
+// The recovery timer in src/channels/manager.js reuses _internal.applyJitter
+// to scatter the 5-minute tick. Verify the helper produces values in
+// [0.75 * base, 1.25 * base] for base = RECOVERY_TICK_MS = 5*60*1000ms,
+// matching the same ±25% envelope the retry-backoff jitter uses.
+console.log('\napplyJitter at recovery-tick magnitude (finding 10):');
+{
+  const RECOVERY_TICK_MS = 5 * 60 * 1000;
+  const lo = 0.75 * RECOVERY_TICK_MS;
+  const hi = 1.25 * RECOVERY_TICK_MS;
+  // Boundary samples via deterministic random.
+  const at0 = _internal.applyJitter(RECOVERY_TICK_MS, () => 0);
+  const at1 = _internal.applyJitter(RECOVERY_TICK_MS, () => 1);
+  check(`applyJitter(${RECOVERY_TICK_MS}, ()=>0) === ${lo}`,
+    at0 === lo, `got ${at0}`);
+  check(`applyJitter(${RECOVERY_TICK_MS}, ()=>1) === ${hi}`,
+    at1 === hi, `got ${at1}`);
+  // 1000-iteration statistical bound, matches the retry-backoff pattern.
+  let allInRange = true;
+  let minObs = Infinity;
+  let maxObs = -Infinity;
+  for (let i = 0; i < 1000; i++) {
+    const v = _internal.applyJitter(RECOVERY_TICK_MS);
+    if (v < minObs) minObs = v;
+    if (v > maxObs) maxObs = v;
+    if (v < lo || v > hi) { allInRange = false; break; }
+  }
+  check(`1000 recovery-tick jitter samples all in [${lo}, ${hi}]`,
+    allInRange, `observed range [${minObs}, ${maxObs}]`);
+}
+
 // ── Section 8: internal constants ─────────────────────────────────────
 console.log('\nInternal constants:');
 check('MAX_ATTEMPTS = 5', _internal.MAX_ATTEMPTS === 5);

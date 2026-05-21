@@ -13,7 +13,7 @@ import {
   formatStatusMarkdown as formatBootstrapStatusMarkdown,
   isCached as isBootstrapCached
 } from '../agents/bootstrap.js';
-import { classify as classifyGrammyError } from './grammy-error-classifier.js';
+import { classify as classifyGrammyError, _internal as _classifierInternal } from './grammy-error-classifier.js';
 import { appendFileSync, chmodSync, existsSync, mkdirSync } from 'fs';
 import { dirname, join } from 'path';
 import { homedir } from 'os';
@@ -849,12 +849,19 @@ await ctx.reply(
       });
       return;
     }
+    // Slice 3e fixup-2 (finding 10): apply ±25% jitter to the recovery
+    // tick so multiple instances (HA active-active, or accidental
+    // dual-PM2-restart overlap) don't lockstep their recovery polls and
+    // double-hammer Telegram. Uses the same applyJitter helper as the
+    // classifier's retry backoff, keeping the formula in one place
+    // (base * 0.25 * (2*random - 1) = ±25%).
+    const jitteredMs = _classifierInternal.applyJitter(RECOVERY_TICK_MS);
     this._recoveryTimer = setTimeout(() => {
       this._recoveryTimer = null;
       this._attemptRecovery().catch((err) => {
         try { log.warn(`[TelegramChannel] recovery tick error: ${err.message}`); } catch {}
       });
-    }, RECOVERY_TICK_MS);
+    }, jitteredMs);
     // Allow process to exit if this is the only handle left (tests).
     if (this._recoveryTimer && typeof this._recoveryTimer.unref === 'function') {
       this._recoveryTimer.unref();
