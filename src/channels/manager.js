@@ -96,15 +96,25 @@ function _appendChannelEvent(record) {
  * (recursively) in a record before serialisation. Non-string values pass
  * through unchanged. Single shallow level + one nested object level is
  * enough for the current event-record shape; deepens if needed.
+ *
+ * Slice 3e fixup-3 (finding 2): WeakSet cycle guard. Defence-in-depth —
+ * no current call site builds cyclic records, but a future contributor
+ * passing through e.g. an Error with a self-referencing .cause chain
+ * would have stack-overflowed the previous implementation, which the
+ * outer try/catch in _appendChannelEvent would have silently swallowed
+ * (losing the event). On cycle detect, substitute the literal string
+ * '[circular]' so the record still serialises.
  */
-function _scrubRecord(record) {
+function _scrubRecord(record, seen = new WeakSet()) {
   if (record === null || typeof record !== 'object') return record;
+  if (seen.has(record)) return '[circular]';
+  seen.add(record);
   const out = Array.isArray(record) ? [] : {};
   for (const [k, v] of Object.entries(record)) {
     if (typeof v === 'string') {
       out[k] = _scrubToken(v);
     } else if (v !== null && typeof v === 'object') {
-      out[k] = _scrubRecord(v);
+      out[k] = _scrubRecord(v, seen);
     } else {
       out[k] = v;
     }
@@ -116,6 +126,14 @@ function _scrubRecord(record) {
 // "approve 37", "yes 37", and the deny variants. Trailing chars after the
 // id are kept on the message text (handler reads them as the deny reason).
 export const APPROVAL_REPLY_RE = /^([✅❌]|approve|deny|yes|no)\s*#?(\d+)/i;
+
+// Slice 3e fixup-3 (finding 2): test-only export so the cycle guard in
+// _scrubRecord can be exercised directly. Same pattern as the classifier's
+// _internal export. Production callers go through _appendChannelEvent.
+export const _internalForTest = {
+  _scrubToken,
+  _scrubRecord,
+};
 
 // Extracted so it's directly testable without spinning up a Bot. The bot.hears
 // callback is a thin wrapper that calls this with the approvals subsystem

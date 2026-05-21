@@ -91,7 +91,7 @@ import {
 // the instance to drive the recovery loop, and call `_onRunnerFailure` /
 // `_attemptRecovery` directly via reflection.
 
-import { ChannelManager } from '../src/channels/manager.js';
+import { ChannelManager, _internalForTest } from '../src/channels/manager.js';
 
 let passed = 0;
 let failed = 0;
@@ -939,6 +939,76 @@ console.log('\nSection 19: retry_succeeded.retry_attempt logs the attempt that s
   check('channel ended active after the 4th-retry success',
     ch.status === 'active', `status=${ch.status}`);
   await ch.stop();
+}
+
+// ── Section 20: fixup-3 finding 2 — _scrubRecord cycle guard
+console.log('\nSection 20: _scrubRecord handles circular references (finding 2)');
+{
+  const { _scrubRecord } = _internalForTest;
+
+  // Direct self-reference.
+  {
+    const r = { a: 'plain', token: 'bot1234567890:ABCDEFghijklmnop_qrstuvWXYZ1234567890' };
+    r.self = r;
+    let scrubbed;
+    let threw = false;
+    try { scrubbed = _scrubRecord(r); } catch { threw = true; }
+    check('direct self-reference does not throw (no stack overflow)', !threw);
+    check('direct self-reference becomes "[circular]" placeholder',
+      scrubbed?.self === '[circular]',
+      `got self=${JSON.stringify(scrubbed?.self)}`);
+    check('non-cyclic string still scrubbed in same record',
+      scrubbed?.token === 'bot<REDACTED>',
+      `got token=${scrubbed?.token}`);
+    check('non-token string preserved in same record',
+      scrubbed?.a === 'plain', `got a=${scrubbed?.a}`);
+  }
+
+  // Mutual / deeper cycle: a → b → a.
+  {
+    const a = { name: 'a' };
+    const b = { name: 'b', back: a };
+    a.forward = b;
+    let scrubbed;
+    let threw = false;
+    try { scrubbed = _scrubRecord(a); } catch { threw = true; }
+    check('mutual cycle does not throw', !threw);
+    check('mutual cycle resolves via "[circular]"',
+      scrubbed?.forward?.back === '[circular]',
+      `got forward.back=${JSON.stringify(scrubbed?.forward?.back)}`);
+    check('outer non-cyclic fields preserved across mutual cycle',
+      scrubbed?.name === 'a' && scrubbed?.forward?.name === 'b');
+  }
+
+  // Cycle via array element.
+  {
+    const arr = ['ok'];
+    arr.push(arr);
+    const r = { list: arr };
+    let scrubbed;
+    let threw = false;
+    try { scrubbed = _scrubRecord(r); } catch { threw = true; }
+    check('cycle via array element does not throw', !threw);
+    check('cycle via array element replaced with "[circular]"',
+      Array.isArray(scrubbed?.list) && scrubbed.list[0] === 'ok'
+        && scrubbed.list[1] === '[circular]',
+      `got list=${JSON.stringify(scrubbed?.list)}`);
+  }
+
+  // JSON-serialisable result (would have been impossible pre-fixup-3 —
+  // JSON.stringify on a cyclic object throws TypeError).
+  {
+    const r = {};
+    r.self = r;
+    const scrubbed = _scrubRecord(r);
+    let serialised;
+    let serialiseThrew = false;
+    try { serialised = JSON.stringify(scrubbed); } catch { serialiseThrew = true; }
+    check('scrubbed cyclic record is JSON-serialisable', !serialiseThrew);
+    check('scrubbed JSON includes the "[circular]" sentinel',
+      typeof serialised === 'string' && serialised.includes('[circular]'),
+      `got: ${serialised}`);
+  }
 }
 
 // ── Summary ───────────────────────────────────────────────────────────
