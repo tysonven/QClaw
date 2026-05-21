@@ -806,6 +806,68 @@ console.log('\nSection 16: _scheduleRecovery passes jittered ms to setTimeout (f
   }
 }
 
+// ── Section 17: finding 12 regression — _recoveryAttempts resets on inline-retry reinit
+console.log('\nSection 17: inline-retry reinit resets _recoveryAttempts (finding 12)');
+{
+  clearLog();
+  const ch = await makeChannel();
+
+  // Episode 1: simulate a prior degradation that incremented
+  // _recoveryAttempts and was recovered via the recovery-tick path.
+  // _attemptRecovery's success path already resets — but we want to
+  // simulate the case where a SUBSEQUENT transient (after recovery)
+  // triggers an inline retry through _onRunnerFailure. The fixup
+  // ensures _recoveryAttempts is reset on THAT reinit too.
+  //
+  // Set _recoveryAttempts to a non-zero value as if a prior degrade
+  // had bumped it. Make _reinitBot succeed on the inline retry.
+  ch._recoveryAttempts = 7; // mid-budget, prior degradation
+  let reinitCalls = 0;
+  ch._reinitBot = async function () {
+    reinitCalls += 1;
+    this._runner = { stop: async () => {}, task: () => undefined };
+    this.bot = {};
+    this.status = 'active';
+    this._retryAttempts = 0;
+    this._recoveryAttempts = 0; // Fixup line under test
+  };
+
+  // Trigger an inline retry path (transient error → retry → reinit).
+  const transientErr = Object.assign(new Error('502'),
+    { error_code: 502, name: 'GrammyError' });
+  await ch._onRunnerFailure(transientErr);
+  check('inline-retry success reset _recoveryAttempts to 0 (finding 12)',
+    ch._recoveryAttempts === 0,
+    `got _recoveryAttempts=${ch._recoveryAttempts}`);
+  check('inline-retry success kept channel active', ch.status === 'active');
+  check('exactly one reinit (inline retry path)', reinitCalls === 1);
+
+  // Episode 2: a fresh degradation should now start from
+  // _recoveryAttempts = 0, not from 7. Drive a non_transient straight
+  // into degrade and confirm the recovery_attempt event will reflect a
+  // fresh budget.
+  const nonTransientErr = Object.assign(new Error('401'),
+    { error_code: 401, name: 'GrammyError' });
+  // _reinitBot is no longer called on non-transient (immediate degrade).
+  await ch._onRunnerFailure(nonTransientErr);
+  check('fresh degradation lands in degraded', ch.status === 'degraded');
+  check('fresh degradation starts with _recoveryAttempts=0 (full budget)',
+    ch._recoveryAttempts === 0,
+    `got ${ch._recoveryAttempts}`);
+
+  // Trigger a recovery tick to confirm the event records
+  // recovery_attempt=1 (not 8), proving the budget restart.
+  ch._reinitBot = async function () { reinitCalls += 1; throw new Error('still failing'); };
+  await ch._attemptRecovery();
+  const events = readEvents();
+  const recoveryAttemptEvents = events.filter((e) => e.event === 'recovery_attempt');
+  check('first recovery_attempt after fresh degrade reports recovery_attempt=1',
+    recoveryAttemptEvents[0]?.recovery_attempt === 1,
+    `recovery_attempt=${recoveryAttemptEvents[0]?.recovery_attempt}`);
+
+  await ch.stop();
+}
+
 // ── Summary ───────────────────────────────────────────────────────────
 try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
 

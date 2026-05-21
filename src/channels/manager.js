@@ -957,6 +957,13 @@ await ctx.reply(
     this._wireRunnerTaskCatch();
     this.status = 'active';
     this._retryAttempts = 0;
+    // Slice 3e fixup-2 (finding 12): also reset the recovery budget on
+    // a successful reinit. _attemptRecovery already resets this on the
+    // recovery-timer success path; doing it here covers the inline-retry
+    // success path too, so a degrade-recover-stable-then-degrade-again
+    // sequence starts the new degradation episode with the full
+    // 12-attempt recovery budget rather than {12 - prior_attempts}.
+    this._recoveryAttempts = 0;
   }
 
   /**
