@@ -102,8 +102,8 @@
       ],
       "credentials": {
         "httpHeaderAuth": {
-          "id": "eXhIwRbh7FBgb6O3",
-          "name": "Anthropic API 2"
+          "id": "LUUeAdpObQjzRbct",
+          "name": "Anthropic - QuantumClaw"
         }
       }
     },
@@ -152,7 +152,7 @@
         "url": "https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendMessage",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ chat_id: 1375806243, text: '\ud83d\udcca Weekly Trading Report\\n\\nTrades: ' + $('Calculate Stats').first().json.total_trades + ' | Wins: ' + $('Calculate Stats').first().json.wins + ' | Win Rate: ' + $('Calculate Stats').first().json.win_rate + '\\n\\n' + $('Claude Analysis').first().json.content[0].text.substring(0, 3500) }) }}",
+        "jsonBody": "={{ JSON.stringify({ chat_id: 1375806243, text: '📊 Weekly Trading Report\\n\\nTrades: ' + $('Calculate Stats').first().json.total_trades + ' | Wins: ' + $('Calculate Stats').first().json.wins + ' | Win Rate: ' + $('Calculate Stats').first().json.win_rate + '\\n\\n' + $('Claude Analysis').first().json.content[0].text.substring(0, 3500) }) }}",
         "options": {}
       },
       "id": "notify-report",
