@@ -607,6 +607,51 @@ console.log('\nSection 13: real _reinitBot via test seams wires task.catch (find
   await ch.stop();
 }
 
+// ── Section 14: finding 5 regression — _runBotOptions enforces silent: true
+console.log('\nSection 14: _runBotOptions includes silent: true (finding 5)');
+{
+  // Read the options directly from the production method (not via a spy
+  // — that would be tautological). A regression that drops silent: true
+  // from _runBotOptions would fail here regardless of whether any test's
+  // _runBot spy reproduces it. Both start() and _reinitBot route their
+  // runner construction through this method.
+  const ch = await makeChannel();
+  const opts = ch._runBotOptions();
+  check('_runBotOptions returns an object',
+    opts && typeof opts === 'object');
+  check('_runBotOptions().runner.silent === true (finding 5)',
+    opts?.runner?.silent === true,
+    `silent=${opts?.runner?.silent}`);
+  check('_runBotOptions().runner.fetch.allowed_updates preserves filter',
+    Array.isArray(opts?.runner?.fetch?.allowed_updates)
+    && opts.runner.fetch.allowed_updates.includes('message')
+    && opts.runner.fetch.allowed_updates.includes('callback_query'));
+
+  // Extended scrub assertion: even when an err.message embeds a Telegram
+  // request URL with a real-looking bot token across BOTH the inline-retry
+  // path and the recovery-tick path, no raw token leaks into the log.
+  // (Section 9 covers the inline-retry path; this extends to the recovery
+  // path, which writes via _attemptRecovery → recovery_failed.)
+  clearLog();
+  const ch2 = await makeChannel();
+  const leakyErr = new Error(
+    'request to https://api.telegram.org/bot1234567890:ABCDEFghijklmnop_qrstuvWXYZ1234567890/getUpdates failed, code: ECONNRESET');
+  leakyErr.code = 'ECONNRESET';
+  // Force a recovery-failed event by making reinit throw with the leaky err.
+  ch2._reinitBot = async () => { throw leakyErr; };
+  ch2.status = 'degraded';
+  await ch2._attemptRecovery();
+  const raw2 = readFileSync(logPath, 'utf8');
+  check('no raw bot token in recovery_failed log line (finding 5)',
+    !/bot\d+:[A-Za-z0-9_-]+/.test(raw2),
+    `raw match in: ${raw2.slice(0, 300)}`);
+  check('recovery_failed event present with redaction marker',
+    raw2.includes('bot<REDACTED>'),
+    `raw: ${raw2.slice(0, 300)}`);
+  await ch2.stop();
+  await ch.stop();
+}
+
 // ── Summary ───────────────────────────────────────────────────────────
 try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
 

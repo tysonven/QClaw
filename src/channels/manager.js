@@ -919,6 +919,16 @@ await ctx.reply(
     return {
       runner: {
         fetch: { allowed_updates: ['message', 'callback_query'] },
+        // Slice 3e fixup (finding 5): silent=true suppresses the grammY
+        // runner's own console.error of fetch-update errors. The runner's
+        // default logger writes a stringified error object that, for
+        // HttpError, contains the full request URL — i.e. the bot token in
+        // the path (2026-05-14 incident class). Slice 3e catches more
+        // errors than the pre-slice baseline (the process no longer
+        // restarts on them), so without this the leak volume to PM2 logs
+        // would INCREASE post-merge in direct proportion to slice
+        // success. channel-events.log records the same events scrubbed.
+        silent: true,
       },
     };
   }
