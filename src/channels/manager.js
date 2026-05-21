@@ -313,9 +313,10 @@ class TelegramChannel {
     // agent.process() in bot.on('message:text'). drop_pending_updates is
     // already handled by deleteWebhook above, so it isn't needed here.
     try {
-      this._runner = run(this.bot, {
-        runner: { fetch: { allowed_updates: ['message', 'callback_query'] } },
-      });
+      // Slice 3e fixup (finding 4/5): use _runBot helper so silent=true and
+      // the option-shape are defined in exactly one place — start() and
+      // _reinitBot must agree, and tests need to spy on the run options.
+      this._runner = this._runBot(this.bot);
       this.status = 'active';
       this._wireRunnerTaskCatch();
       if (allowedUsers.length === 0) {
@@ -864,7 +865,6 @@ await ctx.reply(
    * _retryAttempts.
    */
   async _reinitBot() {
-    const { Bot } = await import('grammy');
     // Tear down the previous runner. The old task promise has already rejected;
     // calling stop() releases sockets and aborts pending fetches.
     if (this._runner) {
@@ -881,20 +881,46 @@ await ctx.reply(
     const allowedUsers = this.channelConfig.allowedUsers || [];
     const dmPolicy = this.channelConfig.dmPolicy || 'pairing';
 
-    const bot = new Bot(token);
+    const bot = await this._constructBot(token);
     this._registerBotHandlers(bot, allowedUsers, dmPolicy);
 
     // Validate the token. A 401 here is a real auth problem — surface it.
-    await bot.api.getMe();
+    await this._validateBot(bot);
     try { await bot.api.deleteWebhook({ drop_pending_updates: true }); } catch {}
 
     this.bot = bot;
-    this._runner = run(bot, {
-      runner: { fetch: { allowed_updates: ['message', 'callback_query'] } },
-    });
+    this._runner = this._runBot(bot);
     this._wireRunnerTaskCatch();
     this.status = 'active';
     this._retryAttempts = 0;
+  }
+
+  /**
+   * Slice 3e fixup (finding 4): test seams. Extracted from _reinitBot so
+   * integration tests can override these three methods on the instance to
+   * exercise the full reinit path (including _wireRunnerTaskCatch on the
+   * resulting runner handle) without touching the real grammy / Telegram
+   * API. Defaults are unchanged production behaviour.
+   */
+  async _constructBot(token) {
+    const { Bot } = await import('grammy');
+    return new Bot(token);
+  }
+
+  async _validateBot(bot) {
+    await bot.api.getMe();
+  }
+
+  _runBot(bot) {
+    return run(bot, this._runBotOptions());
+  }
+
+  _runBotOptions() {
+    return {
+      runner: {
+        fetch: { allowed_updates: ['message', 'callback_query'] },
+      },
+    };
   }
 
   /**

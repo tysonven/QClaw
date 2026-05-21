@@ -500,6 +500,113 @@ console.log('\nSection 12: _sleep cancels promptly on stop() (finding 3)');
   check('_backoffTimerResolve cleared after stop()', ch._backoffTimerResolve === null);
 }
 
+// ── Section 13: finding 4 regression — real _reinitBot wires _wireRunnerTaskCatch
+console.log('\nSection 13: real _reinitBot via test seams wires task.catch (finding 4)');
+{
+  clearLog();
+  const ch = await makeChannel();
+
+  // Spies on the test seams. The real _reinitBot still runs end-to-end —
+  // including the _wireRunnerTaskCatch call against the runner handle
+  // returned by _runBot.
+  let constructBotCalls = 0;
+  let validateBotCalls = 0;
+  let runBotCalls = 0;
+  let wireRunnerTaskCatchCalls = 0;
+
+  ch._constructBot = async function (token) {
+    constructBotCalls += 1;
+    // Minimal Bot-shaped fake. _registerBotHandlers calls bot.command,
+    // bot.hears, bot.on — all need to exist and be tolerant of args.
+    const noopHandler = () => {};
+    return {
+      api: {
+        getMe: async () => ({ id: 1, username: 'fake' }),
+        deleteWebhook: async () => true,
+        sendMessage: async () => ({}),
+      },
+      command: noopHandler,
+      hears: noopHandler,
+      on: noopHandler,
+    };
+  };
+  ch._validateBot = async function (bot) {
+    validateBotCalls += 1;
+    await bot.api.getMe();
+  };
+
+  // Return a runner whose task() is a controllable promise so we can
+  // verify _wireRunnerTaskCatch's task().catch wiring fires _onRunnerFailure.
+  let pendingTaskReject;
+  ch._runBot = function (bot) {
+    runBotCalls += 1;
+    const taskPromise = new Promise((_, rej) => { pendingTaskReject = rej; });
+    // Prevent unhandled-rejection warning in test environment if no one
+    // attaches a catch in time.
+    taskPromise.catch(() => {});
+    return {
+      stop: async () => {},
+      task: () => taskPromise,
+      isRunning: () => true,
+    };
+  };
+
+  // Wrap _wireRunnerTaskCatch (do NOT replace) so we can confirm production
+  // code went through it and the resulting catch actually fires.
+  const origWire = ch._wireRunnerTaskCatch.bind(ch);
+  ch._wireRunnerTaskCatch = function () {
+    wireRunnerTaskCatchCalls += 1;
+    return origWire();
+  };
+
+  // Wrap _onRunnerFailure too so we can detect the wired catch firing.
+  let postReinitFailureCount = 0;
+  const origOnFailure = ch._onRunnerFailure.bind(ch);
+  ch._onRunnerFailure = async function (err) {
+    postReinitFailureCount += 1;
+    return origOnFailure(err);
+  };
+
+  // Drive a full reinit through the public method (which calls _reinitBot
+  // under the lock). Use _attemptRecovery (mirrors the recovery-timer path).
+  ch.status = 'degraded';
+  await ch._attemptRecovery();
+
+  // The reinit path ran end-to-end via the seams.
+  check('_constructBot called once', constructBotCalls === 1,
+    `got ${constructBotCalls}`);
+  check('_validateBot called once', validateBotCalls === 1,
+    `got ${validateBotCalls}`);
+  check('_runBot called once', runBotCalls === 1,
+    `got ${runBotCalls}`);
+  check('_wireRunnerTaskCatch invoked against new runner',
+    wireRunnerTaskCatchCalls === 1,
+    `got ${wireRunnerTaskCatchCalls}`);
+  check('post-reinit channel is active', ch.status === 'active',
+    `status=${ch.status}`);
+  check('post-reinit _runner has expected task() shape',
+    ch._runner && typeof ch._runner.task === 'function');
+
+  // Now reject the new runner's task to prove the wiring fires
+  // _onRunnerFailure end-to-end. Reset _reinitBot to a benign one so the
+  // resulting retry doesn't recurse into another full real-reinit path.
+  ch._reinitBot = async function () {
+    this._runner = { stop: async () => {}, task: () => undefined };
+    this.bot = {};
+    this.status = 'active';
+    this._retryAttempts = 0;
+  };
+  const taskErr = Object.assign(new Error('post-recovery 502'),
+    { error_code: 502, name: 'GrammyError' });
+  pendingTaskReject(taskErr);
+  await new Promise((r) => setTimeout(r, 30));
+  check('rejected new-runner task fired _onRunnerFailure',
+    postReinitFailureCount >= 1,
+    `_onRunnerFailure call count: ${postReinitFailureCount}`);
+
+  await ch.stop();
+}
+
 // ── Summary ───────────────────────────────────────────────────────────
 try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
 
