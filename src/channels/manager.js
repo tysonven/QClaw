@@ -234,8 +234,14 @@ class TelegramChannel {
     this._retryAttempts = 0;
     this._recoveryAttempts = 0;
     this._backoffTimer = null;
+    this._backoffTimerResolve = null;
     this._recoveryTimer = null;
     this._inFlightRecovery = false;
+    // Slice 3e fixup (finding 1): captures a failure that arrives while
+    // _inFlightRecovery is held. The current holder drains it on lock release
+    // so the new task's rejection cannot be silently dropped.
+    this._pendingFailure = null;
+    this._hasPendingFailure = false;
   }
 
   _generatePairingCode() {
@@ -638,7 +644,16 @@ await ctx.reply(
    */
   async _onRunnerFailure(err) {
     if (this.status === 'stopped') return;
-    if (this._inFlightRecovery) return;
+    if (this._inFlightRecovery) {
+      // Slice 3e fixup (finding 1): capture the failure so the current holder
+      // can drain it once the lock releases. Previously this branch silently
+      // dropped the failure — a new runner whose task rejected in the
+      // microtask window between reinit success and lock release would leave
+      // the channel reported `active` but in fact dead.
+      this._pendingFailure = err;
+      this._hasPendingFailure = true;
+      return;
+    }
     this._inFlightRecovery = true;
     try {
       let cls;
@@ -700,7 +715,9 @@ await ctx.reply(
         } catch (reinitErr) {
           // Recursive call — _inFlightRecovery is still true, so the recursion
           // is gated by the early-return at the top. We release the lock here
-          // and re-enter cleanly.
+          // and re-enter cleanly. The drain step also runs from the outer
+          // finally on the recursive call's frame, so a concurrent failure
+          // arriving here will still be picked up.
           this._inFlightRecovery = false;
           await this._onRunnerFailure(reinitErr);
           return; // skip the outer finally lock-release (already released)
@@ -711,7 +728,31 @@ await ctx.reply(
       }
     } finally {
       this._inFlightRecovery = false;
+      this._drainPendingFailure();
     }
+  }
+
+  /**
+   * Slice 3e fixup (finding 1): drain a failure captured while the recovery
+   * lock was held. Called from the finally blocks of _onRunnerFailure and
+   * _attemptRecovery. Re-enters via queueMicrotask to avoid growing the
+   * suspended async stack and to keep the drain off the current call's
+   * critical path.
+   */
+  _drainPendingFailure() {
+    if (!this._hasPendingFailure) return;
+    const pending = this._pendingFailure;
+    this._pendingFailure = null;
+    this._hasPendingFailure = false;
+    if (this.status === 'stopped') return;
+    queueMicrotask(() => {
+      // Re-check status at fire-time — stop() may have run between the
+      // microtask scheduling and now.
+      if (this.status === 'stopped') return;
+      this._onRunnerFailure(pending).catch((e) => {
+        try { log.warn(`[TelegramChannel] pending-failure drain error: ${e.message}`); } catch {}
+      });
+    });
   }
 
   /**
@@ -812,6 +853,7 @@ await ctx.reply(
       this._scheduleRecovery();
     } finally {
       this._inFlightRecovery = false;
+      this._drainPendingFailure();
     }
   }
 
@@ -940,6 +982,11 @@ await ctx.reply(
     // Slice 3e: mark stopped FIRST so any in-flight recovery / retry callbacks
     // early-return rather than racing the teardown.
     this.status = 'stopped';
+    // Slice 3e fixup (finding 1): drop any pending-drain failure — drainers
+    // re-check status at fire-time but clearing here avoids holding onto the
+    // error object after the channel is dead.
+    this._pendingFailure = null;
+    this._hasPendingFailure = false;
     if (this._backoffTimer) {
       try { clearTimeout(this._backoffTimer); } catch {}
       this._backoffTimer = null;

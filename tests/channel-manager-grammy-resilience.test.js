@@ -376,6 +376,66 @@ console.log('\nSection 10: classifier throws → safe-default unknown-transient'
   await ch.stop();
 }
 
+// ── Section 11: finding 1 regression — failure during the lock window is drained
+console.log('\nSection 11: failure during lock window drained (finding 1)');
+{
+  clearLog();
+  const ch = await makeChannel();
+  // While the outer _onRunnerFailure holds _inFlightRecovery, simulate the
+  // new runner's task immediately rejecting (the realistic exploit scenario
+  // is a 409 immediately after re-init when a deploy overlaps). Pre-fixup,
+  // the concurrent _onRunnerFailure call hits the lock gate and is silently
+  // dropped — only one reinit ever happens, channel reported active but
+  // dead. Post-fixup, the second failure is captured and drained after the
+  // lock releases, producing a second reinit.
+  let reinitCount = 0;
+  const secondErr = Object.assign(new Error('new-task 409'),
+    { error_code: 409, name: 'GrammyError' });
+  ch._reinitBot = async function () {
+    const n = ++reinitCount;
+    if (n === 1) {
+      // We're inside the outer _onRunnerFailure's try-block with the lock
+      // held. Schedule a microtask-window concurrent failure.
+      queueMicrotask(() => { ch._onRunnerFailure(secondErr); });
+    }
+    // Both reinits "succeed" (channel returns to a stable state).
+    this._runner = { stop: async () => {}, task: () => undefined };
+    this.bot = {};
+    this.status = 'active';
+    this._retryAttempts = 0;
+  };
+
+  const firstErr = Object.assign(new Error('429'),
+    { error_code: 429, name: 'GrammyError' });
+  await ch._onRunnerFailure(firstErr);
+  // Let the captured-then-drained microtask + the drained handler's own
+  // sleep+reinit microtasks run.
+  await new Promise((r) => setTimeout(r, 20));
+
+  // Pre-fixup this would be 1 (drop). Post-fixup this is 2 (drain ran).
+  // A 409 is non_transient, so the drained handler should degrade (no
+  // second reinit from the 409 itself) — UNLESS pre-fixup behaviour: the
+  // drained failure would never have reached _reinitBot at all.
+  check('drained failure reached _onRunnerFailure (channel went non-active)',
+    ch.status === 'degraded',
+    `expected degraded after 409 drain, got status=${ch.status}`);
+  check('_pendingFailure cleared after drain',
+    ch._hasPendingFailure === false && ch._pendingFailure === null);
+  // Exactly one reinit (the 429 retry succeeded). The 409 drain degraded
+  // immediately, no reinit attempted for it.
+  check('reinit count = 1 (429 retry only; 409 drained-degrade has no reinit)',
+    reinitCount === 1, `got reinitCount=${reinitCount}`);
+  // Most importantly: a degraded event must exist in the log, originating
+  // from the drained 409. Pre-fixup this event would be absent.
+  const events = readEvents();
+  const degradedEvents = events.filter((e) => e.event === 'degraded'
+    && e.http_status === 409);
+  check('degraded event for the drained 409 was written to the log',
+    degradedEvents.length === 1,
+    `expected 1 degraded@409, got ${degradedEvents.length}`);
+  await ch.stop();
+}
+
 // ── Summary ───────────────────────────────────────────────────────────
 try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
 
