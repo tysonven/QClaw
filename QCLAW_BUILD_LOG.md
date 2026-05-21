@@ -12988,4 +12988,29 @@ the pm2-error.log excerpt.
 
 End of Slice 3e episode.
 
+---
+
+## [2026-05-21] Slice 3e fixup-3 — design §5 schema reconciliation (P0-A)
+
+Second cold-read returned clean on architecture, surfaced one P0
+disposition: the `reason` field that fixup-2 commit `c44bb7f` adds to
+`*_error` and `recovery_failed` events is not documented in
+`/tmp/slice3e_design.md` §5 (the event-record schema). The classifier
+already produced `reason` pre-fixup-2; surfacing it into the JSONL log
+was pure observability gain (operator can distinguish `classifier_threw`
+from `unstructured_error` etc.) but the design-doc schema lagged.
+
+Reconciliation: edited `/tmp/slice3e_design.md` §5 to:
+- Add `reason` to the event-shape JSON example, with the full enumeration
+  of classifier `reason` values plus the safe-default `'classifier_threw'`
+  the failure handler assigns when the classifier itself throws.
+- Add a field-presence convention line: `reason` is present on the four
+  `*_error` events plus `recovery_failed`. The union is treated as open
+  so new classifier reasons can be added without a schema break.
+
+Design doc remains kept-on-disk per the original Slice 3e brief; this
+build-log entry records the reconciliation event on the branch so the
+PR history shows it. No code changes in this commit.
+
+End of fixup-3 P0-A.
 
