@@ -759,13 +759,22 @@ await ctx.reply(
         });
         await this._sleep(backoffMs, '_backoffTimer');
         if (this.status === 'stopped') return;
+        // Slice 3e fixup-3 (finding 1 + P0-B): capture the attempt number
+        // BEFORE awaiting reinit. _reinitBot resets _retryAttempts to 0 on
+        // success, so reading this._retryAttempts after the await would log
+        // 0 instead of the attempt that actually succeeded. Pre-fixup-3 the
+        // retry_succeeded.retry_attempt field has been 0 since Slice 3e
+        // Unit 1 — pre-existing observability bug surfaced by P0-B in the
+        // second cold-read; paired here with finding 1 (same shape, same
+        // fix).
+        const retryAttemptNum = this._retryAttempts;
         try {
           await this._reinitBot();
           // _reinitBot resets _retryAttempts on success.
           _appendChannelEvent({
             channel: 'telegram',
             event: 'retry_succeeded',
-            retry_attempt: this._retryAttempts,
+            retry_attempt: retryAttemptNum,
           });
         } catch (reinitErr) {
           // Recursive call — _inFlightRecovery is still true, so the recursion
@@ -882,10 +891,16 @@ await ctx.reply(
     }
     this._inFlightRecovery = true;
     this._recoveryAttempts += 1;
+    // Slice 3e fixup-3 (finding 1): capture the attempt number BEFORE
+    // _reinitBot can reset it. Used by both recovery_attempt (current),
+    // recovery_succeeded (post-reinit, when this._recoveryAttempts is 0
+    // because _reinitBot resets it per fixup-2 #12), and recovery_failed
+    // (pre-reset, but use the local for consistency).
+    const recoveryAttemptNum = this._recoveryAttempts;
     _appendChannelEvent({
       channel: 'telegram',
       event: 'recovery_attempt',
-      recovery_attempt: this._recoveryAttempts,
+      recovery_attempt: recoveryAttemptNum,
       max_recovery_attempts: MAX_RECOVERY_ATTEMPTS,
     });
     try {
@@ -893,7 +908,7 @@ await ctx.reply(
       _appendChannelEvent({
         channel: 'telegram',
         event: 'recovery_succeeded',
-        recovery_attempt: this._recoveryAttempts,
+        recovery_attempt: recoveryAttemptNum,
       });
       this._recoveryAttempts = 0;
     } catch (err) {
@@ -911,7 +926,7 @@ await ctx.reply(
         network_code: cls.networkCode,
         error_name: errName,
         error_message: errMsg,
-        recovery_attempt: this._recoveryAttempts,
+        recovery_attempt: recoveryAttemptNum,
         max_recovery_attempts: MAX_RECOVERY_ATTEMPTS,
       });
       this.status = 'degraded';

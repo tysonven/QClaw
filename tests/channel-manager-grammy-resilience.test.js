@@ -868,6 +868,79 @@ console.log('\nSection 17: inline-retry reinit resets _recoveryAttempts (finding
   await ch.stop();
 }
 
+// ── Section 18: fixup-3 finding 1 — recovery_succeeded.recovery_attempt logs N, not 0
+console.log('\nSection 18: recovery_succeeded.recovery_attempt logs the attempt that succeeded (finding 1)');
+{
+  clearLog();
+  const ch = await makeChannel();
+  // Simulate degraded state with 3 prior failed recovery ticks (counter at 3),
+  // then the 4th tick succeeds. Pre-fixup-3 the recovery_succeeded event logs
+  // 0 (because production _reinitBot resets _recoveryAttempts to 0 at its
+  // tail). Post-fixup-3 the captured local preserves the attempt number.
+  ch.status = 'degraded';
+  ch._recoveryAttempts = 3; // 3 prior failed ticks
+  // Stub _reinitBot to mimic production: success resets BOTH counters,
+  // matching the fixup-2 #12 production behaviour.
+  ch._reinitBot = async function () {
+    this._runner = { stop: async () => {}, task: () => undefined };
+    this.bot = {};
+    this.status = 'active';
+    this._retryAttempts = 0;
+    this._recoveryAttempts = 0; // matches production
+  };
+  await ch._attemptRecovery();
+
+  const events = readEvents();
+  const recoveryAttemptEvents = events.filter((e) => e.event === 'recovery_attempt');
+  const recoverySucceededEvents = events.filter((e) => e.event === 'recovery_succeeded');
+  check('recovery_attempt event present with recovery_attempt=4',
+    recoveryAttemptEvents.some((e) => e.recovery_attempt === 4),
+    `got recovery_attempt values: ${recoveryAttemptEvents.map((e) => e.recovery_attempt).join(',')}`);
+  check('recovery_succeeded.recovery_attempt === 4 (finding 1; pre-fixup-3 was 0)',
+    recoverySucceededEvents[0]?.recovery_attempt === 4,
+    `got recovery_attempt=${recoverySucceededEvents[0]?.recovery_attempt}`);
+  await ch.stop();
+}
+
+// ── Section 19: fixup-3 finding 1 (P0-B paired) — retry_succeeded.retry_attempt logs N, not 0
+console.log('\nSection 19: retry_succeeded.retry_attempt logs the attempt that succeeded (P0-B paired)');
+{
+  clearLog();
+  const ch = await makeChannel();
+  // 3 failed reinits then the 4th succeeds. Production _reinitBot resets
+  // _retryAttempts to 0 — pre-fixup-3 retry_succeeded.retry_attempt would
+  // log 0; post-fixup-3 it logs the captured local (4).
+  let reinitCallCount = 0;
+  ch._reinitBot = async function () {
+    reinitCallCount += 1;
+    if (reinitCallCount < 4) {
+      // Throw a transient so the catch block recurses.
+      const e = new Error('transient'); e.code = 'ECONNRESET';
+      throw e;
+    }
+    // 4th call succeeds.
+    this._runner = { stop: async () => {}, task: () => undefined };
+    this.bot = {};
+    this.status = 'active';
+    this._retryAttempts = 0;
+    this._recoveryAttempts = 0;
+  };
+  const transientErr = Object.assign(new Error('502'),
+    { error_code: 502, name: 'GrammyError' });
+  await ch._onRunnerFailure(transientErr);
+
+  const events = readEvents();
+  const retrySucceededEvents = events.filter((e) => e.event === 'retry_succeeded');
+  check(`_reinitBot called 4 times (3 failed + 1 success)`,
+    reinitCallCount === 4, `got ${reinitCallCount}`);
+  check('retry_succeeded.retry_attempt === 4 (P0-B paired with finding 1; pre-fixup-3 was 0)',
+    retrySucceededEvents[0]?.retry_attempt === 4,
+    `got retry_attempt=${retrySucceededEvents[0]?.retry_attempt}`);
+  check('channel ended active after the 4th-retry success',
+    ch.status === 'active', `status=${ch.status}`);
+  await ch.stop();
+}
+
 // ── Summary ───────────────────────────────────────────────────────────
 try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
 
