@@ -13,6 +13,57 @@ import {
   formatStatusMarkdown as formatBootstrapStatusMarkdown,
   isCached as isBootstrapCached
 } from '../agents/bootstrap.js';
+import { classify as classifyGrammyError } from './grammy-error-classifier.js';
+import { appendFileSync, chmodSync, existsSync, mkdirSync } from 'fs';
+import { dirname, join } from 'path';
+import { homedir } from 'os';
+
+// Slice 3e: recovery-timer interval and cap.
+const RECOVERY_TICK_MS = 5 * 60 * 1000; // 5 minutes
+const MAX_RECOVERY_ATTEMPTS = 12;        // 1 hour total before manual intervention
+const MAX_RETRY_ATTEMPTS = 5;            // matches classifier's MAX_ATTEMPTS
+
+/**
+ * Slice 3e: resolve the absolute path for channel-events.log. Tests can
+ * override via QCLAW_CHANNEL_EVENTS_LOG_PATH; production lives alongside
+ * other ~/.quantumclaw/*.log files.
+ */
+function _channelEventsLogPath() {
+  return process.env.QCLAW_CHANNEL_EVENTS_LOG_PATH
+    || join(homedir(), '.quantumclaw', 'channel-events.log');
+}
+
+/**
+ * Slice 3e: scrub any Telegram bot-token URL fragment from a string. Telegram
+ * tokens are `<bot_id>:<35-char-token>`. The 2026-05-14 incident showed grammY
+ * can embed the full request URL in error messages when sensitiveLogs is on.
+ * This is defence-in-depth — we already exclude err.payload/err.error/err.method
+ * from the log record, but any string we DO log gets scrubbed.
+ */
+function _scrubToken(s) {
+  return String(s ?? '').replace(/bot\d+:[A-Za-z0-9_-]+/g, 'bot<REDACTED>');
+}
+
+/**
+ * Slice 3e: append one JSON Lines record to channel-events.log. Mode-locked to
+ * 0600 on first write. Best-effort: failures are warned and swallowed so they
+ * never block channel state transitions or crash the process.
+ */
+function _appendChannelEvent(record) {
+  try {
+    const path = _channelEventsLogPath();
+    const dir = dirname(path);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    const line = JSON.stringify({ ts: new Date().toISOString(), ...record }) + '\n';
+    const existed = existsSync(path);
+    appendFileSync(path, line);
+    if (!existed) {
+      try { chmodSync(path, 0o600); } catch { /* non-fatal */ }
+    }
+  } catch (err) {
+    try { log.warn(`[ChannelManager] channel-events.log write failed: ${err.message}`); } catch { /* swallow */ }
+  }
+}
 
 // Anchored at start of message. Matches "✅ 37", "✅37", "✅ 37 thanks",
 // "approve 37", "yes 37", and the deny variants. Trailing chars after the
@@ -156,6 +207,18 @@ class TelegramChannel {
     // first-fire bootstrap warning has already surfaced in this session.
     // Cleared by /session and by clearBootstrapCache invocations.
     this.bootstrapWarningShown = new Map();
+
+    // Slice 3e: runtime status field exposed via dashboard /api/channels.
+    // 'starting' → 'active' (after run() returns) → 'retrying' / 'degraded' on
+    // runner-update-loop errors → 'active' on recovery → 'stopped' on stop().
+    // Init failures (getMe throws inside start()) preserve the legacy "channel
+    // absent from registry" semantics — they never reach 'active' here.
+    this.status = 'starting';
+    this._retryAttempts = 0;
+    this._recoveryAttempts = 0;
+    this._backoffTimer = null;
+    this._recoveryTimer = null;
+    this._inFlightRecovery = false;
   }
 
   _generatePairingCode() {
@@ -209,7 +272,67 @@ class TelegramChannel {
     const allowedUsers = this.channelConfig.allowedUsers || [];
     const dmPolicy = this.channelConfig.dmPolicy || 'pairing';
 
-    this.bot.command('start', async (ctx) => {
+    this._registerBotHandlers(this.bot, allowedUsers, dmPolicy);
+
+    try {
+      const me = await this.bot.api.getMe();
+      log.info(`Telegram bot: @${me.username} (${me.id})`);
+    } catch (err) {
+      throw new Error(`Telegram token invalid: ${err.message}`);
+    }
+
+    try {
+      await this.bot.api.deleteWebhook({ drop_pending_updates: true });
+    } catch {}
+
+    // Use @grammyjs/runner so middleware dispatches concurrently — required so
+    // bot.hears (approval-reply parser) is not blocked by a long-running
+    // agent.process() in bot.on('message:text'). drop_pending_updates is
+    // already handled by deleteWebhook above, so it isn't needed here.
+    try {
+      this._runner = run(this.bot, {
+        runner: { fetch: { allowed_updates: ['message', 'callback_query'] } },
+      });
+      this.status = 'active';
+      this._wireRunnerTaskCatch();
+      if (allowedUsers.length === 0) {
+        log.info('Telegram: send /start to your bot to begin pairing');
+      } else {
+        log.success(`Telegram: ready (${allowedUsers.length} user${allowedUsers.length === 1 ? '' : 's'})`);
+      }
+    } catch (err) {
+      // Synchronous construction failure — preserve legacy behaviour: log + null.
+      // This is a pre-active failure; the registry-degradation state machine
+      // applies only to post-active runtime failures.
+      log.error(`Telegram polling error: ${err.message}`);
+      this.bot = null;
+      this._runner = null;
+      throw err;
+    }
+  }
+
+  /**
+   * Slice 3e: wire the runner's task() promise to _onRunnerFailure. Called by
+   * start() on initial wiring and by _attemptRecovery() after each successful
+   * re-init. Every new _runner handle gets its own task().catch(...) — old
+   * runners' tasks have already rejected and been caught by the time a new one
+   * is created.
+   */
+  _wireRunnerTaskCatch() {
+    if (!this._runner) return;
+    const task = this._runner.task();
+    if (task && typeof task.catch === 'function') {
+      task.catch((err) => this._onRunnerFailure(err));
+    }
+  }
+
+  /**
+   * Slice 3e: extracted from start() so _attemptRecovery() can re-register the
+   * same handler set on a freshly-constructed Bot. Each re-init creates a new
+   * Bot, so old listeners GC with the old Bot — no double-registration risk.
+   */
+  _registerBotHandlers(bot, allowedUsers, dmPolicy) {
+    bot.command('start', async (ctx) => {
       const userId = ctx.from.id;
       const username = ctx.from.username || ctx.from.first_name || 'unknown';
 
@@ -247,7 +370,7 @@ class TelegramChannel {
       }
     });
 
-    this.bot.command('pending', async (ctx) => {
+    bot.command('pending', async (ctx) => {
       if (!allowedUsers.includes(ctx.from.id)) return;
       
       const pending = this.approvals.pending();
@@ -266,7 +389,7 @@ class TelegramChannel {
       await ctx.reply(message, { parse_mode: 'Markdown' });
     });
 
-    this.bot.command('approve', async (ctx) => {
+    bot.command('approve', async (ctx) => {
       if (!allowedUsers.includes(ctx.from.id)) return;
       
       const args = ctx.message.text.split(' ');
@@ -297,7 +420,7 @@ class TelegramChannel {
       log.info(`Approval ${id} granted by ${approver}`);
     });
 
-    this.bot.command('deny', async (ctx) => {
+    bot.command('deny', async (ctx) => {
       if (!allowedUsers.includes(ctx.from.id)) return;
       const parts = ctx.message.text.split(/\s+/);
       if (parts.length < 2) { await ctx.reply('Usage: /deny <id> [reason]'); return; }
@@ -316,7 +439,7 @@ class TelegramChannel {
     // Slice 1: /bootstrap-status returns the cached BootstrapResult as
     // a markdown summary. If no cache exists for (userId, primary agent),
     // a fresh bootstrap is fired so the user always gets a current view.
-    this.bot.command('bootstrap-status', async (ctx) => {
+    bot.command('bootstrap-status', async (ctx) => {
       if (allowedUsers.length > 0 && !allowedUsers.includes(ctx.from.id)) return;
       const userId = ctx.from.id;
       const agent = this.agents.primary();
@@ -340,7 +463,7 @@ class TelegramChannel {
     // Slice 1: /session evicts every cached bootstrap entry for this user
     // (across all agents) and resets the warning-surfaced flag so the next
     // message will re-fire bootstrap and re-surface any warnings.
-    this.bot.command('session', async (ctx) => {
+    bot.command('session', async (ctx) => {
       if (allowedUsers.length > 0 && !allowedUsers.includes(ctx.from.id)) return;
       const userId = ctx.from.id;
       clearBootstrapCache(userId);
@@ -355,11 +478,11 @@ class TelegramChannel {
     // are not blocked by an in-flight agent.process() call inside message:text.
     // See QCLAW_BUILD_LOG.md (2026-04-27 concurrency fix) for the deadlock
     // this addresses. handleApprovalReply is exported for unit tests.
-    this.bot.hears(APPROVAL_REPLY_RE, (ctx) =>
+    bot.hears(APPROVAL_REPLY_RE, (ctx) =>
       handleApprovalReply(ctx, { allowedUsers, approvals: this.approvals })
     );
 
-    this.bot.on('message:text', async (ctx) => {
+    bot.on('message:text', async (ctx) => {
       if (ctx.message.text.startsWith('/')) return;
 
       const userId = ctx.from.id;
@@ -482,40 +605,254 @@ await ctx.reply(
       }
     });
 
-    this.bot.on('message:voice', async (ctx) => {
+    bot.on('message:voice', async (ctx) => {
       await ctx.reply('Voice messages coming soon. Send text for now.');
     });
+  }
 
+  /**
+   * Slice 3e: invoked when the runner's task() promise rejects (e.g. 401 from
+   * Telegram, 429 with maxRetryTime exceeded, or any other error the runner's
+   * internal retry loop couldn't handle).
+   *
+   * Classifies the error, applies bounded inline retry on transient errors,
+   * and degrades the channel (with recovery timer) on exhaust or non-transient
+   * classification. The process never crashes from this path.
+   */
+  async _onRunnerFailure(err) {
+    if (this.status === 'stopped') return;
+    if (this._inFlightRecovery) return;
+    this._inFlightRecovery = true;
     try {
-      const me = await this.bot.api.getMe();
-      log.info(`Telegram bot: @${me.username} (${me.id})`);
-    } catch (err) {
-      throw new Error(`Telegram token invalid: ${err.message}`);
-    }
-
-    try {
-      await this.bot.api.deleteWebhook({ drop_pending_updates: true });
-    } catch {}
-
-    // Use @grammyjs/runner so middleware dispatches concurrently — required so
-    // bot.hears (approval-reply parser) is not blocked by a long-running
-    // agent.process() in bot.on('message:text'). drop_pending_updates is
-    // already handled by deleteWebhook above, so it isn't needed here.
-    try {
-      this._runner = run(this.bot, {
-        runner: { fetch: { allowed_updates: ['message', 'callback_query'] } },
-      });
-      if (allowedUsers.length === 0) {
-        log.info('Telegram: send /start to your bot to begin pairing');
-      } else {
-        log.success(`Telegram: ready (${allowedUsers.length} user${allowedUsers.length === 1 ? '' : 's'})`);
+      let cls;
+      try {
+        cls = classifyGrammyError(err, { attempt: this._retryAttempts + 1 });
+      } catch (classifyErr) {
+        // Classifier itself threw — degrade to safe-default unknown-transient.
+        cls = {
+          kind: 'unknown',
+          shouldRetry: this._retryAttempts < MAX_RETRY_ATTEMPTS,
+          backoffMs: 1000,
+          reason: 'classifier_threw',
+        };
+        try { log.warn(`[TelegramChannel] classifier threw: ${classifyErr.message}`); } catch {}
       }
-    } catch (err) {
-      log.error(`Telegram polling error: ${err.message}`);
-      this.bot = null;
-      this._runner = null;
+
+      const eventKind = cls.kind === 'transient' ? 'transient_error'
+        : cls.kind === 'non_transient' ? 'non_transient_error'
+        : 'unknown_error';
+
+      const errName = (err && typeof err === 'object' && typeof err.name === 'string') ? err.name : (err === null ? 'null' : typeof err);
+      const errMsg = (err && typeof err === 'object' && typeof err.message === 'string') ? _scrubToken(err.message).slice(0, 200) : undefined;
+      const errDescription = (err && typeof err === 'object' && typeof err.description === 'string') ? _scrubToken(err.description).slice(0, 200) : undefined;
+
+      _appendChannelEvent({
+        channel: 'telegram',
+        event: eventKind,
+        kind: cls.kind,
+        http_status: cls.httpStatus,
+        network_code: cls.networkCode,
+        error_name: errName,
+        error_message: errMsg || errDescription,
+        retry_attempt: this._retryAttempts + 1,
+        max_attempts: MAX_RETRY_ATTEMPTS,
+        decision: cls.shouldRetry ? 'retry' : (cls.kind === 'non_transient' ? 'non_transient_fail' : 'degrade'),
+      });
+
+      if (cls.shouldRetry && this._retryAttempts < MAX_RETRY_ATTEMPTS) {
+        this._retryAttempts += 1;
+        this.status = 'retrying';
+        const backoffMs = cls.backoffMs ?? 1000;
+        _appendChannelEvent({
+          channel: 'telegram',
+          event: 'retry_scheduled',
+          retry_attempt: this._retryAttempts,
+          max_attempts: MAX_RETRY_ATTEMPTS,
+          backoff_ms: backoffMs,
+        });
+        await this._sleep(backoffMs, '_backoffTimer');
+        if (this.status === 'stopped') return;
+        try {
+          await this._reinitBot();
+          // _reinitBot resets _retryAttempts on success.
+          _appendChannelEvent({
+            channel: 'telegram',
+            event: 'retry_succeeded',
+            retry_attempt: this._retryAttempts,
+          });
+        } catch (reinitErr) {
+          // Recursive call — _inFlightRecovery is still true, so the recursion
+          // is gated by the early-return at the top. We release the lock here
+          // and re-enter cleanly.
+          this._inFlightRecovery = false;
+          await this._onRunnerFailure(reinitErr);
+          return; // skip the outer finally lock-release (already released)
+        }
+      } else {
+        // Exhausted retries OR non-transient. Degrade and start recovery timer.
+        this._degrade(cls);
+      }
+    } finally {
+      this._inFlightRecovery = false;
     }
   }
+
+  /**
+   * Slice 3e: transition to degraded, schedule the first recovery tick.
+   */
+  _degrade(cls) {
+    if (this.status === 'stopped') return;
+    this.status = 'degraded';
+    _appendChannelEvent({
+      channel: 'telegram',
+      event: 'degraded',
+      kind: cls?.kind,
+      http_status: cls?.httpStatus,
+      network_code: cls?.networkCode,
+      decision: 'degrade',
+      recovery_attempt: this._recoveryAttempts,
+      max_recovery_attempts: MAX_RECOVERY_ATTEMPTS,
+    });
+    this._scheduleRecovery();
+  }
+
+  /**
+   * Slice 3e: schedule the next recovery tick. Idempotent — clears any existing
+   * timer before re-scheduling. Stops scheduling once MAX_RECOVERY_ATTEMPTS is
+   * reached.
+   */
+  _scheduleRecovery() {
+    if (this.status === 'stopped') return;
+    if (this._recoveryTimer) {
+      try { clearTimeout(this._recoveryTimer); } catch {}
+      this._recoveryTimer = null;
+    }
+    if (this._recoveryAttempts >= MAX_RECOVERY_ATTEMPTS) {
+      _appendChannelEvent({
+        channel: 'telegram',
+        event: 'manual_intervention_required',
+        recovery_attempt: this._recoveryAttempts,
+        max_recovery_attempts: MAX_RECOVERY_ATTEMPTS,
+      });
+      return;
+    }
+    this._recoveryTimer = setTimeout(() => {
+      this._recoveryTimer = null;
+      this._attemptRecovery().catch((err) => {
+        try { log.warn(`[TelegramChannel] recovery tick error: ${err.message}`); } catch {}
+      });
+    }, RECOVERY_TICK_MS);
+    // Allow process to exit if this is the only handle left (tests).
+    if (this._recoveryTimer && typeof this._recoveryTimer.unref === 'function') {
+      this._recoveryTimer.unref();
+    }
+  }
+
+  /**
+   * Slice 3e: invoked by the recovery timer. Attempts re-init; on success,
+   * resets counters and returns to active. On failure, increments
+   * _recoveryAttempts and re-schedules the next tick.
+   */
+  async _attemptRecovery() {
+    if (this.status === 'stopped') return;
+    if (this._inFlightRecovery) {
+      // A retry is already in progress; let it finish.
+      this._scheduleRecovery();
+      return;
+    }
+    this._inFlightRecovery = true;
+    this._recoveryAttempts += 1;
+    _appendChannelEvent({
+      channel: 'telegram',
+      event: 'recovery_attempt',
+      recovery_attempt: this._recoveryAttempts,
+      max_recovery_attempts: MAX_RECOVERY_ATTEMPTS,
+    });
+    try {
+      await this._reinitBot();
+      _appendChannelEvent({
+        channel: 'telegram',
+        event: 'recovery_succeeded',
+        recovery_attempt: this._recoveryAttempts,
+      });
+      this._recoveryAttempts = 0;
+    } catch (err) {
+      const cls = (() => { try { return classifyGrammyError(err); } catch { return { kind: 'unknown' }; } })();
+      const errName = (err && typeof err === 'object' && typeof err.name === 'string') ? err.name : (err === null ? 'null' : typeof err);
+      const errMsg = (err && typeof err === 'object' && typeof err.message === 'string') ? _scrubToken(err.message).slice(0, 200) : undefined;
+      _appendChannelEvent({
+        channel: 'telegram',
+        event: 'recovery_failed',
+        kind: cls.kind,
+        http_status: cls.httpStatus,
+        network_code: cls.networkCode,
+        error_name: errName,
+        error_message: errMsg,
+        recovery_attempt: this._recoveryAttempts,
+        max_recovery_attempts: MAX_RECOVERY_ATTEMPTS,
+      });
+      this.status = 'degraded';
+      this._scheduleRecovery();
+    } finally {
+      this._inFlightRecovery = false;
+    }
+  }
+
+  /**
+   * Slice 3e: tear down the previous bot/runner, construct a fresh Bot,
+   * register handlers, validate via getMe, deleteWebhook, and start the runner
+   * with a new task.catch wiring. On success, sets status to active and resets
+   * _retryAttempts.
+   */
+  async _reinitBot() {
+    const { Bot } = await import('grammy');
+    // Tear down the previous runner. The old task promise has already rejected;
+    // calling stop() releases sockets and aborts pending fetches.
+    if (this._runner) {
+      try { await this._runner.stop(); } catch {}
+    }
+    this._runner = null;
+    this.bot = null;
+
+    const token = (await this.secrets.get('telegram_bot_token'))?.trim()
+      || this.channelConfig.token
+      || '';
+    if (!token) throw new Error('No Telegram bot token available for re-init');
+
+    const allowedUsers = this.channelConfig.allowedUsers || [];
+    const dmPolicy = this.channelConfig.dmPolicy || 'pairing';
+
+    const bot = new Bot(token);
+    this._registerBotHandlers(bot, allowedUsers, dmPolicy);
+
+    // Validate the token. A 401 here is a real auth problem — surface it.
+    await bot.api.getMe();
+    try { await bot.api.deleteWebhook({ drop_pending_updates: true }); } catch {}
+
+    this.bot = bot;
+    this._runner = run(bot, {
+      runner: { fetch: { allowed_updates: ['message', 'callback_query'] } },
+    });
+    this._wireRunnerTaskCatch();
+    this.status = 'active';
+    this._retryAttempts = 0;
+  }
+
+  /**
+   * Slice 3e: sleep helper that stores the timer reference on the channel so
+   * stop() can clear it. Resolves early on stop().
+   */
+  _sleep(ms, timerField) {
+    return new Promise((resolve) => {
+      const t = setTimeout(() => {
+        if (this[timerField] === t) this[timerField] = null;
+        resolve();
+      }, ms);
+      this[timerField] = t;
+      if (t && typeof t.unref === 'function') t.unref();
+    });
+  }
+
   _chunkMessage(text, maxLen) {
     if (text.length <= maxLen) return [text];
 
@@ -583,6 +920,17 @@ await ctx.reply(
   }
 
   async stop() {
+    // Slice 3e: mark stopped FIRST so any in-flight recovery / retry callbacks
+    // early-return rather than racing the teardown.
+    this.status = 'stopped';
+    if (this._backoffTimer) {
+      try { clearTimeout(this._backoffTimer); } catch {}
+      this._backoffTimer = null;
+    }
+    if (this._recoveryTimer) {
+      try { clearTimeout(this._recoveryTimer); } catch {}
+      this._recoveryTimer = null;
+    }
     if (this._runner) {
       try {
         await this._runner.stop();
@@ -591,5 +939,6 @@ await ctx.reply(
       }
       this._runner = null;
     }
+    _appendChannelEvent({ channel: 'telegram', event: 'stopped' });
   }
 }
