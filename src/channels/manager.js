@@ -683,6 +683,13 @@ await ctx.reply(
         channel: 'telegram',
         event: eventKind,
         kind: cls.kind,
+        // Slice 3e fixup-2 (finding 5): classifier's `reason` field
+        // (e.g. 'classifier_threw', 'rate_limit', 'network_error',
+        // 'unstructured_error', etc.) is the only way to distinguish the
+        // classifier-safe-default path from a real unstructured error.
+        // Surfaced here for observability and so the regression test for
+        // Section 10 can assert against the actual code path.
+        reason: cls.reason,
         http_status: cls.httpStatus,
         network_code: cls.networkCode,
         error_name: errName,
@@ -843,6 +850,9 @@ await ctx.reply(
         channel: 'telegram',
         event: 'recovery_failed',
         kind: cls.kind,
+        // Slice 3e fixup-2 (finding 5): see parallel comment in
+        // _onRunnerFailure for why `reason` is surfaced.
+        reason: cls.reason,
         http_status: cls.httpStatus,
         network_code: cls.networkCode,
         error_name: errName,

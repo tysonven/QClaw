@@ -363,31 +363,65 @@ console.log('\nSection 9: token never appears in log');
   check('redaction marker present', raw.includes('bot<REDACTED>'), `raw: ${raw.slice(0, 300)}`);
 }
 
-// ── Section 10: classifier-throw → safe-default degrade ──────────────
-console.log('\nSection 10: classifier throws → safe-default unknown-transient');
+// ── Section 10: classifier-throw → safe-default retry → recover ──────
+// Slice 3e fixup-2 (finding 5): the previous version of this section
+// stubbed _reinitBot to a no-op and only asserted "_onRunnerFailure did not
+// crash" + "status is not active" — both trivially true with the stub.
+// Replace with a realistic _reinitBot stub (returns success) and assert the
+// on-disk event sequence: unknown_error{reason:classifier_threw} →
+// retry_scheduled → retry_succeeded, plus final status='active'. This
+// exercises the production fall-through path under classifier-throws.
+console.log('\nSection 10: classifier throws → safe-default → retry → recover (finding 5)');
 {
   clearLog();
   const ch = await makeChannel();
-  // Patch the imported classify to throw — we do this by replacing the module's
-  // export via a small overlay. Since classifyGrammyError is bound at import
-  // time in manager.js, we can't easily replace it here. Instead simulate via
-  // an error that the classifier itself would crash on: a Proxy that throws on
-  // property access.
+  // Proxy throws on every property access (err.error_code, err.code,
+  // err.name, err.message, err.description …). Classifier hits the inner
+  // try/catch and returns the classifier_threw safe-default.
   const evilErr = new Proxy({}, {
     get() { throw new Error('proxy property access denied'); },
   });
-  ch._reinitBot = async () => {};
-  // The classifier WILL throw when it tries to read err.error_code / err.code.
-  // _onRunnerFailure's inner try/catch should catch it and fall through.
+  // Realistic reinit stub: success returns the channel to active. Now the
+  // assertions below actually verify the production path, not the stub.
+  let reinitCalls = 0;
+  ch._reinitBot = async function () {
+    reinitCalls += 1;
+    this._runner = { stop: async () => {}, task: () => undefined };
+    this.bot = {};
+    this.status = 'active';
+    this._retryAttempts = 0;
+  };
   await ch._onRunnerFailure(evilErr);
-  // The proxy throws on EVERY property access (including err.name, err.message
-  // inside the log-record builder). _onRunnerFailure should still complete
-  // without crashing the test process.
-  check('_onRunnerFailure completed (no process crash) with evil-proxy err', true);
-  // status should be either 'retrying' or 'degraded' — definitely not active.
-  check('channel not active after evil-proxy error',
-    ch.status === 'retrying' || ch.status === 'degraded' || ch.status === 'stopped',
-    `status=${ch.status}`);
+  check('_onRunnerFailure completed without throwing', true);
+  check('channel returned to active after classifier_threw + successful retry',
+    ch.status === 'active', `status=${ch.status}`);
+  check('_reinitBot called exactly once', reinitCalls === 1,
+    `got ${reinitCalls}`);
+
+  // Event-sequence assertions against the on-disk log — this is the
+  // production code path that pre-fixup the trivial stub elided.
+  const events = readEvents();
+  const unknownErrorEvents = events.filter((e) => e.event === 'unknown_error');
+  check('one unknown_error event written', unknownErrorEvents.length === 1,
+    `got ${unknownErrorEvents.length}`);
+  check('unknown_error.kind === "unknown"',
+    unknownErrorEvents[0]?.kind === 'unknown',
+    `kind=${unknownErrorEvents[0]?.kind}`);
+  check('unknown_error.reason === "classifier_threw" (finding 5)',
+    unknownErrorEvents[0]?.reason === 'classifier_threw',
+    `reason=${unknownErrorEvents[0]?.reason}`);
+  check('unknown_error.decision === "retry" (safe-default routes to retry)',
+    unknownErrorEvents[0]?.decision === 'retry',
+    `decision=${unknownErrorEvents[0]?.decision}`);
+  // retry_scheduled must follow the unknown_error.
+  const unknownIdx = events.findIndex((e) => e.event === 'unknown_error');
+  const retryScheduledIdx = events.findIndex((e, i) => i > unknownIdx
+    && e.event === 'retry_scheduled');
+  check('retry_scheduled follows unknown_error',
+    retryScheduledIdx > unknownIdx,
+    `unknownIdx=${unknownIdx}, retryScheduledIdx=${retryScheduledIdx}`);
+  check('retry_succeeded event written after successful reinit',
+    events.some((e) => e.event === 'retry_succeeded'));
   await ch.stop();
 }
 
