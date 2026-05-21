@@ -127,7 +127,15 @@ export function classify(err, opts = {}) {
       if (errorCode === 429
           && err.parameters
           && typeof err.parameters === 'object'
-          && typeof err.parameters.retry_after === 'number') {
+          && Number.isFinite(err.parameters.retry_after)) {
+        // Slice 3e fixup-2 (finding 9): Number.isFinite rejects NaN +
+        // Infinity + -Infinity. Previous `typeof === 'number'` admitted
+        // NaN, which propagated to backoffMs = NaN → setTimeout(_, NaN)
+        // (Node coerces to 1ms — effectively no-op backoff, accelerated
+        // retry loop) and to JSON.stringify(NaN) = null (degraded
+        // observability). Negative retry_after is also non-sensical;
+        // Math.max with baseBackoffMs ensures we never sleep less than
+        // base regardless.
         const retryAfterMs = Math.min(err.parameters.retry_after * 1000, RETRY_AFTER_CAP_MS);
         backoffMs = Math.max(retryAfterMs, backoffMs);
       } else if (backoffMs !== undefined) {

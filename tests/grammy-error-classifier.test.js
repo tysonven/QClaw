@@ -55,6 +55,29 @@ console.log('\n429 retry_after handling:');
     `got backoffMs=${r.backoffMs}`);
 }
 
+// Slice 3e fixup-2 (finding 9): Number.isFinite rejects NaN/Infinity.
+{
+  const r = classify({ error_code: 429, parameters: { retry_after: NaN } },
+    { attempt: 1, random: fixedRandom(0.5) });
+  check('429 with retry_after=NaN → falls through to jittered base (finding 9)',
+    r.kind === 'transient' && Number.isFinite(r.backoffMs) && r.backoffMs === 1000,
+    `got backoffMs=${r.backoffMs}`);
+}
+{
+  const r = classify({ error_code: 429, parameters: { retry_after: Infinity } },
+    { attempt: 1, random: fixedRandom(0.5) });
+  check('429 with retry_after=Infinity → falls through to jittered base (finding 9)',
+    r.kind === 'transient' && Number.isFinite(r.backoffMs) && r.backoffMs === 1000,
+    `got backoffMs=${r.backoffMs}`);
+}
+{
+  const r = classify({ error_code: 429, parameters: { retry_after: -Infinity } },
+    { attempt: 1, random: fixedRandom(0.5) });
+  check('429 with retry_after=-Infinity → falls through to jittered base (finding 9)',
+    r.kind === 'transient' && Number.isFinite(r.backoffMs) && r.backoffMs === 1000,
+    `got backoffMs=${r.backoffMs}`);
+}
+
 {
   const r = classify({ error_code: 429 }, { attempt: 1, random: fixedRandom(0.5) });
   // No retry_after → jittered base. random=0.5 → jitter=0 → exactly 1000.
