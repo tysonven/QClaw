@@ -178,6 +178,50 @@ console.log('\nAttempt-bounded retry:');
     JSON.stringify(r));
 }
 
+// ── Section 6b: non-finite attempt falls back to attempt=1 (Slice 3e fixup-3 #3)
+// Same hardening fixup-2 #9 applied to retry_after — Number.isFinite rejects
+// NaN/±Infinity. Behaviour should match the missing-attempt fallback (default
+// to 1), not pass non-finite through to baseBackoffMs (which would return NaN).
+console.log('\nNon-finite attempt falls back to attempt=1 (finding 3):');
+
+{
+  const baseline = classify({ error_code: 429 }, { random: fixedRandom(0.5) });
+  // random=0.5 → no jitter → exactly 1000ms.
+  check('baseline (no attempt) backoffMs=1000', baseline.backoffMs === 1000,
+    `got ${baseline.backoffMs}`);
+}
+
+for (const [label, attempt] of [
+  ['NaN', NaN],
+  ['Infinity', Infinity],
+  ['-Infinity', -Infinity],
+]) {
+  const r = classify({ error_code: 429 }, { attempt, random: fixedRandom(0.5) });
+  check(`attempt=${label} → finite backoffMs (no NaN propagation)`,
+    Number.isFinite(r.backoffMs), `got backoffMs=${r.backoffMs}`);
+  check(`attempt=${label} → backoffMs matches missing-attempt fallback (1000ms)`,
+    r.backoffMs === 1000, `got backoffMs=${r.backoffMs}`);
+  check(`attempt=${label} → shouldRetry=true (treated as attempt 1, not exhausted)`,
+    r.shouldRetry === true,
+    `got shouldRetry=${r.shouldRetry}`);
+}
+
+// Same hardening on the network-error path (no error_code, just code).
+{
+  const r = classify({ code: 'ECONNRESET' }, { attempt: NaN, random: fixedRandom(0.5) });
+  check('attempt=NaN on network-error path → finite backoffMs (1000ms)',
+    Number.isFinite(r.backoffMs) && r.backoffMs === 1000,
+    `got backoffMs=${r.backoffMs}`);
+}
+
+// And on the unstructured-error path.
+{
+  const r = classify(new TypeError('boom'), { attempt: Infinity, random: fixedRandom(0.5) });
+  check('attempt=Infinity on unstructured-error path → finite backoffMs (1000ms)',
+    Number.isFinite(r.backoffMs) && r.backoffMs === 1000,
+    `got backoffMs=${r.backoffMs}`);
+}
+
 // ── Section 7: backoff schedule + jitter ──────────────────────────────
 console.log('\nBackoff schedule + jitter:');
 

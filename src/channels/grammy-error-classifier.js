@@ -100,7 +100,15 @@ function applyJitter(baseMs, random = Math.random) {
  * }}
  */
 export function classify(err, opts = {}) {
-  const attempt = opts.attempt ?? 1;
+  // Slice 3e fixup-3 (finding 3): same Number.isFinite hardening fixup-2 #9
+  // applied to retry_after. Without this, attempt=NaN passes the
+  // `attempt > MAX_ATTEMPTS` guard (NaN>5 is false → attemptsExhausted=false)
+  // AND the `attempt < 1 || attempt > MAX_ATTEMPTS` guard inside
+  // baseBackoffMs, producing baseBackoffMs(NaN) = 1000 * 2 ** NaN = NaN,
+  // which propagates to backoffMs = NaN → setTimeout(_, NaN) → Node coerces
+  // to 1ms (accelerated retry loop, same shape as the retry_after NaN bug).
+  // Treat non-finite attempt the same as a missing attempt: fall back to 1.
+  const attempt = Number.isFinite(opts.attempt) ? opts.attempt : 1;
   const random = opts.random ?? Math.random;
 
   // Attempt > MAX_ATTEMPTS — forced no-retry regardless of classification.
