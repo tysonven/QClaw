@@ -45,6 +45,23 @@ function _scrubToken(s) {
 }
 
 /**
+ * Slice 3e: safely read a string property from an error-like value.
+ * Wraps the read in try/catch so getter-throwing objects (e.g. Proxies in
+ * tests, hostile error implementations) don't crash the failure handler.
+ * Optionally scrubs the value for token-URL leakage and truncates to 200 chars.
+ */
+function _safeErrProp(err, key, fallback, scrubAndTrim) {
+  try {
+    if (err === null || typeof err !== 'object') return fallback;
+    const v = err[key];
+    if (typeof v !== 'string') return fallback;
+    return scrubAndTrim ? _scrubToken(v).slice(0, 200) : v;
+  } catch {
+    return fallback;
+  }
+}
+
+/**
  * Slice 3e: append one JSON Lines record to channel-events.log. Mode-locked to
  * 0600 on first write. Best-effort: failures are warned and swallowed so they
  * never block channel state transitions or crash the process.
@@ -642,9 +659,9 @@ await ctx.reply(
         : cls.kind === 'non_transient' ? 'non_transient_error'
         : 'unknown_error';
 
-      const errName = (err && typeof err === 'object' && typeof err.name === 'string') ? err.name : (err === null ? 'null' : typeof err);
-      const errMsg = (err && typeof err === 'object' && typeof err.message === 'string') ? _scrubToken(err.message).slice(0, 200) : undefined;
-      const errDescription = (err && typeof err === 'object' && typeof err.description === 'string') ? _scrubToken(err.description).slice(0, 200) : undefined;
+      const errName = _safeErrProp(err, 'name', (err === null ? 'null' : typeof err));
+      const errMsg = _safeErrProp(err, 'message', undefined, true);
+      const errDescription = _safeErrProp(err, 'description', undefined, true);
 
       _appendChannelEvent({
         channel: 'telegram',
@@ -778,8 +795,8 @@ await ctx.reply(
       this._recoveryAttempts = 0;
     } catch (err) {
       const cls = (() => { try { return classifyGrammyError(err); } catch { return { kind: 'unknown' }; } })();
-      const errName = (err && typeof err === 'object' && typeof err.name === 'string') ? err.name : (err === null ? 'null' : typeof err);
-      const errMsg = (err && typeof err === 'object' && typeof err.message === 'string') ? _scrubToken(err.message).slice(0, 200) : undefined;
+      const errName = _safeErrProp(err, 'name', (err === null ? 'null' : typeof err));
+      const errMsg = _safeErrProp(err, 'message', undefined, true);
       _appendChannelEvent({
         channel: 'telegram',
         event: 'recovery_failed',

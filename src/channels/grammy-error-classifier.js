@@ -72,9 +72,14 @@ function baseBackoffMs(attempt) {
 /**
  * Apply ±25% jitter to a base backoff value.
  * Uses Math.random — sufficient for spreading retry timing across instances.
+ *
+ * Formula: jitter = baseMs * 0.25 * (2*random - 1)
+ *   random=0   → jitter = baseMs * 0.25 * (-1) = -25% of base
+ *   random=0.5 → jitter = baseMs * 0.25 * 0    = 0
+ *   random=1   → jitter = baseMs * 0.25 * (+1) = +25% of base
  */
 function applyJitter(baseMs, random = Math.random) {
-  const jitter = baseMs * 0.5 * (random() - 0.5) * 2; // uniform in [-0.25*base, +0.25*base]
+  const jitter = baseMs * 0.25 * (2 * random() - 1);
   return Math.max(0, Math.round(baseMs + jitter));
 }
 
