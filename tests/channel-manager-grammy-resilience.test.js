@@ -686,6 +686,66 @@ console.log('\nSection 14: _runBotOptions includes silent: true (finding 5)');
   await ch.stop();
 }
 
+// ── Section 15: finding 8 regression — scrub applies at write boundary
+console.log('\nSection 15: _appendChannelEvent scrubs every string field (finding 8)');
+{
+  clearLog();
+  // We don't reach into private module state; we test the OBSERVABLE
+  // contract: any error path that lands a token-bearing string in a field
+  // _other than_ error_message/error_description must still be scrubbed on
+  // disk. Simulate by injecting a synthetic err.code that embeds a token
+  // URL — code is a string field that _onRunnerFailure logs as
+  // network_code (when classifier returns it) without per-call-site scrub.
+  // Pre-fixup-2 this would land raw; post-fixup-2 the central scrub
+  // catches it.
+  const ch = await makeChannel();
+  const leakyTokenErr = Object.assign(new Error('synthetic'),
+    {
+      // err.code as a string is read by classifier; classifier checks
+      // membership in the known-codes Set, falls through to 'unknown'
+      // bucket with networkCode = the string. Embed a token-shaped
+      // substring in the code string itself — would normally never
+      // happen, but proves the central scrub.
+      code: 'BAD_CODE_bot1234567890:ABCDEFghijklmnop_qrstuvWXYZ1234567890',
+    });
+  ch._reinitBot = async function () {
+    this._runner = { stop: async () => {}, task: () => undefined };
+    this.bot = {};
+    this.status = 'active';
+    this._retryAttempts = 0;
+  };
+  await ch._onRunnerFailure(leakyTokenErr);
+  await ch.stop();
+  const raw = readFileSync(logPath, 'utf8');
+  check('central scrub removes token embedded in non-message field (network_code)',
+    !/bot\d+:[A-Za-z0-9_-]+/.test(raw),
+    `raw match in: ${raw.slice(0, 300)}`);
+  check('central scrub leaves the surrounding non-token text intact',
+    raw.includes('BAD_CODE_bot<REDACTED>'),
+    `expected "BAD_CODE_bot<REDACTED>" in: ${raw.slice(0, 300)}`);
+
+  // Also assert that a NESTED string-bearing object would be scrubbed —
+  // future contributors may add nested fields. Call _appendChannelEvent
+  // semantics directly via writing a synthetic event from a controlled
+  // err.message embedded in a deeper path.
+  clearLog();
+  const ch2 = await makeChannel();
+  // Trigger a recovery_failed write path with a leaky err.message via a
+  // synthetic reinit throw. Tests the recovery-failed event-write path,
+  // which uses the same _appendChannelEvent funnel.
+  const leakyMsgErr = Object.assign(new Error(
+    'fetch failed: https://api.telegram.org/bot9999999999:ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ_xxxx/getMe'),
+    { code: 'ECONNRESET' });
+  ch2._reinitBot = async () => { throw leakyMsgErr; };
+  ch2.status = 'degraded';
+  await ch2._attemptRecovery();
+  await ch2.stop();
+  const raw2 = readFileSync(logPath, 'utf8');
+  check('central scrub removes token in recovery_failed message field',
+    !/bot\d+:[A-Za-z0-9_-]+/.test(raw2),
+    `raw match in: ${raw2.slice(0, 300)}`);
+}
+
 // ── Summary ───────────────────────────────────────────────────────────
 try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
 

@@ -65,13 +65,22 @@ function _safeErrProp(err, key, fallback, scrubAndTrim) {
  * Slice 3e: append one JSON Lines record to channel-events.log. Mode-locked to
  * 0600 on first write. Best-effort: failures are warned and swallowed so they
  * never block channel state transitions or crash the process.
+ *
+ * Slice 3e fixup-2 (finding 8): scrub at the WRITE boundary. Previously the
+ * scrub was per-field opt-in via _safeErrProp(..., true) on `message` and
+ * `description` only — error_name, network_code, and any field a future
+ * contributor might add would land in the JSONL unscrubbed. Centralising the
+ * scrub here makes the on-disk file unconditionally token-free regardless of
+ * which call site forgets the scrub. _safeErrProp's scrub argument is kept
+ * as defence-in-depth (truncates length + scrubs at read time).
  */
 function _appendChannelEvent(record) {
   try {
     const path = _channelEventsLogPath();
     const dir = dirname(path);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    const line = JSON.stringify({ ts: new Date().toISOString(), ...record }) + '\n';
+    const scrubbed = _scrubRecord({ ts: new Date().toISOString(), ...record });
+    const line = JSON.stringify(scrubbed) + '\n';
     const existed = existsSync(path);
     appendFileSync(path, line);
     if (!existed) {
@@ -80,6 +89,27 @@ function _appendChannelEvent(record) {
   } catch (err) {
     try { log.warn(`[ChannelManager] channel-events.log write failed: ${err.message}`); } catch { /* swallow */ }
   }
+}
+
+/**
+ * Slice 3e fixup-2 (finding 8): apply _scrubToken to every string value
+ * (recursively) in a record before serialisation. Non-string values pass
+ * through unchanged. Single shallow level + one nested object level is
+ * enough for the current event-record shape; deepens if needed.
+ */
+function _scrubRecord(record) {
+  if (record === null || typeof record !== 'object') return record;
+  const out = Array.isArray(record) ? [] : {};
+  for (const [k, v] of Object.entries(record)) {
+    if (typeof v === 'string') {
+      out[k] = _scrubToken(v);
+    } else if (v !== null && typeof v === 'object') {
+      out[k] = _scrubRecord(v);
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
 }
 
 // Anchored at start of message. Matches "✅ 37", "✅37", "✅ 37 thanks",
