@@ -303,15 +303,26 @@ console.log('\nSection 7: stop() clears timers');
   check('status === stopped after stop()', ch.status === 'stopped');
   check('_recoveryTimer cleared', ch._recoveryTimer === null);
   check('_backoffTimer cleared', ch._backoffTimer === null);
-  // Attempt to drive failure post-stop — should early-return without writing events.
-  const eventsBefore = readEvents().length;
+  // Slice 3e fixup (finding 2): the original assertion here was tautological
+  // — a disjunction with two clauses, at least one always true for any
+  // regression that wrote exactly one extra event. Replace with explicit
+  // equality of the event log before vs after.
+  const eventsBefore = readEvents();
   await ch._onRunnerFailure(new Error('post-stop'));
+  // Give any drained-pending re-entries a chance to leak through (they
+  // shouldn't, but a regression here is exactly what finding 1's fixup must
+  // also continue to suppress under status='stopped').
+  await new Promise((r) => setTimeout(r, 20));
   const eventsAfter = readEvents();
-  // Stop wrote a 'stopped' event; subsequent _onRunnerFailure should not add more.
-  // We expect: events count unchanged from post-stop baseline OR only the 'stopped'.
-  const afterStopCount = eventsAfter.filter((e) => e.event !== 'stopped').length;
-  check('no error events written after stop()', afterStopCount === eventsBefore - eventsAfter.filter((e) => e.event === 'stopped').length || afterStopCount === eventsBefore,
-    `before=${eventsBefore}, after-non-stopped=${afterStopCount}`);
+  check('event count unchanged after post-stop _onRunnerFailure',
+    eventsAfter.length === eventsBefore.length,
+    `before=${eventsBefore.length}, after=${eventsAfter.length}`);
+  check('no new *_error events written post-stop',
+    eventsAfter.filter((e) => typeof e.event === 'string' && e.event.endsWith('_error')).length
+      === eventsBefore.filter((e) => typeof e.event === 'string' && e.event.endsWith('_error')).length);
+  check('no new retry_scheduled / degraded events written post-stop',
+    eventsAfter.filter((e) => e.event === 'retry_scheduled' || e.event === 'degraded').length
+      === eventsBefore.filter((e) => e.event === 'retry_scheduled' || e.event === 'degraded').length);
 }
 
 // ── Section 8: log file mode 0600 on first write ─────────────────────
