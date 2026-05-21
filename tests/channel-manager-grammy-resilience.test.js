@@ -122,7 +122,9 @@ function clearLog() {
 }
 
 // Build a TelegramChannel via the public ChannelManager.
-async function makeChannel() {
+// opts.realSleep=true preserves the production _sleep so cancellation
+// behaviour can be exercised (finding 3).
+async function makeChannel(opts = {}) {
   const fakeAgents = {
     primary: () => null,
     get: () => null,
@@ -147,12 +149,14 @@ async function makeChannel() {
   const ch = await mgr._createChannel('telegram', config.channels.telegram);
   // Skip start(); we'll set status manually and drive private methods.
   ch.status = 'active';
-  // Speed up tests: monkey-patch _sleep to resolve immediately.
-  ch._sleep = async function (ms, timerField) {
-    // Still set the timer field briefly so stop() can verify it gets cleared
-    // — but resolve right away so tests don't wait.
-    return Promise.resolve();
-  };
+  if (!opts.realSleep) {
+    // Speed up tests: monkey-patch _sleep to resolve immediately.
+    ch._sleep = async function (ms, timerField) {
+      // Still set the timer field briefly so stop() can verify it gets cleared
+      // — but resolve right away so tests don't wait.
+      return Promise.resolve();
+    };
+  }
   return ch;
 }
 
@@ -445,6 +449,55 @@ console.log('\nSection 11: failure during lock window drained (finding 1)');
     degradedEvents.length === 1,
     `expected 1 degraded@409, got ${degradedEvents.length}`);
   await ch.stop();
+}
+
+// ── Section 12: finding 3 regression — _sleep cancels on stop()
+console.log('\nSection 12: _sleep cancels promptly on stop() (finding 3)');
+{
+  clearLog();
+  // Use the REAL _sleep — the makeChannel stub would otherwise mask the bug.
+  const ch = await makeChannel({ realSleep: true });
+  // Reinit will never resolve; we want _onRunnerFailure to be parked on
+  // the sleep when stop() runs.
+  let reinitWasReached = false;
+  ch._reinitBot = async function () {
+    reinitWasReached = true;
+    this._runner = { stop: async () => {}, task: () => undefined };
+    this.bot = {};
+    this.status = 'active';
+    this._retryAttempts = 0;
+  };
+
+  // Drive a transient failure. Backoff for attempt 1 is ~1000ms ± 25%.
+  const transientErr = Object.assign(new Error('429'),
+    { error_code: 429, name: 'GrammyError' });
+  const handlerPromise = ch._onRunnerFailure(transientErr);
+
+  // Give the handler a few ms to enter the sleep.
+  await new Promise((r) => setTimeout(r, 20));
+  check('_backoffTimer set during sleep', ch._backoffTimer !== null);
+  check('_backoffTimerResolve captured during sleep',
+    typeof ch._backoffTimerResolve === 'function');
+
+  // Pre-fixup: clearTimeout cancels the callback, resolve is never invoked,
+  // the handler is suspended forever. Post-fixup: stop() invokes the
+  // captured resolver and the handler resumes promptly.
+  const stopStart = Date.now();
+  await ch.stop();
+  // The handler should resolve within a short window after stop(). If the
+  // bug regresses, this Promise.race times out and we report the leak.
+  const TIMEOUT_MS = 500;
+  const handlerResult = await Promise.race([
+    handlerPromise.then(() => 'resolved'),
+    new Promise((r) => setTimeout(() => r('timeout'), TIMEOUT_MS)),
+  ]);
+  const elapsedMs = Date.now() - stopStart;
+  check(`_onRunnerFailure resumed after stop() (within ${TIMEOUT_MS}ms; took ~${elapsedMs}ms)`,
+    handlerResult === 'resolved');
+  check('reinit was NOT reached (handler observed status===stopped after sleep)',
+    reinitWasReached === false);
+  check('_backoffTimer cleared after stop()', ch._backoffTimer === null);
+  check('_backoffTimerResolve cleared after stop()', ch._backoffTimerResolve === null);
 }
 
 // ── Summary ───────────────────────────────────────────────────────────

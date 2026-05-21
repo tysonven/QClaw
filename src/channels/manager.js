@@ -900,14 +900,30 @@ await ctx.reply(
   /**
    * Slice 3e: sleep helper that stores the timer reference on the channel so
    * stop() can clear it. Resolves early on stop().
+   *
+   * Slice 3e fixup (finding 3): the original implementation only resolved
+   * inside the setTimeout callback; clearTimeout in stop() cancelled the
+   * callback but never settled the promise, leaving the awaiting
+   * _onRunnerFailure suspended forever (with _inFlightRecovery permanently
+   * held). The resolver is now captured into a sibling instance field that
+   * stop() invokes after clearing the timer.
    */
   _sleep(ms, timerField) {
+    const resolverField = timerField + 'Resolve';
     return new Promise((resolve) => {
-      const t = setTimeout(() => {
-        if (this[timerField] === t) this[timerField] = null;
+      if (this.status === 'stopped') {
+        // Already torn down before we got here — settle immediately.
         resolve();
-      }, ms);
+        return;
+      }
+      const settle = () => {
+        if (this[timerField] === t) this[timerField] = null;
+        if (this[resolverField] === settle) this[resolverField] = null;
+        resolve();
+      };
+      const t = setTimeout(settle, ms);
       this[timerField] = t;
+      this[resolverField] = settle;
       if (t && typeof t.unref === 'function') t.unref();
     });
   }
@@ -990,6 +1006,14 @@ await ctx.reply(
     if (this._backoffTimer) {
       try { clearTimeout(this._backoffTimer); } catch {}
       this._backoffTimer = null;
+    }
+    // Slice 3e fixup (finding 3): clearTimeout cancels the callback but
+    // does NOT settle the promise — invoke the captured resolver so any
+    // awaiting _onRunnerFailure resumes immediately and observes
+    // status==='stopped' on its post-sleep check.
+    if (this._backoffTimerResolve) {
+      try { this._backoffTimerResolve(); } catch {}
+      this._backoffTimerResolve = null;
     }
     if (this._recoveryTimer) {
       try { clearTimeout(this._recoveryTimer); } catch {}
