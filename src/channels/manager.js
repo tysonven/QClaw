@@ -346,7 +346,24 @@ class TelegramChannel {
     if (!this._runner) return;
     const task = this._runner.task();
     if (task && typeof task.catch === 'function') {
-      task.catch((err) => this._onRunnerFailure(err));
+      // Slice 3e fixup-2 (finding 7): outer catch on the .catch chain.
+      // `task.catch(fn)` returns a new promise whose rejection (if `fn`
+      // rejects) is otherwise unhandled. _onRunnerFailure is reasonably
+      // defensive — every _appendChannelEvent, _safeErrProp, and classifier
+      // call has an inner try/catch — but a synchronous throw that escapes
+      // the body would leak as an unhandled rejection, defeating the slice's
+      // primary guarantee. The outer catch is the final net: log a scrubbed
+      // diagnostic line and swallow.
+      task.catch((err) => this._onRunnerFailure(err))
+        .catch((e) => {
+          try {
+            const name = (e && typeof e === 'object' && typeof e.name === 'string') ? e.name : typeof e;
+            const msg = (e && typeof e === 'object' && typeof e.message === 'string')
+              ? _scrubToken(e.message).slice(0, 200)
+              : '';
+            log.warn(`[TelegramChannel:telegram] _onRunnerFailure itself rejected (${name}): ${msg}`);
+          } catch { /* last-line defence: never throw out of the wiring */ }
+        });
     }
   }
 
