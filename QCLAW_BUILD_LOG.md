@@ -13014,3 +13014,65 @@ PR history shows it. No code changes in this commit.
 
 End of fixup-3 P0-A.
 
+---
+
+## [2026-05-21] Slice 3e fixup-4 — scope-down P0-A reconciliation claim
+
+Third cold-read returned clean on the fixup-3 CODE changes (findings
+#1 + #2 + #3 all correctly implemented and tested). The P0-A
+schema-reconciliation verification, however, came back NEGATIVE:
+fixup-3 closed the `reason` field reconciliation correctly, but the
+broader §5 field-presence convention has substantive drift against
+the code's actual `_appendChannelEvent` call sites — 7 of 11 event
+types have at least one mismatch. Largest gap: `degraded` carries 6
+code-only fields (`kind`, `http_status`, `network_code`, `decision`,
+`recovery_attempt`, `max_recovery_attempts`). Most drift pre-dates
+the fixup waves; the first and second cold-reads both missed it.
+
+Per Tyson triage: scope-down the P0-A claim rather than attempt the
+broader reconciliation in PR #34. The reason-field reconciliation
+is correctly done and stays; the broader convention rewrite is
+filed for Slice 3e.1 alongside third-cold-read findings #1 (diamond
+pattern), #2 (`err.error_code` Number.isFinite hardening), and the
+cold-read prompt-template improvements accumulated across all three
+passes.
+
+Changes in this commit:
+- /tmp/slice3e_design.md §5: appended a "Known incompleteness
+  (filed for Slice 3e.1)" callout immediately after the existing
+  field-presence convention bullets. The convention text itself is
+  unchanged — no silent retcon; the doc explicitly flags itself as
+  incomplete with the PR #34 description as the audit table source
+  of truth.
+- PR #34 description: fixup-3 section rewritten to scope-down the
+  P0-A claim to "reason field only" and embed the third cold-read's
+  mismatched-events table verbatim so the Slice 3e.1 dispatch can
+  be built directly from the PR body.
+
+Outstanding for Slice 3e.1 (filed by this commit + the PR body
+update):
+- §5 field-presence convention rewrite to match code reality across
+  the 7 mismatched event types (audit table in PR #34 body).
+- Third-cold-read finding #1: `_scrubRecord` diamond-pattern
+  semantics (document + test, do not change behaviour).
+- Third-cold-read finding #2: classifier `err.error_code` Number
+  .isFinite hardening — consolidate with any remaining numeric
+  inputs in one commit.
+- First-cold-read finding #11: recursive `_onRunnerFailure` →
+  `while` loop refactor.
+- Second-cold-read findings #4 + #5: `_scrubRecord` Symbol/Date/
+  Map/Set handling and idempotent `stop()`.
+- Cold-read prompt-template improvements (accumulated across three
+  passes):
+  - (a) count-the-body verification (fixup-2 process note).
+  - (b) verify pre-existing event-schema fields against current
+    code, not just newly-introduced ones (fixup-3 process note).
+  - (c) for each documented field-presence claim, find at least
+    one code call site that writes that field on the claimed
+    event (third cold-read prompt-template note).
+
+No source-code changes, no test changes. Test counts unchanged
+from fixup-3 baseline (classifier 67, resilience 97).
+
+End of fixup-4.
+
