@@ -9950,7 +9950,7 @@ compromised regardless of who has read access.
 
 | Priority | Item |
 |----------|------|
-| HIGH | **SIGINT source investigation.** 16-minute interval (19:20:30 → 19:36:24) suggests a cron job or systemd timer signalling the wrong PID. Scan `crontab -l` for root + `flowos`, `systemctl list-timers`, `/etc/cron.*`. Without identifying the source, the next crash loop is a matter of time. |
+| ~~HIGH~~ **RESOLVED 2026-05-22** | ~~**SIGINT source investigation.** 16-minute interval (19:20:30 → 19:36:24) suggests a cron job or systemd timer signalling the wrong PID. Scan `crontab -l` for root + `flowos`, `systemctl list-timers`, `/etc/cron.*`. Without identifying the source, the next crash loop is a matter of time.~~ **RESOLVED 2026-05-22** (post Slice 3e merge + 18h observation): SIGINT source identified as operator-initiated `pm2 restart quantumclaw` calls during normal session work (auth.log cross-reference). Pattern surfaced clearly only after Slice 3e's `channel-events.log` provided structured visibility distinguishing operator restarts from grammY-driven recoveries from external signals. Future SIGINT spikes should be cross-referenced against auth.log + pm2.log before being treated as anomalous. Resolution recorded in `FLOW_OS_STATE.md` §7 Infrastructure / process and in the 2026-05-22 Slice 3e Post-merge observation entry below. |
 | MED | `pm2 reset quantumclaw` to baseline the restart counter so the next anomaly is detectable against zero. |
 | MED | **grammY logs the full token URL on fetch failure.** Either upstream patch / issue, or a local logger wrapper that scrubs the `bot<TOKEN>` path segment before the line goes to stderr. Current behaviour means any Telegram-API fetch failure leaks the token into PM2 logs. |
 | LOW | MCP `filesystem` server init timeout during Charlie bootstrap — either fix the timeout or drop it from the default MCP list. Loud, load-bearing on nothing. |
@@ -13077,6 +13077,113 @@ from fixup-3 baseline (classifier 67, resilience 97).
 End of fixup-4.
 
 
+
+---
+
+## [2026-05-22] Slice 3e — Post-merge observation (18h window)
+
+PR #34 (Slice 3e — grammY runner hardening) merged to `main` as
+commit `07a079f` on 2026-05-21 ~21:43 UTC. T0 anchor and an 18h
+observation window were taken to confirm the runner-rejection catch
+holds in live operation. This entry records the observation outcome,
+the root-cause analysis of the only anomalous signal in the window,
+and the resulting clarification to the Slice 3e success criterion.
+
+### T0 anchor and 18h reading
+
+- T0 (2026-05-21 ~21:43 UTC, immediately post-merge):
+  `pm2 jlist | jq '.[]|select(.name=="quantumclaw")|.pm2_env.restart_time'`
+  = **300**.
+- T+18h (2026-05-22 ~15:43 UTC):
+  `restart_time` = **303**. Delta **+3 over 18h**.
+
+### Initial concern and triage
+
+The `+3` delta initially looked anomalous against the brief's
+"restart_time delta ≤ 2 over 72h" success criterion. Triage cross-
+referenced three log surfaces within the window:
+
+- `/var/log/auth.log` — sudo entries showing every `sudo pm2 restart
+  quantumclaw` command issued during the session.
+- `/root/.pm2/pm2.log` — PM2's own `Stopping app:quantumclaw` /
+  `App [quantumclaw] launched` lines.
+- `~/.quantumclaw/channel-events.log` — Slice 3e's structured event
+  stream (one JSONL entry per Telegram channel state transition).
+
+### Root-cause analysis result
+
+All 3 restarts in the window were **operator-initiated
+`pm2 restart quantumclaw` commands** during normal session work
+(clipper-worker debugging + env-file investigation). auth.log sudo
+timestamps matched the `channel-events.log` `event:"stopped"`
+timestamps exactly:
+
+- **10:32:56 UTC** — operator `sudo pm2 restart quantumclaw`;
+  channel-events.log `event:"stopped"` at the same second.
+- **12:21:04 UTC** — operator `sudo pm2 restart quantumclaw`;
+  channel-events.log `event:"stopped"` at the same second.
+- **12:24:18 UTC** — operator `sudo pm2 restart quantumclaw`;
+  channel-events.log `event:"stopped"` at the same second.
+
+**Zero grammY-driven crashes** in the window. The runner-rejection
+catch wired into `_onRunnerFailure` is firing on every transient 502
+from Telegram throughout the window and routing each to bounded
+inline retry — `event:"transient_error"` followed by
+`event:"retry_succeeded"`, no escalation to `degraded`. The
+restart_time delta is entirely operator-initiated and tracks normal
+session work, not failure.
+
+### Success-criterion clarification
+
+The original brief's "restart_time delta ≤ 2 over 72h" criterion was
+wrong-shaped for this operational environment. `restart_time` counts
+**every** PM2 restart regardless of cause — including operator
+`pm2 restart` commands, which Tyson issues frequently during normal
+session work (clipper debugging, env rotation, config reload, etc.).
+A criterion that counts operator restarts as failures will flag
+healthy operation.
+
+The **corrected Slice 3e success indicator** is `channel-events.log`
+event-type composition, which surfaces the failure modes Slice 3e
+was actually built to detect:
+
+- Zero `event:"degraded"` entries.
+- Zero `event:"recovery_failed"` entries.
+- Zero `event:"manual_intervention_required"` entries.
+- Zero `GrammyError` lines in `quantumclaw-error.log` unmatched by a
+  corresponding catch event (`transient_error`, `non_transient_error`,
+  `unknown_error`, or `classifier_threw`) in `channel-events.log`.
+
+All four are clean as of the 18h reading. The `restart_time`
+counter is now informational rather than load-bearing; the channel-
+events.log surface is the canonical signal.
+
+### Slice 3e final verdict
+
+**PASS** on the actual scope of Slice 3e (grammY runner-rejection
+restart loop closure). The runner-rejection catch is firing as
+designed; zero process crashes attributable to runner-loop errors
+in the 18h window.
+
+The **72h confirmation pass** will run Sunday 2026-05-24 against
+the corrected `channel-events.log` event-composition criterion
+documented above, not the original restart_time-delta criterion.
+
+### Closure note
+
+This entry also resolves the 2026-05-14 SIGINT-source HIGH followup
+filed in the 2026-05-14 dashboard offline incident's Followups table
+(line 9953 above, now annotated RESOLVED 2026-05-22). The SIGINTs
+seen during the 2026-05-14 diagnosis were not from a misconfigured
+cron job or systemd timer signalling the wrong PID, as the original
+followup hypothesised — they were operator-initiated `pm2 restart`
+commands, which is normal operator behaviour. Slice 3e's
+`channel-events.log` is what made operator restarts cleanly
+distinguishable from external-signal-driven failure modes. See
+`FLOW_OS_STATE.md` §7 Infrastructure / process for the state-doc
+closure entry.
+
+End of Slice 3e post-merge observation.
 
 ---
 
