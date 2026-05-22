@@ -2,7 +2,7 @@
 
 **Project:** QClaw — Self-hosted Claude agent runtime (Fork of QuantumClaw/QClaw)
 **Owner:** Tyson Venables / Flow OS
-**Last updated:** 2026-05-21
+**Last updated:** 2026-05-22
 **Repo:** https://github.com/tysonven/QClaw
 
 ---
@@ -13076,3 +13076,138 @@ from fixup-3 baseline (classifier 67, resilience 97).
 
 End of fixup-4.
 
+
+
+---
+
+## 2026-05-22 — Clipper cascade closure: Bug 1 fix validated end-to-end on real Ep 68 source; Ep 68 + Ep 69 backfilled
+
+Closing the cascade that surfaced 2026-05-20 (entry above). Goal:
+prove Bug 1 fix (`8b88072`, escape commas in smart-crop FFmpeg
+expression) actually holds against Ep 68's real failing source, not
+just the synthetic fixture used during the original fix verification.
+
+### Reproduction — Ep 68 against current code
+
+- Source `episodes/theflowlane-ep68-Stop_selling_what_you_do.mp4`
+  still in R2: HTTP 200, Content-Length 2,299,038,463 bytes (exact
+  size match to original May 12 upload), Last-Modified 2026-05-12.
+- `clipper-worker` online, created 2026-05-20T20:43:10.905Z (after
+  `8b88072`); source has the escape-commas patch at
+  [`src/clipper/main.py:275-276`](src/clipper/main.py#L275-L276).
+- Request body matched Workflow A's pattern by reusing
+  `clip_jobs.41eeaa72-...transcript` (the same 5110-item AssemblyAI
+  array Workflow A originally POSTed) — most faithful test, avoids
+  any inference drift.
+
+### Result — PATH A
+
+Job `0cb6d53e-ac16-441e-b725-e97c8d9db6f5`:
+
+- Queued 2026-05-22T09:39:01.638 UTC → complete 2026-05-22T09:44:34.872 UTC
+- **Elapsed 333 seconds** (5.5 min) — well under the 20–30 min budget
+- 5/5 clips produced, all `public_url`s HTTP 200 (10–37 MB each)
+- All three cascade layers neutralised on the real source:
+  - **Smart-crop (Bug 1):** survived 5 sequential face-detected
+    calls (face detect logged for each clip). Comma-escape patch
+    visible in spawned ffmpeg argv: `crop=ih*9/16:ih:max(0\, min(iw-ih*9/16\, 0.4546*iw - ih*9/16/2)):0`.
+  - **Anthropic Step 1:** Claude returned 5 selected segments
+    cleanly — no 401 (post-rotation key from 2026-05-20 restart
+    holds).
+  - **Captions Step 4:** subtitles burn succeeded on all 5 clips
+    with the real transcript array (no empty-SRT, no exit-183).
+
+8/8 clip_jobs-in-error gap closed by this run. **First successful
+end-to-end clipper run on a real production source in the visible
+history.**
+
+### Retroactive backfill — Path X (Tyson decision)
+
+Both episodes adopted from fresh /clip runs, not from the original
+failing jobs.
+
+**Ep 68** (csj `fb4edfcc-7e9d-4873-bf97-f1bedc647777`): adopted clips
+from the cascade-test job above. Update: `status=clipper_complete`,
+`clips_ready=true`, `clip_count=5`, `clip_job_id=0cb6d53e-...`,
+`error_message=NULL`, `clip_selections=<5 entries from clip_jobs.0cb6d53e.clips>`.
+
+**Ep 69** (csj `567548d9-938b-44d4-a01f-57a41724a638`): fresh /clip
+fired against current code. Job `1418ebd1-fd8a-4d95-ab11-b2d997742fc8`,
+elapsed 522 seconds (8.7 min), 5/5 clips, all `public_url`s HTTP 200
+(28–44 MB each). Same status update shape as Ep 68.
+
+Telegram surfaced both via bot to chat 1375806243 (msg_ids 4331 + 4332
+in #1375806243), `🎬 Clips ready: <episode_title>` format with hook
+titles and `public_url`s. Ep 68's first surface used the test-job
+label as title; corrected via `editMessageText` to "The Flow Lane -
+Ep 68: Stop Selling What You Do" (the real csj title).
+
+### Anomaly — n8n API 401
+
+`N8N_API_KEY` in `/root/.quantumclaw/.env` (229-char JWT) returns 401
+from `https://webhook.flowos.tech/api/v1/workflows/...` for both
+the original brief check (`Qf39NEOEgz2W0uls`) and `?limit=250` lookup.
+Tried from both local + qclaw sides; key was sanitised (CRLF/quote
+stripped) and length matches expectations. Worked around by reusing
+prior production payloads from `clip_jobs` rows (`41eeaa72-...` for
+Ep 68, `aebb4ce8-...` for Ep 69) — these are by definition the
+exact shapes Workflow A POSTs, so the test is equivalent.
+
+Likely cause: rotation gap (key in qclaw .env doesn't match what
+n8n recognises) or JWT signature mismatch from a separate rotation.
+Filed as a fresh-dispatch investigation; this session did not
+attempt to debug or rotate the key.
+
+### Lessons banked
+
+- **70.** Bug 1 fix IS complete. `8b88072` (escape commas in smart-
+  crop FFmpeg expression) validated end-to-end against Ep 68's real
+  source today after 9 days deployed-but-unverified. The original
+  Bug 1 verification used a synthetic fixture; today's run is the
+  proper closure.
+- **71.** Synthetic fixtures can fail without production failing.
+  Yesterday's 1-clip empty-transcript verification fixture hit
+  exit-183 at the libass subtitles step (empty SRT silently
+  progressed through `generate_srt()` then exploded at libass).
+  Today's real-transcript run with 5110 items produced valid SRTs
+  for all 5 clips and burned cleanly. The fix proposal for that
+  Step 4 path (fail-fast at SRT generation when transcript is
+  empty) remains valid as defensive hardening, but is no longer
+  blocking the cascade.
+- **72.** n8n API 401 from `.env` JWT is a new anomaly. Worth a
+  separate investigation — likely a rotation gap from May 19, but
+  could be JWT signature drift.
+
+### Followups
+
+- **HIGH — n8n API auth break:** N8N_API_KEY in qclaw .env returns
+  401 from `webhook.flowos.tech/api/v1/...`. Workaround used this
+  session was reusing prior `clip_jobs` payloads; not a viable
+  long-term substitute for direct workflow inspection. Investigate
+  whether n8n's expected key was rotated separately from the qclaw
+  .env value, or whether the JWT signing key drifted. Defer to a
+  fresh dispatch.
+- **MEDIUM — Step 4 empty-SRT defensive guard:** Not blocking now
+  that production always supplies real transcripts (Workflow A
+  posts the AssemblyAI utterance array, never empty). But if any
+  future caller ever POSTs `transcript=[]`, the worker will exit
+  183 at libass instead of failing fast at `generate_srt()`. Add
+  a defensive empty-transcript check at SRT-generation time.
+- **MEDIUM — Workflow A is the only blessed `/clip` caller:** No
+  WL/HL or other surface POSTs to `127.0.0.1:4002/clip` currently.
+  When that changes (e.g., backfill bot, dashboard re-fire button),
+  re-audit the request shape against `ClipRequest` Pydantic schema.
+
+### Commits
+
+Single docs commit covering investigation + backfill + Telegram
+surface. No source-code changes — Bug 1 fix was already deployed
+in the running clipper-worker; the work was diagnostic + adoption.
+
+**verified:** Ep 68 test job 0cb6d53e completed status=complete
+clips=5 in 333s; Ep 69 fresh job 1418ebd1 completed status=complete
+clips=5 in 522s; all 10 public_url HEAD requests returned HTTP 200;
+csj fb4edfcc + 567548d9 updated to status=clipper_complete with
+clips_ready=true clip_count=5; Telegram msg_ids 4331+4332 confirmed
+delivered; build log entry read back after append; Last updated
+header bumped to 2026-05-22.
