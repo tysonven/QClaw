@@ -14,6 +14,7 @@
  */
 
 import { log } from '../core/logger.js';
+import { appendCacheUsage, toolsHash } from '../observability/cache-usage-log.js';
 
 const MAX_TOOL_ITERATIONS = 100;  // Safety limit — increased for AGEX security implementation
 const TOOL_TIMEOUT = 30000;      // 30s per tool call
@@ -524,6 +525,34 @@ export class ToolExecutor {
       _ephemeralExtractionWarned = true;
       log.warn(`[slice3f] cache_creation_input_tokens > 0 but ephemeral_*_input_tokens absent at both paths. usage keys: ${Object.keys(u).join(', ')}`);
     }
+
+    // Slice 3f Unit 2: emit one cache-usage.log entry per API round-trip.
+    // Per /tmp/slice3f_design.md §7.3 — appendFileSync is write+close (not
+    // fsync), bounded by the per-agent lock in registry.js so in-process
+    // rotation races are bounded. Writer swallows its own errors; never
+    // blocks the hot path.
+    appendCacheUsage({
+      model: data.model || model,
+      channel: options.channel,
+      userId: options.userId,
+      input_tokens: u.input_tokens || 0,
+      output_tokens: u.output_tokens || 0,
+      cache_creation_input_tokens: cacheCreation,
+      cache_read_input_tokens: u.cache_read_input_tokens || 0,
+      ephemeral_5m_input_tokens: ephemeral5m,
+      ephemeral_1h_input_tokens: ephemeral1h,
+      ephemeral_extraction_failed: ephemeralExtractionFailed,
+      bootstrap_cache_hit: !!options.bootstrapCacheHit,
+      bootstrap_present: options.bootstrapPresent !== false,
+      cache_control_emitted: runtimeCacheControlEmitted && !failOpenTriggered,
+      tools,
+      had_on_demand_skills: !!options.hadOnDemandSkills,
+      tool_loop_iteration: options.toolLoopIteration || 1,
+      runtime_invariant_failed: runtimeInvariantFailed,
+      fail_open_triggered: failOpenTriggered,
+      fail_open_reason: failOpenReason,
+      cache_control_rejection_message: _cacheControlRejectionMessage,
+    });
 
     return {
       content: textContent,
