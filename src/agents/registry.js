@@ -11,6 +11,16 @@ import { log } from '../core/logger.js';
 import { parseSkill, skillToTools, executeSkillTool } from './skill-parser.js';
 import { loadSkills } from './skill-loader.js';
 
+// Slice 3f: prompt-cache kill-switch read per-request. process.env is a
+// spawn-time snapshot; flip via `pm2 reload qclaw --update-env`.
+// See /tmp/slice3f_design.md §8.6 for the rollback runbook.
+export function isPromptCacheEnabled() {
+  const v = process.env.QCLAW_PROMPT_CACHE_ENABLED;
+  if (v == null) return true;  // default enabled
+  const s = String(v).trim().toLowerCase();
+  return !(s === '0' || s === 'false' || s === 'no' || s === 'off');
+}
+
 // Per-agent serialization for the conversation read-modify-write in process().
 // Two concurrent process() calls for the same agent would otherwise read the
 // same history snapshot, run the LLM in parallel, then both append turns —
@@ -306,7 +316,9 @@ export class Agent {
       log.warn(`_processNonReflex: loadSkills failed: ${err.message} — continuing without routed skills`);
     }
 
-    const systemPrompt = await this._buildSystemPrompt(
+    // Slice 3f: _buildSystemPrompt now returns {cached, dynamic} content blocks.
+    // Cache-control marker on cached[last] when prompt cache is enabled.
+    const systemPromptParts = await this._buildSystemPrompt(
       graphContext,
       knowledgeContext,
       relevantKnowledge,
@@ -316,13 +328,23 @@ export class Agent {
       skillResult
     );
 
-    // H2 fix (2026-05-14): char-budget raised 100k → 300k. Charlie calls
-    // Claude (typically Opus 4.x, 200k-token context ≈ ~800k chars).
-    // 300k chars ≈ ~75k tokens — leaves ~125k tokens of model headroom
-    // for the response and tool round-trips. _truncateHistory below is
-    // the real ceiling on what reaches the model.
+    const cacheEnabled = isPromptCacheEnabled();
+    let cacheControlEmitted = false;
+    if (cacheEnabled && systemPromptParts.cached.length > 0) {
+      const lastIdx = systemPromptParts.cached.length - 1;
+      systemPromptParts.cached[lastIdx] = {
+        ...systemPromptParts.cached[lastIdx],
+        cache_control: { type: 'ephemeral' },
+      };
+      cacheControlEmitted = true;
+    }
+
+    const systemBlocks = [...systemPromptParts.cached, ...systemPromptParts.dynamic];
+
+    // H2 fix (2026-05-14): char-budget raised 100k → 300k. Slice 3f: compute
+    // systemChars from the structured block array, not a joined string.
     const MAX_CONTEXT_CHARS = 300000;
-    const systemChars = systemPrompt.length;
+    const systemChars = systemBlocks.reduce((sum, b) => sum + (b.text?.length || 0), 0);
     const messageChars = textMessage.length;
     const availableForHistory = MAX_CONTEXT_CHARS - systemChars - messageChars;
 
@@ -361,8 +383,12 @@ export class Agent {
       userContent = textMessage;
     }
 
+    // Slice 3f: system message carries the structured content-block array.
+    // executor.js::_anthropicWithTools detects the array shape and forwards
+    // it as the API `system` parameter unchanged (string fallback retained
+    // for non-Anthropic providers and legacy callers).
     const messages = [
-      { role: 'system', content: systemPrompt },
+      { role: 'system', content: systemBlocks },
       ...truncatedHistory.map(h => ({ role: h.role, content: h.content })),
       { role: 'user', content: userContent }
     ];
@@ -385,17 +411,30 @@ export class Agent {
     }
 
     // Call LLM — use tool executor if available (agentic), otherwise direct completion (chat-only)
+    // Slice 3f: thread observability fields so the executor's cache-usage
+    // log (Unit 2) can correlate per-turn cache outcomes without re-deriving.
+    const slice3fOpts = {
+      userId: context?.userId,
+      channel: context?.channel,
+      bootstrapCacheHit: !!context?.bootstrapCacheHit,
+      bootstrapPresent: context?.bootstrap != null,
+      hadOnDemandSkills: (skillResult?.on_demand?.length || 0) > 0,
+      cacheControlEmitted,
+      agent: this.name,
+    };
     let result;
     try {
       if (this.services.toolExecutor) {
         result = await this.services.toolExecutor.run(messages, {
           model: route.model,
-          system: systemPrompt
+          system: systemBlocks,
+          ...slice3fOpts,
         });
       } else {
         const completion = await router.complete(messages, {
           model: route.model,
-          system: systemPrompt
+          system: systemBlocks,
+          ...slice3fOpts,
         });
         result = { ...completion, toolCalls: [] };
       }
@@ -533,48 +572,51 @@ You exist to make your human's life easier and their business more profitable. Y
   }
 
   async _buildSystemPrompt(graphContext, knowledgeContext, relevantKnowledge, bootstrap = null, textMessage = '', userId = null, precomputedSkillResult = null) {
-    // bootstrap (Slice 1): when present, replaces the per-message
-    // soul/values assembly with the cached BootstrapResult. Falls back
-    // to the legacy this.soul path when null.
+    // Slice 3f: returns {cached, dynamic} content-block arrays. The caller
+    // applies cache_control to the LAST cached block (registry.js
+    // _processNonReflex), then concatenates [...cached, ...dynamic] into the
+    // system parameter for the Anthropic call. Bootstrap-stable content is
+    // contiguous in `cached`; per-turn content lives in `dynamic`.
     //
-    // Slice 2b: skill assembly moved off this.skills (Slice 2a en-bloc) onto
-    // loadSkills(context). Always-on skills inject before Trust Kernel
-    // (high cache stability). On-demand skills inject under their own
-    // routed heading. this.skills is still populated by Agent.load() and
-    // still consumed by tool registration — Slice 3 (T7) collapses that.
-    const parts = [this.soul];
+    // The reorder relative to pre-Slice-3f: knowledgeContext (was BETWEEN
+    // Trust Kernel and Tools instruction) is now in `dynamic` because
+    // memory.knowledge.buildContext() reads live state that extractKnowledge
+    // mutates asynchronously after every turn (registry.js:425 →
+    // knowledge.js:216). See /tmp/slice3f_design.md §1.1.
+    const cached = [];
+    const dynamic = [];
+
+    if (this.soul) cached.push({ type: 'text', text: this.soul });
 
     if (bootstrap) {
       if (bootstrap.identity?.charlie_role) {
-        parts.push(`\n## Charlie Role\n${bootstrap.identity.charlie_role}`);
+        cached.push({ type: 'text', text: `\n## Charlie Role\n${bootstrap.identity.charlie_role}` });
       }
       if (bootstrap.identity?.ceo_operating_model) {
-        parts.push(`\n## CEO Operating Model\n${bootstrap.identity.ceo_operating_model}`);
+        cached.push({ type: 'text', text: `\n## CEO Operating Model\n${bootstrap.identity.ceo_operating_model}` });
       }
       if (bootstrap.state?.flow_os_state) {
-        parts.push(`\n## Flow OS State\n${bootstrap.state.flow_os_state}`);
+        cached.push({ type: 'text', text: `\n## Flow OS State\n${bootstrap.state.flow_os_state}` });
       }
       if (bootstrap.specialists?.flow_os_specialists) {
-        parts.push(`\n## Specialists\n${bootstrap.specialists.flow_os_specialists}`);
+        cached.push({ type: 'text', text: `\n## Specialists\n${bootstrap.specialists.flow_os_specialists}` });
       }
       if (bootstrap.state?.recent_build_log) {
-        parts.push(`\n## Recent Build Log (7d)\n${bootstrap.state.recent_build_log}`);
+        cached.push({ type: 'text', text: `\n## Recent Build Log (7d)\n${bootstrap.state.recent_build_log}` });
       }
       if (bootstrap.probes?.length) {
         const probeLines = bootstrap.probes.map(p => `- ${p.ok ? '✓' : '✗'} ${p.name} (${p.latency_ms}ms)${p.error ? ` — ${p.error}` : ''}`).join('\n');
-        parts.push(`\n## Live probes (session bootstrap)\n${probeLines}`);
+        cached.push({ type: 'text', text: `\n## Live probes (session bootstrap)\n${probeLines}` });
       }
-      // H3 fix (2026-05-14): Layer 4 fold-in. recent.audit_log + recent.memory
-      // were populated by bootstrap but never reached the prompt — closes the
-      // dead wiring. Both are capped at 30 entries at the bootstrap source.
-      // Audit ref: /tmp/memory_drop_diagnostic_audit.md.
+      // H3 fix (2026-05-14): Layer 4 fold-in. Cached because bootstrap freezes
+      // the audit/memory snapshot for the TTL window; rebuild brings new bytes.
       if (bootstrap.recent?.audit_log?.entries?.length) {
         const auditLines = bootstrap.recent.audit_log.entries.map(e => {
           const ts = (e.timestamp || '').slice(0, 19);
           const detail = (e.detail || '').replace(/\s+/g, ' ').slice(0, 80);
           return `- ${ts} ${e.agent}/${e.action}${detail ? `: ${detail}` : ''}`;
         }).join('\n');
-        parts.push(`\n## Recent activity (audit log, last ${bootstrap.recent.audit_log.entries.length})\n${auditLines}`);
+        cached.push({ type: 'text', text: `\n## Recent activity (audit log, last ${bootstrap.recent.audit_log.entries.length})\n${auditLines}` });
       }
       if (bootstrap.recent?.memory?.entries?.length) {
         const memLines = bootstrap.recent.memory.entries.map(e => {
@@ -583,25 +625,15 @@ You exist to make your human's life easier and their business more profitable. Y
           const content = (e.content || '').replace(/\s+/g, ' ').slice(0, 120);
           return `- ${ts} [${ch}] ${e.role}: ${content}`;
         }).join('\n');
-        parts.push(`\n## Recent context (conversation memory, last ${bootstrap.recent.memory.entries.length})\n${memLines}`);
+        cached.push({ type: 'text', text: `\n## Recent context (conversation memory, last ${bootstrap.recent.memory.entries.length})\n${memLines}` });
       }
     }
 
-    // Add agent identity (AGEX AID)
     if (this.aid) {
-      parts.push(`\n## Identity\n- **Agent ID (AID):** ${this.aid.aid_id}\n- **Trust Tier:** ${this.aid.trust_tier}\n- **Type:** ${this.aid.agent?.type || 'worker'}`);
+      cached.push({ type: 'text', text: `\n## Identity\n- **Agent ID (AID):** ${this.aid.aid_id}\n- **Trust Tier:** ${this.aid.trust_tier}\n- **Type:** ${this.aid.agent?.type || 'worker'}` });
     }
 
-    // Slice 2b: route skills. Always-on portion reuses bootstrap.skills.always_on
-    // when present (Layer 6 cache from Task 8); on-demand portion runs fresh
-    // against textMessage. Failure here is non-fatal — the prompt still gets
-    // the rest of its context.
-    //
-    // Slice 3b: when _processNonReflex has already routed skills for the
-    // ToolRegistry per-request gate, it threads its skillResult in via
-    // precomputedSkillResult so we don't re-route. Other callers
-    // (heartbeat, dashboard, anywhere _buildSystemPrompt is invoked
-    // without the gate) still get the legacy internal loadSkills call.
+    // Slice 3b: precomputed skill result threaded in by _processNonReflex.
     let skillResult = precomputedSkillResult;
     if (!skillResult) {
       try {
@@ -616,56 +648,57 @@ You exist to make your human's life easier and their business more profitable. Y
       }
     }
 
-    // Always-on skills go BEFORE Trust Kernel — they're identity-layer adjacent
-    // per audit §8 (high cache stability section).
     if (skillResult && skillResult.always_on.length > 0) {
-      parts.push('\n## Always-on Skills');
+      let alwaysOnText = '\n## Always-on Skills';
       for (const skill of skillResult.always_on) {
-        parts.push(`\n### ${skill.name}\n${_stripFrontmatter(skill.content)}`);
+        alwaysOnText += `\n### ${skill.name}\n${_stripFrontmatter(skill.content)}`;
       }
+      cached.push({ type: 'text', text: alwaysOnText });
     }
 
-    // Add Trust Kernel
     const values = this.services.trustKernel.getContext();
-    if (values) parts.push(`\n## Trust Kernel\n${values}`);
+    if (values) cached.push({ type: 'text', text: `\n## Trust Kernel\n${values}` });
 
-    // Add structured knowledge (semantic + procedural + episodic)
-    if (knowledgeContext) {
-      parts.push(`\n${knowledgeContext}`);
-    }
-
-    // Add tools instruction
+    // Tools instruction — static text, last cached block when toolExecutor is
+    // available (the cache_control marker lands here per Slice 3f §1.3).
     if (this.services.toolExecutor) {
-      parts.push('\n## Tool Execution\nYou have registered function-calling tools. When the user requests data or actions from GHL, Stripe, or n8n, you MUST invoke the tool directly. Do not describe the action or show curl commands — execute the tool and report results.');
+      cached.push({ type: 'text', text: '\n## Tool Execution\nYou have registered function-calling tools. When the user requests data or actions from GHL, Stripe, or n8n, you MUST invoke the tool directly. Do not describe the action or show curl commands — execute the tool and report results.' });
     }
 
-    // Slice 2b: routed on-demand skills. Replaces the en-bloc loop over
-    // this.skills. If no on-demand matched, omit the heading entirely.
+    // ─── Dynamic suffix (after cache_control marker) ──────────────────────
+    // knowledgeContext source: knowledge.js:216 buildContext() reads the live
+    // SEMANTIC/PROCEDURAL/EPISODIC store that extractKnowledge mutates async.
+    if (knowledgeContext) {
+      dynamic.push({ type: 'text', text: `\n${knowledgeContext}` });
+    }
+
+    // On-demand skills: keyword-routed per textMessage.
     if (skillResult && skillResult.on_demand.length > 0) {
-      parts.push('\n## Available Skills (routed)');
+      let onDemandText = '\n## Available Skills (routed)';
       for (const skill of skillResult.on_demand) {
         const matchedAnnotation = `matched: ${skill.matched_keywords.join(', ')}; density ${skill.density.toFixed(2)}`;
-        parts.push(`\n### ${skill.name} (${matchedAnnotation})\n${_stripFrontmatter(skill.content)}`);
+        onDemandText += `\n### ${skill.name} (${matchedAnnotation})\n${_stripFrontmatter(skill.content)}`;
       }
+      dynamic.push({ type: 'text', text: onDemandText });
     }
 
-    // Add query-relevant knowledge (from search, for complex queries)
     if (relevantKnowledge && relevantKnowledge.length > 0) {
-      parts.push('\n## Relevant Context');
+      let relevantText = '\n## Relevant Context';
       for (const r of relevantKnowledge) {
-        parts.push(`- [${r.type}] ${r.content}`);
+        relevantText += `\n- [${r.type}] ${r.content}`;
       }
+      dynamic.push({ type: 'text', text: relevantText });
     }
 
-    // Add knowledge graph context (Cognee, if connected)
     if (graphContext.results?.length > 0) {
-      parts.push('\n## Knowledge Graph');
+      let graphText = '\n## Knowledge Graph';
       for (const r of graphContext.results) {
-        parts.push(`- ${r.content || r.text || JSON.stringify(r)}`);
+        graphText += `\n- ${r.content || r.text || JSON.stringify(r)}`;
       }
+      dynamic.push({ type: 'text', text: graphText });
     }
 
-    return parts.join('\n');
+    return { cached, dynamic };
   }
 }
 

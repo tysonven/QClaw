@@ -23,6 +23,107 @@ const OWNER_TELEGRAM_CHAT_ID = 1375806243;
 const CREDITS_NOTIFY_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 let _lastCreditsNotifyAt = 0;
 
+// ─── Slice 3f: prompt-cache plumbing ───────────────────────────────────────
+// Process-local flags. _cacheControlRejected is set true on the first 400 we
+// detect with a cache_control error pattern; persists until process restart.
+// _cacheControlRejectionMessage captures the API error text for observability.
+// _ephemeralExtractionWarned guards a one-time warn when usage.cache_creation
+// reports >0 tokens but neither ephemeral path returns a value.
+//
+// See /tmp/slice3f_design.md §8.1 (fail-open) and §7.2 (extraction fallback).
+let _cacheControlRejected = false;
+let _cacheControlRejectionMessage = null;
+let _ephemeralExtractionWarned = false;
+
+// Test-only reset helper. Production callers never invoke this.
+export function __resetSlice3fStateForTests() {
+  _cacheControlRejected = false;
+  _cacheControlRejectionMessage = null;
+  _ephemeralExtractionWarned = false;
+}
+
+// Test-only export of the placement validator + dynamic-heading list. Used
+// by tests/system-prompt-cache-shape.test.js to exercise the invariant
+// directly without standing up a full executor + fetch mock.
+export const _slice3fInternal = {
+  validateCacheControlPlacement: null, // assigned below once defined
+  dynamicHeadings: null,                // assigned below once defined
+};
+
+// Mirrors registry.js::isPromptCacheEnabled — read here as defence-in-depth
+// so a kill-switch flip between caller and API call still scrubs cache_control.
+function _isPromptCacheEnabledLive() {
+  const v = process.env.QCLAW_PROMPT_CACHE_ENABLED;
+  if (v == null) return true;
+  const s = String(v).trim().toLowerCase();
+  return !(s === '0' || s === 'false' || s === 'no' || s === 'off');
+}
+
+// Canonical dynamic-block heading prefixes — these MUST stay in lockstep with
+// the headings emitted by registry.js::_buildSystemPrompt's dynamic section.
+// See /tmp/slice3f_design.md §10 Unit 1 — heading-drift CI guard test.
+const _SLICE3F_DYNAMIC_HEADINGS = [
+  '\n## What I Know About You',       // knowledge.js:222 (knowledgeContext)
+  '\n## Available Skills (routed)',   // registry.js:645  (on-demand skills)
+  '\n## Relevant Context',            // registry.js:654  (relevant knowledge)
+  '\n## Knowledge Graph',             // registry.js:662  (graph context)
+];
+
+// Validate cache_control placement on a system blocks array:
+//   - exactly one block carries cache_control (drop extras defensively)
+//   - that block's index is < first dynamic block's index
+//   - kill-switch overrides — strip cache_control entirely if disabled
+// Returns {blocks, cacheControlEmitted, invariantFailed}.
+function _validateCacheControlPlacement(blocks, cacheEnabled) {
+  let firstDynamicIdx = blocks.length;
+  for (let i = 0; i < blocks.length; i++) {
+    const text = blocks[i]?.text;
+    if (typeof text === 'string') {
+      for (const h of _SLICE3F_DYNAMIC_HEADINGS) {
+        if (text.startsWith(h)) { firstDynamicIdx = i; break; }
+      }
+      if (firstDynamicIdx === i) break;
+    }
+  }
+
+  const markedIdxs = blocks
+    .map((b, i) => (b && b.cache_control ? i : -1))
+    .filter(i => i >= 0);
+
+  // Kill-switch path: strip every cache_control field.
+  if (!cacheEnabled) {
+    const stripped = blocks.map(b => {
+      if (b && b.cache_control) {
+        const { cache_control: _drop, ...rest } = b;
+        return rest;
+      }
+      return b;
+    });
+    return { blocks: stripped, cacheControlEmitted: false, invariantFailed: false };
+  }
+
+  if (markedIdxs.length === 0) {
+    return { blocks, cacheControlEmitted: false, invariantFailed: false };
+  }
+  if (markedIdxs.length > 1 || markedIdxs[0] >= firstDynamicIdx) {
+    // Invariant violation — strip every marker and fail-open (no caching).
+    log.warn(`[slice3f] cache_marker_misplaced: markedIdxs=${JSON.stringify(markedIdxs)} firstDynamicIdx=${firstDynamicIdx} — stripping cache_control`);
+    const stripped = blocks.map(b => {
+      if (b && b.cache_control) {
+        const { cache_control: _drop, ...rest } = b;
+        return rest;
+      }
+      return b;
+    });
+    return { blocks: stripped, cacheControlEmitted: false, invariantFailed: true };
+  }
+  return { blocks, cacheControlEmitted: true, invariantFailed: false };
+}
+
+// Wire test-only exports now that the function and constant are defined.
+_slice3fInternal.validateCacheControlPlacement = _validateCacheControlPlacement;
+_slice3fInternal.dynamicHeadings = _SLICE3F_DYNAMIC_HEADINGS;
+
 export function isAnthropicCreditsError(err) {
   return err?.code === 'ANTHROPIC_CREDITS_EXHAUSTED';
 }
@@ -93,15 +194,29 @@ export class ToolExecutor {
     let iteration = 0;
     let allToolCalls = [];
     let currentMessages = [...messages];
-    let totalUsage = { input_tokens: 0, output_tokens: 0 };
+    let totalUsage = {
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 0,
+      ephemeral_5m_input_tokens: 0,
+      ephemeral_1h_input_tokens: 0,
+    };
 
     while (iteration < this.maxIterations) {
       iteration++;
 
-      // Call LLM with tools
-      const result = await this._completionWithTools(currentMessages, toolDefs, model, options);
+      // Call LLM with tools. Slice 3f: thread tool_loop_iteration into options
+      // so the per-call observability layer (Unit 2 cache-usage.log writer)
+      // can tag iteration ≥ 2 entries — the system prefix is cached but the
+      // growing messages tail is not (design §3.1.2).
+      const result = await this._completionWithTools(currentMessages, toolDefs, model, { ...options, toolLoopIteration: iteration });
       totalUsage.input_tokens += result.usage?.input_tokens || 0;
       totalUsage.output_tokens += result.usage?.output_tokens || 0;
+      totalUsage.cache_creation_input_tokens += result.usage?.cache_creation_input_tokens || 0;
+      totalUsage.cache_read_input_tokens += result.usage?.cache_read_input_tokens || 0;
+      totalUsage.ephemeral_5m_input_tokens += result.usage?.ephemeral_5m_input_tokens || 0;
+      totalUsage.ephemeral_1h_input_tokens += result.usage?.ephemeral_1h_input_tokens || 0;
 
       // No tool use — we have the final text response
       if (!result.toolCalls || result.toolCalls.length === 0) {
@@ -237,19 +352,39 @@ export class ToolExecutor {
   }
 
   async _anthropicWithTools(apiKey, model, messages, tools, options) {
-    const systemParts = [];
+    // Slice 3f: handle structured `system` content. Messages with array
+    // content (the new shape from registry.js _processNonReflex) are
+    // forwarded to the API verbatim. String content remains supported for
+    // legacy callers and the OpenAI-shaped path.
+    const systemArrayParts = [];   // content blocks (Slice 3f)
+    const systemStringParts = [];  // legacy string parts
     const chatMessages = [];
 
     for (const m of messages) {
       if (m.role === 'system') {
-        systemParts.push(typeof m.content === 'string' ? m.content : JSON.stringify(m.content));
+        if (Array.isArray(m.content)) {
+          systemArrayParts.push(...m.content);
+        } else if (typeof m.content === 'string') {
+          systemStringParts.push(m.content);
+        } else {
+          systemStringParts.push(JSON.stringify(m.content));
+        }
       } else {
         chatMessages.push(m);
       }
     }
 
-    if (options.system && !systemParts.includes(options.system)) {
-      systemParts.unshift(options.system);
+    // options.system can be either a string (legacy) or an array of blocks
+    // (Slice 3f registry.js path). Merge into the right channel without
+    // double-counting.
+    if (options.system) {
+      if (Array.isArray(options.system)) {
+        if (systemArrayParts.length === 0) {
+          systemArrayParts.push(...options.system);
+        }
+      } else if (typeof options.system === 'string' && !systemStringParts.includes(options.system)) {
+        systemStringParts.unshift(options.system);
+      }
     }
 
     // Merge consecutive same-role messages (Anthropic requirement)
@@ -267,26 +402,80 @@ export class ToolExecutor {
       merged.unshift({ role: 'user', content: '(continuing)' });
     }
 
+    // Slice 3f: prefer the structured array shape when present. Defence-in-
+    // depth: re-check kill-switch here so a kill-switch flip between the
+    // caller's check and the API call still scrubs cache_control. Also
+    // enforce the runtime invariant — cache_control MUST land before the
+    // first dynamic block (matched against canonical heading prefixes).
+    let systemForApi;
+    let runtimeCacheControlEmitted = false;
+    let runtimeInvariantFailed = false;
+    if (systemArrayParts.length > 0) {
+      const cacheStillEnabled = _isPromptCacheEnabledLive();
+      const validated = _validateCacheControlPlacement(systemArrayParts, cacheStillEnabled);
+      systemForApi = validated.blocks;
+      runtimeCacheControlEmitted = validated.cacheControlEmitted;
+      runtimeInvariantFailed = validated.invariantFailed;
+    } else if (systemStringParts.length > 0) {
+      systemForApi = systemStringParts.join('\n\n');
+    }
+
     const body = {
       model,
       max_tokens: options.maxTokens || 4096,
       messages: merged,
       tools,
     };
-    if (systemParts.length > 0) body.system = systemParts.join('\n\n');
+    if (systemForApi != null) body.system = systemForApi;
 
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
+    const apiCall = async (bodyToSend) => fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'x-api-key': apiKey,
         'anthropic-version': '2023-06-01',
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify(bodyToSend),
     });
 
-    if (!res.ok) {
+    let res = await apiCall(body);
+    let failOpenTriggered = false;
+    let failOpenReason = null;
+
+    // Slice 3f §8.1: fail-open on 400 with cache_control error pattern.
+    // Strip cache_control from every system block and retry once. Subsequent
+    // calls in this process record cache_control_emitted: false via the
+    // shared cache-usage-log writer (Unit 2 wires this in).
+    if (!res.ok && res.status === 400 && Array.isArray(body.system)) {
       const errText = await res.text();
+      let parsed = null;
+      try { parsed = JSON.parse(errText); } catch { /* not JSON */ }
+      const apiErrMsg = parsed?.error?.message || errText;
+      if (/cache_control/i.test(apiErrMsg) || /cache.*ephemeral/i.test(apiErrMsg)) {
+        if (!_cacheControlRejected) {
+          _cacheControlRejected = true;
+          _cacheControlRejectionMessage = apiErrMsg.slice(0, 500);
+          log.warn(`[slice3f] cache_control rejected by Anthropic — failing open. message: ${_cacheControlRejectionMessage}`);
+        }
+        const strippedSystem = body.system.map(b => {
+          if (b && typeof b === 'object' && 'cache_control' in b) {
+            const { cache_control: _drop, ...rest } = b;
+            return rest;
+          }
+          return b;
+        });
+        const retryBody = { ...body, system: strippedSystem };
+        res = await apiCall(retryBody);
+        failOpenTriggered = true;
+        failOpenReason = apiErrMsg.slice(0, 200);
+      } else {
+        // not a cache_control 400 — restore error text for the general handler
+        res = { ok: false, status: 400, text: async () => errText };
+      }
+    }
+
+    if (!res.ok) {
+      const errText = typeof res.text === 'function' ? await res.text() : '';
       if (res.status === 400) {
         let parsed = null;
         try { parsed = JSON.parse(errText); } catch { /* not JSON */ }
@@ -320,14 +509,42 @@ export class ToolExecutor {
       }
     }
 
+    // Slice 3f: capture all four cache-related usage fields with explicit
+    // nested-then-top-level fallback for ephemeral_*_input_tokens (the
+    // canonical Anthropic shape is nested under usage.cache_creation, but
+    // some deployments observe top-level — see /tmp/slice3f_design.md §7.2).
+    const u = data.usage || {};
+    const ephemeral5m = u.cache_creation?.ephemeral_5m_input_tokens ?? u.ephemeral_5m_input_tokens ?? 0;
+    const ephemeral1h = u.cache_creation?.ephemeral_1h_input_tokens ?? u.ephemeral_1h_input_tokens ?? 0;
+    const cacheCreation = u.cache_creation_input_tokens || 0;
+    const ephemeralExtractionFailed = (cacheCreation > 0 && ephemeral5m === 0 && ephemeral1h === 0
+        && u.cache_creation?.ephemeral_5m_input_tokens === undefined
+        && u.ephemeral_5m_input_tokens === undefined);
+    if (ephemeralExtractionFailed && !_ephemeralExtractionWarned) {
+      _ephemeralExtractionWarned = true;
+      log.warn(`[slice3f] cache_creation_input_tokens > 0 but ephemeral_*_input_tokens absent at both paths. usage keys: ${Object.keys(u).join(', ')}`);
+    }
+
     return {
       content: textContent,
       toolCalls,
       stopReason: data.stop_reason,
       rawContent: data.content, // needed for appending to message history
       usage: {
-        input_tokens: data.usage?.input_tokens || 0,
-        output_tokens: data.usage?.output_tokens || 0,
+        input_tokens: u.input_tokens || 0,
+        output_tokens: u.output_tokens || 0,
+        cache_creation_input_tokens: cacheCreation,
+        cache_read_input_tokens: u.cache_read_input_tokens || 0,
+        ephemeral_5m_input_tokens: ephemeral5m,
+        ephemeral_1h_input_tokens: ephemeral1h,
+        ephemeral_extraction_failed: ephemeralExtractionFailed,
+      },
+      slice3f: {
+        cache_control_emitted: runtimeCacheControlEmitted && !failOpenTriggered,
+        runtime_invariant_failed: runtimeInvariantFailed,
+        fail_open_triggered: failOpenTriggered,
+        fail_open_reason: failOpenReason,
+        cache_control_rejection_message: _cacheControlRejectionMessage,
       },
       model,
     };
