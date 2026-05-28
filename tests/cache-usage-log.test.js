@@ -281,16 +281,21 @@ appendCacheUsage({
 console.log('\nSection 9 — QCLAW_CACHE_USAGE_LOG_PATH override:');
 
 const altPath = join(tmp, 'alt-cache-usage.log');
+const originalLineCount = existsSync(logPath)
+  ? readFileSync(logPath, 'utf-8').split('\n').filter(Boolean).length
+  : 0;
 process.env.QCLAW_CACHE_USAGE_LOG_PATH = altPath;
 __resetCacheUsageLogForTests();
 appendCacheUsage({ model: 'm' });
 check('append lands at overridden path', existsSync(altPath));
-check('default path NOT touched by overridden write',
-  // The default path here was redirected to tmp from the start of the test
-  // file (line 32). After we redirected env to altPath, the original logPath
-  // should NOT have received this latest write — its size shouldn't include
-  // the new line. We check by reading its line count.
-  readFileSync(logPath, 'utf-8').split('\n').filter(Boolean).length >= 1); // just ensure it's stable
+{
+  const newLineCount = existsSync(logPath)
+    ? readFileSync(logPath, 'utf-8').split('\n').filter(Boolean).length
+    : 0;
+  check('original logPath line count unchanged after redirected write',
+    newLineCount === originalLineCount,
+    `before: ${originalLineCount}, after: ${newLineCount}`);
+}
 
 process.env.QCLAW_CACHE_USAGE_LOG_PATH = logPath; // restore for cleanup
 

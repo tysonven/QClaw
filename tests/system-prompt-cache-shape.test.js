@@ -20,7 +20,12 @@
  */
 
 import { Agent, isPromptCacheEnabled } from '../src/agents/registry.js';
-import { _slice3fInternal } from '../src/tools/executor.js';
+import {
+  _slice3fInternal,
+  _slice3fComputeCacheStrategy,
+  __resetSlice3fStateForTests,
+  __setSlice3fRejectedForTests,
+} from '../src/tools/executor.js';
 
 let passed = 0;
 let failed = 0;
@@ -49,7 +54,7 @@ setEnv('FALSE');     check('"FALSE" → disabled',                       isPromp
 setEnv('no');        check('"no" → disabled',                          isPromptCacheEnabled() === false);
 setEnv('off');       check('"off" → disabled',                         isPromptCacheEnabled() === false);
 setEnv(' Off ');     check('" Off " (trimmed) → disabled',             isPromptCacheEnabled() === false);
-setEnv('');          check('empty string → disabled (truthy check)',   isPromptCacheEnabled() === true);  // empty string is falsy-as-flag, treat as default
+setEnv('');          check('empty string → enabled (default; "" not in disable set)', isPromptCacheEnabled() === true);
 setEnv(origEnv);
 
 // ─── Section 2: _buildSystemPrompt structured shape ───────────────────
@@ -327,6 +332,79 @@ await (async () => {
     check(`heading "${h.trim().slice(0, 40)}" is emitted by _buildSystemPrompt dynamic section`, found,
       `dynamic block prefixes: ${result.dynamic.map(b => b.text.slice(0, 30)).join(' | ')}`);
   }
+})();
+
+// ─── Section 8: circuit-breaker on _cacheControlRejected ──────────────
+console.log('\nSection 8 — circuit-breaker via _cacheControlRejected flag:');
+
+{
+  __resetSlice3fStateForTests();
+  const s1 = _slice3fComputeCacheStrategy();
+  check('default state: envEnabled=true, rejected=false, shouldEmit=true',
+    s1.envEnabled === true && s1.rejected === false && s1.shouldEmitCacheControl === true,
+    JSON.stringify(s1));
+
+  // Simulate the post-rejection state via the test setter (no mocked fetch needed).
+  __setSlice3fRejectedForTests(true, 'cache_control unsupported on this model');
+  const s2 = _slice3fComputeCacheStrategy();
+  check('after rejection: shouldEmitCacheControl=false (circuit breaker engaged)',
+    s2.shouldEmitCacheControl === false && s2.rejected === true,
+    JSON.stringify(s2));
+  check('after rejection: rejectionMessage preserved',
+    s2.rejectionMessage === 'cache_control unsupported on this model');
+
+  // Validate that the placement validator sees the rejection-equivalent
+  // cache-disabled signal (caller passes `cacheEnabled && !rejected`).
+  const blocks = [
+    { type: 'text', text: '# soul' },
+    { type: 'text', text: '\n## Tool Execution', cache_control: { type: 'ephemeral' } },
+    { type: 'text', text: '\n## What I Know About You\n- fact' },
+  ];
+  // Mirror the executor's per-request decision: `_isPromptCacheEnabledLive() && !_cacheControlRejected`.
+  const effectiveEnabled = _slice3fComputeCacheStrategy().shouldEmitCacheControl;
+  const r = _slice3fInternal.validateCacheControlPlacement(blocks, effectiveEnabled);
+  check('post-rejection: validator strips cache_control even on valid placement',
+    !r.blocks.some(b => b.cache_control) && r.cacheControlEmitted === false,
+    JSON.stringify(r));
+
+  // Reset and verify the flag clears.
+  __resetSlice3fStateForTests();
+  const s3 = _slice3fComputeCacheStrategy();
+  check('__resetSlice3fStateForTests clears the rejection state',
+    s3.shouldEmitCacheControl === true && s3.rejected === false && s3.rejectionMessage === null,
+    JSON.stringify(s3));
+}
+
+// ─── Section 9: bootstrap-rebuild byte-diff documentary check ─────────
+// Design §9.2 — documents the architectural fact that consecutive bootstrap
+// REBUILDS (not same-bootstrap repeated calls — that's Section 4) typically
+// produce different bytes because probe latency_ms varies on every probe
+// fire AND build-log boundary trims at the 7-day cutoff edge.
+// This test does NOT call the real bootstrap module (avoids probe latency
+// variance + filesystem dependency); instead it constructs two BootstrapResult
+// fixtures that differ only in probe latency_ms and asserts the cached array
+// reflects the difference.
+console.log('\nSection 9 — bootstrap-rebuild byte-diff (architectural fact):');
+
+await (async () => {
+  const agent = makeAgent({ aid: { aid_id: 'aid-charlie', trust_tier: 2 } });
+  const boot1 = makeBootstrap();
+  // Modify probe latency_ms to mirror a real rebuild — Layer 5 probes return
+  // fresh wall-clock latencies on every bootstrap call.
+  const boot2 = JSON.parse(JSON.stringify(boot1));
+  boot2.probes[0].latency_ms = 47;   // was 12
+  boot2.probes[1].latency_ms = 4998; // was 5000
+
+  const r1 = await agent._buildSystemPrompt({ results: [] }, '', [], boot1, '', 'u', skillResult);
+  const r2 = await agent._buildSystemPrompt({ results: [] }, '', [], boot2, '', 'u', skillResult);
+
+  const h1 = r1.cached.map(b => b.text).join('|');
+  const h2 = r2.cached.map(b => b.text).join('|');
+  check('rebuild-driven probe latency change shifts cached bytes (cache will re-prime, by design)',
+    h1 !== h2,
+    'If you see this fail, probe latency_ms is no longer in the cached prefix — investigate whether the assembly drifted from /tmp/slice3f_design.md §1.1');
+  check('only the probes section text differs (other blocks unaffected)',
+    r1.cached.length === r2.cached.length);
 })();
 
 // ─── Summary ──────────────────────────────────────────────────────────

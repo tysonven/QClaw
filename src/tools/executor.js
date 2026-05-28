@@ -43,6 +43,25 @@ export function __resetSlice3fStateForTests() {
   _ephemeralExtractionWarned = false;
 }
 
+// Test-only setter — simulates the post-rejection state without needing to
+// mock a full Anthropic 400 round-trip. Production code never calls this.
+export function __setSlice3fRejectedForTests(rejected, message = null) {
+  _cacheControlRejected = !!rejected;
+  _cacheControlRejectionMessage = rejected ? (message || 'test-injected rejection') : null;
+}
+
+// Read-side observer for tests + consistency checks. Returns the per-request
+// cache-decision contract derived from kill-switch env + module-local flag.
+export function _slice3fComputeCacheStrategy() {
+  const envEnabled = _isPromptCacheEnabledLive();
+  return {
+    envEnabled,
+    rejected: _cacheControlRejected,
+    rejectionMessage: _cacheControlRejectionMessage,
+    shouldEmitCacheControl: envEnabled && !_cacheControlRejected,
+  };
+}
+
 // Test-only export of the placement validator + dynamic-heading list. Used
 // by tests/system-prompt-cache-shape.test.js to exercise the invariant
 // directly without standing up a full executor + fetch mock.
@@ -408,11 +427,17 @@ export class ToolExecutor {
     // caller's check and the API call still scrubs cache_control. Also
     // enforce the runtime invariant — cache_control MUST land before the
     // first dynamic block (matched against canonical heading prefixes).
+    //
+    // Circuit-breaker: when a prior call in this process was rejected by
+    // Anthropic for cache_control reasons (_cacheControlRejected), pretend
+    // the kill-switch is off so the placement validator strips cache_control
+    // upfront. Avoids paying a wasted 400 + fail-open retry on every
+    // subsequent turn until process restart.
     let systemForApi;
     let runtimeCacheControlEmitted = false;
     let runtimeInvariantFailed = false;
     if (systemArrayParts.length > 0) {
-      const cacheStillEnabled = _isPromptCacheEnabledLive();
+      const cacheStillEnabled = _isPromptCacheEnabledLive() && !_cacheControlRejected;
       const validated = _validateCacheControlPlacement(systemArrayParts, cacheStillEnabled);
       systemForApi = validated.blocks;
       runtimeCacheControlEmitted = validated.cacheControlEmitted;

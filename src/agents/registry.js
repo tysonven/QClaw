@@ -431,9 +431,19 @@ export class Agent {
           ...slice3fOpts,
         });
       } else {
-        const completion = await router.complete(messages, {
+        // Chat-only fallback (no tools): router.complete via router.js doesn't
+        // know how to handle Array-shaped system content yet — it would
+        // implicitly stringify each block via Array.prototype.toString. Slice
+        // 3g audits router.js for cache_control; until then, join blocks to
+        // a string at this call site so the legacy path still works.
+        const joinedSystem = systemBlocks.map(b => b.text || '').join('');
+        const compatMessages = [
+          { role: 'system', content: joinedSystem },
+          ...messages.slice(1),
+        ];
+        const completion = await router.complete(compatMessages, {
           model: route.model,
-          system: systemBlocks,
+          system: joinedSystem,
           ...slice3fOpts,
         });
         result = { ...completion, toolCalls: [] };
