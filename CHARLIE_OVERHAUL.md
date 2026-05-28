@@ -775,6 +775,81 @@ Files: `src/channels/grammy-error-classifier.js` (new),
 `package.json` (test script), `LOCATIONS.md`, `FLOW_OS_STATE.md`,
 `CHARLIE_OVERHAUL.md`, `QCLAW_BUILD_LOG.md`.
 
+**Slice 3f — Anthropic prompt caching on Charlie's main loop — ✓ COMPLETE 2026-05-28.**
+Closes the per-turn input-token cost amplifier that compounded the
+2026-05-18 Anthropic spend anomaly (referenced in the Slice 3e closer
+above). `_buildSystemPrompt` in `src/agents/registry.js` was refactored
+from joined-string output to `{cached, dynamic}` content-block arrays.
+The cached prefix carries bootstrap-stable content (SOUL, Charlie Role,
+CEO Operating Model, Flow OS State, Specialists, Recent Build Log,
+Live probes, Recent activity + memory, AGEX AID, Always-on Skills,
+Trust Kernel, Tool Execution instruction); `cache_control:
+{type:"ephemeral"}` lands on the last cached block (Tool Execution).
+The dynamic suffix carries `knowledgeContext` (moved out of the cached
+section because `memory.knowledge.buildContext()` reads the live store
+that `extractKnowledge` mutates async after every turn), on-demand
+skills, relevantKnowledge, and graphContext. `_anthropicWithTools` in
+`src/tools/executor.js` accepts the array-shaped `system` parameter,
+enforces a runtime invariant that exactly one `cache_control` marker
+exists and lands before any dynamic-heading block (canonical headings:
+`## What I Know About You`, `## Available Skills (routed)`, `## Relevant
+Context`, `## Knowledge Graph`), and falls open on Anthropic 400 with a
+cache_control error pattern by retrying once with cache_control stripped
+from every block. Process-local rejection state surfaces in every
+subsequent `cache-usage.log` entry until restart so `cold_re_prime_rate`
+analysis can filter post-rejection entries cleanly.
+
+Kill-switch `QCLAW_PROMPT_CACHE_ENABLED=0|false|no|off` (default
+enabled) is read per-request at both `registry.js` and `executor.js`
+sites; flip via `pm2 reload quantumclaw --update-env` (Node snapshots
+`process.env` at spawn — the `--update-env` flag is required for the
+flip to land in the running process).
+
+Observability: new module `src/observability/cache-usage-log.js` writes
+one JSONL entry per `_anthropicWithTools` API call to
+`~/.quantumclaw/cache-usage.log` (mode 0600, size-based rotation at
+50 MB with 2-generation cap, env override via
+`QCLAW_CACHE_USAGE_LOG_PATH`). Fields per `/tmp/slice3f_design.md` §7.2:
+the four Anthropic cache fields + 5m/1h ephemeral breakdown with
+explicit nested-then-top-level fallback extraction, plus
+`bootstrap_cache_hit`, `bootstrap_present`, `cache_control_emitted`,
+`tools_hash` (sha256/8-hex of tool names in order — detects Map
+iteration shuffles across pm2 reloads), `had_on_demand_skills`,
+`tool_loop_iteration` (1-indexed within a user turn),
+`seconds_since_last_call` (null on first write after process start).
+Token-scrub on `user_id`: Anthropic key prefixes, Bearer, and Telegram
+bot-token shape all → `<scrubbed>`.
+
+Default TTL is 5m ephemeral. 1h TTL revisit is data-driven via
+`cache-usage.log`: once ~1 week of data has accumulated, compute
+`cold_re_prime_rate = (turns with cache_creation_input_tokens > 0) /
+total_turns`. If > 40%, evaluate switch to 1h. Estimate `p_1h` from
+union of `p(bootstrap_cache_hit: false)`, `p(tools_hash changed)`,
+`p(seconds_since_last_call > 3600)`. Decision rule lives in
+`/tmp/slice3f_design.md` §6.2.
+
+Two cold-read adversarial design reviews (round 1: 0 P0, 4 P1, 8 P2;
+round 2: CLEAN, 0 P0/P1, 6 P2 doc polish) plus one cold-read code
+review converged before merge. End-to-end verification at
+`scripts/verify-cache-hits.js` proves the API contract: turn 1 primes
+~6,585 cached tokens; turn 2 within the 5m TTL reads 6,585 cached
+tokens with 99.6% cached fraction; per-run nonce defeats prior-run
+cache so the harness is repeatable.
+
+router.js (`_callAnthropic`) is deferred to Slice 3g — caller-side
+prefix stability profile differs from `_anthropicWithTools` and needs
+separate audit. Anthropic Admin API spend observability is also Slice
+3g's responsibility; Slice 3f writes the per-turn observability
+substrate, Slice 3g reads it.
+
+Files: `src/agents/registry.js`, `src/tools/executor.js`,
+`src/channels/manager.js`, `src/observability/cache-usage-log.js`
+(new), `scripts/verify-cache-hits.js` (new),
+`tests/system-prompt-cache-shape.test.js` (new, 49 checks),
+`tests/cache-usage-log.test.js` (new, 61 checks), `package.json`
+(test script), `LOCATIONS.md`, `CHARLIE_OVERHAUL.md`,
+`QCLAW_BUILD_LOG.md`.
+
 **Slice 4 — Verification gates (soft + hard).** Moved one slot back
 in the queue (was next after 3c.1; now next after 3d).
 `verification-reflexes.md` skill written and loaded. `runGates()`

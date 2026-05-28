@@ -646,7 +646,12 @@ await ctx.reply(
           channel: 'telegram',
           userId: ctx.from.id,
           username: ctx.from.username,
-          bootstrap: bootstrapResult
+          bootstrap: bootstrapResult,
+          // Slice 3f: bootstrapCacheHit feeds the cache-usage.log observability
+          // layer so cold_re_prime_rate analysis can separate "bootstrap rebuild
+          // forced cache miss" from "5m TTL lapsed". wasCached was captured at
+          // line 632 before bootstrap() ran.
+          bootstrapCacheHit: wasCached,
         });
 
         let content = result?.content || '(empty response)';

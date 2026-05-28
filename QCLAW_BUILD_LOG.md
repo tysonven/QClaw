@@ -13549,3 +13549,150 @@ number is now fully off the SIM and running on Telnyx end-to-end.
 - Motorola / `device1.flowos.tech` decommission + SOP cleanup — separate ticket
 - Inbound handler: skip alphanumeric senders (COSMOTE / #My Account) to stop false heartbeat alerts
 - Voice: gateway is SMS-only by design; BYOC via CRM Phone Pro is the path if ever needed
+
+---
+
+## [2026-05-28] Slice 3f — Anthropic prompt caching on Charlie's main loop
+
+Brief 14 — second of three stabilisation slices ahead of Slice 4. Cuts
+Charlie's per-turn input-token cost on cache-hit turns by emitting
+`cache_control: {type:"ephemeral"}` on the last bootstrap-stable block
+of the system prompt. Closes the cost amplifier that compounded the
+2026-05-18 spend anomaly. Default TTL 5m; 1h-TTL revisit is data-driven
+from the new `cache-usage.log` instrumentation.
+
+Branch `cc/slice3f-prompt-caching-20260528-1410`. Design doc
+`/tmp/slice3f_design.md`. PR base `tysonven/QClaw:main`.
+
+### Episode shape
+
+| Phase | Artefact |
+|---|---|
+| Audit | `src/agents/registry.js` (`_processNonReflex`, `_buildSystemPrompt`) + `src/tools/executor.js` (`_anthropicWithTools`) + `src/agents/bootstrap.js` (Layers 1-6) + `src/memory/knowledge.js` (`buildContext`) + `src/channels/manager.js` (lines 620-680) + Anthropic prompt-caching canonical rules via WebFetch |
+| Step 0 (drift check 2026-05-28) | Live model verified: `claude-haiku-4-5-20251001` (primary + fast) per `/root/.quantumclaw/config.json` — no drift from 2026-05-18 downgrade. Live API sample turn confirmed `cache_creation_input_tokens: 0` and `cache_read_input_tokens: 0` on current code (no caching). Spend probe blocked on absent `sk-ant-admin-` key — filed as Slice 3g dependency. |
+| Design | `/tmp/slice3f_design.md` (~720 lines after polish) |
+| Design adversarial review | 2 rounds via fresh cold-read sub-agents (Task tool available this session, unlike Slice 3e's environment). Round 1: NEEDS REVISION (0 P0, 4 P1, 8 P2, 3 INFO) — caught the `usage.cache_creation.*` vs `usage.ephemeral_*` extraction-path ambiguity, kill-switch read-site (boot vs per-request), fail-open observability blind spot (no signal in cache-usage.log), prefix-size assertion ordering, options-threading gap from `_processNonReflex` to `_anthropicWithTools`, and an inverted cross-userId cache analysis. Round 2: CLEAN (0 P0, 0 P1, 6 P2 doc polish — all folded). |
+| Code | 3 commits, one per Unit. |
+| Code adversarial review | 1 round via fresh cold-read sub-agent. NEEDS REVISION: 0 P0, 1 P1 (circuit-breaker miss — `_cacheControlRejected` flag was set but never consulted to short-circuit subsequent cache_control attempts → every post-rejection turn paid a wasted 400 + fail-open retry), 5 P2 (chat-only `router.complete` Array-system bug, §9.2 byte-diff test missing, `__resetSlice3fStateForTests` exported but unused, Section 9 path-override test too lax, empty-string env case label misleading), 3 INFO. All P1 + actionable P2s folded into fix-up commit `e9db937` — circuit-breaker pre-strip in `_anthropicWithTools`, chat-only fallback joins system blocks before router.complete, new tests/system-prompt-cache-shape.test.js Sections 8 (circuit-breaker via _cacheControlRejected) and 9 (bootstrap-rebuild byte-diff documentary) added (total 56 checks; was 49), Section 9 path-override now snapshots line count, empty-string label corrected. Live harness re-run after fixes still PASSes (cached fraction 99.6%). |
+| Verification | `scripts/verify-cache-hits.js` against live Anthropic API: turn 1 cold prime 6,585 cached tokens, turn 2 within 5m TTL reads 6,585 cached tokens (99.6% cached fraction). Per-run nonce defeats prior-run cache so the harness is repeatable. |
+
+### What closed
+
+The per-turn input-token cost amplifier. Pre-slice every Charlie turn
+paid full input-token cost on the bootstrap-stable portion of the
+system prompt (~6-8K tokens of canonical docs + always-on skills + Trust
+Kernel + tools instruction). At Haiku 4.5 pricing the per-turn premium
+is small individually but compounds across the 50+ daily Charlie turns;
+at Sonnet pricing (Charlie's pre-2026-05-18-incident default) it is
+material. Cache reads now cost 10% of base input price; cache writes
+cost 1.25× base (5m TTL). Break-even is ~1.3 turns per 5m window —
+Charlie's active-hours traffic clears that comfortably.
+
+The slice also makes a future leak's blast radius smaller: even if
+spend re-amplifies for an unknown reason, the cached portion is
+discounted 90%, so the dollar-per-anomaly bound is materially lower.
+
+### What landed
+
+Unit 1 (`60cb577 — feat(slice3f): restructure system prompt + cache_control placement`):
+- `src/agents/registry.js`: `_buildSystemPrompt` returns `{cached, dynamic}`. `_processNonReflex` applies cache_control + char budget computed from blocks + threads options. Exports `isPromptCacheEnabled()` for callers.
+- `src/tools/executor.js`: `_anthropicWithTools` accepts array `system` content + runtime invariant check + fail-open retry on cache_control rejection + full usage capture (4 cache fields + 5m/1h breakdown with nested-then-top-level fallback). `run()` extended to pass `toolLoopIteration` into options.
+- `src/channels/manager.js`: thread `bootstrapCacheHit: wasCached` into `context` so the observability layer can correlate cold-prime events with bootstrap rebuilds vs idle-gap re-primes.
+- `tests/system-prompt-cache-shape.test.js` (new): 49 checks across 7 sections — env parsing, structured shape, dynamic ordering, byte stability, null-bootstrap fallback, runtime invariant, heading-drift CI guard.
+
+Unit 2 (`023ec87 — feat(slice3f): cache-usage.log observability writer`):
+- `src/observability/cache-usage-log.js` (new): `appendCacheUsage` + `toolsHash` + token-scrub + size-based rotation (50 MB, 2 generations) + mode 0o600 preserved across rotation + `_lastWriteTs` for `seconds_since_last_call` + first-write `null` semantics + env override.
+- `src/tools/executor.js`: hook `appendCacheUsage(...)` into `_anthropicWithTools` immediately before returning.
+- `tests/cache-usage-log.test.js` (new): 61 checks across 9 sections — shape, token-scrub, hash determinism + order sensitivity, seconds_since_last_call accounting, file mode 0o600, rotation + 2-generation cap, fail-open observability persistence, runtime_invariant_failed + ephemeral_extraction_failed flag wiring, env path override.
+
+Unit 3 (this commit — `feat(slice3f): verification harness + docs`):
+- `scripts/verify-cache-hits.js` (new): end-to-end Anthropic API verification with per-run nonce.
+- `LOCATIONS.md`: cache-usage.log entry + cache-usage-log.js capability-layer entry.
+- `CHARLIE_OVERHAUL.md`: Slice 3f section inserted after Slice 3e.
+- `QCLAW_BUILD_LOG.md`: this entry.
+
+### Verification (verbatim)
+
+`scripts/verify-cache-hits.js` against live Anthropic API
+(`claude-haiku-4-5-20251001`), 2026-05-28:
+
+```
+Turn 1 (cold prime, per-run nonce defeats prior cache):
+  usage: {
+    "input_tokens": 32,
+    "output_tokens": 4,
+    "cache_creation_input_tokens": 6585,
+    "cache_read_input_tokens": 0,
+    "ephemeral_5m_input_tokens": 6585,
+    "ephemeral_1h_input_tokens": 0
+  }
+
+Turn 2 (warm hit, within 5m TTL):
+  usage: {
+    "input_tokens": 10,
+    "output_tokens": 5,
+    "cache_creation_input_tokens": 15,
+    "cache_read_input_tokens": 6585,
+    "ephemeral_5m_input_tokens": 15,
+    "ephemeral_1h_input_tokens": 0
+  }
+```
+
+All 6 assertions pass:
+- ✓ Turn 1 prefix ≥ 4096 tokens (got 6617, well above Haiku 4.5 minimum)
+- ✓ Turn 1 cache_creation_input_tokens > 0 (cache write happened)
+- ✓ Turn 1 cache_read_input_tokens === 0 (cold prime, no prior cache)
+- ✓ Turn 2 cache_read_input_tokens > 0 (warm hit)
+- ✓ Turn 2 cache_creation_input_tokens small vs cache_read (15 / 6585 = 0.23%) — the 15 tokens are Anthropic's normal automatic cache extension at the dynamic tail, not the cached prefix re-priming
+- ✓ Turn 2 cached fraction > 50% (got 99.6%)
+
+### Post-merge runbook for Tyson
+
+```
+sudo pm2 reload quantumclaw --update-env
+# Wait ~30 seconds for bootstrap.
+
+# Send 3-4 Telegram messages to Charlie in succession, ≤5 min apart:
+#   - /session
+#   - "hi"
+#   - "what's the trading scanner status"
+#   - "show me FSC engagements"
+
+sudo cat /root/.quantumclaw/cache-usage.log | tail -10
+# Expect:
+#   - First entry of the burst: cache_creation_input_tokens > 0,
+#     cache_read_input_tokens = 0.
+#   - Subsequent entries within 5m: cache_creation_input_tokens small
+#     (~15-50 tokens of dynamic tail), cache_read_input_tokens > 0 and
+#     >50% of total input on each turn.
+#   - If cached_fraction is consistently <50%, the cache marker is in
+#     the wrong place — file a follow-up dispatch with the harness
+#     output and the cache-usage.log tail.
+```
+
+24-hour check: re-read cache-usage.log, aggregate
+`cold_re_prime_rate = (entries with cache_creation_input_tokens > 0) /
+total_entries`. Expect <40% under normal usage cadence (mostly
+bootstrap-rebuild-driven re-primes every 30 min). If
+`cold_re_prime_rate > 40%`, evaluate 1h TTL per `/tmp/slice3f_design.md`
+§6.2.
+
+### Rollback
+
+```
+sudo bash -c 'echo "QCLAW_PROMPT_CACHE_ENABLED=0" >> /root/.quantumclaw/.env'
+sudo pm2 reload quantumclaw --update-env
+# Verify: next cache-usage.log entry has cache_control_emitted: false.
+```
+
+### Followups
+
+| Priority | Item |
+|---|---|
+| HIGH | Slice 3g (Anthropic API hygiene audit + spend observability) is now unblocked. Provision `ANTHROPIC_ADMIN_API_KEY` (an `sk-ant-admin-…` key, distinct from the regular `sk-ant-api-…` key) into `/root/.quantumclaw/.env` mode 600 root so 3g's spend layer can call `/v1/organizations/{org_id}/cost_report`. The per-turn observability substrate from Slice 3f's cache-usage.log feeds 3g's analysis directly. |
+| HIGH | Slice 3g should also evaluate `src/models/router.js::_callAnthropic` for prompt caching against its own caller-side prefix-stability profile. Slice 3f's bootstrap-stable model does not apply; router callers (`_testProvider`, chat-only `complete()`) have different system content. |
+| MEDIUM | After ~1 week of cache-usage.log data, run the §6.2 cold_re_prime_rate computation. If > 40%, evaluate switch to 1h TTL via the p_1h estimation from `bootstrap_cache_hit`, `tools_hash`, `seconds_since_last_call` fields. |
+| LOW | Audit other LLM call sites (n8n Anthropic nodes, Content Studio Python, clipper-worker) for prompt-caching opportunities. Slice 3f scoped to Charlie main loop only. |
+| LOW | Bootstrap-stable canonical docs (CHARLIE_ROLE.md, CEO_OPERATING_MODEL.md, VALUES.md, SOUL.md) are read non-atomically by `_safeRead`. A concurrent writer using in-place `writeFileSync` can produce a partial read that gets cached for 30 min AND primed into the Anthropic cache at 1.25× write premium. Mitigation: require atomic write (write-to-tmp + rename) in any tool that edits these. Pre-existing risk; Slice 3f doesn't introduce it but does make the failure mode more durable. |
+
+End of Slice 3f episode.
