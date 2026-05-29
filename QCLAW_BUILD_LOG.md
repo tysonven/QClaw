@@ -13792,3 +13792,131 @@ sized the failure).
 
 End of Meta Token Rotation episode.
 
+## 2026-05-29 — GHL Scheduled Publisher Split Rows fix + stale row triage (Slice 3)
+
+Workflow `dHceOMijUOcnEowO` ("GHL Marketing: Scheduled Publisher") was firing every
+15 min for the entire 5-week life of the workflow but never invoking the Publisher
+webhook. Probed via `/tmp/ghl_scheduled_publisher_silent_skip_audit_20260529.md`
+earlier today — filter logic correct, timezone fine, cron healthy, single Code-node
+bug downstream of Fetch Due Drafts.
+
+**Root cause.** `Split Rows` node:
+
+```js
+const rows = $input.first().json;
+const list = Array.isArray(rows) ? rows : [];
+return list.map(r => ({ json: r }));
+```
+
+n8n's HTTP Request v4.2 with `responseFormat: json` and a top-level JSON-array body
+**already splits the response into N items**, one per array element. So
+`$input.first().json` was the FIRST row's object (not the array), `Array.isArray(rows)`
+was always `false`, and the node emitted zero items every tick.
+
+Pre-fix observation: 1,342 cron heartbeats over 14 days, **0 downstream Publisher
+invocations from the cron path**. Only 2 Publisher runs in 20 days, both via the
+Approval Handler's on-demand `Trigger Publisher` node (Telegram "go" replies).
+
+**Fix.** Replaced Split Rows code with:
+
+```js
+return $input.all().filter(item => item.json && item.json.id);
+```
+
+One line. `$input.all()` passes through the items HTTP Request v4.2 already split.
+The `.json.id` filter guards against the empty placeholder that
+`alwaysOutputData: true` injects on Fetch Due Drafts when 0 rows match — without that
+guard, the workflow would fire the Publisher with `draftId=undefined` on every empty
+tick (caught during manual verification — see "Surprise" below).
+
+**Stale row triage** (applied BEFORE the workflow PUT to avoid the next cron tick
+catching half-updated state):
+
+- `eff9e651-c2fe-46fa-931f-ef82273070c6` (pain-led, originally 2026-05-20) →
+  re-scheduled to Tue **2026-06-02 07:30 UTC**. Body contains `tomorrow` reference
+  in IG caption — borderline date anchor but evergreen enough to re-publish.
+- `a5049dba-dc2f-4e63-ae4b-9f42f68b7a0b` (value-led, originally 2026-05-22) →
+  re-scheduled to Thu **2026-06-04 07:30 UTC**. Body contains `yesterday` reference
+  in LinkedIn copy — flagged for dashboard review before Jun 4.
+- `88b49f44-7e8c-4816-9fa5-e1f6b52c73dc` (offer-led, originally 2026-05-25) →
+  status `archived`. Body has hard day anchors ("Weekend project turned into a 6-hour
+  YouTube spiral", "Friday afternoons should be for finishing projects") — not
+  re-publishable as evergreen.
+
+**Future-row sanity check.** `df620801-c1cd-4400-9976-3460ef8b44f1` (offer-led)
+scheduled `2026-06-01 07:30 UTC` is untouched. With the fix, Fetch Due Drafts at the
+first 15-min cron tick on/after that timestamp will return 1 item with real
+`.json.id`, Split Rows will pass it through, Fire Publisher will fire once. Confirmed
+the workflow query's `scheduled_for=lte.{{$now.toISO()}}` filter handles this
+correctly — n8n's `$now` resolves to `America/New_York` (-04:00) and `.toISO()`
+includes the offset, which PostgREST parses correctly against the UTC-stored
+timestamptz.
+
+**Verification.**
+
+1. PUT to `https://webhook.flowos.tech/api/v1/workflows/dHceOMijUOcnEowO` with body
+   limited to `{name, nodes, connections, settings}` (per n8n API constraint).
+   Returned HTTP 200 with new `versionId: b87fda9f-3346-4e91-92fd-f45e78bf0637`
+   (was `2b10b2fb-7829-4b0d-8f75-c5c9b94b1e81`).
+2. Re-GET confirmed: Split Rows code is the new filter pass-through;
+   `settings.availableInMCP: true` preserved; all 3 credential bindings preserved
+   (`Supabase FSC` on Fetch Due Drafts, `Supabase Postgres DB` on both Heartbeat
+   nodes); Fetch Due Drafts URL and Fire Publisher body unchanged.
+3. Manual execution (exec `991827`): Fetch Due Drafts emitted 1 placeholder item
+   (alwaysOutputData behavior with 0 due rows), Split Rows filtered it to 0,
+   Fire Publisher correctly did not execute.
+4. Natural cron tick at `2026-05-29 13:30:36 UTC` (exec `991835`): identical
+   behavior — 1 placeholder in, 0 out, no Publisher invocation, no spurious calls.
+5. `marketing_drafts.partially_published` rows untouched (still 6, from earlier
+   pre-revocation IG-side failures, separate slice).
+6. `marketing_drafts.approved` rows post-triage: 3 (df620801 6/01, eff9e651 6/02,
+   a5049dba 6/04), all future-dated, all `status='approved'`.
+7. `marketing_drafts.archived`: 1 (88b49f44 with its original scheduled_for
+   `2026-05-25 07:30 UTC` preserved for audit trail).
+
+**Surprise found mid-flight (worth a memory note for future workflow edits).**
+First PUT used `return $input.all();` — the audit-recommended minimal fix. Manual
+exec showed Fire Publisher firing once per cron tick even with 0 due rows because
+`Fetch Due Drafts` has `alwaysOutputData: true`, which injects a 1-item placeholder
+when the underlying response is empty. The pre-fix `Array.isArray` guard accidentally
+also acted as an empty-placeholder filter. Second PUT added the `.json.id` filter
+to restore that behavior. One spurious Publisher call to the webhook hit during
+the gap — Publisher returned an error (Prepare node threw on `draftId=undefined`),
+no FB/IG/LI posts made, no DB writes. Exec `991823`. Telegram notification not
+triggered (Publisher errored before Telegram Notify node ran).
+
+**Security gate:**
+- No hardcoded credentials added — PASS
+- No new webhooks — PASS
+- No new endpoints — PASS
+- No RLS changes — PASS
+- No financial features touched — PASS
+- `settings.availableInMCP: true` preserved — PASS
+- No stack traces or secrets in scrollback or commit — PASS
+- Credential references unchanged (Supabase FSC `Nd2uuX5t9KEwbQPv`, Postgres
+  `qGUxEHfEZkZGdAcZ`) — PASS
+- 3 row state changes confirmed via SELECT post-patch — PASS
+- Split Rows fix is one Code node, one line (effectively) — PASS
+- n8n API key staging file `/tmp/.n8n_apikey` shredded on n8n — PASS
+- Workflow JSON file in n8n-workflows/ updated to reflect new state — PASS
+
+**Reference:** `/tmp/ghl_scheduled_publisher_silent_skip_audit_20260529.md`.
+
+**Parked:**
+- 6 older `partially_published` IG-side failures (creation_id, media URI, transient
+  image issues) — separate slice.
+- The 1,342-tick/0-dispatch pattern is now resolved at the source; no need to
+  separately investigate other Code nodes unless they show the same anti-pattern.
+  Worth a one-shot grep of `workflow_entity.nodes::text` for
+  `Array.isArray($input.first().json)` if anyone wants to be thorough.
+- Approval Handler's `Trigger Publisher` (`ptHK2TZq5XppKOOg`) remains the on-demand
+  publish path; the cron path is now functional in parallel — both paths POST the
+  same webhook body shape, so no double-publish risk (each draft is fetched by id
+  once and either resolves or doesn't).
+- The `alwaysOutputData: true` + Code-node-filter pattern should probably be a
+  documented n8n idiom for any HTTP-then-split chain in this codebase. Not in scope
+  to document now.
+
+End of Slice 3 episode.
+
+
