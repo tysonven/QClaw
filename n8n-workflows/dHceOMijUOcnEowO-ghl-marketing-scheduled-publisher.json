@@ -66,7 +66,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const rows = $input.first().json;\nconst list = Array.isArray(rows) ? rows : [];\nreturn list.map(r => ({ json: r }));"
+        "jsCode": "return $input.all().filter(item => item.json && item.json.id);"
       },
       "id": "s0000001-0001-4000-8000-000000000003",
       "name": "Split Rows",
