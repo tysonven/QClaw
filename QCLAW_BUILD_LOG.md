@@ -13919,4 +13919,37 @@ triggered (Publisher errored before Telegram Notify node ran).
 
 End of Slice 3 episode.
 
+## 2026-06-01 — flowos-sms-gateway: Emma +13105738463 validated end-to-end
+
+Phase 2 follow-up. Emma's US Telnyx number went from `active=false` (10DLC pending) to
+fully production-validated with real-world two-way US traffic.
+
+- 10DLC campaign `CC8QIVY` (brand Flow OS LLC) approved 27 May 2026; `+13105738463`
+  assigned to campaign in Telnyx portal, provisioning Active
+- `device_registry.active` flipped to `true` for `+13105738463`
+- Outbound proven: Emma sub → `+15053050936` (Flow OS Twilio), Telnyx MDR shows
+  `delivered` via Twilio International carrier
+- Inbound proven: real US sender `+18046179811` → `+13105738463`, Ed25519 verified,
+  forwarded to Emma's GHL sub, contact auto-created
+- Reply proven: Emma sub → `+18046179811` outbound success
+- Both `message_log` rows: `provider=telnyx`, `status=success`
+
+**Known limitations surfaced during testing:**
+- Sending from `+13105738463` (US 10DLC) to non-US destinations: Telnyx returns 409
+  unless Emma's Messaging Profile has international destinations + alphanumeric
+  sender ID configured. Even with config, international sends from a US 10DLC
+  longcode auto-fail over to alphanumeric routes — one-way only, recipients can't
+  reply. Acceptable: this number is intended for US clients of FSC.
+- Inbound from AU mobile (+61) to US 10DLC was undeliverable in testing — appears
+  to be filtered upstream of Telnyx (no MDR row). Did not affect validation; real
+  US-origin inbound works (proven above).
+
+**Parked (queued during this session, not blocking):**
+- Multi-provider routing rule for Emma sub: +61/+64 destinations → android_gateway,
+  all others → telnyx. Currently both rows are active with no deterministic
+  selection — tested today by toggling android row off during the Telnyx-only test.
+- Inbound handler: skip alphanumeric senders (carrier service messages) to stop
+  false heartbeat alerts on Emma's Android device.
+- Motorola/`device1.flowos.tech` decommission + SOP cleanup.
+
 
