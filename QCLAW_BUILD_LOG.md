@@ -13952,4 +13952,140 @@ fully production-validated with real-world two-way US traffic.
   false heartbeat alerts on Emma's Android device.
 - Motorola/`device1.flowos.tech` decommission + SOP cleanup.
 
+## [2026-06-03] Incident — quantumclaw stopped via stale PM2 dump after systemd-triggered pm2-root restart
+
+2026-06-03 ~11:00 UTC: Tyson reported Charlie unresponsive on Telegram
+and `agentboardroom.flowos.tech` returning 502 Bad Gateway. This entry
+records the symptom, the triage path (including where the existing
+playbook fell short), the root-cause discovery, the resolution
+sequence, and three operational lessons. No Slice 3e or Slice 3f
+regression was involved — both surfaces behaved correctly throughout
+(see "Slice 3e / 3f signal" below).
+
+### Symptom
+
+- Dashboard `https://agentboardroom.flowos.tech` returning **502 Bad
+  Gateway** (Nginx upstream — Charlie's port 4000 — not answering).
+- Charlie unresponsive to Telegram messages.
+
+### Triage path
+
+- `sudo pm2 list` showed `quantumclaw` **status: stopped** with
+  `restart_time: 165` — anomalous against the **305** baseline last
+  confirmed at the end of the Slice 3f observation window on 2026-05-28.
+  The counter had apparently *dropped*, which a normal crash-restart
+  cannot do.
+- `pm2 logs quantumclaw` showed a **graceful SIGINT shutdown**, not a
+  crash — no stack trace, no error exit, clean `Stopping
+  app:quantumclaw`.
+- `~/.quantumclaw/channel-events.log` confirmed a **single
+  `event:"stopped"` entry at 06:35:50 UTC** with **no** `degraded`,
+  `recovery_failed`, or `manual_intervention_required` entries
+  preceding or following it. Slice 3e's catch was healthy through
+  hours of pre-shutdown Telegram 502 transients (each routed to bounded
+  inline retry, no escalation); the shutdown itself was **not** a
+  grammY-driven crash.
+
+### Initial diagnostic miss
+
+The 2026-05-22 diagnostic playbook (LOCATIONS.md channel-events.log
+diagnostic-flow note) prescribed cross-referencing `/var/log/auth.log`
+(operator `sudo pm2` entries) against `/root/.pm2/pm2.log`. Run against
+this incident, **both returned nothing** for 06:35:50 UTC — there was
+no sudo-invoked PM2 action at the shutdown timestamp. The playbook was
+**insufficient for this incident class**: the trigger was
+systemd-driven, not sudo-driven, and neither `auth.log` nor `pm2.log`
+captures a systemd unit restart event.
+
+### Root-cause discovery
+
+`journalctl -u pm2-root --since "yesterday"` revealed the actual
+trigger: **`pm2-root.service` was deactivated and immediately restarted
+at 06:35:52 UTC by systemd**. On restart, PM2 resurrected its process
+table from `/root/.pm2/dump.pm2` — which had `quantumclaw` saved in
+**stopped** state from a prior operator `pm2 stop` that was never
+followed by `pm2 save` with the intended online state. The dump file
+had **drifted from runtime reality**: PM2's resurrect-from-dump
+behaviour faithfully restored the stale stopped state.
+
+The **305 → 165** counter "drop" is explained by the same mechanism:
+the dump restored from disk reflects the **saved** counter value, not
+the live runtime accumulator. Confirmed via `journalctl` — the value
+came off disk, it was not a runtime reset.
+
+### Resolution sequence
+
+1. `sudo pm2 start quantumclaw` — brought Charlie back online.
+2. Verified `sudo pm2 list` shows `quantumclaw` **online** with a
+   healthy memory footprint (Telegram + dashboard responsive again).
+3. `sudo pm2 save` — persisted the online state into
+   `/root/.pm2/dump.pm2`, locking out the stale-dump resurrection on the
+   next daemon restart.
+
+Order matters: `start` first to make runtime reality correct, then
+`save` to capture that reality into the dump.
+
+### Verification (verbatim)
+
+```
+cat /root/.pm2/dump.pm2 | python3 -c "import sys,json; d=json.load(sys.stdin); print([(p['name'],p['status']) for p in d])"
+# → [('quantumclaw', 'online'), ('agex-hub', 'online')]
+```
+
+`quantumclaw` confirmed `status=online` in the saved dump.
+
+### Slice 3e / 3f signal
+
+Both stabilisation surfaces signalled **cleanly through this incident —
+no regression in either**:
+
+- **Slice 3e** (`channel-events.log`) was the surface that made
+  "graceful shutdown vs crash" distinguishable **instantly** — a single
+  `event:"stopped"` with no failure escalation immediately ruled out a
+  grammY-driven crash loop and redirected triage toward the process
+  manager / host layer.
+- **Slice 3f** (`cache-usage.log`) was unaffected by the outage; file
+  integrity preserved across the stop and restart.
+
+### Three lessons
+
+1. **PM2 save discipline.** Any time a process's runtime state is
+   intentionally changed (`pm2 start`, `pm2 stop`, `pm2 reload`, or a
+   `pm2 restart` followed by a state change worth persisting), follow it
+   with `sudo pm2 save` **immediately**. Without `save`, the dump file
+   drifts from runtime reality, and the next systemd-triggered or
+   operator-triggered PM2 daemon restart will resurrect the stale state.
+   Order matters: `save` always captures the *current* state — only run
+   `save` when the runtime state is what you want PM2 to remember.
+2. **Diagnostic surface gap (now closed).** The 2026-05-22 playbook
+   listed `auth.log` + `pm2.log` as the cross-reference path for restart
+   investigations. Today's incident proved that path insufficient — the
+   trigger was systemd-driven, not sudo-driven, and neither surface
+   captures a systemd unit restart. `journalctl -u pm2-root` and
+   `systemctl status pm2-root` are the surfaces that show systemd-driven
+   PM2 daemon state changes. LOCATIONS.md is updated in this PR to
+   include them.
+3. **needrestart-driven pm2-root restarts are an open mitigation
+   surface.** Apt unattended-upgrades on this droplet calls
+   `needrestart`, which restarts systemd units whose underlying
+   libraries have been updated. `pm2-root` is not currently in the
+   needrestart override blacklist, so a routine library upgrade can
+   bounce the daemon and expose any dump drift. Filed as a followup
+   (below): add `pm2-root` to `$nrconf{override_rc}` in
+   `/etc/needrestart/needrestart.conf` to suppress automated systemd
+   restart of the unit during apt upgrades. This does **not** eliminate
+   the save-discipline issue (operator stop/restart still requires
+   `save` to persist), but it materially reduces the frequency of
+   systemd-driven daemon restarts that can expose dump drift.
+
+### Followups
+
+| Priority | Item |
+|---|---|
+| HIGH | `needrestart` `override_rc` blacklist for `pm2-root.service`. Single-line addition to `/etc/needrestart/needrestart.conf` (`$nrconf{override_rc}`). Closes one major trigger class for this incident pattern (systemd-driven daemon restart during apt upgrades). Separate dispatch when ready. |
+| MEDIUM | `pm2 reset quantumclaw` to baseline the restart counter so the next anomaly is detectable against a clean zero. Carried over from the 2026-05-14 followup table; still open. The 305→165 confusion in this incident is a direct symptom of an un-baselined counter. |
+| LOW | Operational-runbook surface for "post-restart save" beyond LOCATIONS.md. The discipline is currently only documented in the LOCATIONS.md diagnostic-flow note. If a `CLAUDE_CODE_OPERATING_RULES.md` operator-facing companion ever ships, mirror the save-discipline rule there. |
+
+End of 2026-06-03 incident entry.
+
 
