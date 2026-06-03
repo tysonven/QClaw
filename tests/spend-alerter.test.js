@@ -128,6 +128,14 @@ check('corrupt state → still fires (no permanent silence)', cor.fired === 'har
 check('corrupt state → health meta-alert sent', cap5.tgCalls === 2 && (readFileSync(tmp('r5.health'), 'utf-8').length > 0));
 check('corrupt state file rewritten fresh (valid entries only)', readAlertState(tmp('r5.log')).corrupt === false);
 
+// P1: unwritable state dir → suppress noisy spend alert (can't track cooldown),
+// but still emit the one-shot health nag (never a silent storm).
+const unwritableDir = join(dir, 'nonexistent-subdir', 'deeper'); // parent missing → writes fail
+const cap6 = {};
+const unw = await runAlerter({ env: baseEnv, nowMs: now, fetchImpl: mkFetch({ usd24h: 10, usd1h: 5, capture: cap6 }), paths: { state: join(unwritableDir, 's.log'), health: join(unwritableDir, 's.health'), thresholds: tmp('none.json') } });
+check('unwritable state → spend alert suppressed (no storm)', unw.fired === null && unw.suppressed === 'state_unpersistable');
+check('unwritable state → health nag still sent (not silent)', cap6.tgCalls === 1 && cap6.tgText.includes('unwritable'));
+
 rmSync(dir, { recursive: true, force: true });
 console.log(`\n${passed}/${passed + failed} checks passed`);
 process.exit(failed > 0 ? 1 : 0);

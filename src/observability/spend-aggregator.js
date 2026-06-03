@@ -12,8 +12,11 @@
  * Cost is computed here (not in the append-only log) via pricing.js, with
  * dated→family model-id normalization and an explicit UNKNOWN-model surface.
  *
- * Runs as a standalone cron entrypoint (NOT in PM2), daily at 00:05 UTC
- * (after the 23:59 poller). Window membership is half-open [start, end).
+ * Runs as a standalone cron entrypoint (NOT in PM2), HOURLY at :05 — keeps the
+ * rolling 1h rollup fresh for the alerter's hard tier. Hourly runs are
+ * idempotent: 24h/7d/30d window_end floors to UTC midnight (re-runs overwrite
+ * the day's row), 1h floors to top-of-hour (one row per hour). The poller runs
+ * daily at 23:59. Window membership is half-open [start, end).
  *
  * Design ref: /tmp/slice3g_design.md §1, §3, §9, §10.
  */

@@ -22,8 +22,11 @@
  *                     cooldown (a real spike still fires once) + rewrite fresh
  *                     — NEVER permanent silent suppression.
  *
- * Runs as a standalone cron entrypoint (NOT in PM2), daily 00:06 UTC.
- * Always exits 0 — alerting failure must never break the cron chain.
+ * Runs as a standalone cron entrypoint (NOT in PM2), HOURLY at :06 — the
+ * hard tier reads a rolling 1h window, so sub-daily cadence is required for it
+ * to be meaningful (a daily-only run would only ever see one dead hour). The
+ * aggregator must run on the same hourly cadence (at :05) to keep the 1h
+ * rollup fresh. Always exits 0 — alerting failure must never break the cron.
  *
  * Design ref: /tmp/slice3g_design.md §4, §10.
  */
@@ -159,11 +162,18 @@ export async function sendTelegram({ token, chatId, text, fetchImpl = fetch }) {
   }
 }
 
+// Returns true iff the entry was durably persisted. The caller MUST gate on
+// this: if we cannot persist the cooldown ledger, we cannot enforce a cooldown,
+// so firing the (noisy) spend alert would storm — suppress it instead (P1 fix).
 function appendState(path, entry) {
   try {
     appendFileSync(path, JSON.stringify(entry) + '\n', { mode: MODE });
     chmodSync(path, MODE);
-  } catch { /* best-effort */ }
+    return true;
+  } catch { return false; }
+}
+function tryWrite(path, content) {
+  try { writeFileSync(path, content, { mode: MODE }); return true; } catch { return false; }
 }
 
 /**
@@ -183,26 +193,36 @@ export async function runAlerter({ env, nowMs = Date.now(), fetchImpl = fetch, p
   // Cooldown state — three cases.
   const { entries, corrupt } = readAlertState(sp);
   const token = env.TELEGRAM_BOT_TOKEN;
-  const chatId = numOr(env.SPEND_ALERT_CHAT_ID, OWNER_TELEGRAM_CHAT_ID);
+  const chatId = numOr(env.SPEND_ALERT_CHAT_ID, OWNER_TELEGRAM_CHAT_ID) || OWNER_TELEGRAM_CHAT_ID;
   const cooldownMs = thresholds.cooldown_minutes * 60_000;
 
-  if (corrupt) {
-    // Health meta-alert (sidecar-gated so it can't storm), then proceed with
-    // an in-memory cooldown so a real spike still fires once this run.
+  // Sidecar-gated, best-effort health meta-alert (used for corrupt/unwritable state).
+  const maybeHealthAlert = async (reason) => {
     const healthAgeOk = !existsSync(hp) || (nowMs - safeMtimeMs(hp)) >= cooldownMs;
     if (healthAgeOk) {
-      await sendTelegram({ token, chatId, text: '🩺 spend-alert-state unreadable — using in-memory cooldown; manual check needed.', fetchImpl });
-      try { writeFileSync(hp, String(nowMs), { mode: MODE }); } catch { /* best-effort */ }
+      await sendTelegram({ token, chatId, text: `🩺 spend-alert-state ${reason} — manual check needed.`, fetchImpl });
+      tryWrite(hp, String(nowMs));
     }
-    try { writeFileSync(sp, '', { mode: MODE }); } catch { /* rewrite fresh */ } // reset corrupt file
-    // in-memory cooldown = no prior entries → not in cooldown → fall through to fire
+  };
+
+  if (corrupt) {
+    await maybeHealthAlert('unreadable/corrupt');
+    tryWrite(sp, ''); // reset corrupt file; in-memory cooldown (no entries) → may fire below
   } else if (inCooldown(entries, decision.severity, nowMs, thresholds.cooldown_minutes)) {
     return { fired: null, suppressed: 'cooldown', severity: decision.severity, usd24h, usd1h };
   }
 
-  // Record the ATTEMPT before sending (flapping ceiling: advances cooldown even if send fails).
+  // Record the ATTEMPT before sending (flapping ceiling: advances cooldown even
+  // if the send fails). If the attempt CANNOT be persisted (unwritable state),
+  // we cannot enforce a cooldown — firing the noisy spend alert would storm on
+  // every subsequent run (P1). Suppress the spend alert, emit the one-shot
+  // health nag instead (so the failure is never silent), and exit.
   const ts = new Date(nowMs).toISOString();
-  appendState(sp, { ts, class: decision.severity, event: 'attempt', window_value_usd: decision.value, threshold_usd: decision.threshold });
+  const attemptOk = appendState(sp, { ts, class: decision.severity, event: 'attempt', window_value_usd: decision.value, threshold_usd: decision.threshold });
+  if (!attemptOk) {
+    await maybeHealthAlert('unwritable (cooldown cannot be tracked)');
+    return { fired: null, suppressed: 'state_unpersistable', severity: decision.severity, usd24h, usd1h };
+  }
   const text = formatAlert(decision, breakdown);
   const sent = await sendTelegram({ token, chatId, text, fetchImpl });
   if (sent.ok) appendState(sp, { ts: new Date(nowMs).toISOString(), class: decision.severity, event: 'fired', window_value_usd: decision.value, threshold_usd: decision.threshold });
