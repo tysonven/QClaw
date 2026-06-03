@@ -14139,4 +14139,143 @@ no regression in either**:
 
 End of 2026-06-03 incident entry.
 
+## [2026-06-03] Slice 3g — Anthropic API spend observability + hygiene audit
+
+Third of three stabilisation slices ahead of Slice 4. Closes the
+cost-blindness gap exposed by the 2026-05-17 spend spike (detected
+2026-05-19), establishes the per-turn cost baseline Slice 4's gates
+need, and makes the Sonnet restoration a one-line config flip
+validatable against a live spend surface. Branch
+`cc/slice3g-spend-observability-20260603-1320`, base `tysonven/QClaw:main`.
+Design doc `/tmp/slice3g_design.md` (3 adversarial review rounds to clean).
+
+### Episode shape
+
+| Phase | Outcome |
+|---|---|
+| Step 0 drift check | Model `claude-haiku-4-5-20251001` (primary+fast, no drift). cache-usage.log n=23 (all Haiku). Admin key initially **wrong type** (operator first provisioned a standard `sk-ant-api03`; Admin API rejects with `invalid x-api-key`) — corrected to `sk-ant-admin01-`. org_id `47f75a12-a5a3-48c6-ae4e-1076e4910362`. |
+| Step 1 call-site inventory (live, all hosts) | QClaw runtime: `executor.js` (cached, 3f), `router.js` ×2 + `clipper/main.py` (uncached). n8n Postgres: **12 active workflows**, models Haiku/Sonnet/**Opus** (`Meta Ads Optimisation Agent`), **0 use cache_control**. flowos-sms-gateway: no Anthropic surface. **No hardcoded keys** (git-history scan clean; only masked incident text + synthetic test fixtures). |
+| Step 3 Admin API review | Cost API daily-only, group_by workspace/description, max 31 buckets; Usage API supports api_key grouping. Auth `x-api-key` admin key. |
+| Step 4 router.js audit | **DEFER → Slice 3g.1.** Brief's premise ("no bootstrap docs in router") partially false — the chat-only fallback (`registry.js:444`) carries the full bootstrap prefix, but it is a *degraded* mode (`index.js:286` sets `toolExecutor=null` on tool-init failure), not unreachable. Correct fix is to surface/repair that mode (3g.1), not cache a failure path. Hot router callers (heartbeat/graph/knowledge) are sub-2048-token → uncacheable. |
+| Design + review | 3 rounds: R1 (7 P1s incl. dated-model mispricing, calendar-day reconciliation, anchored-scrub leak), R2 (N2: corrupt-cooldown permanent-silence hole), R3 (one stale-row contradiction). All resolved. |
+| Migration | `anthropic_spend_daily` + `anthropic_spend_rollup` applied live to project `fdabygmromuqtysitodp` (RLS service-role-only; anon filtered — verified). `window` is a reserved word → column `window_kind`. |
+| Unit 1 + code review | pipeline (poller/aggregator/pricing) + 93 test checks. **Code review caught a P0** (see below) + 2 P2s, all fixed + re-tested. |
+| Live backfill | 30 days into `anthropic_spend_daily`; aggregator 23 turns → 22 rollups + 3 reconciliation. Schema-fit confirmed (raw_api_response keeps all 8 cost_report dimensions). |
+| Unit 2 + code review | alerter + 40 test checks. Review caught **P1** (storm under unwritable state) + **P2** (daily cron makes 1h hard tier dead) — both fixed. |
+| Unit 3 | `ANTHROPIC_API_SURFACE.md` + LOCATIONS.md. |
+| Live verification | synthetic soft-threshold breach fired a real Telegram alert (verbatim below). |
+
+### The P0 that matters: cost_report `amount` is CENTS, not dollars
+
+Caught by the Unit 1 in-session adversarial review **before merge**.
+The Admin Cost API returns `amount` as a decimal string in the lowest
+currency unit (cents): `"1564.68"` USD == **$15.6468**. Proven
+empirically — `1564.68 / 100 = $15.6468` exactly equals the day's
+5,215,600 Sonnet-4.6 input tokens × $3/MTok. The poller now divides by
+100 on ingest (`raw_api_response` keeps verbatim cents for forensics;
+`total_cost_usd`/`model_breakdown` are dollars).
+
+**Transcript honesty note:** during this session's earlier checkpoints,
+CC reported org-spend figures that were **100× too high** ($8,952/30d
+etc.) before the review caught this. Corrected figures: **30-day org
+total ≈ $89.53**, of which `claude-sonnet-4-6` ≈ $81.68 (**91%**, Claude
+Code / cursor — *not* Charlie), Charlie Haiku ≈ $6.64, 2026-05-17 =
+$1.71. The correction *strengthens* the retrospective: ~$81 unauthorised
+on an ~$89/month base ≈ a **doubling of monthly spend**, which is why
+the 2026-05-19 detection happened visually rather than via
+instrumentation — exactly the gap this slice closes.
+
+### 2026-05-17 spike / 2026-05-19 detection — retrospective CLOSED
+
+(Project has historically labelled this "2026-05-18"; forward
+references use spike 2026-05-17 / detection 2026-05-19. Past entries
+left as-is.) Evidence chain: incident record (`QCLAW_BUILD_LOG.md:12308`)
+names `qclaw-local` (sk-ant-api03-vET…) **exposed in a Git repository**,
+revoked at incident time. Admin Usage API (group_by api_key_id, mapped
+via List API Keys) shows `qclaw-local` consumed **5,252,934 tokens over
+2026-05-16→20 — 98% of window tokens, ~50× the next key** — and it is
+**`inactive`** today. Charlie now runs the active `quantumclaw-haiku`
+key. Containment confirmed effective. Limitation (as predicted): the
+sub-hour burst shape aged out of the 7-day 1h/1m window; resolution is
+daily per-key. Full detail in `ANTHROPIC_API_SURFACE.md §5`.
+
+### Architecture notes
+
+- **Alerter scope (forcing constraint):** thresholds the **Charlie-attributed**
+  `anthropic_spend_rollup` (cache-usage.log is Charlie-only by
+  construction), **never** the org-wide `anthropic_spend_daily` (91%
+  non-Charlie would trip $5 every day). Org/Claude-Code-level alerting
+  via usage_report-by-api_key is filed as a 3g-adjacent followup.
+- **Cron cadence:** poller daily 23:59 (cost_report is daily); aggregator
+  + alerter **hourly** at :05/:06 — the hard 1h tier needs sub-daily
+  cadence to be meaningful (Unit 2 review P2). Boundary-floored
+  `window_end` makes hourly runs idempotent.
+- **No-storm guarantee:** corrupt cooldown state → sidecar-gated health
+  meta-alert + in-memory cooldown + fresh rewrite; **unwritable** state →
+  suppress the noisy spend alert (cannot track cooldown) but still emit
+  the one-shot health nag — never permanent silence, never a storm.
+
+### Process learning — do not delegate host recon to a sandboxed subagent
+
+Early in the slice the call-site inventory was delegated to a background
+subagent. The subagent's sandbox could not authenticate over SSH, so it
+silently fell back to scanning only the local Mac clone and *inferred*
+n8n call sites from repo-committed JSON copies — presenting an
+incomplete, partly-wrong inventory as done. SSH was never the blocker
+(it works fine from the main session, as every prior slice used). The
+inventory was redone live in-session against the n8n Postgres store and
+both hosts. **Lesson:** host/SSH-dependent recon must run in the main
+session, not a sandboxed subagent; verify a subagent can reach a
+resource before relying on its negative result.
+
+### Verification (verbatim)
+
+Live synthetic soft-threshold breach (`spend-thresholds.json`
+`soft_24h_usd` → $0.01, run alerter against live rollups, restore):
+
+```
+RESULT: {"fired":"soft","sent":true,"usd24h":0.097443,"usd1h":0,"suppressed":null}
+--- MESSAGE SENT (verbatim) ---
+⚠️ Charlie spend soft alert — $0.0974 in the last 24h (threshold $0.01). Visibility only.
+Breakdown:
+  • claude-haiku-4-5: $0.0974
+```
+
+The $0.0974 is real Charlie 24h rollup data (all Haiku) — full pipeline
+cache-usage.log → aggregator → rollup → alerter → Telegram proven live.
+State ledger wrote `attempt`+`fired`; thresholds/state restored after.
+
+Test counts: poller+pricing 49, aggregator 44, alerter 40 = **133 new
+checks**, all green; full `npm test` unaffected.
+
+### Followups
+
+| Priority | Item |
+|---|---|
+| MEDIUM | **Slice 3g.1 — router.js caching** for the degraded chat-only path (`registry.js:444`), AND make tool-init failure (`index.js:286`) loud (alert, not just `log.warn`) so the degraded mode is detected. The `.join('')` no-separator concat there is also noted. |
+| MEDIUM | **Org / Claude-Code-level spend alerting** via Admin **usage_report** grouped by `api_key_id` (cost_report can't attribute by key; org is a single default workspace so workspace filtering is impossible). Would cover the 91% Sonnet-4.6 surface that the Charlie-scoped 3g alerter intentionally ignores. |
+| MEDIUM | **n8n caching** — 12/12 active workflows are uncached, one runs Opus. Biggest remaining cost lever; out of 3g (Charlie-runtime) scope. |
+| LOW | **Migrate `router.js` `COST_TABLE` to `pricing.js`** — router's table is stale (Opus 4.5 listed $15/$75, actual $5/$25; Haiku $0.8/$4, actual $1/$5) and mis-keys dated ids. Single source avoids drift. |
+| LOW | **Admin API key rotation** — 90-day cadence for `ANTHROPIC_ADMIN_API_KEY`. |
+| LOW | **Pricing revalidation** — `pricing.js` carries `PRICING_AS_OF=2026-06-03`; revalidate quarterly (price change invalidates aggregator estimates, not the authoritative daily USD). |
+
+### Post-merge steps for Tyson
+
+1. **No `pm2 reload` needed** — the three modules are standalone cron
+   entrypoints, not imported by the `quantumclaw` runtime.
+2. **Install host cron** (after CI deploys the modules to `/root/QClaw`):
+   ```
+   # /etc/cron.d/qclaw-spend (root)
+   59 23 * * *  root  cd /root/QClaw && /usr/bin/node src/observability/anthropic-spend-poller.js >> /var/log/qclaw-spend.log 2>&1
+   5  *  * * *  root  cd /root/QClaw && /usr/bin/node src/observability/spend-aggregator.js  >> /var/log/qclaw-spend.log 2>&1
+   6  *  * * *  root  cd /root/QClaw && /usr/bin/node src/observability/spend-alerter.js     >> /var/log/qclaw-spend.log 2>&1
+   ```
+3. **Tune thresholds** if desired in `/root/.quantumclaw/spend-thresholds.json`
+   (mode 600; defaults soft $5/24h, hard $3/1h, cooldown 60m).
+4. **Model restoration to Sonnet** is now unblocked — flip
+   `config.json` `models.primary` and watch the spend surface for 48h to
+   confirm no anomaly. Separate operator decision, not a code change.
+
+End of Slice 3g episode.
+
 
