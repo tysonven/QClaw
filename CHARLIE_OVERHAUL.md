@@ -850,6 +850,32 @@ Files: `src/agents/registry.js`, `src/tools/executor.js`,
 (test script), `LOCATIONS.md`, `CHARLIE_OVERHAUL.md`,
 `QCLAW_BUILD_LOG.md`.
 
+**Slice 3g — Anthropic API spend observability + hygiene audit — ✓ COMPLETE 2026-06-03.**
+Third of three stabilisation slices. Closes the cost-blindness gap the
+2026-05-17 spike / 2026-05-19 detection exposed. Three subsystems:
+(1) spend data pipeline — `anthropic-spend-poller.js` polls the Admin
+Cost API daily into Supabase `anthropic_spend_daily`; `spend-aggregator.js`
+turns cache-usage.log into Charlie-attributed rollups in
+`anthropic_spend_rollup` (hourly; 1h/24h/7d/30d + calendar-day
+reconciliation); `pricing.js` is the single normalized rate table.
+(2) spend alerting — `spend-alerter.js` thresholds the **Charlie-attributed**
+rollups (never the org total, which is ~91% Claude Code) → Telegram,
+with per-class cooldown + corrupt/unwritable-state no-storm handling.
+(3) hygiene audit — `ANTHROPIC_API_SURFACE.md` inventories every
+Anthropic call site (no hardcoded keys found); router.js caching
+**DEFERRED → Slice 3g.1** (its only cacheable path is the degraded
+chat-only fallback). **2026-05-17 retrospective CLOSED:** leaked
+`qclaw-local` key named (now inactive), containment confirmed.
+Design adversarial-reviewed (3 rounds clean); Unit 1 + Unit 2 code
+reviewed (P0 cents-not-dollars + alerter no-storm fixes). 133 new test
+checks. The Sonnet→Haiku model restoration is now a one-line config
+flip validatable against this spend surface. Files: `src/observability/`
+(`pricing.js`, `anthropic-spend-poller.js`, `spend-aggregator.js`,
+`spend-alerter.js` — all new), `n8n-workflows/migrations/2026_06_03_anthropic_spend_observability.sql`
+(new), `tests/anthropic-spend-poller.test.js` + `tests/spend-aggregator.test.js`
++ `tests/spend-alerter.test.js` (new), `ANTHROPIC_API_SURFACE.md` (new),
+`LOCATIONS.md`, `package.json`, `QCLAW_BUILD_LOG.md`.
+
 **Slice 4 — Verification gates (soft + hard).** Moved one slot back
 in the queue (was next after 3c.1; now next after 3d).
 `verification-reflexes.md` skill written and loaded. `runGates()`
