@@ -13719,6 +13719,35 @@ trigger a switch from 5m to 1h TTL.
 post-4), **or** after **~1 month of normal operation**, whichever comes
 first.
 
+## [2026-06-03] needrestart blacklist for pm2-root.service — closes 2026-06-03 incident HIGH followup
+
+Closes the HIGH followup filed in the 2026-06-03 dump-drift incident
+entry (recorded in PR #39, merged today): `needrestart`-driven
+`pm2-root.service` restarts were the likely systemd trigger for the
+morning's outage. **What changed:** one line plus a comment header
+(`# PM2 process manager` / `qr(^pm2-root) => 0,`) added to the
+`$nrconf{override_rc}` hash in `/etc/needrestart/needrestart.conf` on
+the qclaw host at ~12:15 UTC, placed between the existing `^docker`
+entry and the `LP: #2063442` block to match the misc-services grouping
+pattern. **Why:** `override_rc => 0` tells `needrestart` not to
+auto-restart the matched unit, so apt unattended-upgrades that bump an
+underlying library no longer bounce the PM2 daemon — removing the
+systemd-driven restart trigger class that exposed the stale dump.
+**What it does NOT close:** operator-initiated `pm2 stop`/`restart`
+without a following `pm2 save` still drifts `/root/.pm2/dump.pm2` from
+runtime reality; the save-discipline rule remains the primary defence
+(any daemon restart — operator-triggered, reboot, or otherwise — will
+still resurrect whatever state the dump holds). **Verification:**
+`sudo needrestart -l` parsed the config cleanly with no errors, and
+`sudo grep "pm2-root" /etc/needrestart/needrestart.conf` returned a
+single matching line with correct indentation and trailing comma.
+**Rollback:** pre-edit config backed up at
+`/etc/needrestart/needrestart.conf.bak-20260603`. This is a host
+system-file change, not a repo change — this entry documents it. See
+the `## [2026-06-03] Incident — quantumclaw stopped via stale PM2 dump`
+entry below for the originating incident and the HIGH followup (now
+annotated RESOLVED).
+
 ## 2026-05-29 — Meta Page Access Token rotation + GHL Marketing FB backlog catch-up
 
 Both Meta Page Access Tokens consumed by n8n (`FLOWOS_META_PAGE_ACCESS_TOKEN` for the
@@ -14104,7 +14133,7 @@ no regression in either**:
 
 | Priority | Item |
 |---|---|
-| HIGH | `needrestart` `override_rc` blacklist for `pm2-root.service`. Single-line addition to `/etc/needrestart/needrestart.conf` (`$nrconf{override_rc}`). Closes one major trigger class for this incident pattern (systemd-driven daemon restart during apt upgrades). Separate dispatch when ready. |
+| ~~HIGH~~ **RESOLVED 2026-06-03** | ~~`needrestart` `override_rc` blacklist for `pm2-root.service`. Single-line addition to `/etc/needrestart/needrestart.conf` (`$nrconf{override_rc}`). Closes one major trigger class for this incident pattern (systemd-driven daemon restart during apt upgrades). Separate dispatch when ready.~~ **RESOLVED 2026-06-03** — `qr(^pm2-root) => 0,` added to the `override_rc` hash in `/etc/needrestart/needrestart.conf`. See the `## [2026-06-03] needrestart blacklist for pm2-root.service` entry below. |
 | MEDIUM | `pm2 reset quantumclaw` to baseline the restart counter so the next anomaly is detectable against a clean zero. Carried over from the 2026-05-14 followup table; still open. The 305→165 confusion in this incident is a direct symptom of an un-baselined counter. |
 | LOW | Operational-runbook surface for "post-restart save" beyond LOCATIONS.md. The discipline is currently only documented in the LOCATIONS.md diagnostic-flow note. If a `CLAUDE_CODE_OPERATING_RULES.md` operator-facing companion ever ships, mirror the save-discipline rule there. |
 
