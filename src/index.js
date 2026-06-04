@@ -278,6 +278,13 @@ class QuantumClaw {
           log.debug(`Tool call: ${call.name}(${JSON.stringify(call.args).slice(0, 100)}`);
           this.audit.log('tool', call.name, JSON.stringify(call.args).slice(0, 200));
         },
+        // Slice 4: record tool OUTCOME (success/error) so verification gates can
+        // verify completion/state claims against real results, not just calls.
+        onToolResult: (call) => {
+          this.audit.log('tool', call.name, String(call.result).slice(0, 200), {
+            resultStatus: call.ok ? 'success' : 'error',
+          });
+        },
       });
 
       if (toolStatus.tools > 0) {

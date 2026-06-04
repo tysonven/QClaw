@@ -20,6 +20,18 @@ try {
   Database = null;
 }
 
+/**
+ * Slice 4: normalize an audit `timestamp` to epoch ms. New rows are ISO-UTC
+ * (`...T...Z`); legacy rows are SQLite space-format UTC (`YYYY-MM-DD HH:MM:SS`,
+ * no zone) which `new Date()` would parse as host-local — so we coerce legacy
+ * strings to UTC explicitly. Returns NaN for unparseable input.
+ */
+export function parseAuditTs(ts) {
+  if (!ts || typeof ts !== 'string') return NaN;
+  const norm = ts.includes('T') ? ts : ts.replace(' ', 'T') + 'Z';
+  return Date.parse(norm);
+}
+
 export class AuditLog {
   constructor(config) {
     const dir = config._dir;
@@ -44,13 +56,26 @@ export class AuditLog {
           tier TEXT,
           approved INTEGER DEFAULT 1,
           duration_ms INTEGER,
-          channel TEXT DEFAULT 'unknown'
+          channel TEXT DEFAULT 'unknown',
+          result_status TEXT
         )
       `);
 
+      // Slice 4: result_status column for tool-outcome capture. Guarded ADD
+      // COLUMN for DBs created before this column existed (idempotent —
+      // metadata-only, no table rewrite; safe under WAL on the single writer).
+      const cols = this.db.prepare(`PRAGMA table_info(audit)`).all();
+      if (!cols.some(c => c.name === 'result_status')) {
+        this.db.exec(`ALTER TABLE audit ADD COLUMN result_status TEXT`);
+      }
+
+      // Slice 4: bind `timestamp` explicitly as ISO-UTC. Previously omitted, so
+      // SQLite's DEFAULT (datetime('now')) wrote space-format local-ambiguous
+      // strings while the JSONL fallback wrote ISO — `new Date()` parsed them
+      // inconsistently across timezones, breaking time-window gate queries.
       this._insert = this.db.prepare(`
-        INSERT INTO audit (agent, action, detail, model, cost, tier, approved, duration_ms, channel)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO audit (timestamp, agent, action, detail, model, cost, tier, approved, duration_ms, channel, result_status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
     } else {
       // Fallback: append-only JSONL file
@@ -68,13 +93,15 @@ export class AuditLog {
       tier: extra.tier || null,
       approved: extra.approved !== undefined ? (extra.approved ? 1 : 0) : 1,
       duration_ms: extra.duration || null,
-      channel: extra.channel || 'unknown'
+      channel: extra.channel || 'unknown',
+      result_status: extra.resultStatus || null
     };
 
     if (this.db) {
       this._insert.run(
-        entry.agent, entry.action, entry.detail, entry.model,
-        entry.cost, entry.tier, entry.approved, entry.duration_ms, entry.channel
+        entry.timestamp, entry.agent, entry.action, entry.detail, entry.model,
+        entry.cost, entry.tier, entry.approved, entry.duration_ms, entry.channel,
+        entry.result_status
       );
     } else if (this._logFile) {
       try {
@@ -108,6 +135,31 @@ export class AuditLog {
           .filter(Boolean);
         if (agent) entries = entries.filter(e => e.agent === agent);
         return entries.slice(-limit).reverse();
+      } catch { return []; }
+    }
+    return [];
+  }
+
+  /**
+   * Slice 4: tool/probe events at or after `cutoffIso` (UTC ISO string), newest
+   * first. Time-windowed (NOT a fixed row cap) so a gate's evidence window is
+   * correct under bursty volume. Bounded by a generous LIMIT as a scan backstop.
+   * Returns rows with {timestamp, action, detail, result_status, ...}.
+   */
+  toolEventsSince(cutoffIso, limit = 2000) {
+    if (this.db) {
+      return this.db.prepare(
+        `SELECT * FROM audit WHERE agent = 'tool' AND timestamp >= ? ORDER BY id DESC LIMIT ?`
+      ).all(cutoffIso, limit);
+    }
+    if (this._logFile && existsSync(this._logFile)) {
+      try {
+        const cutMs = Date.parse(cutoffIso);
+        return readFileSync(this._logFile, 'utf-8').trim().split('\n')
+          .filter(Boolean)
+          .map(l => { try { return JSON.parse(l); } catch { return null; } })
+          .filter(e => e && e.agent === 'tool' && parseAuditTs(e.timestamp) >= cutMs)
+          .reverse();
       } catch { return []; }
     }
     return [];
