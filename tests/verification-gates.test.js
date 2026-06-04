@@ -172,7 +172,11 @@ check('runGates: clean factual w/ backing → pass',
   runGates('The workflow Qf39NEOEgz2W0uls is running.', mkAudit(successPair('shared__n8n-api__n8n-api__get_workflows_id', 'Qf39NEOEgz2W0uls')), reg, { now: Date.now(), turnStartMs: Date.now() - 60000 }).result === 'pass');
 
 console.log('Unit 3 — regeneration loop:');
-import { regenerateWithGates } from '../src/agents/gates.js';
+import { regenerateWithGates, isGatedAgent } from '../src/agents/gates.js';
+// P0 scoping: gates apply to charlie only by default; background agents skip them.
+check('U3: isGatedAgent("charlie") default true', isGatedAgent('charlie') === true);
+check('U3: isGatedAgent("echo") default false (background agent skips gates)', isGatedAgent('echo') === false);
+check('U3: QCLAW_GATES_AGENTS override', (() => { process.env.QCLAW_GATES_AGENTS = 'charlie,echo'; const r = isGatedAgent('echo'); delete process.env.QCLAW_GATES_AGENTS; return r === true; })());
 const BM = [{ role: 'user', content: 'go' }];
 const past = Date.now() - 5000;
 

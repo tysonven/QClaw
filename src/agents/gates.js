@@ -275,6 +275,19 @@ function gatesEnabled() {
 }
 
 /**
+ * Which agents the gates apply to. Default: charlie only — background/heartbeat
+ * agents would otherwise pay regeneration cost (and Gate 2 would suppress their
+ * normal "dispatched"/"handed off" status lines) for no benefit. Configurable
+ * via QCLAW_GATES_AGENTS (comma list). This is the scoping the design's
+ * `agentScope` intended; enforced at the registry wiring layer.
+ */
+export function isGatedAgent(name) {
+  const list = (process.env.QCLAW_GATES_AGENTS || 'charlie')
+    .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+  return list.includes(String(name || '').toLowerCase());
+}
+
+/**
  * Run all gates on `response`. Fail-closed: a gate that throws → synthesized
  * hard_fail. Aggregate: any hard fired → 'hard_fail'; else any soft → 'soft_fail';
  * else 'pass'. opts: { now, turnStart, windowMinComplete, windowMinState, agentScope }.

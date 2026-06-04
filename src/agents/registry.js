@@ -10,7 +10,7 @@ import { join } from 'path';
 import { log } from '../core/logger.js';
 import { parseSkill, skillToTools, executeSkillTool } from './skill-parser.js';
 import { loadSkills } from './skill-loader.js';
-import { regenerateWithGates } from './gates.js';
+import { regenerateWithGates, isGatedAgent } from './gates.js';
 import { appendGateLog } from '../observability/gate-log.js';
 import { appendChannelEvent } from '../observability/channel-events.js';
 
@@ -458,11 +458,17 @@ export class Agent {
     const turnStart = Date.now();
     let result;
     try {
-      // Slice 4: gate the assembled response; regenerate (≤3) or escalate on
-      // failure. Runs INSIDE this try so the per-request tool gate stays
-      // registered across ALL regeneration attempts; cleanupTools() fires once
-      // in the finally after the loop completes. The user never sees a raw
-      // unbacked claim — only a hedged/corrected/escalated response.
+      // Slice 4: gates apply to the gated agent(s) only (charlie by default —
+      // background/heartbeat agents skip the loop entirely, paying zero gate
+      // cost). When out of scope, a single ungated generation.
+      if (!isGatedAgent(this.name)) {
+        result = await generate(messages);
+      } else
+      // Gate the assembled response; regenerate (≤3) or escalate on failure.
+      // Runs INSIDE this try so the per-request tool gate stays registered
+      // across ALL regeneration attempts; cleanupTools() fires once in the
+      // finally after the loop. The user never sees a raw unbacked claim —
+      // only a hedged/corrected/escalated response.
       result = await regenerateWithGates({
         generate,
         auditLog: audit,
