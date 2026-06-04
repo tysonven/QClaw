@@ -154,6 +154,17 @@ check('G2: past "I dispatched ... to Claude Code" → hard fail-closed',
 check('G2: future "I\'ll dispatch" (plan) → not fired',
   gateDelegation("I'll dispatch the audit to Claude Code.", ctx([])).fired === false);
 
+// Unit-2 review fixes:
+// P1-a: elided-subject declarative "Is working on it" must NOT be suppressed (fires Gate 2)
+check('R(P1a): "Is working on it." NOT suppressed (declarative)', isSuppressed('Is working on it.') === false);
+check('R(P1a): true question "is it working?" still suppressed', isSuppressed('is it working?') === true);
+check('R(P1a): "is the workflow running?" still suppressed', isSuppressed('is the workflow running?') === true);
+check('R(P1a): standalone "Is working on it." fires Gate 2', gateDelegation('Is working on it.', ctx([])).fired === true);
+// P1-b: liveness "running" backed by an ERRORED probe → hard_fail (was a false-pass)
+check('R(P1b): "running" + errored probe → hard_fail', (() => { const g = gateState('The workflow Qf39NEOEgz2W0uls is running.', ctx(errorPair('shared__n8n-api__n8n-api__get_workflows_id', 'Qf39NEOEgz2W0uls'))); return g.fired && g.severity === 'hard'; })());
+// P1-c: entity-bearing success that PRE-DATES the turn must not back the claim
+check('R(P1c): pre-turn entity success → NOT backed', matchEvidence('deployed Qf39NEOEgz2W0uls', events, { requireStatus: 'success', turnStartMs: Date.now() + 60000 }).backed === false);
+
 // runGates integration: phantom tool + unbacked completion → hard_fail
 check('runGates: phantom + unbacked completion → hard_fail',
   runGates('Used charlie__nope__doit and deployed workflow Zz000000zz11.', mkAudit([]), reg, { now: Date.now(), turnStartMs: Date.now() - 60000 }).result === 'hard_fail');

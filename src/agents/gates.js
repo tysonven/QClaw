@@ -41,7 +41,11 @@ export function stripCodeSpans(text) {
 }
 
 const NEG_RE = /\b(not|n't|never|no longer|isn't|wasn't|aren't|weren't|haven't|hasn't|didn't|won't|cannot|can't)\b/i;
-const INTERROG_OPEN_RE = /^\s*(is|are|was|were|does|do|did|can|could|will|would|should|has|have|had)\b/i;
+// Copula-initial → interrogative ONLY when a subject follows (e.g. "is it
+// working", "did the workflow run"). NOT "Is working on it" / "Has shipped" —
+// those are declarative status lines with an elided subject and must NOT be
+// suppressed (they're real claims). True "?" questions are caught separately.
+const INTERROG_OPEN_RE = /^\s*(is|are|was|were|does|do|did|can|could|will|would|should|has|have|had)\s+(i|we|you|he|she|it|they|the|that|this|there|my|your|our|their|his|her|everything|all)\b/i;
 const FUTURE_RE = /\b(will|'ll|going to|gonna|about to|plan to|planning to|intend to|i'll|we'll|let me|once|after we|before we|if)\b/i;
 
 /**
@@ -132,6 +136,9 @@ export function matchEvidence(sentence, events, { requireStatus = 'success', tur
 
   if (entities.length) {
     for (const p of candidates) {
+      // Evidence must not pre-date the turn (design §2: a regenerated claim
+      // can't be backed by a prior attempt's / earlier turn's tool rows).
+      if (parseAuditTs(p.result.timestamp) < turnStartMs) continue;
       const args = String(p.call.detail || '');
       if (entities.some(e => args.includes(e))) return { backed: true, evidence: p };
     }
@@ -183,10 +190,14 @@ export function gateToolReference(response, ctx) {
 
 // ── Gates 1 / 3 / 2 — evidentiary + delegation (Unit 2) ───────────────────
 
-const COMPLETION_RE = /\b(done|finished|complete|completed|shipped|deployed|fixed|resolved|merged|published|posted|sent|successfully)\b/i;
-const STATE_RE = /\b(running|live|active|online|enabled|connected|working|up|healthy|passed|succeeded|successful)\b/i;
-const CHARACTERIZATION_RE = /\b(healthy|passed|succeeded|successful|working|ok|fine|good|stable)\b/i;
-const DELEGATION_RE = /\b(dispatched|delegated|handed off|handed it off|is working on it|kicked off)\b/i;
+// Hyphen-aware boundaries (?<![\w-])…(?![\w-]) so hyphenated compounds like
+// "completed-tasks" / "auto-deploy" don't false-fire (P2 over-fire).
+const COMPLETION_RE = /(?<![\w-])(done|finished|complete|completed|shipped|deployed|fixed|resolved|merged|published|posted|sent|successfully)(?![\w-])/i;
+const STATE_RE = /(?<![\w-])(running|live|active|online|enabled|connected|working|up|healthy|passed|succeeded|successful|stable)(?![\w-])/i;
+// Characterization (needs a SUCCESS probe; an errored probe → hard_fail). Liveness
+// words moved here (R: "running" backed by an errored probe was a false-pass).
+const CHARACTERIZATION_RE = /(?<![\w-])(running|live|active|online|connected|up|enabled|healthy|passed|succeeded|successful|working|ok|fine|good|stable)(?![\w-])/i;
+const DELEGATION_RE = /(?<![\w-])(dispatched|delegated|handed off|handed it off|is working on it|kicked off)(?![\w-])/i;
 
 // no-entity-fallback relevance: which tools plausibly back which claim class.
 const isCompletionTool = (n) => /write|edit|update|create|deploy|post|publish|send|merge|workflow_update|shell_exec/i.test(n || '');
@@ -198,7 +209,10 @@ function detectClaims(response, verbRe) {
 }
 
 function windowEvents(ctx, windowMin) {
-  const cutoffMs = ctx.now - windowMin * 60_000;
+  // cutoff = max(now - window, turnStart) when turnStart is known, so a
+  // prior-attempt / earlier-turn row can't enter the evidence set (design §2).
+  const base = ctx.now - windowMin * 60_000;
+  const cutoffMs = (ctx.turnStartMs != null) ? Math.max(base, ctx.turnStartMs) : base;
   const cutoffIso = new Date(cutoffMs).toISOString();
   return (ctx.auditLog && typeof ctx.auditLog.toolEventsSince === 'function')
     ? ctx.auditLog.toolEventsSince(cutoffIso)
@@ -212,7 +226,7 @@ export function gateCompletion(response, ctx) {
   const events = windowEvents(ctx, ctx.windowMinComplete);
   const unbacked = [];
   for (const c of claims) {
-    const m = matchEvidence(c, events, { requireStatus: 'success', turnStartMs: ctx.turnStartMs, relevant: isCompletionTool });
+    const m = matchEvidence(c, events, { requireStatus: 'success', turnStartMs: ctx.turnStartMs ?? 0, relevant: isCompletionTool });
     if (!m.backed) unbacked.push({ text: c, verification_attempted: true, verified: false });
   }
   if (!unbacked.length) return { gate: 'completion', fired: false };
@@ -226,10 +240,10 @@ export function gateState(response, ctx) {
   const events = windowEvents(ctx, ctx.windowMinState);
   let anyHard = false; const fired = [];
   for (const c of claims) {
-    const ran = matchEvidence(c, events, { requireStatus: 'nonnull', turnStartMs: ctx.turnStartMs, relevant: isStateTool });
+    const ran = matchEvidence(c, events, { requireStatus: 'nonnull', turnStartMs: ctx.turnStartMs ?? 0, relevant: isStateTool });
     if (!ran.backed) { fired.push({ text: c, verification_attempted: true, verified: false, severity: 'soft' }); continue; }
     if (CHARACTERIZATION_RE.test(c)) {
-      const ok = matchEvidence(c, events, { requireStatus: 'success', turnStartMs: ctx.turnStartMs, relevant: isStateTool });
+      const ok = matchEvidence(c, events, { requireStatus: 'success', turnStartMs: ctx.turnStartMs ?? 0, relevant: isStateTool });
       if (!ok.backed) { anyHard = true; fired.push({ text: c, verification_attempted: true, verified: false, severity: 'hard' }); } // probe ran but not success → contradicted
     }
   }
@@ -273,7 +287,10 @@ export function runGates(response, auditLog, toolRegistry, opts = {}) {
   const ctx = {
     auditLog, toolRegistry,
     now,
-    turnStartMs: opts.turnStart || now,
+    // null (not now) when unset: windowEvents only clamps by turnStart when
+    // known, so Unit-3 callers that omit it don't accidentally exclude all
+    // this-turn evidence. Unit 3 MUST pass the real turn-start timestamp.
+    turnStartMs: (typeof opts.turnStart === 'number') ? opts.turnStart : null,
     windowMinComplete: opts.windowMinComplete ?? 10,
     windowMinState: opts.windowMinState ?? 5,
     agentScope: opts.agentScope || null,
