@@ -116,6 +116,50 @@ check('fail-closed: throwing registry → hard_fail (no throw out)', (() => {
   return r.result === 'hard_fail';
 })());
 
+console.log('Gate 1 / 3 / 2 (Unit 2):');
+import { gateCompletion, gateState, gateDelegation } from '../src/agents/gates.js';
+const ts2 = new Date().toISOString();
+const mkAudit = (events) => ({ toolEventsSince: () => events });
+const ctx = (events, extra = {}) => ({ auditLog: mkAudit(events), now: Date.now(), turnStartMs: Date.now() - 60000, windowMinComplete: 10, windowMinState: 5, ...extra });
+const successPair = (action, entity) => ([
+  { action, detail: `{"id":"p1","result":"OK updated"}`, result_status: 'success', timestamp: ts2 },
+  { action, detail: `{"id":"p1","args":{"id":"${entity}"}}`, result_status: null, timestamp: ts2 },
+]);
+const errorPair = (action, entity) => ([
+  { action, detail: `{"id":"p2","result":"boom"}`, result_status: 'error', timestamp: ts2 },
+  { action, detail: `{"id":"p2","args":{"id":"${entity}"}}`, result_status: null, timestamp: ts2 },
+]);
+
+// Gate 1 — completion
+check('G1: completion backed by matching success → not fired',
+  gateCompletion('Deployed workflow Qf39NEOEgz2W0uls.', ctx(successPair('n8n_workflow_update', 'Qf39NEOEgz2W0uls'))).fired === false);
+check('G1: completion, entity has NO backing → hard_fail',
+  (() => { const g = gateCompletion('Deployed workflow Zz000000zz11.', ctx(successPair('n8n_workflow_update', 'Qf39NEOEgz2W0uls'))); return g.fired && g.severity === 'hard'; })());
+check('G1: completion entity backed only by ERROR row → hard_fail',
+  gateCompletion('Deployed workflow Qf39NEOEgz2W0uls.', ctx(errorPair('n8n_workflow_update', 'Qf39NEOEgz2W0uls'))).fired === true);
+check('G1: future "I\'ll deploy" suppressed → not fired',
+  gateCompletion("I'll deploy workflow Qf39NEOEgz2W0uls next.", ctx([])).fired === false);
+
+// Gate 3 — state
+check('G3: "running" with probe that RAN → not fired',
+  gateState('The workflow Qf39NEOEgz2W0uls is running.', ctx(successPair('shared__n8n-api__n8n-api__get_workflows_id', 'Qf39NEOEgz2W0uls'))).fired === false);
+check('G3: "running" with NO probe → soft_fail',
+  (() => { const g = gateState('The workflow Qf39NEOEgz2W0uls is running.', ctx([])); return g.fired && g.severity === 'soft'; })());
+check('G3: characterization "healthy" but probe ERRORED → hard_fail',
+  (() => { const g = gateState('The workflow Qf39NEOEgz2W0uls is healthy.', ctx(errorPair('shared__n8n-api__n8n-api__get_workflows_id', 'Qf39NEOEgz2W0uls'))); return g.fired && g.severity === 'hard'; })());
+
+// Gate 2 — delegation (tense-discriminated, fail-closed)
+check('G2: past "I dispatched ... to Claude Code" → hard fail-closed',
+  (() => { const g = gateDelegation('I dispatched the audit to Claude Code.', ctx([])); return g.fired && g.severity === 'hard' && g.action === 'fail_closed_slice5_pending'; })());
+check('G2: future "I\'ll dispatch" (plan) → not fired',
+  gateDelegation("I'll dispatch the audit to Claude Code.", ctx([])).fired === false);
+
+// runGates integration: phantom tool + unbacked completion → hard_fail
+check('runGates: phantom + unbacked completion → hard_fail',
+  runGates('Used charlie__nope__doit and deployed workflow Zz000000zz11.', mkAudit([]), reg, { now: Date.now(), turnStartMs: Date.now() - 60000 }).result === 'hard_fail');
+check('runGates: clean factual w/ backing → pass',
+  runGates('The workflow Qf39NEOEgz2W0uls is running.', mkAudit(successPair('shared__n8n-api__n8n-api__get_workflows_id', 'Qf39NEOEgz2W0uls')), reg, { now: Date.now(), turnStartMs: Date.now() - 60000 }).result === 'pass');
+
 console.log('gate-log:');
 process.env.QCLAW_GATE_LOG_PATH = join(dir, 'gate.log');
 appendGateLog({ gate: 'completion', claim: 'done; key sk-ant-admin01-SECRET123 here', result: 'hard_fail', action: 'reprompt', attempt: 1, verified: false });

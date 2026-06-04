@@ -181,10 +181,79 @@ export function gateToolReference(response, ctx) {
   };
 }
 
+// ── Gates 1 / 3 / 2 — evidentiary + delegation (Unit 2) ───────────────────
+
+const COMPLETION_RE = /\b(done|finished|complete|completed|shipped|deployed|fixed|resolved|merged|published|posted|sent|successfully)\b/i;
+const STATE_RE = /\b(running|live|active|online|enabled|connected|working|up|healthy|passed|succeeded|successful)\b/i;
+const CHARACTERIZATION_RE = /\b(healthy|passed|succeeded|successful|working|ok|fine|good|stable)\b/i;
+const DELEGATION_RE = /\b(dispatched|delegated|handed off|handed it off|is working on it|kicked off)\b/i;
+
+// no-entity-fallback relevance: which tools plausibly back which claim class.
+const isCompletionTool = (n) => /write|edit|update|create|deploy|post|publish|send|merge|workflow_update|shell_exec/i.test(n || '');
+const isStateTool = (n) => /get_|list_|search|read|status|executions|pm2|shell_exec/i.test(n || '');
+
+/** Non-suppressed sentences that match a verb class. */
+function detectClaims(response, verbRe) {
+  return splitSentences(response).filter(s => !isSuppressed(s) && verbRe.test(s));
+}
+
+function windowEvents(ctx, windowMin) {
+  const cutoffMs = ctx.now - windowMin * 60_000;
+  const cutoffIso = new Date(cutoffMs).toISOString();
+  return (ctx.auditLog && typeof ctx.auditLog.toolEventsSince === 'function')
+    ? ctx.auditLog.toolEventsSince(cutoffIso)
+    : [];
+}
+
+/** Gate 1 — completion: each claim needs a backing success tool result (entity-aware). */
+export function gateCompletion(response, ctx) {
+  const claims = detectClaims(response, COMPLETION_RE);
+  if (!claims.length) return { gate: 'completion', fired: false };
+  const events = windowEvents(ctx, ctx.windowMinComplete);
+  const unbacked = [];
+  for (const c of claims) {
+    const m = matchEvidence(c, events, { requireStatus: 'success', turnStartMs: ctx.turnStartMs, relevant: isCompletionTool });
+    if (!m.backed) unbacked.push({ text: c, verification_attempted: true, verified: false });
+  }
+  if (!unbacked.length) return { gate: 'completion', fired: false };
+  return { gate: 'completion', fired: true, severity: 'hard', claims: unbacked, action: 'reprompt', reason: 'completion claim without a backing success tool result' };
+}
+
+/** Gate 3 — state: probe must have RUN (nonnull); characterization needs success. */
+export function gateState(response, ctx) {
+  const claims = detectClaims(response, STATE_RE);
+  if (!claims.length) return { gate: 'state', fired: false };
+  const events = windowEvents(ctx, ctx.windowMinState);
+  let anyHard = false; const fired = [];
+  for (const c of claims) {
+    const ran = matchEvidence(c, events, { requireStatus: 'nonnull', turnStartMs: ctx.turnStartMs, relevant: isStateTool });
+    if (!ran.backed) { fired.push({ text: c, verification_attempted: true, verified: false, severity: 'soft' }); continue; }
+    if (CHARACTERIZATION_RE.test(c)) {
+      const ok = matchEvidence(c, events, { requireStatus: 'success', turnStartMs: ctx.turnStartMs, relevant: isStateTool });
+      if (!ok.backed) { anyHard = true; fired.push({ text: c, verification_attempted: true, verified: false, severity: 'hard' }); } // probe ran but not success → contradicted
+    }
+  }
+  if (!fired.length) return { gate: 'state', fired: false };
+  return { gate: 'state', fired: true, severity: anyHard ? 'hard' : 'soft', claims: fired, action: anyHard ? 'reprompt' : 'rewrite', reason: anyHard ? 'characterization contradicted by tool result' : 'state claim without a probe in window' };
+}
+
+/** Gate 2 — delegation: detect-only, always fail-closed (no evidence source until Slice 5). */
+export function gateDelegation(response, ctx) {
+  const claims = detectClaims(response, DELEGATION_RE);
+  if (!claims.length) return { gate: 'delegation', fired: false };
+  // SLICE 5: wire claude_code_dispatches evidence here; until then, a past-tense
+  // delegation claim is structurally unverifiable → fail closed.
+  return {
+    gate: 'delegation', fired: true, severity: 'hard',
+    claims: claims.map(c => ({ text: c, verification_attempted: false, verified: false })),
+    action: 'fail_closed_slice5_pending',
+    reason: 'delegation claim unverifiable pre-Slice-5 (no dispatch evidence source)',
+  };
+}
+
 // ── Framework ─────────────────────────────────────────────────────────────
 
-// Unit 1: only Gate 4. Unit 2 appends completion/state/delegation gates.
-const GATES = [gateToolReference];
+const GATES = [gateToolReference, gateCompletion, gateState, gateDelegation];
 
 function gatesEnabled() {
   const v = process.env.QCLAW_GATES_ENABLED;
