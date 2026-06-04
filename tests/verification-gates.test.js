@@ -171,6 +171,63 @@ check('runGates: phantom + unbacked completion → hard_fail',
 check('runGates: clean factual w/ backing → pass',
   runGates('The workflow Qf39NEOEgz2W0uls is running.', mkAudit(successPair('shared__n8n-api__n8n-api__get_workflows_id', 'Qf39NEOEgz2W0uls')), reg, { now: Date.now(), turnStartMs: Date.now() - 60000 }).result === 'pass');
 
+console.log('Unit 3 — regeneration loop:');
+import { regenerateWithGates } from '../src/agents/gates.js';
+const BM = [{ role: 'user', content: 'go' }];
+const past = Date.now() - 5000;
+
+// (1) seeded false completion, no backing → escalates after 3 attempts; raw claim never returned as truth
+let n1 = 0;
+const r1 = await regenerateWithGates({
+  generate: async () => { n1++; return { content: 'Deployed workflow Zz000000zz11 successfully.', model: 'm' }; },
+  auditLog: mkAudit([]), toolRegistry: reg, turnStart: past, baseMessages: BM,
+});
+check('U3: unbacked completion → 3 generate attempts', n1 === 3);
+check('U3: → escalated (not pass)', r1.gateEscalated === true && r1.gateOutcome === 'hard_fail');
+check('U3: escalation reframes (not asserted as done)', r1.content.includes("couldn't verify") && !/^Deployed workflow Zz000000zz11 successfully\.$/.test(r1.content.trim()));
+
+// (2) DONE-BUT-ERRORED — claim completion after the tool returned result_status:error → hard_fail
+let n2 = 0;
+const r2 = await regenerateWithGates({
+  generate: async () => { n2++; return { content: 'Deployed workflow Qf39NEOEgz2W0uls.', model: 'm' }; },
+  auditLog: mkAudit(errorPair('n8n_workflow_update', 'Qf39NEOEgz2W0uls')), toolRegistry: reg, turnStart: past, baseMessages: BM,
+});
+check('U3: done-but-errored → hard_fail + escalated', r2.gateOutcome === 'hard_fail' && r2.gateEscalated === true && n2 === 3);
+
+// (3) cleanupTools stays valid across ALL 3 attempts (layered call-site that bit 3b/3c) — DEMONSTRATED
+let registered = true; const cleanup = () => { registered = false; }; const seenRegistered = [];
+try {
+  await regenerateWithGates({
+    generate: async () => { seenRegistered.push(registered); return { content: 'Deployed workflow Zz000000zz11 now.', model: 'm' }; },
+    auditLog: mkAudit([]), toolRegistry: reg, turnStart: past, baseMessages: BM,
+  });
+} finally { cleanup(); }
+check('U3: tools registered on all 3 attempts (not torn down mid-loop)', seenRegistered.length === 3 && seenRegistered.every(x => x === true));
+check('U3: cleanupTools fires exactly once AFTER the loop', registered === false);
+
+// (4) soft_fail (state, no probe) → deterministic hedge, NO LLM regen, resolves to pass
+let n4 = 0;
+const r4 = await regenerateWithGates({
+  generate: async () => { n4++; return { content: 'The workflow Qf39NEOEgz2W0uls is running.', model: 'm' }; },
+  auditLog: mkAudit([]), toolRegistry: reg, turnStart: past, baseMessages: BM,
+});
+check('U3: soft_fail hedged without a second generate call', n4 === 1 && r4.content.includes('Unverified') && r4.gateOutcome === 'pass');
+
+// (5) clean backed claim → pass on first attempt, content untouched
+const r5 = await regenerateWithGates({
+  generate: async () => ({ content: 'The workflow Qf39NEOEgz2W0uls is running.', model: 'm' }),
+  auditLog: mkAudit(successPair('shared__n8n-api__n8n-api__get_workflows_id', 'Qf39NEOEgz2W0uls')), toolRegistry: reg, turnStart: past, baseMessages: BM,
+});
+check('U3: backed claim → pass attempt 1, content unchanged', r5.gateOutcome === 'pass' && r5.gateAttempts === 1 && r5.content === 'The workflow Qf39NEOEgz2W0uls is running.');
+
+// (6) hard_fail then model self-corrects on re-prompt → pass, not escalated
+let n6 = 0;
+const r6 = await regenerateWithGates({
+  generate: async () => { n6++; return n6 === 1 ? { content: 'Deployed workflow Zz000000zz11.', model: 'm' } : { content: "I have not verified that yet; let me check.", model: 'm' }; },
+  auditLog: mkAudit([]), toolRegistry: reg, turnStart: past, baseMessages: BM,
+});
+check('U3: hard_fail then corrected re-prompt → pass, not escalated', r6.gateOutcome === 'pass' && n6 === 2 && !r6.gateEscalated);
+
 console.log('gate-log:');
 process.env.QCLAW_GATE_LOG_PATH = join(dir, 'gate.log');
 appendGateLog({ gate: 'completion', claim: 'done; key sk-ant-admin01-SECRET123 here', result: 'hard_fail', action: 'reprompt', attempt: 1, verified: false });

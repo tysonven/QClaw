@@ -317,4 +317,76 @@ export function runGates(response, auditLog, toolRegistry, opts = {}) {
   return { result, gates: results };
 }
 
+// ── Regeneration loop (Unit 3) ────────────────────────────────────────────
+
+const SOFT_HEDGE = "[Unverified — I don't have a confirmed tool result for that this turn; let me check and confirm before stating it.]";
+
+/** Replace each SOFT-fired claim sentence with a fixed hedge (no surgical leak). */
+export function hedgeResponse(response, gateOut) {
+  let out = response;
+  for (const g of (gateOut.gates || [])) {
+    if (!g.fired || g.severity !== 'soft') continue;
+    for (const c of (g.claims || [])) {
+      const t = c.text || '';
+      if (t && out.includes(t)) out = out.split(t).join(SOFT_HEDGE);
+    }
+  }
+  return out;
+}
+
+/** Augmented re-prompt note for a hard_fail (lists the unbacked claims). */
+export function buildRepromptNote(gateOut) {
+  const lines = [];
+  for (const g of (gateOut.gates || [])) {
+    if (g.fired && g.severity === 'hard') for (const c of (g.claims || [])) lines.push(`- "${c.text}" (gate: ${g.gate})`);
+  }
+  return `Your previous reply made statement(s) I could not verify against this turn's tool results:\n${lines.join('\n')}\n` +
+    `Revise: state only what a tool result or probe THIS TURN confirms (and cite it), or say you will verify and then stop. ` +
+    `Do not repeat an unbacked claim, and do not reference tools that are not registered in your scope.`;
+}
+
+/** User/Tyson-facing escalation text (the raw unbacked claim is never shown). */
+export function buildEscalation(gateOut) {
+  const lines = [];
+  for (const g of (gateOut.gates || [])) {
+    if (g.fired) for (const c of (g.claims || [])) lines.push(`• ${c.text || c} [${g.gate}]`);
+  }
+  return `⚠️ I couldn't verify the following before stating it, so I've stopped rather than risk an unbacked claim:\n` +
+    `${lines.join('\n')}\nI need to actually run the check. Flagging this for you — say the word and I'll probe and report back with evidence.`;
+}
+
+/**
+ * Run `generate(messages)` and gate its output; on failure regenerate up to
+ * `maxAttempts` times, then escalate. soft_fail → deterministic hedge + re-check
+ * (no LLM); hard_fail → re-prompt with structured feedback (an attempt).
+ * The raw failing response is NEVER returned — only a hedged/corrected/escalated
+ * one. Branches on gateOut.result (NOT action literals). Caller keeps tools
+ * registered for the whole call (cleanupTools fires once after this returns).
+ */
+export async function regenerateWithGates({ generate, auditLog, toolRegistry, turnStart, agentScope = null, baseMessages, maxAttempts = 3, onGateLog = null, onEscalate = null, now = null }) {
+  const opts = () => ({ now: now || Date.now(), turnStart, agentScope });
+  let messages = baseMessages;
+  let result = await generate(messages);
+  let attempt = 1;
+  let gateOut = runGates(result.content, auditLog, toolRegistry, opts());
+  while (gateOut.result !== 'pass') {
+    if (onGateLog) { try { onGateLog(gateOut, attempt); } catch { /* logging best-effort */ } }
+    if (gateOut.result === 'soft_fail') {
+      result = { ...result, content: hedgeResponse(result.content, gateOut) };
+      gateOut = runGates(result.content, auditLog, toolRegistry, opts());
+      if (gateOut.result === 'pass') break;
+    }
+    if (attempt >= maxAttempts) {
+      if (onEscalate) { try { onEscalate(gateOut, attempt); } catch { /* best-effort */ } }
+      result = { ...result, content: buildEscalation(gateOut), gateEscalated: true };
+      break;
+    }
+    messages = [...baseMessages, { role: 'user', content: buildRepromptNote(gateOut) }];
+    result = await generate(messages);
+    attempt++;
+    gateOut = runGates(result.content, auditLog, toolRegistry, opts());
+  }
+  return { ...result, gateAttempts: attempt, gateOutcome: gateOut.result };
+}
+
 export const __testing = { GATES };
