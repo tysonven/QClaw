@@ -61,24 +61,39 @@ console.log('entity + evidence matching:');
 check('extractEntities long id', extractEntities('deployed Qf39NEOEgz2W0uls now').includes('Qf39NEOEgz2W0uls'));
 check('extractEntities file path', extractEntities('fixed /root/QClaw/src/x.js').some(e => e.includes('x.js')));
 check('extractEntities none in vague', extractEntities('it is done').filter(e => e.length >= 12).length === 0);
-// id-DESC events: result row precedes its call row
+// id-DESC events (result row higher id → precedes call row); detail embeds the call id.
 const evNow = new Date().toISOString();
 const events = [
-  { action: 'deploy', detail: 'Workflow updated', result_status: 'success', timestamp: evNow },
-  { action: 'deploy', detail: '{"id":"Qf39NEOEgz2W0uls"}', result_status: null, timestamp: evNow },
+  { action: 'deploy', detail: '{"id":"toolu_1","result":"Workflow updated"}', result_status: 'success', timestamp: evNow },
+  { action: 'deploy', detail: '{"id":"toolu_1","args":{"id":"Qf39NEOEgz2W0uls"}}', result_status: null, timestamp: evNow },
 ];
-check('correlatePairs pairs result+call', correlatePairs(events).length === 1);
+check('correlatePairs pairs result+call by id', correlatePairs(events).length === 1);
 check('matchEvidence: entity in call args → backed', matchEvidence('deployed Qf39NEOEgz2W0uls', events, { requireStatus: 'success' }).backed === true);
 check('matchEvidence: UNRELATED entity, same tool success → NOT backed', matchEvidence('deployed WkXX0000zz9988yy', events, { requireStatus: 'success' }).backed === false);
 check('matchEvidence: error-only row → not backed for success', matchEvidence('deployed Qf39NEOEgz2W0uls', [
-  { action: 'deploy', detail: 'boom', result_status: 'error', timestamp: evNow },
-  { action: 'deploy', detail: '{"id":"Qf39NEOEgz2W0uls"}', result_status: null, timestamp: evNow },
+  { action: 'deploy', detail: '{"id":"toolu_2","result":"boom"}', result_status: 'error', timestamp: evNow },
+  { action: 'deploy', detail: '{"id":"toolu_2","args":{"id":"Qf39NEOEgz2W0uls"}}', result_status: null, timestamp: evNow },
 ], { requireStatus: 'success' }).backed === false);
 check('matchEvidence: no-entity this-turn fallback → backed weak', (() => {
   const r = matchEvidence('it is done', events, { requireStatus: 'success', turnStartMs: Date.now() - 120000 });
   return r.backed === true && r.weak === true;
 })());
 check('matchEvidence: no-entity, evidence pre-dates turn → not backed', matchEvidence('it is done', events, { requireStatus: 'success', turnStartMs: Date.now() + 60000 }).backed === false);
+// P1-2: interleaved cross-agent rows — id correlation must pair correctly (errored claim not success-backed)
+const interleaved = [
+  { action: 'deploy', detail: '{"id":"BB","result":"boom"}', result_status: 'error', timestamp: evNow },
+  { action: 'deploy', detail: '{"id":"AA","result":"ok"}', result_status: 'success', timestamp: evNow },
+  { action: 'deploy', detail: '{"id":"BB","args":{"id":"WorkflowBB990000"}}', result_status: null, timestamp: evNow },
+  { action: 'deploy', detail: '{"id":"AA","args":{"id":"WorkflowAA110000"}}', result_status: null, timestamp: evNow },
+];
+check('interleaved: errored BB claim NOT success-backed', matchEvidence('deployed WorkflowBB990000', interleaved, { requireStatus: 'success' }).backed === false);
+check('interleaved: AA success claim backed', matchEvidence('deployed WorkflowAA110000', interleaved, { requireStatus: 'success' }).backed === true);
+// P2: common English word must NOT be treated as an entity that spuriously backs a claim
+const cfgEvents = [
+  { action: 'set_config', detail: '{"id":"C1","result":"configuration saved"}', result_status: 'success', timestamp: evNow },
+  { action: 'set_config', detail: '{"id":"C1","args":{"configuration":"x"}}', result_status: null, timestamp: evNow },
+];
+check('common word "configuration" not a spurious entity', matchEvidence('the configuration is fixed', cfgEvents, { requireStatus: 'success', turnStartMs: Date.now() + 60000 }).backed === false);
 
 console.log('Gate 4 (tool reference):');
 const reg = { has: (n) => ['charlie__ghl__get_contacts', 'web_fetch'].includes(n) };

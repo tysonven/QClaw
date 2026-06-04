@@ -146,23 +146,29 @@ export class AuditLog {
    * correct under bursty volume. Bounded by a generous LIMIT as a scan backstop.
    * Returns rows with {timestamp, action, detail, result_status, ...}.
    */
-  toolEventsSince(cutoffIso, limit = 2000) {
+  toolEventsSince(cutoffIso, limit = 5000) {
+    const cutMs = parseAuditTs(cutoffIso);
+    // NOTE: do NOT use a SQL `timestamp >= ?` predicate — legacy rows are
+    // space-format and new rows are ISO, so a lexical compare would wrongly
+    // exclude a chronologically-in-window legacy row ('  ' < 'T' at pos 10).
+    // Fetch a bounded recent slice by id, then filter numerically via
+    // parseAuditTs (format-agnostic). 5000 >> any realistic minutes-window
+    // tool volume, so the row cap never truncates a live window.
+    let rows = [];
     if (this.db) {
-      return this.db.prepare(
-        `SELECT * FROM audit WHERE agent = 'tool' AND timestamp >= ? ORDER BY id DESC LIMIT ?`
-      ).all(cutoffIso, limit);
-    }
-    if (this._logFile && existsSync(this._logFile)) {
+      rows = this.db.prepare(
+        `SELECT * FROM audit WHERE agent = 'tool' ORDER BY id DESC LIMIT ?`
+      ).all(limit);
+    } else if (this._logFile && existsSync(this._logFile)) {
       try {
-        const cutMs = Date.parse(cutoffIso);
-        return readFileSync(this._logFile, 'utf-8').trim().split('\n')
+        rows = readFileSync(this._logFile, 'utf-8').trim().split('\n')
           .filter(Boolean)
           .map(l => { try { return JSON.parse(l); } catch { return null; } })
-          .filter(e => e && e.agent === 'tool' && parseAuditTs(e.timestamp) >= cutMs)
+          .filter(e => e && e.agent === 'tool')
           .reverse();
       } catch { return []; }
     }
-    return [];
+    return rows.filter(r => parseAuditTs(r.timestamp) >= cutMs);
   }
 
   /**

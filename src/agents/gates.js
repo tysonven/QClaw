@@ -64,13 +64,12 @@ export function isSuppressed(sentence) {
 // ── §2.5 entity-aware evidence matching ───────────────────────────────────
 
 const ENTITY_PATTERNS = [
-  /\b[A-Za-z0-9_-]{12,}\b/g,                 // long ids (n8n workflow ids etc.)
+  /\b(?=[A-Za-z0-9_-]*[0-9_-])[A-Za-z0-9_-]{12,}\b/g, // long ids — MUST contain a digit/_/- (excludes dictionary words like "successfully","configuration")
   /\b[a-z]{2,}_[A-Za-z0-9]{6,}\b/g,          // prefixed ids (stripe/ghl style)
   /\b\d{6,}\b/g,                             // bare digit-runs (ghl numeric ids)
   /\b(?:charlie__|shared__)?[a-z0-9]+(?:__[a-z0-9-]+)+\b/g, // tool names
   /\/[\w./-]+\.\w+\b/g,                       // file paths
-  /"([^"]{3,})"|'([^']{3,})'/g,              // quoted proper nouns
-  /\b[A-Z][a-zA-Z0-9]{2,}\b/g,               // Capitalized proper nouns
+  /"([^"]{3,})"|'([^']{3,})'/g,              // quoted proper nouns (bare Capitalized words dropped — too noisy / substring false-positives)
 ];
 
 /** Extract candidate entity tokens from a claim sentence (broadened, §2.5 step 1). */
@@ -85,24 +84,34 @@ export function extractEntities(sentence) {
   return [...out];
 }
 
+/** Parse the embedded tool-call id from a row's detail (`{"id":...}`), or null. */
+function _callId(row) {
+  try { return JSON.parse(row.detail).id ?? null; } catch { return null; }
+}
+
 /**
- * Correlate raw tool events (id-DESC) into {call, result} pairs by tool name.
- * In id-DESC order the result row precedes its call row (written later → higher
- * id). For each result row (result_status non-null) we pair the nearest later
- * call row (result_status null) with the same action.
+ * Correlate raw tool events into {call, result} pairs by **tool-call id**
+ * (embedded in `detail` by index.js), which is robust to interleaving when
+ * agents run tools concurrently. Falls back to nearest-same-action only when
+ * an id is absent (legacy rows). A call row is consumed at most once (dedup),
+ * so one call can't back two results.
  */
 export function correlatePairs(events) {
   const pairs = [];
   const evs = Array.isArray(events) ? events : [];
+  const usedCallIdx = new Set();
   for (let i = 0; i < evs.length; i++) {
     const r = evs[i];
     if (r.result_status == null) continue;           // not a result row
+    const rid = _callId(r);
+    let matchIdx = -1;
     for (let j = i + 1; j < evs.length; j++) {
-      if (evs[j].action === r.action && evs[j].result_status == null) {
-        pairs.push({ call: evs[j], result: r });
-        break;
-      }
+      if (usedCallIdx.has(j) || evs[j].result_status != null || evs[j].action !== r.action) continue;
+      const cid = _callId(evs[j]);
+      if (rid != null && cid != null) { if (cid === rid) { matchIdx = j; break; } }
+      else if (matchIdx === -1) { matchIdx = j; }     // no-id fallback: nearest same-action
     }
+    if (matchIdx >= 0) { usedCallIdx.add(matchIdx); pairs.push({ call: evs[matchIdx], result: r }); }
   }
   return pairs;
 }
