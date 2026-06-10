@@ -22,11 +22,16 @@ import { parseAuditTs } from '../security/audit.js';
 
 // ── §2.5 detection helpers ────────────────────────────────────────────────
 
-/** Split prose into sentences (on ., !, ?, newline). Keeps it simple + robust. */
+/** Split prose into sentences (on ., !, ?, newline). Keeps it simple + robust.
+ * Slice 4.1 (L2): also split immediately after `!`/`?` when the next char is a
+ * markdown/closing token (`**`, `)`, `]`, `` ` ``…) with no intervening space —
+ * otherwise "**Who deployed it?** (…)" stays one "sentence" that ends in `)`,
+ * evading the interrogative suppression below. Splitting here only ISOLATES the
+ * question clause so it can be suppressed (strictly fewer fires, never more). */
 export function splitSentences(text) {
   if (!text || typeof text !== 'string') return [];
   return text
-    .split(/(?<=[.!?])\s+|\n+/)
+    .split(/(?<=[.!?])\s+|\n+|(?<=[!?])(?=[*_`~)\]}>"'’”])/)
     .map(s => s.trim())
     .filter(Boolean);
 }
@@ -47,6 +52,14 @@ const NEG_RE = /\b(not|n't|never|no longer|isn't|wasn't|aren't|weren't|haven't|h
 // suppressed (they're real claims). True "?" questions are caught separately.
 const INTERROG_OPEN_RE = /^\s*(is|are|was|were|does|do|did|can|could|will|would|should|has|have|had)\s+(i|we|you|he|she|it|they|the|that|this|there|my|your|our|their|his|her|everything|all)\b/i;
 const FUTURE_RE = /\b(will|'ll|going to|gonna|about to|plan to|planning to|intend to|i'll|we'll|let me|once|after we|before we|if)\b/i;
+// Slice 4.1 (L2): a `?` at the very end modulo trailing closing brackets / quotes
+// / markdown ("…verify?)", "…done?**") is still interrogative. And an INDIRECT
+// question / clarification request ("confirm whether X deployed", "I need you to
+// clarify", "not sure if…") is NOT an assertion that X happened — Charlie asking
+// before claiming is the desired behaviour, and must never fire a gate. Both are
+// pure suppression ADDITIONS (strictly fewer fires).
+const TRAILING_Q_RE = /\?[)\]}>"'’”*_`~\s]*$/;
+const INDIRECT_Q_RE = /\bwhether\b|\b(?:confirm|check|verify|clarify|sure|know)\s+(?:if|whether)\b|\bnot sure\b|\bneed (?:you )?to (?:confirm|clarify|check|verify|know)\b|\bto clarify\b|\b(?:can|could|would)\s+you\s+(?:confirm|clarify|tell|let)\b|\blet me know\b/i;
 
 /**
  * §2.5 conservative suppression: a sentence does NOT fire a gate when it is
@@ -57,6 +70,8 @@ export function isSuppressed(sentence) {
   const s = (sentence || '').trim();
   if (!s) return true;
   if (s.endsWith('?')) return true;                 // interrogative
+  if (TRAILING_Q_RE.test(s)) return true;            // "…verify?)", "…done?**" (L2)
+  if (INDIRECT_Q_RE.test(s)) return true;            // "confirm whether X deployed", "need you to clarify" (L2)
   if (INTERROG_OPEN_RE.test(s)) return true;         // "is it working", "did X"
   if (NEG_RE.test(s)) return true;                   // "not done"
   if (FUTURE_RE.test(s)) return true;                // "I'll deploy", "once X"

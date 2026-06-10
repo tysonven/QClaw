@@ -945,7 +945,13 @@ cases from adversarial review); full suite green on host. Files: `src/agents/gat
 recitations ("9 paid subs") have no token to match against bootstrap → still
 soft-hedge (non-escalating); full number/state backing waits on Slice 5 evidence
 wiring. Out of scope (unchanged): detection-pattern / paraphrase tuning, Gate 2
-evidence (Slice 5), liveness (Slice 3h).
+evidence (Slice 5), liveness (Slice 3h). **Live verify #1 (2026-06-10) follow-up:**
+surfaced two false-fire classes — **L1** unattributed status recitation ("Clipper
+recovery complete") left to Charlie's cite-sources reflex + soft-hedge (no backing
+change; acceptable if the loop self-corrects without escalation), and **L2** honest
+questions firing, fixed as a suppression-correctness change (markdown-wrapped
+questions + "whether X <verb>" indirect interrogatives + clarification requests now
+suppressed; strictly fewer fires; gate-firing regexes untouched). 114 test checks.
 
 **Slice 5 — Claude Code delegation bridge.**
 Supabase table, `claude_code_dispatch` tool, PM2 dispatcher worker, result write-back, gate integration.
