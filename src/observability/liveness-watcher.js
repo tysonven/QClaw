@@ -36,6 +36,9 @@ const DEFAULT_STALE_MINUTES = 4;
 const FIRST_REMINDER_MS = 15 * 60_000;
 const THEN_EVERY_MS = 60 * 60_000;
 const DEGRADED_STATES = new Set(['degraded', 'retrying', 'stopped', 'manual_intervention_required']);
+const DEFAULT_TARGET = 'qclaw (138.68.138.214)';
+const REMINDER_CADENCE = 'Reminding every 15m then hourly until it clears.';
+const hhmmZ = (iso) => { const d = new Date(iso); return Number.isNaN(d.getTime()) ? String(iso) : d.toISOString().slice(11, 16) + 'Z'; };
 
 // ── env (self-contained loader) ────────────────────────────────────────────
 export function parseEnvFile(text) {
@@ -74,12 +77,12 @@ export async function fetchLatestBeat({ url, key, fetchImpl = fetch }) {
 
 // ── classification ──────────────────────────────────────────────────────────
 /** @returns {class:'down'|'unknown'|'polling'|'healthy'|'armed', ...} */
-export function classify({ readError, row, serverNowMs, nowMs = Date.now(), staleMs }) {
+export function classify({ readError, row, serverNowMs, nowMs = Date.now(), staleMs, target = DEFAULT_TARGET }) {
   if (readError) {
     return { class: 'unknown', message:
-      `🟠 Charlie LIVENESS UNKNOWN — watcher cannot reach Supabase (${readError}). ` +
-      `Liveness indeterminate, and a Supabase outage is itself a Charlie outage. ` +
-      `Check Supabase status and n8n-droplet connectivity.` };
+      `🟠 Charlie LIVENESS UNKNOWN — watcher cannot reach Supabase (${readError}).\n` +
+      `Liveness of ${target} is indeterminate, and a Supabase outage is itself a Charlie outage.\n` +
+      `Check Supabase status and n8n-droplet connectivity. ${REMINDER_CADENCE}` };
   }
   if (!row) return { class: 'armed' }; // zero rows ever → cold start (handled by caller)
 
@@ -91,17 +94,17 @@ export function classify({ readError, row, serverNowMs, nowMs = Date.now(), stal
 
   if (ageMs > staleMs) {
     return { class: 'down', ageMin, message:
-      `🔴 Charlie LIVENESS — no heartbeat for ${ageMin}m (threshold ${Math.round(staleMs / 60000)}m). ` +
+      `🔴 Charlie LIVENESS — no heartbeat for ${ageMin}m on ${target}.\n` +
       `quantumclaw is DOWN, hung, or the host is unreachable.\n` +
-      `Check: \`pm2 list\` · \`journalctl -u pm2-root --since '20 min ago'\` · \`pm2 logs quantumclaw\`\n` +
-      `(last beat ${row.created_at}, pid ${md.pid ?? '?'}, v${md.version ?? '?'})` };
+      `Check (in order): \`pm2 list\` → \`journalctl -u pm2-root --since '20 min ago'\` → \`pm2 logs quantumclaw\`\n` +
+      `Last beat ${hhmmZ(row.created_at)} (pid ${md.pid ?? '?'}, v${md.version ?? '?'}). ${REMINDER_CADENCE}` };
   }
   const cs = md.channel_status;
   if (md.polling_ok === false || DEGRADED_STATES.has(cs)) {
     return { class: 'polling', ageMin, channel_status: cs, message:
-      `🟡 Charlie UP but Telegram polling DEGRADED (3e state: ${cs}). ` +
+      `🟡 Charlie UP but Telegram polling DEGRADED on ${target} (3e state: ${cs}).\n` +
       `Process alive (beat ${Math.round(ageMs / 1000)}s ago) but not serving Telegram.\n` +
-      `Check: \`~/.quantumclaw/channel-events.log\` · \`pm2 logs quantumclaw\`` };
+      `Check: \`~/.quantumclaw/channel-events.log\` · \`pm2 logs quantumclaw\`. ${REMINDER_CADENCE}` };
   }
   return { class: 'healthy', ageMin, channel_status: cs };
 }
@@ -164,15 +167,16 @@ export async function runWatcher({ env, nowMs = Date.now(), fetchImpl = fetch, s
   // `env` first — reading process.env here defaulted to an unwritable /root path
   // on the n8n droplet, which silently broke cooldown persistence → alert storm.
   const sp = statePath || join(env.LIVENESS_DIR || process.env.LIVENESS_DIR || '/root/charlie-liveness', 'liveness-state.log');
+  const target = env.LIVENESS_TARGET || DEFAULT_TARGET;
   const OUTAGE = new Set(['down', 'unknown', 'polling']);
 
   // Read (loud on failure — HIGH#1).
   let decision;
   try {
     const { row, serverNowMs } = await fetchLatestBeat({ url, key, fetchImpl });
-    decision = classify({ row, serverNowMs, nowMs, staleMs });
+    decision = classify({ row, serverNowMs, nowMs, staleMs, target });
   } catch (err) {
-    decision = classify({ readError: err.message || String(err), nowMs, staleMs });
+    decision = classify({ readError: err.message || String(err), nowMs, staleMs, target });
   }
 
   const { entries, readable } = readState(sp);
@@ -184,10 +188,11 @@ export async function runWatcher({ env, nowMs = Date.now(), fetchImpl = fetch, s
   const nowOutage = OUTAGE.has(decision.class);
   for (const cls of currentlyActive) {
     if (decision.class === cls) continue; // still in this outage — handled below
-    if (nowOutage && cls !== decision.class) { /* switched outage class — recover the old one */ }
-    const text = `🟢 Charlie LIVENESS recovered — ${decision.class === 'healthy'
+    const ep = activeEpisode(entries, cls);
+    const downMin = ep ? Math.max(1, Math.round((nowMs - ep.firstFired) / 60_000)) : null;
+    const text = `🟢 Charlie LIVENESS recovered on ${target} — ${decision.class === 'healthy'
       ? `heartbeat fresh (~${decision.ageMin ?? 0}m), polling ${decision.channel_status ?? 'ok'}`
-      : `now ${decision.class}`} (was: ${cls}).`;
+      : `now ${decision.class}`}. Was ${cls}${downMin != null ? ` for ~${downMin}m` : ''}.`;
     const sent = await sendTelegram({ token, chatId, text, fetchImpl });
     if (sent.ok) appendState(sp, { ts: new Date(nowMs).toISOString(), class: cls, event: 'recovered' });
   }

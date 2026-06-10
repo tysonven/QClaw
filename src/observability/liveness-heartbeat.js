@@ -30,10 +30,18 @@
  * Design ref: /tmp/slice3h_design.md.
  */
 
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 import { getEnv } from '../core/env.js';
 import { log } from '../core/logger.js';
 
 export const LIVENESS_WORKFLOW_ID = 'charlie-liveness';
+
+// Resolve the package version once for the diagnostic metadata (so alerts read
+// "v1.3.4" not "v?"). Best-effort — never fatal.
+let PKG_VERSION = null;
+try { PKG_VERSION = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../../package.json'), 'utf-8')).version || null; } catch { /* */ }
 const BEAT_MS = 60_000;
 const RETENTION_EVERY_BEATS = 60;   // ~hourly
 const RETENTION_HOURS = 24;
@@ -91,7 +99,7 @@ export function startLivenessHeartbeat({
       const metadata = {
         pid: process.pid,
         uptime_s: Math.round((nowMs() - startedAt) / 1000),
-        version,
+        version: version ?? PKG_VERSION,
         channel_status,
         polling_ok: channel_status === 'active',
         host: env.HOSTNAME || env.HOST || null,

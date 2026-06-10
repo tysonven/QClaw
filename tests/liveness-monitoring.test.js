@@ -43,7 +43,8 @@ const beat = (agoMs, md = {}) => ({ created_at: new Date(nowMs - agoMs).toISOStr
 check('classify: read error → unknown (loud)', classify({ readError: 'Supabase HTTP 503', nowMs, staleMs: STALE }).class === 'unknown');
 check('classify: no row → armed', classify({ row: null, nowMs, staleMs: STALE }).class === 'armed');
 check('classify: fresh + active → healthy', classify({ row: beat(30_000), serverNowMs: nowMs, nowMs, staleMs: STALE }).class === 'healthy');
-check('classify: stale → down', (() => { const d = classify({ row: beat(10 * 60_000), serverNowMs: nowMs, nowMs, staleMs: STALE }); return d.class === 'down' && /pm2 list/.test(d.message) && /journalctl -u pm2-root/.test(d.message); })());
+check('classify: stale → down (names host, ordered diagnostics, reminder cadence)', (() => { const d = classify({ row: beat(10 * 60_000), serverNowMs: nowMs, nowMs, staleMs: STALE }); return d.class === 'down' && /pm2 list/.test(d.message) && /journalctl -u pm2-root/.test(d.message) && /qclaw \(138\.68\.138\.214\)/.test(d.message) && /every 15m then hourly/.test(d.message); })());
+check('classify: custom target threads into message', /myhost/.test(classify({ row: beat(10 * 60_000), serverNowMs: nowMs, nowMs, staleMs: STALE, target: 'myhost' }).message));
 check('classify: fresh + degraded → polling (class b)', classify({ row: beat(30_000, { channel_status: 'degraded', polling_ok: false }), serverNowMs: nowMs, nowMs, staleMs: STALE }).class === 'polling');
 check('classify: uses SERVER clock (Date hdr) over local — skewed local would say stale, server says fresh',
   classify({ row: beat(30_000), serverNowMs: nowMs, nowMs: nowMs + 30 * 60_000, staleMs: STALE }).class === 'healthy');
@@ -108,7 +109,7 @@ const freshPath = () => join(dir, `state-${++n}.log`);
   const sends = []; const sp = freshPath();
   await runWatcher({ env: baseEnv, nowMs, statePath: sp, fetchImpl: makeFetch({ beatRow: beat(10 * 60_000), serverDate, sends }) });
   const r2 = await runWatcher({ env: baseEnv, nowMs: nowMs + 60_000, statePath: sp, fetchImpl: makeFetch({ beatRow: beat(20_000), serverDate: new Date(nowMs + 60_000).toUTCString(), sends }) });
-  check('runWatcher: recovery → all-clear sent', r2.class === 'healthy' && sends.some(s => /recovered/.test(s.text)));
+  check('runWatcher: recovery → all-clear sent (with downtime duration)', r2.class === 'healthy' && sends.some(s => /recovered/.test(s.text) && /Was down for ~\d+m/.test(s.text)));
 }
 // cold start: no rows, no state → armed one-shot, not repeated
 {
