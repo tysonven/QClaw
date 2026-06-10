@@ -905,6 +905,38 @@ phantom / done-but-errored → escalated; backed claim → pass). Files:
 `src/index.js`, `src/agents/registry.js`, `src/agents/skills/verification-reflexes.md`,
 `tests/verification-gates.test.js` (new), `package.json`, docs.
 
+**Slice 4.1 — `runGates` input-scoping fix (bootstrap-as-evidence) — 2026-06-10.**
+On first live session (2026-06-04) the completion gate hard-fired on Charlie's
+session-orientation reply and escalated after 3 attempts; gates were disabled
+(`QCLAW_GATES_ENABLED=0`) and ran off until this slice. Audit (real `gate.log`):
+attempt 1 fired on **bootstrap recitation** — Charlie citing his briefing
+("The incident log shows … RESOLVED via /etc/needrestart/needrestart.conf";
+"agex-hub, trading-worker … stable at 38h") per the "cite or don't claim"
+reflex. The gates' premise — *a completion/state claim needs a **this-turn**
+tool result* — is invalid for recited bootstrap context, which the gate could
+not see. Correction to the original diagnosis: the gated string already equals
+the user-facing reply (`runGates(result.content)`; manager.js sends it
+verbatim) — there is **no system-side composite** to strip. The fix scopes the
+gate's **evidence**, not its detection: the this-session bootstrap snapshot is
+now a backing source for **recited** claims about known entities. The hard
+discriminator — first-person/elided **this-session action** ("I deployed X" /
+"Deployed X") is **never** bootstrap-backed, so Gate 1 still hard-fails a false
+action claim about a bootstrap-known entity (`isFirstPersonAction`). Also fixed:
+**(V3)** `buildRepromptNote` now describes the violation by class instead of
+quoting the failing claim verbatim — the verbatim echo re-injected trigger
+words, the model echoed them, and the gate re-fired (the 4 Jun attempts 2–3 were
+echoes), making escalation near-certain once anything fired. **(V4)** heartbeat /
+graph-discovery / digest turns run *as* charlie but carry no bootstrap and recite
+monitoring state; `isGatedTurn` now excludes background sources (the scoping the
+original design intended by name but missed). Detection regexes unchanged. 91
+test checks (70 prior + 21 new, incl. the adversarial first-person-action case);
+full suite green on host. Files: `src/agents/gates.js`, `src/agents/registry.js`,
+`tests/verification-gates.test.js`, docs. **Residual (honest):** entity-free
+recitations ("9 paid subs") have no token to match against bootstrap → still
+soft-hedge (non-escalating); full number/state backing waits on Slice 5 evidence
+wiring. Out of scope (unchanged): detection-pattern / paraphrase tuning, Gate 2
+evidence (Slice 5), liveness (Slice 3h).
+
 **Slice 5 — Claude Code delegation bridge.**
 Supabase table, `claude_code_dispatch` tool, PM2 dispatcher worker, result write-back, gate integration.
 

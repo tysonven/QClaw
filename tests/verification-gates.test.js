@@ -232,6 +232,84 @@ const r6 = await regenerateWithGates({
 });
 check('U3: hard_fail then corrected re-prompt → pass, not escalated', r6.gateOutcome === 'pass' && n6 === 2 && !r6.gateEscalated);
 
+console.log('Slice 4.1 — bootstrap-as-evidence + recitation scoping:');
+import { isFirstPersonAction, isGatedTurn, bootstrapCorpus, buildRepromptNote } from '../src/agents/gates.js';
+// This-session bootstrap snapshot Charlie recites at session start: incident-log
+// path + workflow id + PM2 process names + business-state numbers. Reproduces
+// the 2026-06-04 shape (gate.log: completion "incident ... RESOLVED", state
+// "... all stable at 38h", "9 paid subs").
+const bootstrap4Jun = {
+  state: {
+    flow_os_state: '9 Flow OS paid subs (~$1.5k MRR); 10 active FSC engagements (~$4.5k MRR).',
+    recent_build_log: 'closes 2026-06-03 needrestart pm2-root blacklist incident; /etc/needrestart/needrestart.conf updated. sunset workflow TikJkWLzpreI6iTa.',
+  },
+  probes: [{ name: 'pm2', ok: true, detail: 'agex-hub, trading-worker, clipper-worker, charlie-watcher all up 38h' }],
+};
+const bootText = bootstrapCorpus(bootstrap4Jun);
+const turnAgo = Date.now() - 60000;
+
+// first-person / elided action discriminator
+check('4.1: "I deployed X" → first-person action', isFirstPersonAction('I deployed the needrestart fix.') === true);
+check('4.1: "Deployed X." (elided subject) → first-person action', isFirstPersonAction('Deployed workflow TikJkWLzpreI6iTa.') === true);
+check('4.1: "I\'ve shipped it" → first-person action', isFirstPersonAction("I've shipped it.") === true);
+check('4.1: recited "The incident log shows X RESOLVED" → NOT first-person action',
+  isFirstPersonAction('The incident log shows the 2026-06-03 outage is now RESOLVED via /etc/needrestart/needrestart.conf.') === false);
+check('4.1: "I referenced a fix deployed" → NOT action (referenced is not an action verb)',
+  isFirstPersonAction('I referenced a "fix deployed" without a tool result.') === false);
+
+// bootstrap backs a RECITED claim about a known entity (no this-turn tool)
+check('4.1: recited completion, entity IN bootstrap → backed (sourced bootstrap)', (() => {
+  const m = matchEvidence('The incident log shows the outage is now RESOLVED via /etc/needrestart/needrestart.conf.', [], { requireStatus: 'success', turnStartMs: turnAgo, bootstrapText: bootText });
+  return m.backed === true && m.sourced === 'bootstrap';
+})());
+// ADVERSARIAL (the constraint): first-person/elided action about the SAME known entity → NOT backed
+check('4.1 ADVERSARIAL: "I deployed <bootstrap entity>" → NOT backed by bootstrap',
+  matchEvidence('I deployed /etc/needrestart/needrestart.conf this session.', [], { requireStatus: 'success', turnStartMs: turnAgo, bootstrapText: bootText }).backed === false);
+check('4.1 ADVERSARIAL: "Deployed workflow TikJkWLzpreI6iTa." (elided, in bootstrap) → NOT backed',
+  matchEvidence('Deployed workflow TikJkWLzpreI6iTa.', [], { requireStatus: 'success', turnStartMs: turnAgo, bootstrapText: bootText }).backed === false);
+// entity NOT in bootstrap and no tool → still strict
+check('4.1: recited completion, entity NOT in bootstrap → not backed',
+  matchEvidence('The log shows workflow Zz000000zz11 is now RESOLVED.', [], { requireStatus: 'success', turnStartMs: turnAgo, bootstrapText: bootText }).backed === false);
+
+// gate-level: recited incident completion passes; first-person action still hard_fails
+check('4.1: gateCompletion recited incident (bootstrap) → not fired',
+  gateCompletion('The incident log shows the 2026-06-03 outage is now RESOLVED with the blacklist added to /etc/needrestart/needrestart.conf.', ctx([], { bootstrapText: bootText })).fired === false);
+check('4.1 ADVERSARIAL: gateCompletion "I deployed <known entity>" → hard_fail (Gate 1 alive)',
+  (() => { const g = gateCompletion('I deployed /etc/needrestart/needrestart.conf this session.', ctx([], { bootstrapText: bootText })); return g.fired && g.severity === 'hard'; })());
+check('4.1: gateState recited "... all stable at 38h" (process names in bootstrap) → not fired',
+  gateState('agex-hub, trading-worker, clipper-worker, charlie-watcher all stable at 38h uptime.', ctx([], { bootstrapText: bootText })).fired === false);
+// bootstrap must NOT mask a this-turn errored probe (characterization contradiction stays hard)
+check('4.1: char "healthy" + this-turn ERRORED probe → still hard (bootstrap not a mask)',
+  (() => { const g = gateState('The workflow Qf39NEOEgz2W0uls is healthy.', ctx(errorPair('shared__n8n-api__n8n-api__get_workflows_id', 'Qf39NEOEgz2W0uls'), { bootstrapText: bootstrapCorpus({ probes: [{ name: 'x', detail: 'Qf39NEOEgz2W0uls' }] }) })); return g.fired && g.severity === 'hard'; })());
+
+// V3: reprompt note describes the violation, never echoes the claim text
+const reproNote = buildRepromptNote({ gates: [{ gate: 'completion', fired: true, severity: 'hard', claims: [{ text: 'Deployed the fix deployed thing to prod' }] }] });
+check('4.1 V3: reprompt note does NOT echo the failing claim text', !reproNote.includes('fix deployed thing') && !reproNote.includes('Deployed the'));
+check('4.1 V3: reprompt note describes the completion violation by class', reproNote.includes('completion/action claim'));
+
+// V4: background turns (heartbeat/digest) are not gated; interactive charlie is
+check('4.1 V4: isGatedTurn charlie interactive (no source) → true', isGatedTurn('charlie', {}) === true);
+check('4.1 V4: isGatedTurn charlie heartbeat → false', isGatedTurn('charlie', { source: 'heartbeat' }) === false);
+check('4.1 V4: isGatedTurn charlie heartbeat-graph → false', isGatedTurn('charlie', { source: 'heartbeat-graph' }) === false);
+check('4.1 V4: isGatedTurn echo interactive → false (not gated agent)', isGatedTurn('echo', {}) === false);
+
+// E2E: the full 4 Jun composite reply (recitation + clean reply) → pass, no escalation
+const reply4Jun = 'Yep, here. The incident log shows the 2026-06-03 outage is now RESOLVED with the blacklist added to /etc/needrestart/needrestart.conf. agex-hub, trading-worker, clipper-worker, charlie-watcher all stable at 38h uptime. What do you need?';
+const rJun = await regenerateWithGates({
+  generate: async () => ({ content: reply4Jun, model: 'm' }),
+  auditLog: mkAudit([]), toolRegistry: reg, turnStart: past, bootstrap: bootstrap4Jun, baseMessages: BM,
+});
+check('4.1 E2E: 4 Jun recitation reply → pass attempt 1, no escalation, content unchanged',
+  rJun.gateOutcome === 'pass' && rJun.gateAttempts === 1 && !rJun.gateEscalated && rJun.content === reply4Jun);
+// E2E ADVERSARIAL: same bootstrap, but a first-person false action claim → still escalates
+let nAdv = 0;
+const rAdv = await regenerateWithGates({
+  generate: async () => { nAdv++; return { content: 'I deployed workflow TikJkWLzpreI6iTa this session.', model: 'm' }; },
+  auditLog: mkAudit([]), toolRegistry: reg, turnStart: past, bootstrap: bootstrap4Jun, baseMessages: BM,
+});
+check('4.1 E2E ADVERSARIAL: first-person false action about bootstrap entity → hard_fail + escalated',
+  rAdv.gateOutcome === 'hard_fail' && rAdv.gateEscalated === true && nAdv === 3);
+
 console.log('gate-log:');
 process.env.QCLAW_GATE_LOG_PATH = join(dir, 'gate.log');
 appendGateLog({ gate: 'completion', claim: 'done; key sk-ant-admin01-SECRET123 here', result: 'hard_fail', action: 'reprompt', attempt: 1, verified: false });

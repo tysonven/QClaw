@@ -126,7 +126,7 @@ export function correlatePairs(events) {
  * (`detail`); falls back to a this-turn relevant-tool pair when the claim has
  * no extractable entity. Returns { backed, evidence? }.
  */
-export function matchEvidence(sentence, events, { requireStatus = 'success', turnStartMs = 0, relevant = null } = {}) {
+export function matchEvidence(sentence, events, { requireStatus = 'success', turnStartMs = 0, relevant = null, bootstrapText = null } = {}) {
   const pairs = correlatePairs(events);
   const statusOk = (p) => requireStatus === 'success'
     ? p.result.result_status === 'success'
@@ -141,6 +141,16 @@ export function matchEvidence(sentence, events, { requireStatus = 'success', tur
       if (parseAuditTs(p.result.timestamp) < turnStartMs) continue;
       const args = String(p.call.detail || '');
       if (entities.some(e => args.includes(e))) return { backed: true, evidence: p };
+    }
+    // Slice 4.1: the this-session bootstrap snapshot is a legitimate source for
+    // a RECITED claim about a known entity (Charlie cites his briefing). It is
+    // NOT a source for a first-person/elided this-session action claim — those
+    // remain tool-evidence-only, so "I deployed <bootstrap-known id>" still
+    // hard_fails. Marked sourced:'bootstrap' so gateState can tell recitation
+    // (no this-turn probe) from a contradicting this-turn probe.
+    if (bootstrapText && !isFirstPersonAction(sentence)
+        && entities.some(e => bootstrapText.includes(e))) {
+      return { backed: true, sourced: 'bootstrap', weak: true };
     }
     return { backed: false };
   }
@@ -199,6 +209,28 @@ const STATE_RE = /(?<![\w-])(running|live|active|online|enabled|connected|workin
 const CHARACTERIZATION_RE = /(?<![\w-])(running|live|active|online|connected|up|enabled|healthy|passed|succeeded|successful|working|ok|fine|good|stable)(?![\w-])/i;
 const DELEGATION_RE = /(?<![\w-])(dispatched|delegated|handed off|handed it off|is working on it|kicked off)(?![\w-])/i;
 
+// ── Slice 4.1: first-person THIS-SESSION action discriminator ──────────────
+// Input-scoping, NOT a detection-pattern change: the gate-firing regexes above
+// are untouched. This only decides what the bootstrap snapshot is ALLOWED to
+// back. Bootstrap may back RECITED state ("the log shows X is resolved",
+// "agex-hub stable at 38h") — content Charlie was handed at session start and
+// cites per his role. It must NEVER back a claim that Charlie DID something
+// this session ("I deployed X", "Deployed X"), even when the entity is present
+// in bootstrap — those still require a this-turn success tool result, or Gate 1
+// dies for every bootstrap-known entity (the adversarial case).
+const ACTION_VERB = 'deployed|fixed|shipped|merged|published|posted|sent|created|updated|ran|completed|finished|resolved|built|added|removed|configured|restarted|installed|wrote|pushed|rolled out|set up|turned on|enabled|disabled';
+const FP_SUBJECT_ACTION_RE = new RegExp(String.raw`\b(?:i|we)(?:'ve|'ll|'d)?\b(?:\s+(?:just|already|have|then|also|now|successfully|finally))*\s+(?:${ACTION_VERB})\b`, 'i');
+const ELIDED_ACTION_RE = new RegExp(String.raw`^\s*(?:just\s+|already\s+|successfully\s+|finally\s+)?(?:${ACTION_VERB})\b`, 'i');
+
+/** True when the sentence asserts Charlie did something this session (explicit
+ * "I/we <verb>" or an elided-subject "<verb> …" opener). Bootstrap cannot back
+ * these — they are tool-evidence-only. */
+export function isFirstPersonAction(sentence) {
+  const s = (sentence || '').trim();
+  if (!s) return false;
+  return FP_SUBJECT_ACTION_RE.test(s) || ELIDED_ACTION_RE.test(s);
+}
+
 // no-entity-fallback relevance: which tools plausibly back which claim class.
 const isCompletionTool = (n) => /write|edit|update|create|deploy|post|publish|send|merge|workflow_update|shell_exec/i.test(n || '');
 const isStateTool = (n) => /get_|list_|search|read|status|executions|pm2|shell_exec/i.test(n || '');
@@ -226,7 +258,7 @@ export function gateCompletion(response, ctx) {
   const events = windowEvents(ctx, ctx.windowMinComplete);
   const unbacked = [];
   for (const c of claims) {
-    const m = matchEvidence(c, events, { requireStatus: 'success', turnStartMs: ctx.turnStartMs ?? 0, relevant: isCompletionTool });
+    const m = matchEvidence(c, events, { requireStatus: 'success', turnStartMs: ctx.turnStartMs ?? 0, relevant: isCompletionTool, bootstrapText: ctx.bootstrapText });
     if (!m.backed) unbacked.push({ text: c, verification_attempted: true, verified: false });
   }
   if (!unbacked.length) return { gate: 'completion', fired: false };
@@ -240,11 +272,16 @@ export function gateState(response, ctx) {
   const events = windowEvents(ctx, ctx.windowMinState);
   let anyHard = false; const fired = [];
   for (const c of claims) {
-    const ran = matchEvidence(c, events, { requireStatus: 'nonnull', turnStartMs: ctx.turnStartMs ?? 0, relevant: isStateTool });
+    const ran = matchEvidence(c, events, { requireStatus: 'nonnull', turnStartMs: ctx.turnStartMs ?? 0, relevant: isStateTool, bootstrapText: ctx.bootstrapText });
     if (!ran.backed) { fired.push({ text: c, verification_attempted: true, verified: false, severity: 'soft' }); continue; }
     if (CHARACTERIZATION_RE.test(c)) {
+      // Success check is TOOL-ONLY (no bootstrapText): a this-turn probe that
+      // ran but didn't succeed must still contradict a characterization. But
+      // when `ran` was satisfied by BOOTSTRAP (recitation — no this-turn probe
+      // at all), there is no this-turn probe to contradict, so a recited
+      // characterization ("agex-hub stable at 38h") is not a hard contradiction.
       const ok = matchEvidence(c, events, { requireStatus: 'success', turnStartMs: ctx.turnStartMs ?? 0, relevant: isStateTool });
-      if (!ok.backed) { anyHard = true; fired.push({ text: c, verification_attempted: true, verified: false, severity: 'hard' }); } // probe ran but not success → contradicted
+      if (!ok.backed && ran.sourced !== 'bootstrap') { anyHard = true; fired.push({ text: c, verification_attempted: true, verified: false, severity: 'hard' }); } // this-turn probe ran but not success → contradicted
     }
   }
   if (!fired.length) return { gate: 'state', fired: false };
@@ -287,6 +324,33 @@ export function isGatedAgent(name) {
   return list.includes(String(name || '').toLowerCase());
 }
 
+// Slice 4.1 (V4): heartbeat / graph-discovery / digest turns run AS the primary
+// agent (charlie), so isGatedAgent alone subjects them to the loop — but they
+// carry no bootstrap evidence and recite monitoring state, so they false-fire
+// exactly like the 4 Jun /session turn. The design always intended background
+// agents to skip gates (see isGatedAgent doc); the miss was scoping by NAME
+// when the discriminator is the TURN SOURCE. A background turn is not a
+// user-facing reply making this-turn action claims, so it is not gated.
+const BACKGROUND_SOURCES = new Set(['heartbeat', 'heartbeat-graph', 'digest', 'autolearn']);
+export function isBackgroundSource(source) {
+  const s = String(source || '').toLowerCase();
+  return BACKGROUND_SOURCES.has(s) || s.startsWith('heartbeat');
+}
+
+/** A turn is gated only when it is both a gated agent AND an interactive
+ * (non-background) turn. Used at the registry wiring layer. */
+export function isGatedTurn(agentName, context = {}) {
+  return isGatedAgent(agentName) && !isBackgroundSource(context?.source);
+}
+
+/** Flatten the this-session bootstrap snapshot into a single searchable corpus
+ * (state doc, recent build/audit log, probe results, memory) for entity-membership
+ * checks. Null when no bootstrap was loaded this turn. */
+export function bootstrapCorpus(bootstrap) {
+  if (!bootstrap) return null;
+  try { return JSON.stringify(bootstrap); } catch { return null; }
+}
+
 /**
  * Run all gates on `response`. Fail-closed: a gate that throws → synthesized
  * hard_fail. Aggregate: any hard fired → 'hard_fail'; else any soft → 'soft_fail';
@@ -307,6 +371,8 @@ export function runGates(response, auditLog, toolRegistry, opts = {}) {
     windowMinComplete: opts.windowMinComplete ?? 10,
     windowMinState: opts.windowMinState ?? 5,
     agentScope: opts.agentScope || null,
+    // Slice 4.1: this-session bootstrap as a backing source for recited claims.
+    bootstrapText: bootstrapCorpus(opts.bootstrap),
   };
 
   const results = [];
@@ -347,15 +413,36 @@ export function hedgeResponse(response, gateOut) {
   return out;
 }
 
-/** Augmented re-prompt note for a hard_fail (lists the unbacked claims). */
+// Slice 4.1 (V3): describe the VIOLATION by gate, never echo the claim text.
+// Quoting the failing claim verbatim re-injected its trigger words ("fix
+// deployed"), the model echoed them, and the echo re-tripped the gate — a
+// self-reinforcing loop that made escalation near-certain once anything fired
+// (see 2026-06-04 gate.log attempts 2-3). The model already has its own prior
+// reply in context; it does not need it quoted back.
+const VIOLATION_BY_GATE = {
+  completion: 'a completion/action claim with no backing success tool result from THIS turn',
+  state: 'a state/liveness claim with no probe run THIS turn',
+  tool_reference: 'a reference to a tool that is not registered in your current scope',
+  delegation: 'a delegation claim that cannot be verified yet (no dispatch evidence source)',
+};
+
+/** Augmented re-prompt note for a hard_fail (describes violations by class;
+ * deliberately does NOT quote the failing claim text — see V3 note above). */
 export function buildRepromptNote(gateOut) {
-  const lines = [];
+  const counts = new Map();
   for (const g of (gateOut.gates || [])) {
-    if (g.fired && g.severity === 'hard') for (const c of (g.claims || [])) lines.push(`- "${c.text}" (gate: ${g.gate})`);
+    if (g.fired && g.severity === 'hard') {
+      const n = (g.claims || []).length || 1;
+      counts.set(g.gate, (counts.get(g.gate) || 0) + n);
+    }
   }
-  return `Your previous reply made statement(s) I could not verify against this turn's tool results:\n${lines.join('\n')}\n` +
+  const lines = [...counts.entries()].map(([gate, n]) => {
+    const desc = VIOLATION_BY_GATE[gate] || `an unverifiable claim (gate: ${gate})`;
+    return `- ${desc}${n > 1 ? ` (×${n})` : ''}`;
+  });
+  return `Your previous reply contained statement(s) I could not verify against this turn's evidence:\n${lines.join('\n')}\n` +
     `Revise: state only what a tool result or probe THIS TURN confirms (and cite it), or say you will verify and then stop. ` +
-    `Do not repeat an unbacked claim, and do not reference tools that are not registered in your scope.`;
+    `Do not restate the unverified claim, and do not reference tools that are not registered in your scope.`;
 }
 
 /** User/Tyson-facing escalation text (the raw unbacked claim is never shown). */
@@ -376,8 +463,8 @@ export function buildEscalation(gateOut) {
  * one. Branches on gateOut.result (NOT action literals). Caller keeps tools
  * registered for the whole call (cleanupTools fires once after this returns).
  */
-export async function regenerateWithGates({ generate, auditLog, toolRegistry, turnStart, agentScope = null, baseMessages, maxAttempts = 3, onGateLog = null, onEscalate = null, now = null }) {
-  const opts = () => ({ now: now || Date.now(), turnStart, agentScope });
+export async function regenerateWithGates({ generate, auditLog, toolRegistry, turnStart, agentScope = null, bootstrap = null, baseMessages, maxAttempts = 3, onGateLog = null, onEscalate = null, now = null }) {
+  const opts = () => ({ now: now || Date.now(), turnStart, agentScope, bootstrap });
   let messages = baseMessages;
   let result = await generate(messages);
   let attempt = 1;

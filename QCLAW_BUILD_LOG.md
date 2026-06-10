@@ -14499,4 +14499,108 @@ Verbatim clipper-worker log (job a51b64e2), captured pre-intervention to
 
 End of Ep 71 clipper recovery episode.
 
+## [2026-06-10] Slice 4.1 — `runGates` input-scoping fix (bootstrap-as-evidence); gates re-enable prep
+
+### Why
+
+Slice 4 (PR #43) merged 2026-06-04 and reloaded live. On the first live session the
+completion gate false-fired on Charlie's session-orientation reply and escalated after
+3 attempts. Gates were disabled via `QCLAW_GATES_ENABLED=0` in `/root/.quantumclaw/.env`
+and have run off since.
+
+### Verbatim evidence (from host `/root/.quantumclaw/`)
+
+`channel-events.log`:
+
+```
+{"ts":"2026-06-04T21:21:56.943Z","event":"gate_escalation","agent":"charlie","channel":"telegram","attempts":3,"gates":["completion"],"claim":"- **What just happened:** Slice 4 fired a gate on my previous message — I referenced a \"fix deployed\" without a tool result proving it."}
+```
+
+`gate.log` (per-attempt — this is the actual firing sequence, which rewrites the diagnosis):
+
+```
+{"ts":"2026-06-04T21:21:44.914Z","gate":"completion","claim":"The incident log shows the 2026-06-03 quantumclaw outage (stale PM2 dump after systemd restart) is now RESOLVED with the `needrestart` blacklist added to `/etc/needrestart/needrestart.conf`.","result":"hard_fail","action":"reprompt","attempt":1}
+{"ts":"2026-06-04T21:21:44.914Z","gate":"state","claim":"That's now live and scoped to my outputs only.","result":"hard_fail","action":"rewrite","attempt":1}
+{"ts":"2026-06-04T21:21:44.914Z","gate":"state","claim":"From state: **9 Flow OS paid subs** (~$1.5k MRR), **10 active FSC engagements** ...","result":"hard_fail","action":"rewrite","attempt":1}
+{"ts":"2026-06-04T21:21:51.874Z","gate":"completion","claim":"I don't have independent verification that the fix deployed — that's a Tyson action per the build log.","result":"hard_fail","action":"reprompt","attempt":2}
+{"ts":"2026-06-04T21:21:51.874Z","gate":"state","claim":"- agex-hub, trading-worker, clipper-worker, charlie-watcher all stable at 38h+ uptime","result":"hard_fail","action":"rewrite","attempt":2}
+{"ts":"2026-06-04T21:21:56.942Z","gate":"completion","claim":"- **What just happened:** Slice 4 fired a gate on my previous message — I referenced a \"fix deployed\" without a tool result proving it.","result":"hard_fail","action":"reprompt","attempt":3}
+```
+
+### Audit verdicts
+
+- **V1 — the original "composite gated string" hypothesis does not hold in code.**
+  The gated string is `runGates(result.content)` where `result.content` is the
+  tool-executor's final assistant text (`executor.js` `textContent`), and
+  `manager.js` sends that **verbatim** to Telegram (the bootstrap-warning prepend is
+  added *after* gating). The gated text already equals the user-facing reply — there
+  is no session-summary / bootstrap block folded in by code.
+- **V2 — root cause is bootstrap *recitation*.** Attempt 1 (above) fired on Charlie
+  citing his briefing — incident-log resolution, FLOW_OS_STATE MRR/subs, PM2 uptime —
+  per the "cite or don't claim" reflex (`CHARLIE_ROLE.md`). The gate premise (*a
+  completion/state claim needs a this-turn tool result*) is invalid for recited
+  bootstrap context the gate cannot see. The recitation **is** the reply (not
+  separable).
+- **V3 — regeneration compounding (CONFIRMED).** `buildRepromptNote` quoted the
+  failing claim verbatim; attempts 2–3 are the model echoing "fix deployed" / "Slice 4
+  fired" back, which re-tripped the gate → escalation near-certain once anything fired.
+- **V4 — heartbeat / digest are gated.** They run *as* the primary agent (charlie,
+  `heartbeat.js:166`), so `isGatedAgent('charlie')` is true; they carry no bootstrap
+  and recite monitoring state → same false-fire class. Re-enabling gates as-is would
+  newly subject them to escalation.
+
+### Fix (input-scoping; detection regexes untouched)
+
+- **Bootstrap-as-evidence.** The this-session bootstrap snapshot is now a backing
+  source for **recited** claims about known entities (`matchEvidence` checks entity
+  membership against the bootstrap corpus; `runGates`/`regenerateWithGates` thread
+  `bootstrap` through from `_processNonReflex`).
+- **Hard discriminator (the adversarial constraint).** A first-person/elided
+  **this-session action** claim ("I deployed X" / "Deployed X") is **never**
+  bootstrap-backed — tool-evidence only — so Gate 1 still hard-fails a false action
+  claim about a bootstrap-known entity (`isFirstPersonAction`). Regression test asserts
+  exactly this.
+- **V3.** `buildRepromptNote` now describes the violation by gate class (no verbatim
+  claim echo) → breaks the echo loop.
+- **V4.** `isGatedTurn(agent, context)` = gated-agent AND non-background source;
+  registry uses it so heartbeat / graph-discovery / digest skip the loop (the scoping
+  the original design intended by name but missed).
+
+### Tests
+
+91 checks in `tests/verification-gates.test.js` (70 prior + 21 new). New coverage:
+first-person/elided action discriminator; bootstrap backs recited completion/state;
+**adversarial** — first-person action about a bootstrap-known entity still hard_fails
+(unit + E2E); bootstrap does not mask a this-turn errored probe; V3 no-echo;
+`isGatedTurn` background exclusion; E2E reproduction of the 4 Jun composite reply →
+pass, no escalation. Full suite green on host via temp-deploy (`cd /root/QClaw &&
+sudo npm test`); host repo restored to clean `f533442` afterward (no uncommitted
+prod changes pre-PR). Local `probes.test.js::pm2_processes` fails on the Mac
+(environmental — confirmed identical with changes reverted; passes on host).
+
+### 7 Pillars / security gate
+
+- **No-hardcoded-credentials: PASS** — no secrets in new code; bootstrap corpus is
+  `JSON.stringify` of the in-memory snapshot, written nowhere; `gate.log` scrubbing
+  path unchanged (still the existing unanchored sk-ant/Telegram scrubber, mode 0600).
+- **Webhook-auth / rate-limit: N/A** — gates are in-process; no new endpoints.
+- **Supabase RLS: N/A** — no DB changes.
+- **Financial / disabled-by-default: N/A** — no financial features; kill-switch
+  `QCLAW_GATES_ENABLED` intact, gates default-on.
+- **Cost:** regeneration still bounded by the 3-attempt cap and the V3 fix *reduces*
+  loop iterations (no self-reinforcing echo); V4 removes heartbeat/digest gate cost.
+
+### Followups
+
+- **Live verification + re-enable (PENDING, needs deploy + Tyson):** deploy the branch
+  to prod, `QCLAW_GATES_ENABLED=1`, `sudo pm2 reload quantumclaw --update-env`; send
+  `/session` + a greeting (expect zero gate firings), then a seeded false completion
+  claim (expect hard_fail). PR opened **draft** pending adversarial-review session per
+  standing policy on security-relevant slices.
+- **Residual (Slice 5):** entity-free recitations ("9 paid subs") have no token to
+  match against bootstrap → still soft-hedge (non-escalating). Full number/state
+  backing waits on Slice 5 evidence wiring.
+
+End of Slice 4.1 entry.
+
 
