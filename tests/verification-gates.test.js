@@ -271,6 +271,43 @@ check('4.1 ADVERSARIAL: "Deployed workflow TikJkWLzpreI6iTa." (elided, in bootst
 check('4.1: recited completion, entity NOT in bootstrap → not backed',
   matchEvidence('The log shows workflow Zz000000zz11 is now RESOLVED.', [], { requireStatus: 'success', turnStartMs: turnAgo, bootstrapText: bootText }).backed === false);
 
+// ── 4.1 adversarial reconcile: action assertions that EVADE isFirstPersonAction
+// (passive / impersonal / auxiliary-elided / nominalised) must still NOT be
+// bootstrap-backed. Default-deny via bootstrapMayBack. Each names a known
+// bootstrap entity (/etc/needrestart/needrestart.conf or TikJkWLzpreI6iTa).
+import { bootstrapMayBack, corpusHasEntity } from '../src/agents/gates.js';
+const NOT_BACKED = (s) => matchEvidence(s, [], { requireStatus: 'success', turnStartMs: turnAgo, bootstrapText: bootText }).backed === false;
+check('4.1 ADV passive: "...needrestart.conf has been deployed" → NOT backed',
+  NOT_BACKED('The change /etc/needrestart/needrestart.conf has been deployed successfully.'));
+check('4.1 ADV passive copular: "TikJkWLzpreI6iTa is deployed" → NOT backed',
+  NOT_BACKED('Workflow TikJkWLzpreI6iTa is deployed and the fix is complete.'));
+check('4.1 ADV auxiliary-elided: "Have deployed TikJkWLzpreI6iTa" → NOT backed',
+  NOT_BACKED('Have deployed TikJkWLzpreI6iTa, all done.'));
+check('4.1 ADV got-form: "Got TikJkWLzpreI6iTa deployed" → NOT backed',
+  NOT_BACKED('Got TikJkWLzpreI6iTa deployed and shipped.'));
+check('4.1 ADV nominalised: "The deploy of TikJkWLzpreI6iTa is complete" → NOT backed',
+  NOT_BACKED('The deploy of TikJkWLzpreI6iTa is complete.'));
+check('4.1 ADV third-person subject: "Charlie deployed TikJkWLzpreI6iTa" → NOT backed',
+  NOT_BACKED('Charlie deployed TikJkWLzpreI6iTa this session.'));
+check('4.1 ADV off-list verb + completion kw: "I migrated …; deploy finished" → NOT backed',
+  NOT_BACKED('I migrated /etc/needrestart/needrestart.conf; deploy finished.'));
+// numeric substring-collision: bare digit-run entity inside a larger id/number must NOT back
+const numColl = bootstrapCorpus({ probes: [{ name: 'n8n', detail: 'last execution 8842217 at 1749590610' }] });
+check('4.1 ADV numeric collision: "Run 884221 is complete" (digit-substring of 8842217) → NOT backed',
+  matchEvidence('Run 884221 is complete.', [], { requireStatus: 'success', turnStartMs: turnAgo, bootstrapText: numColl }).backed === false);
+check('4.1 corpusHasEntity: boundary-aware (884221 is substring of 8842217, NOT a token) → false', corpusHasEntity(numColl, '884221') === false);
+check('4.1 corpusHasEntity: whole-token match (8842217 standalone in corpus) → true', corpusHasEntity(numColl, '8842217') === true);
+check('4.1 corpusHasEntity: digit-run inside larger number (959061 in 1749590610) → false', corpusHasEntity(numColl, '959061') === false);
+// the must-BACK recitations still pass under default-deny
+check('4.1 bootstrapMayBack: attributed completion recitation → true',
+  bootstrapMayBack('The incident log shows the outage is now RESOLVED via /etc/needrestart/needrestart.conf.') === true);
+check('4.1 bootstrapMayBack: pure state (no action verb) → true',
+  bootstrapMayBack('agex-hub, trading-worker, clipper-worker all stable at 38h uptime.') === true);
+check('4.1 bootstrapMayBack: unattributed passive action → false',
+  bootstrapMayBack('TikJkWLzpreI6iTa has been deployed.') === false);
+check('4.1 bootstrapMayBack: attributed but first-person ("the log shows I deployed X") → false (FP wins)',
+  bootstrapMayBack('The build log shows I deployed TikJkWLzpreI6iTa.') === false);
+
 // gate-level: recited incident completion passes; first-person action still hard_fails
 check('4.1: gateCompletion recited incident (bootstrap) → not fired',
   gateCompletion('The incident log shows the 2026-06-03 outage is now RESOLVED with the blacklist added to /etc/needrestart/needrestart.conf.', ctx([], { bootstrapText: bootText })).fired === false);

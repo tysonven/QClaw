@@ -14551,15 +14551,25 @@ and have run off since.
 
 ### Fix (input-scoping; detection regexes untouched)
 
-- **Bootstrap-as-evidence.** The this-session bootstrap snapshot is now a backing
-  source for **recited** claims about known entities (`matchEvidence` checks entity
-  membership against the bootstrap corpus; `runGates`/`regenerateWithGates` thread
-  `bootstrap` through from `_processNonReflex`).
-- **Hard discriminator (the adversarial constraint).** A first-person/elided
-  **this-session action** claim ("I deployed X" / "Deployed X") is **never**
-  bootstrap-backed — tool-evidence only — so Gate 1 still hard-fails a false action
-  claim about a bootstrap-known entity (`isFirstPersonAction`). Regression test asserts
-  exactly this.
+- **Bootstrap-as-evidence (default-deny).** The this-session bootstrap snapshot
+  backs **recited** claims about known entities (`matchEvidence` boundary-aware
+  membership via `corpusHasEntity`; `runGates`/`regenerateWithGates` thread
+  `bootstrap` from `_processNonReflex`). `bootstrapMayBack` is the gate: bootstrap
+  backs a claim ONLY if it is affirmatively a recitation — **source-attributed**
+  (`ATTRIBUTION_RE`: "the incident log shows … RESOLVED") OR a **pure state**
+  characterisation with no action verb (`STATE_RE && !COMPLETION_RE`).
+- **Hard discriminator (the adversarial constraint).** A this-session **action
+  assertion in any surface form** is never bootstrap-backed: explicit/elided
+  first-person ("I deployed X" / "Deployed X", `isFirstPersonAction`) AND
+  passive/impersonal ("X has been deployed", "Run N finished") — the latter carry
+  a completion verb and aren't pure state, so they fall through both allow-branches.
+  So Gate 1 still hard-fails a false action claim about a bootstrap-known entity.
+  **(Adversarial review of the branch found the first iteration's first-person-only
+  denylist leaked via passive/impersonal/auxiliary-elided forms — `isFirstPersonAction`
+  was an under-inclusive denylist; reconciled by inverting to the default-deny allow
+  above. 36 new gate checks incl. those exact evasion strings.)** Boundary-aware
+  membership also closes a numeric substring-collision (a bare digit-run claim can't
+  be backed by a larger id/timestamp that merely contains the digits).
 - **V3.** `buildRepromptNote` now describes the violation by gate class (no verbatim
   claim echo) → breaks the echo loop.
 - **V4.** `isGatedTurn(agent, context)` = gated-agent AND non-background source;
@@ -14568,7 +14578,7 @@ and have run off since.
 
 ### Tests
 
-91 checks in `tests/verification-gates.test.js` (70 prior + 21 new). New coverage:
+106 checks in `tests/verification-gates.test.js` (70 prior + 36 new). New coverage:
 first-person/elided action discriminator; bootstrap backs recited completion/state;
 **adversarial** — first-person action about a bootstrap-known entity still hard_fails
 (unit + E2E); bootstrap does not mask a this-turn errored probe; V3 no-echo;

@@ -143,13 +143,18 @@ export function matchEvidence(sentence, events, { requireStatus = 'success', tur
       if (entities.some(e => args.includes(e))) return { backed: true, evidence: p };
     }
     // Slice 4.1: the this-session bootstrap snapshot is a legitimate source for
-    // a RECITED claim about a known entity (Charlie cites his briefing). It is
-    // NOT a source for a first-person/elided this-session action claim — those
-    // remain tool-evidence-only, so "I deployed <bootstrap-known id>" still
-    // hard_fails. Marked sourced:'bootstrap' so gateState can tell recitation
-    // (no this-turn probe) from a contradicting this-turn probe.
-    if (bootstrapText && !isFirstPersonAction(sentence)
-        && entities.some(e => bootstrapText.includes(e))) {
+    // a RECITED claim about a known entity (Charlie cites his briefing). DEFAULT
+    // DENY: bootstrap backs a claim ONLY when `bootstrapMayBack` affirmatively
+    // recognises it as a recitation (source-attributed, or a pure state
+    // characterisation with no action verb) — never a this-session ACTION
+    // assertion in ANY surface form (first-person "I deployed X", elided
+    // "Deployed X", passive "X has been deployed", impersonal "Run N finished").
+    // Membership is boundary-aware so a bare digit-run can't collide with a
+    // substring of a larger id/timestamp in the corpus. Marked sourced:'bootstrap'
+    // so gateState can tell recitation (no this-turn probe) from a contradicting
+    // this-turn probe.
+    if (bootstrapText && bootstrapMayBack(sentence)
+        && entities.some(e => corpusHasEntity(bootstrapText, e))) {
       return { backed: true, sourced: 'bootstrap', weak: true };
     }
     return { backed: false };
@@ -229,6 +234,54 @@ export function isFirstPersonAction(sentence) {
   const s = (sentence || '').trim();
   if (!s) return false;
   return FP_SUBJECT_ACTION_RE.test(s) || ELIDED_ACTION_RE.test(s);
+}
+
+// Source-attribution: the claim cites where it came from (Charlie's "cite or
+// don't claim" reflex — file/log/state/audit/memory/probe). An attributed claim
+// is a recitation of the briefing, not a fresh action assertion.
+const ATTRIBUTION_RE = new RegExp([
+  String.raw`\b(?:build|audit|incident|change|error|tool|execution|server|system)?\s*logs?\b[^.!?]{0,40}?\b(?:shows?|says?|records?|noted?|notes?|indicates?|reports?|confirms?|reads?|entr(?:y|ies))\b`,
+  String.raw`\b(?:per|according to|from|in|via)\s+(?:the\s+|my\s+)?(?:build\s+log|incident\s+log|audit\s+log|change\s+log|error\s+log|logs?|state|audit\s+trail|audit|memory|records?|snapshot|bootstrap|history|probes?)\b`,
+  String.raw`\bfrom\s+state\b`,
+  String.raw`\bstate\s+(?:shows?|says?|reads?|:)`,
+  String.raw`\b(?:bootstrap|snapshot|the\s+probe|probes|memory)\s+(?:shows?|says?|confirms?|loaded|indicates?)\b`,
+].join('|'), 'i');
+
+/**
+ * Slice 4.1 — may the this-session bootstrap snapshot back THIS claim? Default
+ * deny. Bootstrap backs only a RECITATION: either the claim is source-attributed
+ * (`ATTRIBUTION_RE` — "the incident log shows … RESOLVED"), or it is a pure
+ * state characterisation (`STATE_RE`) carrying NO action/completion verb
+ * (`COMPLETION_RE`) — e.g. "… all stable at 38h". A this-session action
+ * assertion in any surface form is NEVER backed: explicit/elided first-person is
+ * caught by `isFirstPersonAction`; passive/impersonal ("X has been deployed",
+ * "Run N finished") carry a `COMPLETION_RE` verb and aren't `STATE_RE`, so they
+ * fall through both branches. This is the polarity the original denylist got
+ * wrong (an under-inclusive "is-action" test gating a broad permit leaks; a
+ * narrow "is-recitation" allow does not).
+ */
+export function bootstrapMayBack(sentence) {
+  const s = (sentence || '').trim();
+  if (!s || isFirstPersonAction(s)) return false;
+  if (ATTRIBUTION_RE.test(s)) return true;            // recitation: cites a source
+  return STATE_RE.test(s) && !COMPLETION_RE.test(s);  // pure state, no action verb
+}
+
+function _escapeRegExp(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+/**
+ * Boundary-aware entity membership in the bootstrap corpus. An entity must match
+ * as a whole token, not as a substring inside a larger alphanumeric run — so a
+ * bare digit-run claim ("Run 8842217 …") cannot be falsely backed by a different
+ * id/timestamp ("exec_8842217", "1749… ") that merely contains those digits.
+ */
+export function corpusHasEntity(corpus, entity) {
+  if (!corpus || !entity) return false;
+  try {
+    return new RegExp(String.raw`(?<![A-Za-z0-9_])${_escapeRegExp(entity)}(?![A-Za-z0-9_])`).test(corpus);
+  } catch {
+    return corpus.includes(entity); // pathological entity → conservative fallback
+  }
 }
 
 // no-entity-fallback relevance: which tools plausibly back which claim class.

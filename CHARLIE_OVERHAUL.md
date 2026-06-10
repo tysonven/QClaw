@@ -918,19 +918,29 @@ not see. Correction to the original diagnosis: the gated string already equals
 the user-facing reply (`runGates(result.content)`; manager.js sends it
 verbatim) — there is **no system-side composite** to strip. The fix scopes the
 gate's **evidence**, not its detection: the this-session bootstrap snapshot is
-now a backing source for **recited** claims about known entities. The hard
-discriminator — first-person/elided **this-session action** ("I deployed X" /
-"Deployed X") is **never** bootstrap-backed, so Gate 1 still hard-fails a false
-action claim about a bootstrap-known entity (`isFirstPersonAction`). Also fixed:
+a backing source for **recited** claims about known entities, on a **default-deny**
+polarity (`bootstrapMayBack`) — bootstrap backs a claim only when it is
+affirmatively a recitation: **source-attributed** ("the incident log shows …
+RESOLVED") or a **pure state** characterisation carrying no action verb ("…
+all stable at 38h"). A this-session **action assertion in any surface form** is
+never backed — explicit/elided first-person ("I deployed X" / "Deployed X",
+`isFirstPersonAction`), and also passive/impersonal ("X has been deployed",
+"Run N finished") which carry a completion verb and aren't pure state, so they
+fall through both allow-branches. So Gate 1 still hard-fails a false action
+claim about a bootstrap-known entity. Entity membership is **boundary-aware**
+(`corpusHasEntity`) so a bare digit-run can't collide with a substring of a
+larger id/timestamp in the snapshot. (Adversarial review of the branch found the
+original first-person-only denylist leaked via passive/impersonal/auxiliary-elided
+forms — reconciled by inverting to the default-deny allow above.) Also fixed:
 **(V3)** `buildRepromptNote` now describes the violation by class instead of
 quoting the failing claim verbatim — the verbatim echo re-injected trigger
 words, the model echoed them, and the gate re-fired (the 4 Jun attempts 2–3 were
 echoes), making escalation near-certain once anything fired. **(V4)** heartbeat /
 graph-discovery / digest turns run *as* charlie but carry no bootstrap and recite
 monitoring state; `isGatedTurn` now excludes background sources (the scoping the
-original design intended by name but missed). Detection regexes unchanged. 91
-test checks (70 prior + 21 new, incl. the adversarial first-person-action case);
-full suite green on host. Files: `src/agents/gates.js`, `src/agents/registry.js`,
+original design intended by name but missed). Gate-firing regexes unchanged. 106
+test checks (70 prior + 36 new, incl. the passive/impersonal/elided action-evasion
+cases from adversarial review); full suite green on host. Files: `src/agents/gates.js`, `src/agents/registry.js`,
 `tests/verification-gates.test.js`, docs. **Residual (honest):** entity-free
 recitations ("9 paid subs") have no token to match against bootstrap → still
 soft-hedge (non-escalating); full number/state backing waits on Slice 5 evidence
