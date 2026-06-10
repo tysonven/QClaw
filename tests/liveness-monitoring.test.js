@@ -4,7 +4,7 @@
  */
 import { recordLivenessBeat, pruneLivenessRows, startLivenessHeartbeat, LIVENESS_WORKFLOW_ID } from '../src/observability/liveness-heartbeat.js';
 import { parseEnvFile, classify, activeEpisode, reminderDue, readState, runWatcher } from '../src/observability/liveness-watcher.js';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -122,6 +122,18 @@ const freshPath = () => join(dir, `state-${++n}.log`);
   const sends = []; const badStatePath = dir; // a directory → readFileSync throws → readable:false
   const r = await runWatcher({ env: baseEnv, nowMs, statePath: badStatePath, fetchImpl: makeFetch({ beatRow: beat(10 * 60_000), serverDate, sends }) });
   check('runWatcher: unreadable ledger + DOWN → STILL fires (inverted polarity)', r.class === 'down' && r.fired === true && sends.some(s => /LIVENESS/.test(s.text)));
+}
+
+// regression: cooldown ledger must persist via env.LIVENESS_DIR when statePath
+// is omitted (the live bug: it read process.env.LIVENESS_DIR → unwritable /root
+// → no persistence → DOWN re-fired every run = storm).
+{
+  const sends = []; const ldir = join(dir, 'lvdir'); mkdirSync(ldir, { recursive: true });
+  const envD = { ...baseEnv, LIVENESS_DIR: ldir };
+  const f = () => makeFetch({ beatRow: beat(10 * 60_000), serverDate, sends });
+  const r1 = await runWatcher({ env: envD, nowMs, fetchImpl: f() });                       // no statePath
+  const r2 = await runWatcher({ env: envD, nowMs: nowMs + 60_000, fetchImpl: f() });
+  check('runWatcher: cooldown persists via env.LIVENESS_DIR (no storm)', r1.fired === true && r2.fired === false && r2.suppressed === 'cooldown' && sends.length === 1);
 }
 
 check('parseEnvFile: parses KEY=val, strips quotes, skips comments', (() => {

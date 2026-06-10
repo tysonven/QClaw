@@ -160,7 +160,10 @@ export async function runWatcher({ env, nowMs = Date.now(), fetchImpl = fetch, s
   const token = env.TELEGRAM_BOT_TOKEN;
   const chatId = Number(env.LIVENESS_ALERT_CHAT_ID) || OWNER_TELEGRAM_CHAT_ID;
   const staleMs = (Number(env.LIVENESS_STALE_MINUTES) || DEFAULT_STALE_MINUTES) * 60_000;
-  const sp = statePath || join(process.env.LIVENESS_DIR || '/root/charlie-liveness', 'liveness-state.log');
+  // LIVENESS_DIR comes from the .env FILE (merged into `env`), so read it from
+  // `env` first — reading process.env here defaulted to an unwritable /root path
+  // on the n8n droplet, which silently broke cooldown persistence → alert storm.
+  const sp = statePath || join(env.LIVENESS_DIR || process.env.LIVENESS_DIR || '/root/charlie-liveness', 'liveness-state.log');
   const OUTAGE = new Set(['down', 'unknown', 'polling']);
 
   // Read (loud on failure — HIGH#1).
