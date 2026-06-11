@@ -117,18 +117,20 @@ export function createClaudeCodeDispatchTool({
       required: ['task', 'mode', 'scope'],
     },
     fn: async (args = {}, ctx = {}) => {
+      // Hard failures THROW (not return) so the tool's audit result_status is
+      // 'error', and Gate 2 never treats a rejected dispatch as a real dispatch.
       if (!SUPABASE_URL || !SERVICE_KEY) {
-        return 'Error: dispatcher storage is not configured (SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY missing). Cannot queue.';
+        throw new Error('dispatcher storage is not configured (SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY missing); cannot queue.');
       }
 
       const task = String(args.task || '').trim();
-      if (!task) return 'Error: task is required.';
+      if (!task) throw new Error('task is required.');
       const mode = String(args.mode || '');
-      if (!V1_MODES.includes(mode)) return `Error: mode must be one of ${V1_MODES.join(', ')}. Implement-with-audit-gate requires Tyson and is not available in v1.`;
+      if (!V1_MODES.includes(mode)) throw new Error(`mode must be one of ${V1_MODES.join(', ')}. Implementation modes require Tyson and are not available in v1.`);
       const scope = String(args.scope || '');
-      if (!V1_SCOPES.includes(scope)) return `Error: scope must be one of ${V1_SCOPES.join(', ')}. write/infra/critical scopes are not dispatchable in v1.`;
+      if (!V1_SCOPES.includes(scope)) throw new Error(`scope must be one of ${V1_SCOPES.join(', ')}. write/infra/critical scopes are not dispatchable in v1.`);
       const repo = args.repo ? String(args.repo).trim() : DEFAULT_REPO;
-      if (!REPO_RE.test(repo)) return 'Error: repo must be of the form "owner/name".';
+      if (!REPO_RE.test(repo)) throw new Error('repo must be of the form "owner/name".');
       let priority = Number.isInteger(args.priority) ? args.priority : 5;
       priority = Math.max(1, Math.min(10, priority));
 
@@ -140,11 +142,11 @@ export function createClaudeCodeDispatchTool({
       try {
         const active = await rest('GET', `claude_code_dispatches?session_id=eq.${encodeURIComponent(session_id)}&status=in.(queued,in_progress)&select=id`);
         activeAhead = Array.isArray(active) ? active.length : 0;
-        if (activeAhead >= ENQUEUE_CAP_PER_SESSION) {
-          return `Error: too many active dispatches (${activeAhead}/${ENQUEUE_CAP_PER_SESSION}) for this session. Wait for some to finish before queueing more.`;
-        }
       } catch (e) {
         log.warn(`claude_code_dispatch: enqueue-cap check failed (${e.message}) — proceeding`);
+      }
+      if (activeAhead >= ENQUEUE_CAP_PER_SESSION) {
+        throw new Error(`too many active dispatches (${activeAhead}/${ENQUEUE_CAP_PER_SESSION}) for this session; wait for some to finish before queueing more.`);
       }
 
       const brief = assembleBrief(args, repo, mode);
@@ -171,9 +173,9 @@ export function createClaudeCodeDispatchTool({
         row = Array.isArray(inserted) ? inserted[0] : inserted;
       } catch (e) {
         log.error(`claude_code_dispatch: insert failed: ${e.message}`);
-        return `Error: could not queue the dispatch (${e.message}).`;
+        throw new Error(`could not queue the dispatch (${e.message}).`);
       }
-      if (!row?.id) return 'Error: dispatch row did not return an id; not queued.';
+      if (!row?.id) throw new Error('dispatch row did not return an id; not queued.');
 
       const estimated_completion = new Date(Date.now() + (activeAhead + 1) * PER_TASK_ESTIMATE_MS).toISOString();
 
