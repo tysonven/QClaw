@@ -46,19 +46,26 @@ const BEAT_MS = 60_000;
 const RETENTION_EVERY_BEATS = 60;   // ~hourly
 const RETENTION_HOURS = 24;
 
-/** POST record_heartbeat() with the service_role key. Throws on non-2xx. */
-export async function recordLivenessBeat({ url, key, status = 'success', metadata, fetchImpl = fetch }) {
+/** POST record_heartbeat() with the service_role key for an arbitrary workflow_id.
+ * The generic writer — Slice 5's claude-code-dispatcher uses it for
+ * `dispatcher-liveness`; the off-host watcher monitors both ids. Throws on non-2xx. */
+export async function recordBeat({ url, key, workflowId, workflowName, status = 'success', metadata, fetchImpl = fetch }) {
   const res = await fetchImpl(`${url}/rest/v1/rpc/record_heartbeat`, {
     method: 'POST',
     headers: { apikey: key, Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      p_workflow_id: LIVENESS_WORKFLOW_ID,
+      p_workflow_id: workflowId,
       p_status: status,
-      p_workflow_name: 'Charlie liveness (quantumclaw)',
+      p_workflow_name: workflowName,
       p_metadata: metadata,
     }),
   });
   if (!res.ok) throw new Error(`record_heartbeat HTTP ${res.status}`);
+}
+
+/** POST record_heartbeat() for charlie-liveness. Throws on non-2xx. */
+export async function recordLivenessBeat({ url, key, status = 'success', metadata, fetchImpl = fetch }) {
+  return recordBeat({ url, key, workflowId: LIVENESS_WORKFLOW_ID, workflowName: 'Charlie liveness (quantumclaw)', status, metadata, fetchImpl });
 }
 
 /** Best-effort retention: delete charlie-liveness rows older than RETENTION_HOURS. */

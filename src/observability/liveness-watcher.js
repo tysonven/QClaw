@@ -63,9 +63,9 @@ function loadEnv() {
 }
 
 // ── Supabase read (returns server clock from the Date header) ───────────────
-export async function fetchLatestBeat({ url, key, fetchImpl = fetch }) {
+export async function fetchLatestBeat({ url, key, workflowId = WORKFLOW_ID, fetchImpl = fetch }) {
   const base = (url || '').replace(/\/+$/, '');
-  const q = `${base}/rest/v1/workflow_heartbeats?workflow_id=eq.${WORKFLOW_ID}` +
+  const q = `${base}/rest/v1/workflow_heartbeats?workflow_id=eq.${workflowId}` +
     `&select=created_at,status,metadata&order=created_at.desc&limit=1`;
   const res = await fetchImpl(q, { headers: { apikey: key, Authorization: `Bearer ${key}` } });
   if (!res.ok) throw new Error(`Supabase HTTP ${res.status}`);
@@ -77,11 +77,11 @@ export async function fetchLatestBeat({ url, key, fetchImpl = fetch }) {
 
 // ── classification ──────────────────────────────────────────────────────────
 /** @returns {class:'down'|'unknown'|'polling'|'healthy'|'armed', ...} */
-export function classify({ readError, row, serverNowMs, nowMs = Date.now(), staleMs, target = DEFAULT_TARGET }) {
+export function classify({ readError, row, serverNowMs, nowMs = Date.now(), staleMs, target = DEFAULT_TARGET, label = 'Charlie', proc = 'quantumclaw' }) {
   if (readError) {
     return { class: 'unknown', message:
-      `🟠 Charlie LIVENESS UNKNOWN — watcher cannot reach Supabase (${readError}).\n` +
-      `Liveness of ${target} is indeterminate, and a Supabase outage is itself a Charlie outage.\n` +
+      `🟠 ${label} LIVENESS UNKNOWN — watcher cannot reach Supabase (${readError}).\n` +
+      `Liveness of ${target} is indeterminate, and a Supabase outage is itself a ${label} outage.\n` +
       `Check Supabase status and n8n-droplet connectivity. ${REMINDER_CADENCE}` };
   }
   if (!row) return { class: 'armed' }; // zero rows ever → cold start (handled by caller)
@@ -94,15 +94,15 @@ export function classify({ readError, row, serverNowMs, nowMs = Date.now(), stal
 
   if (ageMs > staleMs) {
     return { class: 'down', ageMin, message:
-      `🔴 Charlie LIVENESS — no heartbeat for ${ageMin}m on ${target}.\n` +
-      `quantumclaw is DOWN, hung, or the host is unreachable.\n` +
-      `Check (in order): \`pm2 list\` → \`journalctl -u pm2-root --since '20 min ago'\` → \`pm2 logs quantumclaw\`\n` +
+      `🔴 ${label} LIVENESS — no heartbeat for ${ageMin}m on ${target}.\n` +
+      `${proc} is DOWN, hung, or the host is unreachable.\n` +
+      `Check (in order): \`pm2 list\` → \`journalctl -u pm2-root --since '20 min ago'\` → \`pm2 logs ${proc}\`\n` +
       `Last beat ${hhmmZ(row.created_at)} (pid ${md.pid ?? '?'}, v${md.version ?? '?'}). ${REMINDER_CADENCE}` };
   }
   const cs = md.channel_status;
   if (md.polling_ok === false || DEGRADED_STATES.has(cs)) {
     return { class: 'polling', ageMin, channel_status: cs, message:
-      `🟡 Charlie UP but Telegram polling DEGRADED on ${target} (3e state: ${cs}).\n` +
+      `🟡 ${label} UP but Telegram polling DEGRADED on ${target} (3e state: ${cs}).\n` +
       `Process alive (beat ${Math.round(ageMs / 1000)}s ago) but not serving Telegram.\n` +
       `Check: \`~/.quantumclaw/channel-events.log\` · \`pm2 logs quantumclaw\`. ${REMINDER_CADENCE}` };
   }
@@ -157,26 +157,32 @@ export async function sendTelegram({ token, chatId, text, fetchImpl = fetch }) {
 }
 
 // ── orchestrator ─────────────────────────────────────────────────────────────
-export async function runWatcher({ env, nowMs = Date.now(), fetchImpl = fetch, statePath } = {}) {
+export async function runWatcher({ env, nowMs = Date.now(), fetchImpl = fetch, statePath, cfg = {} } = {}) {
   const url = env.SUPABASE_URL;
   const key = env.SUPABASE_SERVICE_ROLE_KEY || env.SUPABASE_ANON_KEY; // service_role required for RLS read
   const token = env.TELEGRAM_BOT_TOKEN;
   const chatId = Number(env.LIVENESS_ALERT_CHAT_ID) || OWNER_TELEGRAM_CHAT_ID;
-  const staleMs = (Number(env.LIVENESS_STALE_MINUTES) || DEFAULT_STALE_MINUTES) * 60_000;
+  // Slice 5: per-target config (cfg) so one watcher process monitors both
+  // charlie-liveness and dispatcher-liveness, each with its own id / label / stale
+  // threshold / state-ledger file (so their outage episodes never collide).
+  const workflowId = cfg.workflowId || WORKFLOW_ID;
+  const label = cfg.label || 'Charlie';
+  const proc = cfg.proc || 'quantumclaw';
+  const staleMs = (cfg.staleMinutes || Number(env.LIVENESS_STALE_MINUTES) || DEFAULT_STALE_MINUTES) * 60_000;
   // LIVENESS_DIR comes from the .env FILE (merged into `env`), so read it from
   // `env` first — reading process.env here defaulted to an unwritable /root path
   // on the n8n droplet, which silently broke cooldown persistence → alert storm.
-  const sp = statePath || join(env.LIVENESS_DIR || process.env.LIVENESS_DIR || '/root/charlie-liveness', 'liveness-state.log');
-  const target = env.LIVENESS_TARGET || DEFAULT_TARGET;
+  const sp = statePath || join(env.LIVENESS_DIR || process.env.LIVENESS_DIR || '/root/charlie-liveness', cfg.stateFile || 'liveness-state.log');
+  const target = cfg.target || env.LIVENESS_TARGET || DEFAULT_TARGET;
   const OUTAGE = new Set(['down', 'unknown', 'polling']);
 
   // Read (loud on failure — HIGH#1).
   let decision;
   try {
-    const { row, serverNowMs } = await fetchLatestBeat({ url, key, fetchImpl });
-    decision = classify({ row, serverNowMs, nowMs, staleMs, target });
+    const { row, serverNowMs } = await fetchLatestBeat({ url, key, workflowId, fetchImpl });
+    decision = classify({ row, serverNowMs, nowMs, staleMs, target, label, proc });
   } catch (err) {
-    decision = classify({ readError: err.message || String(err), nowMs, staleMs, target });
+    decision = classify({ readError: err.message || String(err), nowMs, staleMs, target, label, proc });
   }
 
   const { entries, readable } = readState(sp);
@@ -190,7 +196,7 @@ export async function runWatcher({ env, nowMs = Date.now(), fetchImpl = fetch, s
     if (decision.class === cls) continue; // still in this outage — handled below
     const ep = activeEpisode(entries, cls);
     const downMin = ep ? Math.max(1, Math.round((nowMs - ep.firstFired) / 60_000)) : null;
-    const text = `🟢 Charlie LIVENESS recovered on ${target} — ${decision.class === 'healthy'
+    const text = `🟢 ${label} LIVENESS recovered on ${target} — ${decision.class === 'healthy'
       ? `heartbeat fresh (~${decision.ageMin ?? 0}m), polling ${decision.channel_status ?? 'ok'}`
       : `now ${decision.class}`}. Was ${cls}${downMin != null ? ` for ~${downMin}m` : ''}.`;
     const sent = await sendTelegram({ token, chatId, text, fetchImpl });
@@ -201,7 +207,7 @@ export async function runWatcher({ env, nowMs = Date.now(), fetchImpl = fetch, s
     // MED#6: only one-shot, and only if we've never recorded a beat before.
     const everArmed = entries.some(e => e.event === 'armed');
     if (!everArmed) {
-      await sendTelegram({ token, chatId, text: '🩺 Charlie liveness monitor armed — awaiting first heartbeat from quantumclaw.', fetchImpl });
+      await sendTelegram({ token, chatId, text: `🩺 ${label} liveness monitor armed — awaiting first heartbeat from ${proc}.`, fetchImpl });
       appendState(sp, { ts: new Date(nowMs).toISOString(), class: 'armed', event: 'armed' });
     }
     return { class: 'armed', fired: false };
@@ -221,10 +227,32 @@ export async function runWatcher({ env, nowMs = Date.now(), fetchImpl = fetch, s
   return { class: decision.class, fired: true, sent: sent.ok, message: decision.message };
 }
 
+// ── monitored targets ────────────────────────────────────────────────────────
+// One watcher process, N targets, each with its own state-ledger file. The
+// dispatcher beats on an independent timer (decoupled from CC runs), so a 5m
+// stale threshold won't false-alert during a long audit.
+export const TARGETS = [
+  { workflowId: 'charlie-liveness', label: 'Charlie', proc: 'quantumclaw', stateFile: 'liveness-state.log' },
+  {
+    workflowId: 'dispatcher-liveness', label: 'CC dispatcher', proc: 'claude-code-dispatcher',
+    stateFile: 'dispatcher-state.log',
+    staleMinutes: Number(process.env.DISPATCHER_STALE_MINUTES) || 5,
+  },
+];
+
 // ── cron entrypoint ──────────────────────────────────────────────────────────
 const isMain = import.meta.url === `file://${process.argv[1]}`;
 if (isMain) {
-  runWatcher({ env: loadEnv() })
-    .then(r => { console.log(`[liveness-watcher] class=${r.class} fired=${r.fired}${r.suppressed ? ' (' + r.suppressed + ')' : ''}`); process.exit(0); })
-    .catch(err => { console.error(`[liveness-watcher] error (non-fatal): ${err?.message || err}`); process.exit(0); });
+  const env = loadEnv();
+  (async () => {
+    for (const cfg of TARGETS) {
+      try {
+        const r = await runWatcher({ env, cfg });
+        console.log(`[liveness-watcher] ${cfg.workflowId} class=${r.class} fired=${r.fired}${r.suppressed ? ' (' + r.suppressed + ')' : ''}`);
+      } catch (err) {
+        console.error(`[liveness-watcher] ${cfg.workflowId} error (non-fatal): ${err?.message || err}`);
+      }
+    }
+    process.exit(0);
+  })();
 }
