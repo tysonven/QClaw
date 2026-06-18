@@ -259,11 +259,14 @@ class QuantumClaw {
       });
       // Slice 5: claude_code_dispatch — Charlie queues audit/read_only briefs for
       // Claude Code (the claude-code-dispatcher PM2 worker runs them read-only).
-      // Enqueue-only; scoped to the primary agent (lane discipline) so sub-agents
-      // cannot dispatch CC.
-      const primaryAgentName = (this.config.agent?.name || 'echo').toLowerCase().replace(/[^a-z0-9_-]/g, '');
+      // Enqueue-only; scoped to the GATED agent set (QCLAW_GATES_AGENTS, default
+      // 'charlie') — NOT config.agent.name (the brand, 'QClaw') — so the tool is
+      // available to exactly the agent(s) whose dispatch claims the gates verify,
+      // and sub-agents (echo, patcher, …) cannot dispatch CC.
+      const dispatchAgents = (process.env.QCLAW_GATES_AGENTS || 'charlie')
+        .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
       this.tools.registerBuiltin('claude_code_dispatch', {
-        scope: [primaryAgentName],
+        scope: dispatchAgents,
         ...createClaudeCodeDispatchTool({ audit: this.audit, auditActor: 'charlie' }),
       });
       const rateLimiter = new RateLimiter({
