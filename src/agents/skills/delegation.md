@@ -2,6 +2,7 @@
 name: delegation
 category: always-on
 surface: prompt
+tools: [claude_code_dispatch]
 description: How Charlie routes work to Claude Code, specialists, sub-agents, and Tyson — dispatch contract, escalation paths, sub-agent coordination
 ---
 

@@ -14727,4 +14727,65 @@ from `process.env.LIVENESS_DIR`, but `LIVENESS_DIR` comes from the `.env` *file*
 
 End of Slice 3h entry.
 
+---
+
+## Slice 5 — Claude Code delegation bridge (Component 6 v1) — 2026-06-18
+
+**What shipped:** Charlie can queue audit/read_only briefs for Claude Code (CC), executed by a
+secure dispatcher. Pieces: Supabase `claude_code_dispatches` table (RLS enable+force+revoke, service-role
+only) + `claim_next_dispatch`/`reap_stale_dispatches` RPCs; `claude_code_dispatch` enqueue-only tool
+(audit_only mode, scope audit/read_only, session_id server-derived); `claude-code-dispatcher` PM2 worker
+(runs CC as the unprivileged `ccdispatch` user, plan-mode, scrubbed env, throwaway clone, single atomic
+write-back); Gate 2 evidence-checked (dispatch vs outcome grades; queued never backs completed; empty-entity
+outcome fails closed); poll-on-turn-start read-path with untrusted-output fencing; multi-target liveness
+(`dispatcher-liveness` + `charlie-liveness`). Decommissioned the insecure predecessor `charlie-watcher`
+(ran CC with `--dangerously-skip-permissions` off `charlie_tasks`).
+
+**Pause-(c) secret-read matrix (first live CC):** ccdispatch isolation proven structural. Kernel EACCES
+observed THROUGH live CC for `.env`, `config.json`, `.claude.json` (refined plausible-audit briefs) + a
+planted root:600 file in the clone; `/proc/<pid>/environ` proven directly (`0400 root:root`, ccdispatch
+`cat` → `Permission denied` rc=1). ZERO secret values in any result (checked against RAW output, not
+scrubbed rows); ZERO repo mutation. Blatant briefs were caught earlier by CC model-refusal / deny-list
+(too obvious) — the kernel is the structural control, deny-list/plan-mode are defence-in-depth.
+
+**7 bugs found and fixed during build/matrix/deploy:**
+1. `workingTreeDirty()` dead backstop — root `git status` on a ccdispatch-owned clone → `fatal: detected
+   dubious ownership` → catch returned "clean". Fixed: run as ccdispatch + `-c safe.directory` fallback + fail-safe-to-dirty.
+2. HOME pollution — `HOME=clone` made CC write `.claude/` into the repo clone → false "working tree mutated"
+   on every dispatch. Fixed: separate `<clone>.home`.
+3. PM2 ESM `isMain` — PM2 sets `process.argv[1]` to its wrapper, so the dispatcher's `import.meta.url`
+   guard never fired and `mainLoop` was silently skipped (process "online", 0 CPU, no heartbeat). Fixed:
+   dedicated `src/dispatch/start.js` entry (no guard) + robust realpath isMain + startup log.
+4. Env plumbing — the tool + read-path read `process.env`, but the app loads creds via `core/env.js getEnv()`
+   (NOT into process.env). Fixed: default to `getEnv()`.
+5. Tool scope — scoped to `config.agent.name` ('QClaw'->'qclaw', a non-agent) → invisible to Charlie. Fixed:
+   scope to `QCLAW_GATES_AGENTS` (default 'charlie').
+6. **Tool not in Charlie's ACTIVE per-turn set** (acceptance scenario 1) — registered scope=['charlie']
+   shows in `/api/tools`, but `registerForRequest` only activates an AGENT-scoped builtin if a LOADED skill
+   DECLARES it in frontmatter `tools:`. `delegation.md` (always-on) only mentioned it in prose. Fixed: added
+   `tools: [claude_code_dispatch]` to delegation.md frontmatter. (A fresh `/session` does NOT fix this — it
+   is a per-turn active-set gap, not a bootstrap-snapshot/cache issue. Charlie's self-report was ACCURATE.)
+7. `pm2_processes` probe failure (also surfaced as the bootstrap's 1 warning) — `src/agents/probes/pm2.js`
+   `EXPECTED` still listed decommissioned `charlie-watcher` (→ `missing:["charlie-watcher"]`) and lacked
+   `claude-code-dispatcher` (→ `extras:["claude-code-dispatcher"]`). Fixed EXPECTED.
+
+> **DISCIPLINE — PM2 roster changes MUST update `src/agents/probes/pm2.js` `EXPECTED`**, same reflex as
+> `pm2 save`. The bootstrap pm2 probe checks the live roster against that hardcoded list; adding/removing a
+> PM2 process without updating EXPECTED makes the probe fail (and Charlie's bootstrap warn) on every load.
+
+**Deploy:** branch `slice-5-claude-code-dispatch` checked out in `/root/QClaw` + `pm2 restart quantumclaw`
+(env preserved → gates stay ENABLED via default; `QCLAW_GATES_ENABLED` lives in `.env` but the app reads
+`process.env`, so default-enabled is the active mechanism). Dispatcher runs from `/root/QClaw-slice5` (post-
+merge: repoint to `/root/QClaw`). ccdispatch user created (`useradd -r`, work root 700). Multi-target watcher
+redeployed at `/home/n8nadmin/charlie-liveness/` on the n8n droplet (n8nadmin cron, NOT `/root`; n8n sudo
+needs a password — manage as n8nadmin). Note: intermittent `grammY 502 Bad Gateway` on `getUpdates` (Telegram-
+side; channel_status stays `active`). Resolved-stale: the old `heartbeat_freshness` probe failure now passes
+via service_role.
+
+**Status:** re-verifying fixes 6+7 on a fresh bootstrap; then HOLD for Tyson's Telegram acceptance messages
+(legit audit e2e, write-scope rejection, Gate 2 no-row hard-fail, dispatcher-kill liveness alert). Matrix
+artifacts retained until green (test rows `matrix:*`, `/root/cc-matrix*`). No CC invoked outside the matrix.
+
+End of Slice 5 entry.
+
 
