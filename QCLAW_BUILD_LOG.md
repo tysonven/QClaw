@@ -14782,9 +14782,15 @@ needs a password — manage as n8nadmin). Note: intermittent `grammY 502 Bad Gat
 side; channel_status stays `active`). Resolved-stale: the old `heartbeat_freshness` probe failure now passes
 via service_role.
 
-**Status:** re-verifying fixes 6+7 on a fresh bootstrap; then HOLD for Tyson's Telegram acceptance messages
-(legit audit e2e, write-scope rejection, Gate 2 no-row hard-fail, dispatcher-kill liveness alert). Matrix
-artifacts retained until green (test rows `matrix:*`, `/root/cc-matrix*`). No CC invoked outside the matrix.
+**Live acceptance (2026-06-18) — all 4 scenarios PASSED** (full evidence: `/tmp/slice5-acceptance.md`):
+1. **Audit e2e** — Charlie dispatched an audit_only brief; result surfaced next turn; "Claude Code completed…" passed Gate 1 against the real row. (Observed a benign **double-dispatch** — Charlie issued the same brief twice ~6.6s apart, two LLM tool calls; both read-only, surfaced together; no harm. → follow-up: enqueue-dedup.)
+2. **Scope rejection** — `scope=write` + `scope=critical` rows injected via service-role; dispatcher claimed then **rejected to `failed` BEFORE invoking CC** (`rejected: scope "write" is not runnable in v1`), `cc_session_id`/`exit_code`/`result` all NULL, 0 audit/result events. Structural scope gate proven live, fail-closed.
+3. **Unbacked delegation claim** — caught by the **REFLEX layer** (Charlie refused + escalated); his output had no delegation claim, so **Gate 2 did not fire** (no gate.log entry). *Honest framing (same as 4.1's hard_fail): the no-row "working on X" → Gate 2 hard-fail is **unit-test-covered (verification-gates, 124 checks), not live-proven**. The **outcome-grade hard-fail IS live-proven** — gate.log 18:08:30 "Claude Code finished both dispatches" hard-failed and reprompted until the surfaced result backed it.*
+4. **Dispatcher-kill liveness** — killed `claude-code-dispatcher`; DOWN alert fired ~6m later (`dispatcher-state.log` `event:fired,sent:true`, message targets "CC dispatcher/claude-code-dispatcher"), **`charlie-liveness` stayed healthy throughout (isolation)**; on restore, recovery all-clear (`event:recovered`, 🟢 sent). Multi-target watcher proven live.
+
+**Follow-ups logged (not fixed):** enqueue-dedup; dispatch-grade `task_id` binding (id is in the tool RESULT detail, not the CALL detail — fired at 18:07:25 then resolved); dispatcher heartbeat `version` field missing (DOWN msg showed "v?"); Charlie recently-verified-result continuity across turns.
+
+**Status:** v1 COMPLETE & LIVE (branch `slice-5-claude-code-dispatch`, deployed in `/root/QClaw`). Docs-close done (this entry, CHARLIE_OVERHAUL Component 6 = COMPLETE, LOCATIONS.md, FLOW_OS_STATE §8, SECURITY.md 7-Pillars gate). PR #46 un-draft after a scoped regression check over the churn. Matrix/scope-test artifacts purged after un-draft.
 
 End of Slice 5 entry.
 

@@ -339,6 +339,8 @@ Each gate is a separate function with its own claim patterns and verification lo
 
 ### Component 6 — Claude Code delegation bridge
 
+**Status (2026-06-18): v1 COMPLETE & LIVE** — Phase 4 Slice 5, steps 1–5: `claude_code_dispatches` table + RLS + claim/reaper RPCs; `claude_code_dispatch` tool (audit/read_only only); `claude-code-dispatcher` PM2 worker running Claude Code READ-ONLY as the unprivileged `ccdispatch` user; result write-back + poll-on-turn-start surfacing; Gate 1/2 evidence integration; multi-target liveness (`dispatcher-liveness`). All 4 acceptance scenarios passed live (audit e2e → Gate 1; write/critical scope rejection; unbacked-claim → reflex/Gate 2; dispatcher-kill → liveness alert + recovery) — evidence in `/tmp/slice5-acceptance.md` and `QCLAW_BUILD_LOG.md`. Steps 6–8 (write/infra/critical scopes + authorisation flow; digests/overnight batching) deferred to Phase 5.
+
 **Purpose:** Eliminate Tyson as the human bridge between Charlie and Claude Code. Single most important component for the daily rhythm working.
 
 **Dispatch model:**
