@@ -208,14 +208,18 @@ export function workingTreeDirty(clonePath, ccUser, log = console) {
  * Single-flight: only the first of {exit, timeout} resolves. Returns
  * { ok, status, resultText, exitCode, costUsd, ccSessionId, error }.
  */
-export function runClaudeCode({ env, clonePath, brief, ccUser, timeoutSeconds, budgetUsd = PER_DISPATCH_BUDGET_USD }) {
+export function runClaudeCode({ env, clonePath, homeDir, brief, ccUser, timeoutSeconds, budgetUsd = PER_DISPATCH_BUDGET_USD }) {
   return new Promise((resolve) => {
     const argv = buildCcArgv({ clonePath, settingsPath: SETTINGS_PATH, budgetUsd });
     const child = spawn(CC_BIN, argv, {
       cwd: clonePath,
       uid: ccUser.uid,
       gid: ccUser.gid,
-      env: scrubChildEnv(env, clonePath),
+      // HOME is a SEPARATE dir, NOT the clone — otherwise CC writes its own state
+      // (.claude/, session files) into the repo clone and pollutes the post-hoc
+      // git-status clean assert (false "mutated" failures). HOME falls back to the
+      // clone only if no separate home was provided.
+      env: scrubChildEnv(env, homeDir || clonePath),
       detached: true, // own process group so we can kill the whole tree on timeout
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -274,9 +278,14 @@ async function processOne(env, rest, row, ccUser, log = console) {
     await writeBack(rest, id, { status: 'failed', error_message: `ccdispatch user absent — refusing to run Claude Code as root. Run scripts/setup-ccdispatch-user.sh.`, completed_at: new Date().toISOString() });
     return;
   }
-  let clonePath;
+  let clonePath, homeDir;
   try {
     clonePath = prepareClone(id, row.pinned_commit, ccUser);
+    // CC's HOME — a sibling dir to the clone (owned by ccdispatch) so CC's own
+    // state files never pollute the repo clone's git-status clean assert.
+    homeDir = `${clonePath}.home`;
+    mkdirSync(homeDir, { recursive: true });
+    execFileSync('chown', ['-R', `${ccUser.uid}:${ccUser.gid}`, homeDir]);
     // pause-(c) matrix plant (gated): drop a root-owned 0600 file INSIDE the
     // ccdispatch-owned clone to prove ownership/perms gate reads even within CC's
     // own work area. Off in production (no env var).
@@ -284,7 +293,7 @@ async function processOne(env, rest, row, ccUser, log = console) {
       writeFileSync(join(clonePath, 'PLANTED_SECRET.txt'), `${process.env.QCLAW_CC_PLANT_VALUE || 'PLANTED-SECRET-DO-NOT-LEAK'}\n`, { mode: 0o600 });
     }
     const r = await runClaudeCode({
-      env, clonePath, brief: row.brief, ccUser,
+      env, clonePath, homeDir, brief: row.brief, ccUser,
       timeoutSeconds: Number(row.timeout_seconds) || 600,
     });
     // pause-(c) matrix raw capture (gated): write CC's RAW stdout/stderr +
@@ -326,6 +335,7 @@ async function processOne(env, rest, row, ccUser, log = console) {
     log.error?.(`[dispatcher] ${id} errored: ${err.message}`);
   } finally {
     if (clonePath) cleanupClone(clonePath);
+    if (homeDir) cleanupClone(homeDir);
   }
 }
 
