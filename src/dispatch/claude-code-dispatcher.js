@@ -25,7 +25,7 @@
  */
 
 import { spawn, execFileSync } from 'child_process';
-import { readFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
+import { readFileSync, existsSync, mkdirSync, rmSync, writeFileSync, realpathSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { recordBeat } from '../observability/liveness-heartbeat.js';
@@ -343,6 +343,7 @@ async function processOne(env, rest, row, ccUser, log = console) {
 async function mainLoop(env, log = console) {
   const rest = makeRest(env);
   const ccUser = resolveCcUser();
+  log.info?.(`[dispatcher] starting — ccUser=${ccUser ? `${ccUser.uid}:${ccUser.gid}` : 'MISSING'}, poll=${POLL_MS}ms, heartbeat=${HEARTBEAT_MS}ms, supabase=${env.SUPABASE_URL ? 'set' : 'MISSING'}`);
   if (!ccUser) log.warn?.(`[dispatcher] ccdispatch user not found — dispatches will FAIL (never run CC as root). Run scripts/setup-ccdispatch-user.sh`);
 
   // startup reaper: recover rows orphaned by a previous dead/hung dispatcher
@@ -397,7 +398,14 @@ async function mainLoop(env, log = console) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ── entrypoint (only when run directly; importing for tests does nothing) ─────
-const isMain = import.meta.url === `file://${process.argv[1]}`;
+// Robust main detection — the naive `import.meta.url === 'file://'+argv[1]` is
+// fragile under PM2's ESM launch (path/symlink differences) and silently skips
+// mainLoop while PM2 keeps the process "online". Compare realpaths.
+let isMain = false;
+try {
+  const here = fileURLToPath(import.meta.url);
+  isMain = !!process.argv[1] && (process.argv[1] === here || realpathSync(process.argv[1]) === realpathSync(here));
+} catch { isMain = import.meta.url === `file://${process.argv[1]}`; }
 if (isMain) {
   if (process.env.QCLAW_CC_DISPATCHER_ENABLED === '0') {
     console.warn('[dispatcher] QCLAW_CC_DISPATCHER_ENABLED=0 — not starting');
