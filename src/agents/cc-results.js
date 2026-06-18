@@ -20,6 +20,7 @@
  */
 
 import { log } from '../core/logger.js';
+import { getEnv } from '../core/env.js';
 
 const TERMINAL = 'complete,failed,timeout';
 
@@ -47,7 +48,7 @@ async function rest(env, method, path, { body, prefer, fetchImpl = fetch } = {})
  * Relies on U6 writing each terminal row's payload atomically with its status, so a
  * returned row always has result/error_message (defensively skipped here if not).
  */
-export async function pollCcResults({ sessionId, env = process.env, nowIso = new Date().toISOString(), fetchImpl = fetch }) {
+export async function pollCcResults({ sessionId, env = getEnv(), nowIso = new Date().toISOString(), fetchImpl = fetch }) {
   const q = `claude_code_dispatches?session_id=eq.${encodeURIComponent(sessionId)}`
     + `&status=in.(${TERMINAL})&surfaced_at=is.null`;
   const rows = await rest(env, 'PATCH', q, {
@@ -111,7 +112,7 @@ export function depositCcEvidence(audit, rows) {
 }
 
 /** Convenience: poll + (caller injects block) — returns {rows, block}. Never throws. */
-export async function gatherCcResults(context, env = process.env) {
+export async function gatherCcResults(context, env = getEnv()) {
   try {
     const rows = await pollCcResults({ sessionId: ccSessionId(context), env });
     return { rows, block: formatCcResultsBlock(rows) };

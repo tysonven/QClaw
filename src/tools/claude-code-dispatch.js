@@ -26,6 +26,7 @@
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { log } from '../core/logger.js';
+import { getEnv } from '../core/env.js';
 
 const execFileP = promisify(execFile);
 
@@ -43,7 +44,9 @@ const PER_TASK_ESTIMATE_MS = 120_000;
 export function createClaudeCodeDispatchTool({
   audit,
   auditActor = 'charlie',
-  env = process.env,
+  // The app loads creds via core/env.js (getEnv), NOT into process.env — so default
+  // to getEnv() or the tool would see undefined SUPABASE_* and fail to queue.
+  env = getEnv(),
   repoPath = process.env.QCLAW_REPO_PATH || '/root/QClaw',
 } = {}) {
   const SUPABASE_URL = (env.SUPABASE_URL || '').replace(/\/+$/, '');
