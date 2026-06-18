@@ -29,6 +29,7 @@ import { ExecApprovals } from './security/approvals.js';
 import { ApprovalGate } from './security/approval-gate.js';
 import { createShellExecTool, createDisabledShellExecTool, isShellExecEnabled } from './tools/shell-exec.js';
 import { createN8nWorkflowUpdateTool } from './tools/n8n-workflow-update.js';
+import { createClaudeCodeDispatchTool } from './tools/claude-code-dispatch.js';
 import { RateLimiter } from './security/rate-limiter.js';
 import { ContentQueue } from './security/content-queue.js';
 import { banner } from './cli/brand.js';
@@ -255,6 +256,18 @@ class QuantumClaw {
       this.tools.registerBuiltin('n8n_workflow_update', {
         scope: 'shared',
         ...createN8nWorkflowUpdateTool({ approvalGate, audit: this.audit, auditActor: 'charlie' }),
+      });
+      // Slice 5: claude_code_dispatch — Charlie queues audit/read_only briefs for
+      // Claude Code (the claude-code-dispatcher PM2 worker runs them read-only).
+      // Enqueue-only; scoped to the GATED agent set (QCLAW_GATES_AGENTS, default
+      // 'charlie') — NOT config.agent.name (the brand, 'QClaw') — so the tool is
+      // available to exactly the agent(s) whose dispatch claims the gates verify,
+      // and sub-agents (echo, patcher, …) cannot dispatch CC.
+      const dispatchAgents = (process.env.QCLAW_GATES_AGENTS || 'charlie')
+        .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+      this.tools.registerBuiltin('claude_code_dispatch', {
+        scope: dispatchAgents,
+        ...createClaudeCodeDispatchTool({ audit: this.audit, auditActor: 'charlie' }),
       });
       const rateLimiter = new RateLimiter({
         _dir: workspaceDir,

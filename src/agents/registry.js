@@ -11,6 +11,7 @@ import { log } from '../core/logger.js';
 import { parseSkill, skillToTools, executeSkillTool } from './skill-parser.js';
 import { loadSkills } from './skill-loader.js';
 import { regenerateWithGates, isGatedTurn } from './gates.js';
+import { gatherCcResults, depositCcEvidence } from './cc-results.js';
 import { appendGateLog } from '../observability/gate-log.js';
 import { appendChannelEvent } from '../observability/channel-events.js';
 
@@ -289,6 +290,15 @@ export class Agent {
   async _processNonReflex(message, context, route, textMessage) {
     const { router, memory, audit } = this.services;
 
+    // Slice 5: poll-on-turn-start. On a gated interactive turn, atomically surface
+    // this session's finished Claude Code dispatches. The block goes into the system
+    // prompt (visibility); the evidence is deposited AFTER turnStart (below) so the
+    // gates' toolEventsSince window includes it.
+    let ccResults = { rows: [], block: null };
+    if (isGatedTurn(this.name, context)) {
+      ccResults = await gatherCcResults(context);
+    }
+
     // Build context — now uses structured knowledge + selective history
     const graphContext = route.extendedContext
       ? await memory.graphQuery(textMessage)
@@ -343,6 +353,9 @@ export class Agent {
     }
 
     const systemBlocks = [...systemPromptParts.cached, ...systemPromptParts.dynamic];
+    // Slice 5: surfaced Claude Code results as a dynamic (uncached) block — untrusted
+    // tool output Charlie can report; evidence for it is deposited post-turnStart.
+    if (ccResults.block) systemBlocks.push({ type: 'text', text: ccResults.block });
 
     // H2 fix (2026-05-14): char-budget raised 100k → 300k. Slice 3f: compute
     // systemChars from the structured block array, not a joined string.
@@ -456,6 +469,10 @@ export class Agent {
     // results (which land during generate()) count as evidence, while a prior
     // turn's / prior attempt's rows do not (gates clamp evidence to turnStart).
     const turnStart = Date.now();
+    // Slice 5: deposit Claude Code result evidence AFTER turnStart so the gates'
+    // toolEventsSince window (clamped to turnStart) includes it — a "Claude Code
+    // completed X" claim this turn binds to the just-surfaced result for that task.
+    if (ccResults.rows.length) depositCcEvidence(audit, ccResults.rows);
     let result;
     try {
       // Slice 4: gates apply to the gated agent(s) only (charlie by default).

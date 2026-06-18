@@ -17,7 +17,10 @@ const EXPECTED = [
   'quantumclaw',
   'trading-worker',
   'clipper-worker',
-  'charlie-watcher'
+  // Slice 5: charlie-watcher decommissioned (insecure --dangerously-skip-permissions
+  // predecessor); claude-code-dispatcher is the secure replacement. PM2 roster changes
+  // MUST update this list (same discipline as `pm2 save`).
+  'claude-code-dispatcher'
 ];
 
 // PM2 occasionally prepends non-JSON lines (e.g. Node deprecation warnings)

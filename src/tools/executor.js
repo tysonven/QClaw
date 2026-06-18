@@ -312,7 +312,7 @@ export class ToolExecutor {
           const toolDef = this.tools._builtins?.get(call.name);
           const toolTimeoutMs = toolDef?.longRunning ? LONG_RUNNING_TOOL_TIMEOUT : TOOL_TIMEOUT;
           const toolResult = await Promise.race([
-            this.tools.executeTool(call.name, call.args),
+            this.tools.executeTool(call.name, call.args, { channel: options.channel, userId: options.userId, agent: options.agent }),
             new Promise((_, reject) => setTimeout(() => reject(new Error('Tool timeout')), toolTimeoutMs))
           ]);
 

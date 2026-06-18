@@ -117,7 +117,7 @@ check('fail-closed: throwing registry → hard_fail (no throw out)', (() => {
 })());
 
 console.log('Gate 1 / 3 / 2 (Unit 2):');
-import { gateCompletion, gateState, gateDelegation } from '../src/agents/gates.js';
+import { gateCompletion, gateState, gateDelegation, isCompletionTool } from '../src/agents/gates.js';
 const ts2 = new Date().toISOString();
 const mkAudit = (events) => ({ toolEventsSince: () => events });
 const ctx = (events, extra = {}) => ({ auditLog: mkAudit(events), now: Date.now(), turnStartMs: Date.now() - 60000, windowMinComplete: 10, windowMinState: 5, ...extra });
@@ -148,11 +148,34 @@ check('G3: "running" with NO probe → soft_fail',
 check('G3: characterization "healthy" but probe ERRORED → hard_fail',
   (() => { const g = gateState('The workflow Qf39NEOEgz2W0uls is healthy.', ctx(errorPair('shared__n8n-api__n8n-api__get_workflows_id', 'Qf39NEOEgz2W0uls'))); return g.fired && g.severity === 'hard'; })());
 
-// Gate 2 — delegation (tense-discriminated, fail-closed)
-check('G2: past "I dispatched ... to Claude Code" → hard fail-closed',
-  (() => { const g = gateDelegation('I dispatched the audit to Claude Code.', ctx([])); return g.fired && g.severity === 'hard' && g.action === 'fail_closed_slice5_pending'; })());
-check('G2: future "I\'ll dispatch" (plan) → not fired',
+// Gate 2 — Claude Code delegation/outcome (Slice 5, evidence-checked)
+const ccDispatch = (entity) => successPair('claude_code_dispatch', entity);
+const ccResult = (entity) => successPair('claude_code_result', entity);
+const T1 = 'a1b2c3d4-1111-2222-3333-444455556666';
+const T2 = '99999999-aaaa-bbbb-cccc-dddddddddddd';
+
+// DISPATCH grade — backed by a this-turn claude_code_dispatch event (queued is enough)
+check('G2 dispatch: "I dispatched ... to Claude Code" with NO dispatch event → hard fired (reprompt)',
+  (() => { const g = gateDelegation('I dispatched the audit to Claude Code.', ctx([])); return g.fired && g.severity === 'hard' && g.action === 'reprompt'; })());
+check('G2 dispatch: backed by a this-turn claude_code_dispatch event → not fired',
+  gateDelegation('I dispatched the audit to Claude Code.', ctx(ccDispatch(T1))).fired === false);
+check('G2 dispatch: future "I\'ll dispatch" (plan) → not fired',
   gateDelegation("I'll dispatch the audit to Claude Code.", ctx([])).fired === false);
+check('G2 dispatch: standalone "Is working on it." with no event → fired', gateDelegation('Is working on it.', ctx([])).fired === true);
+
+// OUTCOME grade — load-bearing
+check('G2 outcome: "Claude Code completed ... task T1" backed by claude_code_result(T1) → not fired',
+  gateDelegation(`Claude Code completed the audit of task ${T1}.`, ctx(ccResult(T1))).fired === false);
+check('G2 LOAD-BEARING: a queued claude_code_dispatch NEVER backs a "completed" claim → hard fired',
+  (() => { const g = gateDelegation(`Claude Code completed the audit of task ${T1}.`, ctx(ccDispatch(T1))); return g.fired && g.severity === 'hard'; })());
+check('G2 LOAD-BEARING: empty-entity Claude Code outcome claim FAILS CLOSED → hard fired',
+  (() => { const g = gateDelegation('Claude Code completed the work.', ctx(ccResult(T1))); return g.fired && g.severity === 'hard'; })());
+check('G2 outcome: a result for a DIFFERENT task does not back the claim → fired',
+  gateDelegation(`Claude Code completed the audit of task ${T1}.`, ctx(ccResult(T2))).fired === true);
+
+// LOAD-BEARING: isCompletionTool matches claude_code_result exactly, never claude_code_dispatch
+check('isCompletionTool matches claude_code_result exactly', isCompletionTool('claude_code_result') === true);
+check('isCompletionTool NEVER matches claude_code_dispatch (queued≠completed)', isCompletionTool('claude_code_dispatch') === false);
 
 // Unit-2 review fixes:
 // P1-a: elided-subject declarative "Is working on it" must NOT be suppressed (fires Gate 2)
@@ -170,6 +193,13 @@ check('runGates: phantom + unbacked completion → hard_fail',
   runGates('Used charlie__nope__doit and deployed workflow Zz000000zz11.', mkAudit([]), reg, { now: Date.now(), turnStartMs: Date.now() - 60000 }).result === 'hard_fail');
 check('runGates: clean factual w/ backing → pass',
   runGates('The workflow Qf39NEOEgz2W0uls is running.', mkAudit(successPair('shared__n8n-api__n8n-api__get_workflows_id', 'Qf39NEOEgz2W0uls')), reg, { now: Date.now(), turnStartMs: Date.now() - 60000 }).result === 'pass');
+// Slice 5: a "Claude Code completed" claim backed ONLY by a queued dispatch must
+// hard_fail end-to-end — Gate 2 (strictRelevant) overrides any Gate 1 entity-path
+// false-pass off the dispatch event.
+check('runGates: Claude Code "completed" backed only by a queued dispatch → hard_fail',
+  runGates(`Claude Code completed the audit of task ${T1}.`, mkAudit(ccDispatch(T1)), reg, { now: Date.now(), turnStartMs: Date.now() - 60000 }).result === 'hard_fail');
+check('runGates: Claude Code "completed" backed by a real result → pass',
+  runGates(`Claude Code completed the audit of task ${T1}.`, mkAudit(ccResult(T1)), reg, { now: Date.now(), turnStartMs: Date.now() - 60000 }).result === 'pass');
 
 console.log('Unit 3 — regeneration loop:');
 import { regenerateWithGates, isGatedAgent } from '../src/agents/gates.js';

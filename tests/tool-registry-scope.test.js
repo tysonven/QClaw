@@ -108,6 +108,20 @@ if (existsSync(logPath)) {
     parsed.every(e => e.ts && e.event === 'registration' && e.source && e.tool && e.scope));
 }
 
+// ─── Slice 5 regression: an agent-scoped builtin is ACTIVE only when a loaded
+// skill declares it (registerForRequest). claude_code_dispatch shows in /api/tools
+// but was invisible to Charlie's turns until delegation.md declared it in `tools:`.
+r.registerBuiltin('claude_code_dispatch', { scope: ['charlie'], description: 'x', fn: async () => 'x' });
+const noSkill = { tools: { always_on: [], on_demand: [], always_on_skill_names: [], on_demand_skill_names: [] } };
+let cleanup = r.registerForRequest(noSkill, 'charlie');
+check('agent-scoped builtin NOT active when no skill declares it', r._activeForRequest.has('claude_code_dispatch') === false);
+cleanup();
+const withSkill = { tools: { always_on: ['claude_code_dispatch'], on_demand: [], always_on_skill_names: ['delegation'], on_demand_skill_names: [] } };
+cleanup = r.registerForRequest(withSkill, 'charlie');
+check('agent-scoped builtin ACTIVE when an always-on skill declares it', r._activeForRequest.has('claude_code_dispatch') === true);
+check('still NOT active for a different agent (lane discipline)', (() => { const c2 = r.registerForRequest(withSkill, 'echo'); const ok = r._activeForRequest.has('claude_code_dispatch') === false; c2(); return ok; })());
+cleanup();
+
 // Cleanup
 rmSync(tmp, { recursive: true, force: true });
 

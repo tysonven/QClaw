@@ -2,8 +2,8 @@
  * Slice 3h — liveness writer + watcher tests.
  * Run: node tests/liveness-monitoring.test.js
  */
-import { recordLivenessBeat, pruneLivenessRows, startLivenessHeartbeat, LIVENESS_WORKFLOW_ID } from '../src/observability/liveness-heartbeat.js';
-import { parseEnvFile, classify, activeEpisode, reminderDue, readState, runWatcher } from '../src/observability/liveness-watcher.js';
+import { recordLivenessBeat, recordBeat, pruneLivenessRows, startLivenessHeartbeat, LIVENESS_WORKFLOW_ID } from '../src/observability/liveness-heartbeat.js';
+import { parseEnvFile, classify, activeEpisode, reminderDue, readState, runWatcher, fetchLatestBeat, TARGETS } from '../src/observability/liveness-watcher.js';
 import { mkdtempSync, rmSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -48,6 +48,26 @@ check('classify: custom target threads into message', /myhost/.test(classify({ r
 check('classify: fresh + degraded → polling (class b)', classify({ row: beat(30_000, { channel_status: 'degraded', polling_ok: false }), serverNowMs: nowMs, nowMs, staleMs: STALE }).class === 'polling');
 check('classify: uses SERVER clock (Date hdr) over local — skewed local would say stale, server says fresh',
   classify({ row: beat(30_000), serverNowMs: nowMs, nowMs: nowMs + 30 * 60_000, staleMs: STALE }).class === 'healthy');
+
+// Slice 5 — multi-target parameterization
+check('classify: label/proc thread into the down message (dispatcher target)',
+  (() => { const d = classify({ row: beat(10 * 60_000), serverNowMs: nowMs, nowMs, staleMs: STALE, label: 'CC dispatcher', proc: 'claude-code-dispatcher' }); return /CC dispatcher LIVENESS/.test(d.message) && /pm2 logs claude-code-dispatcher/.test(d.message); })());
+check('classify: default label/proc unchanged (charlie/quantumclaw)',
+  (() => { const d = classify({ row: beat(10 * 60_000), serverNowMs: nowMs, nowMs, staleMs: STALE }); return /Charlie LIVENESS/.test(d.message) && /quantumclaw is DOWN/.test(d.message); })());
+check('TARGETS: two targets with distinct workflow ids and state files',
+  TARGETS.length === 2 && TARGETS[0].workflowId === 'charlie-liveness' && TARGETS[1].workflowId === 'dispatcher-liveness' && TARGETS[0].stateFile !== TARGETS[1].stateFile);
+check('fetchLatestBeat: workflowId param is used in the query', await (async () => {
+  let seen = '';
+  const stub = async (u) => { seen = u; return { ok: true, status: 200, headers: { get: () => null }, json: async () => [] }; };
+  await fetchLatestBeat({ url: 'http://x', key: 'k', workflowId: 'dispatcher-liveness', fetchImpl: stub });
+  return /workflow_id=eq\.dispatcher-liveness/.test(seen);
+})());
+check('recordBeat: posts the given workflow_id to record_heartbeat', await (async () => {
+  let body = null;
+  const stub = async (_u, opts) => { body = JSON.parse(opts.body); return { ok: true, status: 200 }; };
+  await recordBeat({ url: 'http://x', key: 'k', workflowId: 'dispatcher-liveness', workflowName: 'CC dispatcher', metadata: { q: 1 }, fetchImpl: stub });
+  return body.p_workflow_id === 'dispatcher-liveness' && body.p_workflow_name === 'CC dispatcher';
+})());
 
 // ── watcher: episode + reminder cadence ───────────────────────────────────────
 console.log('liveness watcher — cooldown/reminders:');

@@ -692,16 +692,18 @@ export class ToolRegistry {
    * model can correct course (delegate, or rephrase to trigger the
    * skill).
    */
-  async executeTool(toolName, args = {}) {
+  async executeTool(toolName, args = {}, ctx = {}) {
     const active = this._activeForRequest;
     if (active !== null && !active.has(toolName)) {
       return this._outOfScope(toolName);
     }
 
-    // Built-in tool?
+    // Built-in tool? Built-ins receive the runtime turn context as a 2nd arg
+    // (channel/userId/agent) so server-derived fields (e.g. session_id) cannot
+    // be supplied by the model. Existing built-ins ignore the extra arg.
     if (this._builtins.has(toolName)) {
       const handler = this._builtins.get(toolName);
-      return await handler.fn(args);
+      return await handler.fn(args, ctx);
     }
 
     // API tool?

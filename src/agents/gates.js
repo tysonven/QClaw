@@ -141,12 +141,17 @@ export function correlatePairs(events) {
  * (`detail`); falls back to a this-turn relevant-tool pair when the claim has
  * no extractable entity. Returns { backed, evidence? }.
  */
-export function matchEvidence(sentence, events, { requireStatus = 'success', turnStartMs = 0, relevant = null, bootstrapText = null } = {}) {
+export function matchEvidence(sentence, events, { requireStatus = 'success', turnStartMs = 0, relevant = null, bootstrapText = null, strictRelevant = false, noEntityFallback = true } = {}) {
   const pairs = correlatePairs(events);
   const statusOk = (p) => requireStatus === 'success'
     ? p.result.result_status === 'success'
     : p.result.result_status != null;
-  const candidates = pairs.filter(statusOk);
+  let candidates = pairs.filter(statusOk);
+  // Slice 5: strictRelevant restricts candidates to `relevant` tools in the ENTITY
+  // path too (not just the no-entity fallback). Used for Claude Code outcome claims
+  // so a queued `claude_code_dispatch` — or any unrelated tool whose detail happens
+  // to contain the entity — can never back a "Claude Code completed X" claim.
+  if (strictRelevant && relevant) candidates = candidates.filter(p => relevant(p.result.action));
   const entities = extractEntities(sentence);
 
   if (entities.length) {
@@ -168,13 +173,17 @@ export function matchEvidence(sentence, events, { requireStatus = 'success', tur
     // substring of a larger id/timestamp in the corpus. Marked sourced:'bootstrap'
     // so gateState can tell recitation (no this-turn probe) from a contradicting
     // this-turn probe.
-    if (bootstrapText && bootstrapMayBack(sentence)
+    // Bootstrap recitation never backs a strict (Claude Code outcome) claim —
+    // those require a real this-turn result event, not the briefing snapshot.
+    if (!strictRelevant && bootstrapText && bootstrapMayBack(sentence)
         && entities.some(e => corpusHasEntity(bootstrapText, e))) {
       return { backed: true, sourced: 'bootstrap', weak: true };
     }
     return { backed: false };
   }
-  // no-entity fallback: a this-turn pair for a verb-relevant tool
+  // no-entity fallback: a this-turn pair for a verb-relevant tool. Disabled when
+  // noEntityFallback=false so an entity-free outcome claim FAILS CLOSED.
+  if (!noEntityFallback) return { backed: false };
   for (const p of candidates) {
     const ts = parseAuditTs(p.result.timestamp);
     if (ts >= turnStartMs && (!relevant || relevant(p.result.action))) {
@@ -228,6 +237,21 @@ const STATE_RE = /(?<![\w-])(running|live|active|online|enabled|connected|workin
 // words moved here (R: "running" backed by an errored probe was a false-pass).
 const CHARACTERIZATION_RE = /(?<![\w-])(running|live|active|online|connected|up|enabled|healthy|passed|succeeded|successful|working|ok|fine|good|stable)(?![\w-])/i;
 const DELEGATION_RE = /(?<![\w-])(dispatched|delegated|handed off|handed it off|is working on it|kicked off)(?![\w-])/i;
+
+// Slice 5 — Claude Code claim grades (Gate 2).
+//  - DISPATCH: a claude_code_dispatch event this turn proves only that work was
+//    QUEUED. isClaudeCodeDispatch matches that event exactly.
+//  - OUTCOME: a claude_code_result event (deposited by the read path ONLY for a
+//    dispatch that reached status=complete) proves work finished. isClaudeCodeResult
+//    matches it exactly — and it is whole-token, so it never matches
+//    claude_code_dispatch (queued can never back completed).
+const isClaudeCodeResult = (n) => n === 'claude_code_result';
+const isClaudeCodeDispatch = (n) => n === 'claude_code_dispatch';
+// An OUTCOME claim attributes a finished result to Claude Code: it both mentions
+// Claude Code AND asserts a result. These require a completed result for the cited
+// task; a bare DELEGATION_RE verb is only a DISPATCH claim.
+const CC_MENTION_RE = /(?<![\w-])claude[ _-]?code(?![\w-])/i;
+const CC_OUTCOME_RE = /(?<![\w-])(found|identified|flagged|caught|audited|reviewed|analy[sz]ed|inspected|checked|returned|reported|surfaced|produced|delivered|completed?|finished|done|fixed|resolved)(?![\w-])/i;
 
 // ── Slice 4.1: first-person THIS-SESSION action discriminator ──────────────
 // Input-scoping, NOT a detection-pattern change: the gate-firing regexes above
@@ -300,7 +324,7 @@ export function corpusHasEntity(corpus, entity) {
 }
 
 // no-entity-fallback relevance: which tools plausibly back which claim class.
-const isCompletionTool = (n) => /write|edit|update|create|deploy|post|publish|send|merge|workflow_update|shell_exec/i.test(n || '');
+export const isCompletionTool = (n) => /write|edit|update|create|deploy|post|publish|send|merge|workflow_update|shell_exec/i.test(n || '') || n === 'claude_code_result';
 const isStateTool = (n) => /get_|list_|search|read|status|executions|pm2|shell_exec/i.test(n || '');
 
 /** Non-suppressed sentences that match a verb class. */
@@ -356,17 +380,36 @@ export function gateState(response, ctx) {
   return { gate: 'state', fired: true, severity: anyHard ? 'hard' : 'soft', claims: fired, action: anyHard ? 'reprompt' : 'rewrite', reason: anyHard ? 'characterization contradicted by tool result' : 'state claim without a probe in window' };
 }
 
-/** Gate 2 — delegation: detect-only, always fail-closed (no evidence source until Slice 5). */
+/**
+ * Gate 2 — Claude Code delegation/outcome (Slice 5, evidence-checked). Two grades:
+ *  - DISPATCH ("dispatched / handed off / is working on it"): backed by a this-turn
+ *    `claude_code_dispatch` success event — the enqueue happened. Queued is enough.
+ *    An entity-free dispatch claim may be backed by that event (it is a weak claim).
+ *  - OUTCOME ("Claude Code completed / found / audited X"): backed ONLY by a
+ *    `claude_code_result` success event (deposited by the read path solely for a
+ *    dispatch that reached status=complete), bound to the cited entity, this turn.
+ *    strictRelevant ⇒ a queued `claude_code_dispatch` can NEVER back it; an
+ *    entity-free outcome claim FAILS CLOSED. A sentence that is both grades is held
+ *    to OUTCOME (the stronger requirement).
+ * Replaces the pre-Slice-5 fail-closed stub.
+ */
 export function gateDelegation(response, ctx) {
-  const claims = detectClaims(response, DELEGATION_RE);
-  if (!claims.length) return { gate: 'delegation', fired: false };
-  // SLICE 5: wire claude_code_dispatches evidence here; until then, a past-tense
-  // delegation claim is structurally unverifiable → fail closed.
+  const sentences = splitSentences(response).filter(s => !isSuppressed(s));
+  const cc = sentences.filter(s => DELEGATION_RE.test(s) || (CC_MENTION_RE.test(s) && CC_OUTCOME_RE.test(s)));
+  if (!cc.length) return { gate: 'delegation', fired: false };
+  const events = windowEvents(ctx, ctx.windowMinComplete);
+  const fired = [];
+  for (const s of cc) {
+    const isOutcome = CC_MENTION_RE.test(s) && CC_OUTCOME_RE.test(s);
+    const m = isOutcome
+      ? matchEvidence(s, events, { requireStatus: 'success', turnStartMs: ctx.turnStartMs ?? 0, relevant: isClaudeCodeResult, strictRelevant: true, noEntityFallback: false })
+      : matchEvidence(s, events, { requireStatus: 'success', turnStartMs: ctx.turnStartMs ?? 0, relevant: isClaudeCodeDispatch, strictRelevant: true });
+    if (!m.backed) fired.push({ text: s, verification_attempted: true, verified: false });
+  }
+  if (!fired.length) return { gate: 'delegation', fired: false };
   return {
-    gate: 'delegation', fired: true, severity: 'hard',
-    claims: claims.map(c => ({ text: c, verification_attempted: false, verified: false })),
-    action: 'fail_closed_slice5_pending',
-    reason: 'delegation claim unverifiable pre-Slice-5 (no dispatch evidence source)',
+    gate: 'delegation', fired: true, severity: 'hard', claims: fired, action: 'reprompt',
+    reason: 'Claude Code claim unbacked: a dispatch claim needs a this-turn claude_code_dispatch event; an outcome claim needs a completed claude_code_result for the cited task',
   };
 }
 
@@ -491,7 +534,7 @@ const VIOLATION_BY_GATE = {
   completion: 'a completion/action claim with no backing success tool result from THIS turn',
   state: 'a state/liveness claim with no probe run THIS turn',
   tool_reference: 'a reference to a tool that is not registered in your current scope',
-  delegation: 'a delegation claim that cannot be verified yet (no dispatch evidence source)',
+  delegation: 'a Claude Code claim with no backing evidence — a "dispatched/handed off" claim needs a successful claude_code_dispatch THIS turn, and an "it completed/found X" claim needs a completed Claude Code result for that specific task',
 };
 
 /** Augmented re-prompt note for a hard_fail (describes violations by class;

@@ -360,6 +360,10 @@ Stuff currently broken, suboptimal, or pending. Charlie reads this section to kn
 
 Rolling list of last 30 days. Most recent at top.
 
+### 2026-06-18
+
+- **Slice 5 (Claude Code delegation bridge) v1 LIVE.** Charlie can now dispatch AUDIT-ONLY / read_only briefs to Claude Code via the `claude_code_dispatch` tool; the `claude-code-dispatcher` PM2 worker runs them READ-ONLY as the unprivileged `ccdispatch` user and surfaces results back into Charlie's next reply (gated by Gate 1/2). Decommissioned the insecure `charlie-watcher` predecessor. Multi-target liveness (`dispatcher-liveness`) + secrets-dir hardening (`/root/.quantumclaw` 750, files 600). All 4 acceptance scenarios passed live. Write/infra/critical scopes + authorisation flow + digests deferred to Phase 5. See `CHARLIE_OVERHAUL.md` Component 6, `QCLAW_BUILD_LOG.md`, `LOCATIONS.md`.
+
 ### 2026-05-03
 
 - **Charlie Overhaul Phase 1, 2, 2.5, 3 design complete.** Foundation docs committed: `CEO_OPERATING_MODEL.md`, `CHARLIE_OVERHAUL.md`, `LOCATIONS.md`, `KEYWORD_REFERENCE.md`, `CLAUDE_CODE_OPERATING_RULES.md`, `CLAUDE_CODE_INVENTORY.md`, `CHARLIE_ROLE.md`, `FLOW_OS_SPECIALISTS.md`, this file.
