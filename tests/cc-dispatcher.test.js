@@ -7,7 +7,7 @@
  */
 import {
   validateScope, scrubChildEnv, buildCcArgv, scrubSecretsFromOutput,
-  sumCostSince, summarise, parseEnvFile, resolveCcUser,
+  sumCostSince, summarise, parseEnvFile, resolveCcUser, workingTreeDirty,
 } from '../src/dispatch/claude-code-dispatcher.js';
 
 let passed = 0, failed = 0;
@@ -63,6 +63,7 @@ console.log('misc:');
 check('parseEnvFile strips quotes + skips comments', (() => { const e = parseEnvFile('# c\nA="x"\nB=y\n'); return e.A === 'x' && e.B === 'y'; })());
 check('summarise trims + caps', summarise('  a\r\nb  ', 3) === 'a\nb');
 check('resolveCcUser returns null for an absent user (refuse-root invariant)', resolveCcUser('definitely-no-such-user-xyz') === null);
+check('workingTreeDirty fails SAFE (dirty) when git cannot run', workingTreeDirty('/nonexistent-clone-xyz', { uid: 4294967, gid: 4294967 }, { warn(){} }) === true);
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

@@ -180,9 +180,26 @@ function cleanupClone(clonePath) {
   try { rmSync(clonePath, { recursive: true, force: true }); } catch { /* */ }
 }
 /** Detect-only: any working-tree mutation under a read-only run → fail. */
-function workingTreeDirty(clonePath) {
-  try { return execFileSync('git', ['-C', clonePath, 'status', '--porcelain', '--ignored'], { encoding: 'utf8' }).trim().length > 0; }
-  catch { return false; }
+export function workingTreeDirty(clonePath, ccUser, log = console) {
+  // Run git AS ccdispatch (the clone's owner) — root running git on a ccdispatch-
+  // owned repo trips `fatal: detected dubious ownership`, which previously fell into
+  // the catch and reported "clean" (a non-functional backstop). As the owner there
+  // is no ownership warning, and we see exactly what ccdispatch could have mutated.
+  try {
+    const out = execFileSync('git', ['-C', clonePath, 'status', '--porcelain', '--ignored'],
+      { uid: ccUser.uid, gid: ccUser.gid, encoding: 'utf8' });
+    return out.trim().length > 0;
+  } catch (e) {
+    // Fallback: explicit safe.directory for THIS clone only (never '*').
+    try {
+      const out = execFileSync('git', ['-c', `safe.directory=${clonePath}`, '-C', clonePath, 'status', '--porcelain', '--ignored'], { encoding: 'utf8' });
+      return out.trim().length > 0;
+    } catch (e2) {
+      // Fail SAFE: if cleanliness can't be determined, treat as DIRTY (reject).
+      log.warn?.(`[dispatcher] workingTreeDirty check failed (${e2.message}) — failing safe (dirty)`);
+      return true;
+    }
+  }
 }
 
 // ── CC invocation (the wiring; gated to live runs, reviewed at pause c) ───────
@@ -283,7 +300,7 @@ async function processOne(env, rest, row, ccUser, log = console) {
     }
     // 3. post-hoc clean assert (read-only contract)
     let { status, resultText, error } = r;
-    if (status === 'complete' && workingTreeDirty(clonePath)) {
+    if (status === 'complete' && workingTreeDirty(clonePath, ccUser, log)) {
       status = 'failed';
       error = 'working tree mutated under a read-only scope — rejected';
     }
