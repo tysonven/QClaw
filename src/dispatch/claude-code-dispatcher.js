@@ -63,7 +63,7 @@ export function parseEnvFile(text) {
   }
   return out;
 }
-function loadEnv() {
+export function loadEnv() {
   const path = process.env.QCLAW_ENV_PATH || '/root/.quantumclaw/.env';
   let fileEnv = {};
   try { if (existsSync(path)) fileEnv = parseEnvFile(readFileSync(path, 'utf-8')); } catch { /* */ }
@@ -340,7 +340,7 @@ async function processOne(env, rest, row, ccUser, log = console) {
 }
 
 // ── main loop ─────────────────────────────────────────────────────────────────
-async function mainLoop(env, log = console) {
+export async function mainLoop(env, log = console) {
   const rest = makeRest(env);
   const ccUser = resolveCcUser();
   log.info?.(`[dispatcher] starting — ccUser=${ccUser ? `${ccUser.uid}:${ccUser.gid}` : 'MISSING'}, poll=${POLL_MS}ms, heartbeat=${HEARTBEAT_MS}ms, supabase=${env.SUPABASE_URL ? 'set' : 'MISSING'}`);
