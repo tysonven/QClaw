@@ -14795,3 +14795,7 @@ via service_role.
 End of Slice 5 entry.
 
 
+
+## 2026-06-19 — Slice 6 pre-step: remove autonomous spawn ghost agents
+
+Slice 6 pre-step: removed 5 autonomous spawn ghost agents (claude-code-ig-fix, dispatch-zeta, n8n-workflow-fixer, patcher, post-auditor). All were Charlie-authored via the now-removed spawn_agent tool. n8n-workflow-fixer flagged: SOUL.md explicitly designed to bypass shell_exec approval gates — pattern noted. Echo preserved (upstream Phase 3 agent, frozen). Dashboard /api/agents will now return charlie + echo only until Slice 6b registers specialists.
