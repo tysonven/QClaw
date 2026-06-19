@@ -14799,3 +14799,17 @@ End of Slice 5 entry.
 ## 2026-06-19 — Slice 6 pre-step: remove autonomous spawn ghost agents
 
 Slice 6 pre-step: removed 5 autonomous spawn ghost agents (claude-code-ig-fix, dispatch-zeta, n8n-workflow-fixer, patcher, post-auditor). All were Charlie-authored via the now-removed spawn_agent tool. n8n-workflow-fixer flagged: SOUL.md explicitly designed to bypass shell_exec approval gates — pattern noted. Echo preserved (upstream Phase 3 agent, frozen). Dashboard /api/agents will now return charlie + echo only until Slice 6b registers specialists.
+
+## [2026-06-19] Slice 6b — Specialist dispatch infrastructure + Gate 2 extension
+
+**What shipped (PR #47, merged main):** delegate_to tool (scope:['charlie'], enqueue-only, live path gated by empty QCLAW_SPECIALIST_LIVE_IDS); specialist-registry.js (18 entries: 15 active + 3 deferred parsed from FLOW_OS_SPECIALISTS.md); Gate 2 extended (isSpecialistDispatch/isSpecialistResult evidence predicates, additive, CC path untouched, 124/124 regression); executor.run() surfaces toolResults; _processNonReflex typed loop-break (routed_back===true, pure scan, never re-delegates); specialist_dispatches Supabase table (RLS enable+force+revoke, touch trigger, 2 indexes, applied fdabygmromuqtysitodp); POST /api/agents/spawn → 403 spawn_disabled; #spawn-btn hidden. Skill docs updated: delegation/lanes/verification-reflexes.
+
+**Audit decisions:** U1-A live-status conflict resolved via QCLAW_SPECIALIST_LIVE_IDS allowlist (5 entries marked live in file; all route as stubs in 6b; 6d enables content-studio-operator + community-manager-fsc only). U1-B parse 18 total. A1-1 predicate signature corrected (action-name strings, not event objects). A3-1 executor extended to surface toolResults. A6-1 migration in n8n-workflows/migrations/.
+
+**Tests:** 34/35 files pass (1 pre-existing environmental flake: probes.test.js pm2_processes on host where pm2 runs). New: specialist-registry 30/30, delegate-to 28/28, gates-specialist-dispatch 11/11, specialist-loop-break 17/17, spawn-disabled 5/5.
+
+**Live acceptance:** + Spawn button confirmed gone. Dashboard shows charlie + echo only (specialist agent-manager wiring deferred to 6c — expected). No live delegate_to call yet (deferred to 6d — no live specialists).
+
+**Pre-existing stash:** stash@{0} yarn.lock only, unrelated, left untouched.
+
+**Follow-ups logged for 6c/6d:** dashboard specialist rows (agent-manager wiring); SPECIALIST_MENTION_RE for isSpecialistResult OUTCOME branch; claim/reap RPCs; QCLAW_SPECIALIST_LIVE_IDS population; per-turn stub sequencing (low priority); runtime symlink dir cleanup; gh/GITHUB_TOKEN on host; CLAUDE_CODE_INVENTORY.md correction.
