@@ -1533,6 +1533,15 @@ export class ToolRegistry {
     });
   }
 
+  /**
+   * Slice 6b: public hook for non-registry callers (e.g. _processNonReflex
+   * loop-break detection) to append a JSONL event to tool-call.log via the
+   * canonical writer (ts auto-stamped; best-effort, never throws).
+   */
+  logCallEvent(record) {
+    _appendToolCallLog(record);
+  }
+
   _registerBuiltins() {
     // Current time
     this.registerBuiltin('get_current_time', {

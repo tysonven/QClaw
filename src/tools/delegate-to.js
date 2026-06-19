@@ -177,3 +177,41 @@ export function createDelegateToTool({
     },
   };
 }
+
+// ── Loop-break detection helpers (Slice 6b Unit 4) ─────────────────────────
+// Pure, typed checks over the executor's surfaced tool results. Used by
+// _processNonReflex to detect a stub routed-back (Charlie handles inline) or a
+// sequential_only rejection (surface as a structured tool error). These inspect
+// the RAW result object (executor stores it pre-stringify), so NO JSON.parse and
+// NO string matching — a typed check only.
+
+/** True iff a tool-result entry is a delegate_to stub routed-back. */
+export function isStubRoutedBack(toolResult) {
+  const r = toolResult && toolResult.result;
+  return !!(r && typeof r === 'object' && r.routed_back === true && r.status === 'stub_routed_back');
+}
+
+/** True iff a tool-result entry is a delegate_to sequential_only rejection. */
+export function isSequentialOnly(toolResult) {
+  const r = toolResult && toolResult.result;
+  return !!(r && typeof r === 'object' && r.error === 'sequential_only');
+}
+
+/**
+ * Scan an executor toolResults array for specialist loop-break signals.
+ * Returns { stubRoutedBack, routedBack:[{specialist, task}], sequentialOnly }.
+ * Pure — performs NO dispatch (so it can never re-invoke delegate_to).
+ */
+export function scanSpecialistResults(toolResults = []) {
+  const routedBack = [];
+  let sequentialOnly = false;
+  for (const tr of (Array.isArray(toolResults) ? toolResults : [])) {
+    if (!tr || tr.name !== 'delegate_to') continue;
+    if (isStubRoutedBack(tr)) {
+      routedBack.push({ specialist: tr.result.specialist, task: tr.result.stub_result?.task ?? null });
+    } else if (isSequentialOnly(tr)) {
+      sequentialOnly = true;
+    }
+  }
+  return { stubRoutedBack: routedBack.length > 0, routedBack, sequentialOnly };
+}
