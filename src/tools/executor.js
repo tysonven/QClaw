@@ -200,7 +200,7 @@ export class ToolExecutor {
     const model = options.model || this.router.primary;
     if (!model || !model.provider) {
       const result = await this.router.complete(messages, options);
-      return { content: result.content, toolCalls: [], usage: result.usage, model: result.model };
+      return { content: result.content, toolCalls: [], usage: result.usage, model: result.model, toolResults: [] };
     }
     const provider = model.provider;
     const toolDefs = this.tools.getToolDefinitions(provider === 'anthropic' ? 'anthropic' : 'openai');
@@ -208,11 +208,12 @@ export class ToolExecutor {
     // If no tools available, just do a normal completion
     if (toolDefs.length === 0) {
       const result = await this.router.complete(messages, options);
-      return { content: result.content, toolCalls: [], usage: result.usage, model: result.model };
+      return { content: result.content, toolCalls: [], usage: result.usage, model: result.model, toolResults: [] };
     }
 
     let iteration = 0;
     let allToolCalls = [];
+    let allToolResults = []; // Slice 6b: raw per-call results surfaced to _processNonReflex (loop-break)
     let currentMessages = [...messages];
     let totalUsage = {
       input_tokens: 0,
@@ -243,6 +244,7 @@ export class ToolExecutor {
         return {
           content: result.content,
           toolCalls: allToolCalls,
+          toolResults: allToolResults,
           usage: totalUsage,
           model: result.model,
           iterations: iteration,
@@ -299,6 +301,7 @@ export class ToolExecutor {
             );
             const queueResult = `Content queued for review [ID: ${queueId}]. Use content-queue approve ${queueId} to publish.`;
             toolResults.push({ id: call.id, name: call.name, result: queueResult, error: false });
+            allToolResults.push({ id: call.id, name: call.name, result: queueResult, error: false });
             
             if (this.onToolResult) {
               this.onToolResult({ ...call, result: queueResult, ok: true });
@@ -326,6 +329,7 @@ export class ToolExecutor {
 
           const resultStr = typeof toolResult === 'string' ? toolResult : JSON.stringify(toolResult);
           toolResults.push({ id: call.id, name: call.name, result: resultStr, error: false });
+          allToolResults.push({ id: call.id, name: call.name, result: toolResult, error: false });
 
           if (this.onToolResult) {
             this.onToolResult({ ...call, result: resultStr, ok: true });
@@ -334,6 +338,7 @@ export class ToolExecutor {
         } catch (err) {
           const errorMsg = `Error executing ${call.name}: ${err.message}`;
           toolResults.push({ id: call.id, name: call.name, result: errorMsg, error: true });
+          allToolResults.push({ id: call.id, name: call.name, result: errorMsg, error: true });
           log.warn(errorMsg);
           // Slice 4: record the failed outcome so completion/state gates can
           // tell "claimed done" from "tool actually errored".
@@ -356,6 +361,7 @@ export class ToolExecutor {
     return {
       content: 'I made several tool calls but hit the iteration limit. Here\'s what I found so far.',
       toolCalls: allToolCalls,
+      toolResults: allToolResults,
       usage: totalUsage,
       iterations: iteration,
     };

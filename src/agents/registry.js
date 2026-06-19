@@ -10,6 +10,7 @@ import { join } from 'path';
 import { log } from '../core/logger.js';
 import { parseSkill, skillToTools, executeSkillTool } from './skill-parser.js';
 import { loadSkills } from './skill-loader.js';
+import { scanSpecialistResults } from '../tools/delegate-to.js';
 import { regenerateWithGates, isGatedTurn } from './gates.js';
 import { gatherCcResults, depositCcEvidence } from './cc-results.js';
 import { appendGateLog } from '../observability/gate-log.js';
@@ -522,6 +523,28 @@ export class Agent {
       });
     } finally {
       cleanupTools();
+    }
+
+    // Slice 6b Unit 4 — specialist stub loop-break. If delegate_to routed a
+    // task back (scaffolded stub), log it and flag the turn so Charlie handles
+    // inline; never re-invoke delegate_to. Typed check on the raw tool result
+    // (executor surfaces toolResults) — not a string match.
+    try {
+      const scan = scanSpecialistResults(result.toolResults);
+      if (scan.stubRoutedBack) {
+        context.stubRoutedBack = true;
+        for (const rb of scan.routedBack) {
+          this.services.toolRegistry?.logCallEvent?.({
+            event: 'specialist_stub_routed_back', agent: this.name,
+            specialist: rb.specialist, task: rb.task,
+          });
+        }
+      }
+      if (scan.sequentialOnly) {
+        this.services.toolRegistry?.logCallEvent?.({ event: 'specialist_sequential_only', agent: this.name });
+      }
+    } catch (err) {
+      log.warn(`_processNonReflex: specialist loop-break detection failed: ${err.message}`);
     }
 
     // Store in conversation memory (working memory / episodic log)

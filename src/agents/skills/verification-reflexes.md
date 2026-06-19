@@ -42,6 +42,8 @@ This is the reflex that closes the "wrong brief" failure pattern.
 
 No "it's done" without a probe, log entry, tool result, or test that confirmed it. No "it's working" without a probe that showed it working. No "Claude Code is working on it" without an audit log entry showing the dispatch succeeded.
 
+Same for specialists (Slice 6b): "I delegated X to [specialist]" needs a successful `delegate_to` call THIS turn. And if `delegate_to` returns `routed_back: true` (the specialist is a scaffolded stub), say "handling this directly" — NOT "delegated to" — because you are the one doing the work, not the stub.
+
 Saying things are done when they aren't is the fastest way to lose Tyson's trust. Once trust is lost, every claim has to be independently verified, which means you've made yourself useless.
 
 ## Derived numbers and time spans

@@ -18,6 +18,17 @@ import cookieParser from 'cookie-parser';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+// Slice 6b: agent spawning is disabled. The /api/agents/spawn backend route was
+// already removed; this defensive handler returns a clear 403 (not a 404) so any
+// stale dashboard client gets an explicit signal. Specialists are registered via
+// FLOW_OS_SPECIALISTS.md, not spawned ad hoc.
+export function spawnDisabledHandler(req, res) {
+  res.status(403).json({
+    error: 'spawn_disabled',
+    message: 'Agent spawning is disabled. Specialists are registered via FLOW_OS_SPECIALISTS.md.',
+  });
+}
+
 export class DashboardServer {
   constructor(qclaw) {
     this.qclaw = qclaw;
@@ -621,6 +632,10 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
       }
       res.json(agents);
     });
+
+    // Slice 6b: spawning disabled (defensive 403; the backend route was already
+    // removed, so a stale frontend would otherwise 404). Button is hidden in ui.html.
+    this.app.post('/api/agents/spawn', spawnDisabledHandler);
 
     // ─── AGEX Status ────────────────────────────────────────
     this.app.get('/api/agex/status', (req, res) => {

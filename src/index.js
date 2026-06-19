@@ -30,6 +30,7 @@ import { ApprovalGate } from './security/approval-gate.js';
 import { createShellExecTool, createDisabledShellExecTool, isShellExecEnabled } from './tools/shell-exec.js';
 import { createN8nWorkflowUpdateTool } from './tools/n8n-workflow-update.js';
 import { createClaudeCodeDispatchTool } from './tools/claude-code-dispatch.js';
+import { createDelegateToTool } from './tools/delegate-to.js';
 import { RateLimiter } from './security/rate-limiter.js';
 import { ContentQueue } from './security/content-queue.js';
 import { banner } from './cli/brand.js';
@@ -268,6 +269,15 @@ class QuantumClaw {
       this.tools.registerBuiltin('claude_code_dispatch', {
         scope: dispatchAgents,
         ...createClaudeCodeDispatchTool({ audit: this.audit, auditActor: 'charlie' }),
+      });
+      // Slice 6b: delegate_to — Charlie routes work to a Flow OS specialist.
+      // Scoped to charlie only (specialists cannot delegate). Enqueue-only; in 6b
+      // every specialist routes back as a stub (live path gated by the EMPTY
+      // QCLAW_SPECIALIST_LIVE_IDS allowlist). Sequential + rate limiting live in
+      // the tool fn (registerBuiltin honours only description/inputSchema/fn/scope).
+      this.tools.registerBuiltin('delegate_to', {
+        scope: ['charlie'],
+        ...createDelegateToTool({ audit: this.audit, auditActor: 'charlie' }),
       });
       const rateLimiter = new RateLimiter({
         _dir: workspaceDir,
