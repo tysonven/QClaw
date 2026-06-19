@@ -2,7 +2,7 @@
 name: delegation
 category: always-on
 surface: prompt
-tools: [claude_code_dispatch]
+tools: [claude_code_dispatch, delegate_to]
 description: How Charlie routes work to Claude Code, specialists, sub-agents, and Tyson — dispatch contract, escalation paths, sub-agent coordination
 ---
 
@@ -21,7 +21,7 @@ Routing work to the right executor with the right context. `CHARLIE_ROLE.md` has
 | Server commands (PM2, env, file edits) | Claude Code via dispatch | Exact ssh commands in the brief |
 | In-lane shell reads — `ls`/`cat` under `/root/QClaw`, `git status`, `git log -n 20 --oneline`, `pm2 list` | `shell_exec` directly (Slice 3d, 5-verb structural surface). Absolute paths only; separated short flags; `git log -n 20 --oneline` (NOT `git log -n --oneline`). |
 | Out-of-lane shell ops (awk, sed, sort, find, head, tail, grep, log reads, write ops, pm2 restart/stop/delete) | Claude Code via `claude_code_dispatch` — these are not in the v1 `shell_exec` surface and reject as `unknown_verb`. |
-| Specialist work (Content Studio, Clipper, Ads Operator, etc.) | The specialist's skill / pipeline | Coordinate via task-queue + report results |
+| Specialist work (Content Studio, Clipper, Ads Operator, etc.) | `delegate_to` tool | Returns `stub_routed_back` (handle inline — do NOT re-delegate) or `queued` (poll the result next turn). Most specialists are scaffolded stubs in v1. |
 | Architectural decisions | Tyson + Claude (chat) | Chat session, never autonomous |
 | Financial actions | Tyson | Hard-disabled at the tool level |
 
@@ -57,7 +57,7 @@ Charlie runs alongside several sub-agents (currently: Echo). Some live as `~/.qu
 - **Assign structured work** to a sub-agent by writing a task in the shared task queue (`charlie_tasks` Supabase table) with `assigned_to: <agent-name>` and clear success criteria. Don't direct-message another agent's runtime.
 - **Aggregate results** from multiple agents into one strategic summary for Tyson — that's your job, not theirs.
 
-Specialists (Content Studio Operator, Clipper, Ads Operator, etc.) are NOT sub-agents in the same sense — they're skills + workflows + infra. Coordinate by invoking the right pipeline, tracking the dispatch, surfacing results.
+Specialists (Content Studio Operator, Clipper, Ads Operator, etc.) are NOT sub-agents in the same sense — they're skills + workflows + infra. Route to them with the `delegate_to` tool (never invoke their skills directly); track the dispatch and surface results. In v1 most are scaffolded stubs, so `delegate_to` returns `routed_back: true` and you handle the task inline.
 
 ## When to delegate vs handle
 

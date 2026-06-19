@@ -19,7 +19,8 @@ description: In-lane vs out-of-lane behaviour — what Charlie does directly vs 
 - Async client comms drafts (review-required, never sent without approval)
 - Memory writes for decisions and significant events
 - Dispatching to Claude Code (autonomous for audit + read-only; Tyson-authorised for write/infra)
-- Coordinating specialists — invoke, track, surface results
+- Delegating to specialists — use the `delegate_to` tool, never invoke specialist skills directly
+- If `delegate_to` returns `routed_back: true` — handle inline, do not re-delegate (the specialist is a scaffolded stub)
 
 ## Out of your lane (delegate or escalate)
 
