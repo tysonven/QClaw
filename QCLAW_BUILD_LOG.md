@@ -14813,3 +14813,54 @@ Slice 6 pre-step: removed 5 autonomous spawn ghost agents (claude-code-ig-fix, d
 **Pre-existing stash:** stash@{0} yarn.lock only, unrelated, left untouched.
 
 **Follow-ups logged for 6c/6d:** dashboard specialist rows (agent-manager wiring); SPECIALIST_MENTION_RE for isSpecialistResult OUTCOME branch; claim/reap RPCs; QCLAW_SPECIALIST_LIVE_IDS population; per-turn stub sequencing (low priority); runtime symlink dir cleanup; gh/GITHUB_TOKEN on host; CLAUDE_CODE_INVENTORY.md correction.
+
+## [2026-06-24] Slice 6c — Agent manager wiring + scope principal isolation
+
+**What shipped (PR #48, merged main):** 18 specialists registered as
+lightweight agents in qclaw.agents at boot (Agent.createSpecialist
+factory, AgentRegistry.register/has, non-fatal boot loop after loadAll).
+Dashboard /api/agents now returns 20 rows (charlie + echo + 18
+specialists) with status (stub/live/deferred), businessUnit, isSpecialist
+fields. ui.html renders status badges (amber/green/grey) and businessUnit
+labels inline in the name column; deferred rows dimmed. Specialist skill
+tools registered under specialist agentName off SSOT (src/agents/skills/),
+never the stale symlink dir. Typed observation tools (read_file, grep_repo,
+list_dir, git_status) implemented as builtins via src/tools/observation.js,
+scope dynamically built from 18-specialist roster at boot (charlie/echo
+excluded). specialist-observation.md added as prompt-surface skill doc
+with tools: frontmatter for activation coupling. UNIVERSAL_SKILLS pattern
+in specialist-registry.js appends specialist-observation to every entry.
+lanes.md + verification-reflexes.md updated: specialists use typed tools,
+not shell_exec.
+
+**Audit decisions:** Option A (extend Agent class) for lightweight
+constructor. Option 6-A (builtins with array scope) for observation tools
+— skill-tool path is HTTP-only, function-backed tools require registerBuiltin.
+Unit 3: push content always, register HTTP tools only when parseSkill
+non-null. Unit 4: REPO_ROOT dropped, loadSpecialistRegistry() uses
+import.meta.url default. surface:prompt for specialist-observation.md
+(matches delegation.md precedent; tools: frontmatter still drives
+activation).
+
+**Tests:** 1826 checks, 0 failures. New: specialist-agent 25/25,
+specialist-loader 13/13, agent-dashboard 10/10, specialist-observation
+21/21.
+
+**Live acceptance:** Dashboard shows 20 rows. charlie + echo unaffected
+(isSpecialist:false, no badges). Status badges correct: stub amber, live
+green, deferred grey/dimmed. charlie skills:15 (stale symlink dir defect
+— pre-existing, deferred to follow-up micro-dispatch). Charlie correctly
+enumerated all 18 specialists by business unit via Telegram.
+
+**Security:** realpathSync containment on all path-taking tools
+(try/catch → null on ENOENT, no cryptic error leak). Shell metacharacter
+rejection on grep_repo pattern. Observation scope dynamic, no hardcoded
+names.
+
+**Follow-ups:** stale charlie symlink dir (Agent.load reads 15-entry dir
+vs 25-file SSOT — micro-dispatch); specialist skill slug reconciliation
+for name-mismatched entries (ad-agency vs ads-agency.md etc — 6d);
+SPECIALIST_MENTION_RE for isSpecialistResult OUTCOME branch (6d);
+per-request activation path for specialist turns (6d); 24 auto-stashes
+cleanup (separate maintenance pass); gh/GITHUB_TOKEN on host;
+CLAUDE_CODE_INVENTORY.md correction.
