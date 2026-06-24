@@ -109,6 +109,35 @@ export class AgentRegistry {
     return Array.from(this.agents.keys());
   }
 
+  /**
+   * Slice 6c — explicit membership check. Callers MUST use this before
+   * get() for specialist lookups: get() silently falls back to the
+   * default agent (charlie) for unknown names (audit F2), so a bare
+   * get('some-specialist') can return the wrong agent. has() is the
+   * truthful "is this name registered" probe.
+   */
+  has(name) {
+    return this.agents.has(name);
+  }
+
+  /**
+   * Slice 6c — lightweight registration. Adds an already-constructed agent
+   * (e.g. Agent.createSpecialist(...)) to the registry. Does NOT call
+   * load(), create a workspace dir, or generate an AID — that is the
+   * caller's responsibility. Throws on duplicate name (never silently
+   * overwrites charlie/echo or another specialist).
+   */
+  register(agent) {
+    if (this.agents.has(agent.name)) {
+      throw new Error(
+        `Agent '${agent.name}' is already registered. ` +
+        `Use has() to check before registering.`
+      );
+    }
+    this.agents.set(agent.name, agent);
+    return agent;
+  }
+
   async _createDefault() {
     const { mkdirSync, writeFileSync } = await import('fs');
     const n = this.defaultName;
@@ -207,11 +236,42 @@ These tags help the system update your identity.
 export class Agent {
   constructor(name, dir, services) {
     this.name = name;
-    this.dir = dir;
+    this.dir = dir;             // null for lightweight specialists (no workspace dir)
     this.services = services;
     this.soul = '';
     this.skills = [];
     this.aid = null;
+
+    // Slice 6c: optional specialist metadata. Defaults keep disk-backed
+    // agents (charlie, echo) unchanged — they never set these, so they
+    // stay null/false and the /api/agents handler emits the same shape.
+    this.status = null;         // 'live' | 'stub' | 'deferred' | null
+    this.businessUnit = null;   // 'flow_os' | 'fsc' | … | null
+    this.isSpecialist = false;  // true only for specialists
+  }
+
+  /**
+   * Slice 6c — lightweight specialist factory. Builds an Agent from a
+   * SpecialistEntry (specialist-registry.js) WITHOUT touching disk: no
+   * workspace dir, no SOUL.md, no aid.json, no skill scan. `load()` is
+   * never called. Skill tools are wired separately by
+   * registerSpecialistSkills (specialist-loader.js) off the SSOT.
+   *
+   * @param {object} entry     SpecialistEntry { agentName, businessUnit, status, isLive, … }
+   * @param {object} services  the AgentRegistry services bag
+   * @returns {Agent}
+   */
+  static createSpecialist(entry, services) {
+    const agent = new Agent(entry.agentName, null, services);
+    // entry.status is the file's verbatim word ('live'|'scaffolded'|'deferred').
+    // Map to the dashboard vocabulary: scaffolded → stub.
+    agent.status = entry.isLive
+      ? 'live'
+      : (entry.status === 'deferred' ? 'deferred' : 'stub');
+    agent.businessUnit = entry.businessUnit;
+    agent.isSpecialist = true;
+    agent.skills = [];          // populated by registerSpecialistSkills (Unit 3)
+    return agent;
   }
 
   async load() {

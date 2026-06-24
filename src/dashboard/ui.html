@@ -1329,14 +1329,27 @@ $('currency-sel').onchange = function() {
 async function loadAgents() {
   try {
     const agents = await api('/agents');
-    $('agents-body').innerHTML = agents.map(a =>
-      '<tr>' +
-      '<td>' + a.name + (a.isPrimary ? ' <span class="badge badge-accent">primary</span>' : '') + '</td>' +
+    $('agents-body').innerHTML = agents.map(a => {
+      // Slice 6c: specialist status badge + businessUnit label (inline in the
+      // name column; charlie/echo render exactly as before — isSpecialist false).
+      const statusBadge = a.isSpecialist
+        ? (a.status === 'live'
+            ? ' <span class="badge badge-green">live</span>'
+            : a.status === 'deferred'
+              ? ' <span class="badge" style="background:var(--bg-3);color:var(--text-dim)">deferred</span>'
+              : ' <span class="badge badge-yellow">stub</span>')
+        : '';
+      const buLabel = (a.isSpecialist && a.businessUnit)
+        ? ' <span class="badge" style="background:var(--bg-3);color:var(--text-dim)">' + a.businessUnit + '</span>'
+        : '';
+      const rowStyle = (a.isSpecialist && a.status === 'deferred') ? ' style="opacity:.5"' : '';
+      return '<tr' + rowStyle + '>' +
+      '<td>' + a.name + (a.isPrimary ? ' <span class="badge badge-accent">primary</span>' : '') + statusBadge + buLabel + '</td>' +
       '<td><span class="badge badge-blue">' + (a.provider || '') + '/' + (a.model || '') + '</span></td>' +
       '<td>' + (a.skills || 0) + '</td><td>' + (a.threads || 0) + '</td><td>' + (a.messages || 0) + '</td>' +
       '<td>' + (a.aidId ? '<span class="badge badge-green">T' + (a.trustTier ?? '') + '</span>' : '<span class="badge badge-yellow">local</span>') + '</td>' +
-      '</tr>'
-    ).join('') || '<tr><td colspan="6" style="color:var(--text-dim)">No agents</td></tr>';
+      '</tr>';
+    }).join('') || '<tr><td colspan="6" style="color:var(--text-dim)">No agents</td></tr>';
     if (agents.length) $('agent-badge').textContent = agents.find(a => a.isPrimary)?.name || agents[0].name;
   } catch(e) { $('agents-body').innerHTML = '<tr><td colspan="6" style="color:var(--text-dim)">Failed to load</td></tr>'; }
 }
