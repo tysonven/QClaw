@@ -49,7 +49,9 @@ check('sproutcode-operator → sproutcode', getSpecialist('sproutcode-operator')
 check('crete-marketing-operator → crete', getSpecialist('crete-marketing-operator')?.businessUnit === 'crete');
 
 console.log('skills derivation (provisional, 6c/6d wires real):');
-check('content-studio-operator → ["content-studio"]', JSON.stringify(getSpecialist('content-studio-operator')?.skills) === '["content-studio"]');
+// Slice 6c: every entry now also carries the universal 'specialist-observation' skill.
+check('content-studio-operator → ["content-studio","specialist-observation"]', JSON.stringify(getSpecialist('content-studio-operator')?.skills) === '["content-studio","specialist-observation"]');
+check('every specialist carries specialist-observation', listSpecialists().every(s => s.skills.includes('specialist-observation')));
 
 console.log('getSpecialist lookups:');
 check('by display name resolves', getSpecialist('Content Studio Operator')?.id === 'content-studio-operator');

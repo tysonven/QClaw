@@ -627,7 +627,11 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
           messages: totalMessages,
           isPrimary: agent.name === this.qclaw.agents.primary()?.name,
           aidId: agent.aid?.aid_id || null,
-          trustTier: agent.aid?.trust_tier ?? null
+          trustTier: agent.aid?.trust_tier ?? null,
+          // Slice 6c: specialist metadata. null/false for charlie & echo.
+          status: agent.status || null,
+          businessUnit: agent.businessUnit || null,
+          isSpecialist: agent.isSpecialist || false
         });
       }
       res.json(agents);
@@ -649,7 +653,11 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
           name: agent.name,
           aidId: agent.aid?.aid_id || null,
           trustTier: agent.aid?.trust_tier || null,
-          isPrimary: agent.name === this.qclaw.agents.primary()?.name
+          isPrimary: agent.name === this.qclaw.agents.primary()?.name,
+          // Slice 6c: specialist metadata (null/false for charlie & echo).
+          status: agent.status || null,
+          businessUnit: agent.businessUnit || null,
+          isSpecialist: agent.isSpecialist || false
         });
       }
 

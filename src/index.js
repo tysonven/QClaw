@@ -14,7 +14,7 @@ import { TrustKernel } from './security/trust-kernel.js';
 import { AuditLog } from './security/audit.js';
 import { MemoryManager } from './memory/manager.js';
 import { ModelRouter } from './models/router.js';
-import { AgentRegistry } from './agents/registry.js';
+import { AgentRegistry, Agent } from './agents/registry.js';
 import { ChannelManager } from './channels/manager.js';
 import { startLivenessHeartbeat } from './observability/liveness-heartbeat.js';
 import { DashboardServer } from './dashboard/server.js';
@@ -358,6 +358,46 @@ class QuantumClaw {
       log.error(`Agent registry failed: ${err.message}`);
       log.error('Cannot start without agents. Check workspace/agents/');
       process.exit(1);
+    }
+
+    // ── Slice 6c: register Flow OS specialists as lightweight agents ──
+    // Parsed from FLOW_OS_SPECIALISTS.md (the registry resolves its own path
+    // via import.meta.url — no REPO_ROOT needed). Each becomes a dir-less
+    // Agent (no SOUL.md / aid.json / workspace dir); skill tools are wired
+    // under the specialist's own agentName off the SSOT. Non-fatal: a parse
+    // failure must never stop charlie/echo from booting. has()-guarded so a
+    // specialist whose agentName collides with charlie/echo is skipped, never
+    // overwriting an existing agent (audit F2).
+    try {
+      const { loadSpecialistRegistry } = await import('./agents/specialist-registry.js');
+      const { registerSpecialistSkills } = await import('./agents/specialist-loader.js');
+      const { registerObservationTools } = await import('./tools/observation.js');
+      const specialistRegistry = loadSpecialistRegistry();
+
+      // Slice 6c Unit 6: register the typed read-only observation builtins
+      // (read_file/grep_repo/list_dir/git_status) scoped to the specialist
+      // roster. The scope array is built DYNAMICALLY from the loaded registry
+      // at registration time — never hardcoded. shell_exec stays charlie's.
+      const specialistNames = [...specialistRegistry.values()].map(e => e.agentName);
+      if (this.tools) {
+        const observed = registerObservationTools(this.tools, specialistNames, { audit: this.audit, auditActor: 'specialist' });
+        if (observed.length) log.info(`Observation tools scoped to ${specialistNames.length} specialists: ${observed.join(', ')}`);
+      }
+
+      let registered = 0;
+      for (const entry of specialistRegistry.values()) {
+        if (this.agents.has(entry.agentName)) {
+          log.warn(`Specialist ${entry.agentName} conflicts with existing agent — skipping`);
+          continue;
+        }
+        const specialist = Agent.createSpecialist(entry, this.agents.services);
+        registerSpecialistSkills(specialist, this.agents.services);
+        this.agents.register(specialist);
+        registered++;
+      }
+      log.info(`Registered ${registered} specialists`);
+    } catch (err) {
+      log.warn(`Specialist registration failed (non-fatal): ${err.message}`);
     }
 
     // ── Layer 6: Channels (non-fatal, dashboard is the fallback) ──

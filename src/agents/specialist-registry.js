@@ -59,6 +59,12 @@ const SKIP_SECTIONS = new Set([
 // Trailing role tokens stripped when deriving a provisional skill slug.
 const ROLE_SUFFIXES = new Set(['operator', 'specialist', 'bot']);
 
+// Slice 6c: every specialist (live, scaffolded, or deferred) carries the
+// read-only observation skill — it declares the typed observation builtins
+// (read_file/grep_repo/list_dir/git_status) that replace shell_exec for
+// specialists. Appended to the provisional name-derived slug(s).
+const UNIVERSAL_SKILLS = ['specialist-observation'];
+
 let _cache = null; // Map<id, SpecialistEntry> — populated on first load, reused.
 
 /** kebab-case an entry's display name (em/en dashes → hyphen, collapse). */
@@ -121,7 +127,7 @@ function buildEntry(cur) {
     businessUnit,
     status,
     agentName: id,
-    skills: deriveSkills(id),
+    skills: [...deriveSkills(id), ...UNIVERSAL_SKILLS],
     runsOn: cur.runsOn ? String(cur.runsOn).trim() : '',
     isLive: status === 'live',
     isStub: status === 'scaffolded' || status === 'deferred',

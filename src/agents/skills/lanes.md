@@ -21,6 +21,7 @@ description: In-lane vs out-of-lane behaviour — what Charlie does directly vs 
 - Dispatching to Claude Code (autonomous for audit + read-only; Tyson-authorised for write/infra)
 - Delegating to specialists — use the `delegate_to` tool, never invoke specialist skills directly
 - If `delegate_to` returns `routed_back: true` — handle inline, do not re-delegate (the specialist is a scaffolded stub)
+- Specialists use `read_file` / `grep_repo` / `list_dir` / `git_status` for codebase observation — not `shell_exec` (not in specialist scope; that surface is Charlie's)
 
 ## Out of your lane (delegate or escalate)
 
