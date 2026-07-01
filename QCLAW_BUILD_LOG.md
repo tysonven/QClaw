@@ -14864,3 +14864,49 @@ SPECIALIST_MENTION_RE for isSpecialistResult OUTCOME branch (6d);
 per-request activation path for specialist turns (6d); 24 auto-stashes
 cleanup (separate maintenance pass); gh/GITHUB_TOKEN on host;
 CLAUDE_CODE_INVENTORY.md correction.
+
+## [2026-07-01] Slice 6d — Live specialist migration + SPECIALIST_MENTION_RE
+
+**What shipped (PR #49, merged main):** Content Studio Operator and
+Community Manager FSC enabled as live specialists via
+QCLAW_SPECIALIST_LIVE_IDS env var (runtime only, not committed).
+content-studio.md flipped to specialist-scope with minimal live-turn
+stub (## Endpoints, report-back contract, verification reflex).
+community-manager-fsc.md frontmatter flipped to specialist-scope;
+14.5KB body untouched. SPECIALIST_MENTION_RE added to gates.js —
+isSpecialistResult now load-bearing (was wired dormant since 6b).
+OUTCOME evidence attribution-matched: CC claims → isClaudeCodeResult,
+specialist claims → isSpecialistResult. Dead content-studio
+COMBINATION_TRIGGERS entry removed from skill-router.js. skill-router
+and skill-loader tests updated to post-migration reality (13 on-demand
+skills; content-studio no longer keyword auto-loads — reached via
+delegate_to). FLOW_OS_SPECIALISTS.md maintenance log updated.
+
+**Live verification:** specialist_dispatches row written for
+content-studio-operator (task_id 95181ea7, status queued,
+session_id telegram:1375806243). Live path confirmed firing.
+Gate 2 hard-fails on delegation claim — expected and correct:
+delegate_to not yet wired into onToolResult audit path, so no
+gate evidence exists. Fail-closed behavior is safe.
+
+**Tests:** npm test green except pre-existing probes.test.js
+environmental flake. gates-specialist-dispatch 26/26 (+15 new).
+skill-frontmatter 257/0. skill-router and skill-loader updated
+to post-migration counts.
+
+**Phase 4 declared complete** with this slice. All 6 Slice 6
+sub-slices shipped (6 pre-step, 6b, 6c, 6d). Phase 5 begins
+with a scoping session before any new code.
+
+**Phase 5 item #1 (highest priority):** Wire delegate_to into
+onToolResult audit path so Gate 2 can see specialist dispatch
+evidence. Until then, Charlie's delegation claims hard-fail
+Gate 2 on every specialist dispatch turn — producing
+[Unverified...] noise in Telegram output.
+
+**Other Phase 5 follow-ups:** delegate_to_result deposit path
+for specialist outcome claims; KEYWORD_REFERENCE.md regen;
+specialist skill slug reconciliation; deep content-studio.md
+authoring; hard-cap-4 fix; Gate 2 cross-turn false-fire fix;
+GHL write tools; trading workflow reactivation; Crete tool
+surface.
