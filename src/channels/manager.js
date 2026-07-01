@@ -7,6 +7,7 @@
 
 import { run } from '@grammyjs/runner';
 import { log } from '../core/logger.js';
+import { getEnv } from '../core/env.js';
 import {
   bootstrap,
   clearCache as clearBootstrapCache,
@@ -171,6 +172,90 @@ export async function handleApprovalReply(ctx, { allowedUsers, approvals }) {
     } else {
       await ctx.reply(`⚠️ Couldn't ${isApprove ? 'approve' : 'deny'} [${id}]: ${e.message}`);
     }
+  }
+}
+
+// ── Phase 5 Session 1 — Claude Code WRITE-scope approval replies ─────────────
+// A write/infra CC dispatch holds in `awaiting_authorisation`; the owner approves
+// with "✅ <task_id8>" or cancels with "❌ <task_id8>", where task_id8 is the first
+// 8 hex chars of the dispatch task_id. Distinct from the numeric approvals subsystem
+// (APPROVAL_REPLY_RE / handleApprovalReply): those are integer ids, these are 8-hex.
+// Registered BEFORE APPROVAL_REPLY_RE and terminal (no next()), so it wins the rare
+// all-numeric 8-char overlap and never double-handles.
+export const CC_AUTH_REPLY_RE = /^([✅❌])\s*([0-9a-f]{8})(?![0-9a-f])/i;
+
+/** Default Supabase (service_role) client for the CC-auth handler. Injectable for tests. */
+export function makeCcAuthDb(env = getEnv()) {
+  const url = (env.SUPABASE_URL || '').replace(/\/+$/, '');
+  const key = env.SUPABASE_SERVICE_ROLE_KEY || '';
+  async function rest(method, path, { body, prefer } = {}) {
+    const headers = { apikey: key, Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' };
+    if (prefer) headers.Prefer = prefer;
+    const res = await fetch(`${url}/rest/v1/${path}`, { method, headers, body: body ? JSON.stringify(body) : undefined });
+    if (!res.ok) throw new Error(`Supabase ${method} ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    const text = await res.text();
+    return text ? JSON.parse(text) : null;
+  }
+  return {
+    configured: () => !!(url && key),
+    async findAwaiting(prefix) {
+      const rows = await rest('GET', `claude_code_dispatches?task_id=like.${encodeURIComponent(prefix)}*&status=eq.awaiting_authorisation&select=id,task_id`);
+      return Array.isArray(rows) ? rows : [];
+    },
+    // status filter on the PATCH is a race guard: a second ✅ (or a reap) can't
+    // re-queue a row that already left awaiting_authorisation.
+    async authorise(id, authorisedAt) {
+      await rest('PATCH', `claude_code_dispatches?id=eq.${encodeURIComponent(id)}&status=eq.awaiting_authorisation`,
+        { prefer: 'return=minimal', body: { status: 'queued', authorisation_required: false, authorised_by: 'tyson', authorised_at: authorisedAt } });
+    },
+    async cancel(id) {
+      await rest('PATCH', `claude_code_dispatches?id=eq.${encodeURIComponent(id)}&status=eq.awaiting_authorisation`,
+        { prefer: 'return=minimal', body: { status: 'cancelled' } });
+    },
+  };
+}
+
+// Extracted (like handleApprovalReply) so it's unit-testable without a Bot. `db`
+// defaults to the env-backed client; tests inject a fake. `now` is injectable.
+export async function handleCcAuthReply(ctx, { allowedUsers, db, now = () => new Date().toISOString() }) {
+  if (!allowedUsers.includes(ctx.from.id)) return;
+  const verb = ctx.match[1];
+  const prefix = String(ctx.match[2] || '').toLowerCase();
+  const isApprove = verb === '✅';
+  // Defensive re-validate for direct callers: never query on a non-8-hex token.
+  if (!/^[0-9a-f]{8}$/.test(prefix)) {
+    await ctx.reply('⚠️ Expected an 8-character hex task id, e.g. `✅ 95181ea7`.');
+    return;
+  }
+  const actor = `telegram:${ctx.from.username || ctx.from.id}`;
+  let rows;
+  try {
+    rows = await db.findAwaiting(prefix);
+  } catch (e) {
+    await ctx.reply(`⚠️ Couldn't look up dispatch \`${prefix}\`: ${e.message}`);
+    return;
+  }
+  if (!rows || rows.length === 0) {
+    await ctx.reply(`No write-scope dispatch awaiting approval matching \`${prefix}\`.`);
+    return;
+  }
+  if (rows.length > 1) {
+    await ctx.reply(`⚠️ Ambiguous — ${rows.length} dispatches match \`${prefix}\`. Reply with more of the task id.`);
+    return;
+  }
+  const row = rows[0];
+  try {
+    if (isApprove) {
+      await db.authorise(row.id, now());
+      await ctx.reply(`✅ Approved write dispatch \`${prefix}\` — queued for Claude Code.`);
+      log.info(`CC write dispatch ${prefix} authorised by ${actor}`);
+    } else {
+      await db.cancel(row.id);
+      await ctx.reply(`❌ Cancelled write dispatch \`${prefix}\`.`);
+      log.info(`CC write dispatch ${prefix} cancelled by ${actor}`);
+    }
+  } catch (e) {
+    await ctx.reply(`⚠️ Couldn't ${isApprove ? 'approve' : 'cancel'} \`${prefix}\`: ${e.message}`);
   }
 }
 
@@ -567,6 +652,13 @@ class TelegramChannel {
     // are not blocked by an in-flight agent.process() call inside message:text.
     // See QCLAW_BUILD_LOG.md (2026-04-27 concurrency fix) for the deadlock
     // this addresses. handleApprovalReply is exported for unit tests.
+    // Phase 5: CC write-scope approval (✅/❌ <task_id8>). Registered FIRST and
+    // terminal (no next()) so it wins the rare all-numeric 8-char overlap with the
+    // integer-id approvals below. db is the env-backed Supabase client (service_role).
+    const ccAuthDb = makeCcAuthDb();
+    bot.hears(CC_AUTH_REPLY_RE, (ctx) =>
+      handleCcAuthReply(ctx, { allowedUsers, db: ccAuthDb })
+    );
     bot.hears(APPROVAL_REPLY_RE, (ctx) =>
       handleApprovalReply(ctx, { allowedUsers, approvals: this.approvals })
     );

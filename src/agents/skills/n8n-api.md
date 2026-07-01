@@ -13,7 +13,11 @@ Base URL: https://webhook.flowos.tech/api/v1
 Header: X-N8N-API-KEY: {{secrets.n8n_api_key}}
 
 ## Endpoints
-GET /workflows?limit=200 - List all n8n workflows (find any workflow by scanning this list)
+To LIST workflows or find one by name, call the `n8n_workflow_list` tool — it returns a
+lightweight {id, name, active} array (a few KB). Do NOT use GET /workflows?limit=200 for
+listing: it returns full node graphs (~2 MB for ~80 workflows) and truncates. Use the raw
+GET only when you already have an id and need the node config.
+GET /workflows/{{id}} - Get details of one workflow by ID (nodes, connections, active state)
 GET /workflows/{{id}} - Get details of one workflow by ID (nodes, connections, active state)
 GET /executions/{{id}} - Get full details of a single execution (error messages, node outputs)
 GET /executions?workflowId={{workflow_id}} - List recent executions for a workflow
@@ -26,7 +30,7 @@ GET /executions?workflowId={{workflow_id}}&status={{status}} - Filter executions
 
 ## Diagnostic approach
 When asked about ANY n8n workflow:
-1. Use get_workflows_limit_200 to list all workflows and find the one you need by name
+1. Use the n8n_workflow_list tool to list all workflows and find the one you need by name (lightweight; the full GET /workflows truncates)
 2. Use get_workflows_id with the workflow's ID to inspect its nodes
 3. Use get_executions_workflowid_workflow_id_status_status with status=error to find recent failures
 4. Use get_executions_id on a failing execution to see the exact error message

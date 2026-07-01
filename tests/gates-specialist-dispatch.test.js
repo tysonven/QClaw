@@ -154,5 +154,73 @@ console.log('attribution isolation — a delegate_to_result does NOT back a Clau
   rmSync(dir, { recursive: true, force: true });
 }
 
+// ── Phase 5 Session 1 — DISPATCH claim binds the server-returned task_id ─────
+// Live-bug repro (2026-07-01): delegate_to succeeded and its audit event existed,
+// but Gate 2 hard-failed on "Dispatched … task <uuid> queued." because the task_id
+// is server-generated and lives in the RESULT row, not the call args — and the
+// entity path only searched the call detail. matchResultDetail:true (DISPATCH
+// branch) fixes it.
+const TASK_ID = '95181ea7-aa1a-43c7-ba50-ff0830cf3033';
+
+console.log('DISPATCH claim citing a task_id present only in the RESULT row is backed:');
+{
+  const { audit, dir } = freshAudit();
+  const turnStart = Date.now() - 5000;
+  // call args carry specialist + task text — NOT the task_id (mirrors real delegate_to)
+  logCall(audit, 'delegate_to', 'd1', { specialist: 'content-studio-operator', task: 'process a test episode' });
+  // result row carries the server-generated task_id (this is where it actually lives)
+  logResult(audit, 'delegate_to', 'd1', JSON.stringify({ task_id: TASK_ID, specialist: 'content-studio-operator', status: 'queued', routed_back: false }));
+  const out = gateDelegation(`**Dispatched to Content Studio Operator** — task \`${TASK_ID}\` queued.`, ctxFor(audit, turnStart));
+  check('does not fire (task_id bound via result detail)', out.fired === false, JSON.stringify(out));
+  rmSync(dir, { recursive: true, force: true });
+}
+
+console.log('DISPATCH claim citing a task_id in NEITHER call nor result still fires:');
+{
+  const { audit, dir } = freshAudit();
+  const turnStart = Date.now() - 5000;
+  logCall(audit, 'delegate_to', 'd2', { specialist: 'content-studio-operator', task: 'process a test episode' });
+  logResult(audit, 'delegate_to', 'd2', JSON.stringify({ task_id: 'ffffffff-0000-0000-0000-000000000000', specialist: 'content-studio-operator', status: 'queued' }));
+  const out = gateDelegation(`**Dispatched to Content Studio Operator** — task \`${TASK_ID}\` queued.`, ctxFor(audit, turnStart));
+  check('fires (cited task_id matches no dispatch event)', out.fired === true && out.severity === 'hard', JSON.stringify(out));
+  rmSync(dir, { recursive: true, force: true });
+}
+
+console.log('matchResultDetail is confined to dispatch tools (strictRelevant) — a non-dispatch result does NOT back:');
+{
+  const { audit, dir } = freshAudit();
+  const turnStart = Date.now() - 5000;
+  // task_id appears only in a shell_exec result — NOT a dispatch tool
+  logCall(audit, 'shell_exec', 's9', { command: 'cat log' });
+  logResult(audit, 'shell_exec', 's9', JSON.stringify({ out: `queued ${TASK_ID}` }));
+  const out = gateDelegation(`**Dispatched to Content Studio Operator** — task \`${TASK_ID}\` queued.`, ctxFor(audit, turnStart));
+  check('fires (shell_exec is not a dispatch tool; result-detail match is dispatch-only)', out.fired === true, JSON.stringify(out));
+  rmSync(dir, { recursive: true, force: true });
+}
+
+console.log('stub-path dispatch also backed (stub returns a task_id in its result too):');
+{
+  const { audit, dir } = freshAudit();
+  const turnStart = Date.now() - 5000;
+  const stubId = 'aaaa1111-bbbb-2222-cccc-333344445555';
+  logCall(audit, 'delegate_to', 'd3', { specialist: 'community-manager-fsc', task: 'draft a welcome post' });
+  logResult(audit, 'delegate_to', 'd3', JSON.stringify({ task_id: stubId, specialist: 'community-manager-fsc', status: 'stub_routed_back', routed_back: true }));
+  const out = gateDelegation(`Dispatched to the community-manager-fsc specialist — task \`${stubId}\`.`, ctxFor(audit, turnStart));
+  check('does not fire (stub path produces a backing delegate_to event)', out.fired === false, JSON.stringify(out));
+  rmSync(dir, { recursive: true, force: true });
+}
+
+console.log('regression — CC dispatch claim citing task_id in the result row is backed (latent CC case fixed too):');
+{
+  const { audit, dir } = freshAudit();
+  const turnStart = Date.now() - 5000;
+  const ccTask = 'dddd9999-eeee-8888-ffff-777766665555';
+  logCall(audit, 'claude_code_dispatch', 'cc9', { task: 'audit the GHL publish failure' });
+  logResult(audit, 'claude_code_dispatch', 'cc9', JSON.stringify({ task_id: ccTask, status: 'queued' }));
+  const out = gateDelegation(`I dispatched task \`${ccTask}\` to Claude Code for an audit.`, ctxFor(audit, turnStart));
+  check('does not fire (CC task_id bound via result detail)', out.fired === false, JSON.stringify(out));
+  rmSync(dir, { recursive: true, force: true });
+}
+
 console.log(`\n${passed}/${passed + failed} checks passed`);
 process.exit(failed > 0 ? 1 : 0);
