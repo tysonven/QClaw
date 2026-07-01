@@ -14910,3 +14910,30 @@ specialist skill slug reconciliation; deep content-studio.md
 authoring; hard-cap-4 fix; Gate 2 cross-turn false-fire fix;
 GHL write tools; trading workflow reactivation; Crete tool
 surface.
+
+## [2026-07-01] Operational fixes — n8n API key rotation + .env hardening
+
+**n8n API key expired** — `quantum claw api` key in n8n expired.
+Rotated to `quantum claw api v2` (never expires). Updated in both
+/root/.quantumclaw/.env (N8N_API_KEY) and the encrypted secrets
+store (n8n_api_key + n8n_router_token) via QClaw CLI secret set.
+Both now ending MVcY. n8n API confirmed working post-rotation —
+Charlie successfully called n8n API without 401.
+
+**WP_APP_PASSWORD .env parse bug fixed** — value contained an
+unquoted $ character causing bash source to fail with
+"YlzT: command not found" on line 12. Fixed by quoting the value.
+Latent bug — any tool using source /root/.quantumclaw/.env was
+hitting this silently.
+
+**PM2 sudo hang** — sudo pm2 commands hung in the original SSH
+session. Resolved by opening a fresh SSH session and using
+sudo -i pm2 instead of sudo pm2. Root cause: stale sudo context
+in the original session, not a PM2 daemon issue.
+
+**Secrets store vs .env distinction confirmed** — Charlie reads
+API keys from /root/.quantumclaw/.secrets.enc via the encrypted
+secrets store, NOT from .env directly. .env is only read by
+n8n-workflow-update.js directly. Future key rotations must update
+both locations: .env AND secrets store via CLI secret set.
+This is now documented here to prevent recurrence.
