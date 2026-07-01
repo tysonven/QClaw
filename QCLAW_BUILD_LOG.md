@@ -14937,3 +14937,45 @@ secrets store, NOT from .env directly. .env is only read by
 n8n-workflow-update.js directly. Future key rotations must update
 both locations: .env AND secrets store via CLI secret set.
 This is now documented here to prevent recurrence.
+
+## [2026-07-01] Phase 5 Session 1 — Gate 2 dispatch evidence + CC write scope + n8n list
+
+**What shipped (PR #50, merged main):**
+
+Gate 2 dispatch evidence fix: matchEvidence gained matchResultDetail
+opt-in flag; DISPATCH branch now binds cited task_id against the
+result row (server-generated task_ids live in result, not call args).
+Fixes the live [Unverified...] hard-fail from June 26 and the latent
+CC dispatch case. +5 tests including exact live-bug repro.
+
+CC write-scope approval gate: write/infra scope dispatches now create
+awaiting_authorisation rows + send structured Telegram approval
+request. Tyson replies ✅/❌ [8-char task_id prefix] to approve or
+cancel. cancelled status added via live migration
+(2026_07_01_ccd_add_cancelled_status.sql, applied fdabygmromuqtysitodp).
+critical scope remains hard-blocked. audit/read_only unchanged.
+25 tests. Dispatcher write-execution deferred — approved write tasks
+queue but won't execute until dispatcher ALLOWED_SCOPES is expanded
+(Phase 5 Session 2 item).
+
+n8n_workflow_list builtin: projects each workflow to {id, name, active}
+server-side. 6,302 B vs 1.88 MB live-verified. Replaces the
+truncating get_workflows_limit_200 tool for count/list queries.
+11 tests.
+
+**Live acceptance:** Gate 2 clean on delegate_to test turn (17:39
+EEST) — no gate.log entry, no [Unverified...] output. Charlie asked
+clarifying questions (correct behaviour) without gate noise.
+
+**Note:** Brief's Unit 1 premise was wrong — delegate_to was already
+wired into onToolResult; audit event existed. Real defect was entity
+binding (task_id in result row, not call args). Audit-first caught
+this before any code was written.
+
+**Phase 5 Session 2 priorities:**
+1. Dispatcher write-execution (expand ALLOWED_SCOPES, non-read-only
+   runner, git-clean-assert for mutations)
+2. delegate_to_result deposit path (specialist OUTCOME evidence)
+3. GHL write tools (draft email, invoice, contact update per
+   sub-account)
+4. Trading workflow reactivation
