@@ -70,11 +70,11 @@ What Claude Code has access to in this environment, and what it does not. Read a
 **Read access:**
 - Supabase project `fdabygmromuqtysitodp` — read-only queries on whitelisted tables
 - n8n at `webhook.flowos.tech` — read workflow JSON, read execution history
-- GitHub `tysonven/QClaw` — push and PR operations
+- GitHub `tysonven/QClaw` — `git push` only (branches + main). PR operations are NOT available from the qclaw host: the `gh` CLI is not installed and `GITHUB_TOKEN` is not in env. PRs are opened manually by Tyson via the GitHub web UI (or local `gh`, authed as tysonven). **GITHUB_TOKEN not in env. PRs opened manually. Inventory gap documented 2026-07-01.**
 - Cloudflare R2 — read object lists in scoped buckets
 
 **Write access (when explicitly in scope):**
-- GitHub: push commits, open PRs
+- GitHub: `git push` commits only (from the qclaw host). Opening PRs is not possible from the host (no `gh` CLI, no `GITHUB_TOKEN`) — Tyson opens PRs manually via the GitHub web UI / local `gh`.
 - Supabase: writes to operational tables (e.g. `claude_code_dispatches` results) when dispatched for those operations
 - n8n: workflow updates only after audit-first flow, only when explicitly dispatched
 

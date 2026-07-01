@@ -8,7 +8,7 @@ Running architecture document for Charlie 2.0. This overhaul redesigns Charlie t
 - Phase 2 (Code-grounded audit): COMPLETE — see /tmp/charlie_phase2_audit.md
 - Phase 2.5 (CEO Operating Model spec): COMPLETE — see CEO_OPERATING_MODEL.md
 - Phase 3 (Charlie 2.0 design): COMPLETE
-- Phase 4 (Implementation): IN PROGRESS — pre-slice foundation
+- Phase 4 (Implementation): COMPLETE [2026-07-01] — all slices shipped (pre-slice → 6d); see Slice 6 entry
 
 ## Failure patterns being addressed
 
@@ -989,6 +989,13 @@ Specialist registry materialised as actual sub-agent shells with their scoped to
 
 **Slice 6c — Agent manager wiring + scope principal isolation — ✓ COMPLETE 2026-06-24.**
 Closes the 6b dashboard gap and makes scope isolation real. The 18 specialists from `FLOW_OS_SPECIALISTS.md` are now registered as lightweight agents in `qclaw.agents` at boot: a dir-less `Agent.createSpecialist(entry)` factory (no SOUL.md / aid.json / workspace dir — `load()` is never called) plus a new `AgentRegistry.register()` / `has()` surface (register throws on duplicate; `has()` is the explicit guard against `get()`'s silent charlie fallback, audit F2). Boot registration is non-fatal (a parse failure can't stop charlie/echo) and `has()`-guarded against name collisions. The dashboard surfaces all 18 — `/api/agents` and `/api/agex/status` emit `status` (stub/live/deferred), `businessUnit`, `isSpecialist` (null/false for charlie & echo); `ui.html` renders status badges + businessUnit labels inline, deferred rows dimmed. Each specialist's skill tools register under its **own** agentName off the canonical SSOT (`specialist-loader.js`, never the stale symlink dir) — HTTP-tool skills register tools, prompt skills contribute content only. Scope principal isolation is enforced by typed read-only observation builtins (`read_file`, `grep_repo`, `list_dir`, `git_status` in `src/tools/observation.js`) scoped **dynamically** to the loaded specialist roster (never hardcoded) and declared by the new `specialist-observation` skill — `shell_exec` stays Charlie's surface. Path/pattern bounds: `read_file`/`grep_repo` confined to `src/`+`docs/` via realpath containment, `git_status` reuses the Slice-3d hardened `SAFE_ENV` spawn. New tests: `specialist-agent`, `specialist-loader`, `agent-dashboard`, `specialist-observation`. **Carry-forward:** stale charlie symlink-dir (15 vs 25 skills, audit F10) deferred to a follow-up micro-dispatch; live specialist skill/tool wiring is Slice 6d.
+
+**Phase 4 — COMPLETE [2026-07-01].** All slices shipped:
+Pre-slice (foundation docs), Slice 1 (bootstrap), Slice 2a/2b/2c
+(skill loading), Slice 3a/3b/3b.1/3c/3c.1/3d/3d.1/3e/3f/3g/3h
+(tool surface + gates foundation), Slice 4/4.1 (verification gates),
+Slice 5 (Claude Code delegation bridge), Slice 6 pre-step + 6b/6c/6d
+(specialist scaffolding). Phase 5 begins with a scoping session.
 
 Each slice ends with: documentation update in `CHARLIE_OVERHAUL.md`, build log entry, brief Tyson review, then next slice begins.
 
