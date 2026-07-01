@@ -141,7 +141,7 @@ export function correlatePairs(events) {
  * (`detail`); falls back to a this-turn relevant-tool pair when the claim has
  * no extractable entity. Returns { backed, evidence? }.
  */
-export function matchEvidence(sentence, events, { requireStatus = 'success', turnStartMs = 0, relevant = null, bootstrapText = null, strictRelevant = false, noEntityFallback = true } = {}) {
+export function matchEvidence(sentence, events, { requireStatus = 'success', turnStartMs = 0, relevant = null, bootstrapText = null, strictRelevant = false, noEntityFallback = true, matchResultDetail = false } = {}) {
   const pairs = correlatePairs(events);
   const statusOk = (p) => requireStatus === 'success'
     ? p.result.result_status === 'success'
@@ -159,8 +159,17 @@ export function matchEvidence(sentence, events, { requireStatus = 'success', tur
       // Evidence must not pre-date the turn (design §2: a regenerated claim
       // can't be backed by a prior attempt's / earlier turn's tool rows).
       if (parseAuditTs(p.result.timestamp) < turnStartMs) continue;
-      const args = String(p.call.detail || '');
-      if (entities.some(e => args.includes(e))) return { backed: true, evidence: p };
+      // Slice/Phase-5: matchResultDetail also searches the RESULT row's detail,
+      // not just the call args. Dispatch tools (delegate_to / claude_code_dispatch)
+      // return a SERVER-GENERATED task_id in the result — never in the call args —
+      // so a dispatch claim that cites that task_id can only bind against the
+      // result row. Gated behind the flag + strictRelevant (dispatch-tool-only,
+      // success-only candidates) so it can't loosen completion/state matching,
+      // which must not bind entities that merely appear in arbitrary tool output.
+      const hay = matchResultDetail
+        ? String(p.call.detail || '') + '\n' + String(p.result.detail || '')
+        : String(p.call.detail || '');
+      if (entities.some(e => hay.includes(e))) return { backed: true, evidence: p };
     }
     // Slice 4.1: the this-session bootstrap snapshot is a legitimate source for
     // a RECITED claim about a known entity (Charlie cites his briefing). DEFAULT
@@ -443,7 +452,10 @@ export function gateDelegation(response, ctx) {
       : isSpecialistResult;
     const m = isOutcome
       ? matchEvidence(s, events, { requireStatus: 'success', turnStartMs: ctx.turnStartMs ?? 0, relevant: outcomeRelevant, strictRelevant: true, noEntityFallback: false })
-      : matchEvidence(s, events, { requireStatus: 'success', turnStartMs: ctx.turnStartMs ?? 0, relevant: isAnyDispatch, strictRelevant: true });
+      // DISPATCH: a dispatch claim often cites the server-returned task_id, which
+      // lives in the result row, not the call args — so match the result detail too
+      // (safe: strictRelevant already confines candidates to success dispatch events).
+      : matchEvidence(s, events, { requireStatus: 'success', turnStartMs: ctx.turnStartMs ?? 0, relevant: isAnyDispatch, strictRelevant: true, matchResultDetail: true });
     if (!m.backed) fired.push({ text: s, verification_attempted: true, verified: false });
   }
   if (!fired.length) return { gate: 'delegation', fired: false };

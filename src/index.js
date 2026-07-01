@@ -29,6 +29,7 @@ import { ExecApprovals } from './security/approvals.js';
 import { ApprovalGate } from './security/approval-gate.js';
 import { createShellExecTool, createDisabledShellExecTool, isShellExecEnabled } from './tools/shell-exec.js';
 import { createN8nWorkflowUpdateTool } from './tools/n8n-workflow-update.js';
+import { createN8nWorkflowListTool } from './tools/n8n-workflow-list.js';
 import { createClaudeCodeDispatchTool } from './tools/claude-code-dispatch.js';
 import { createDelegateToTool } from './tools/delegate-to.js';
 import { RateLimiter } from './security/rate-limiter.js';
@@ -258,6 +259,12 @@ class QuantumClaw {
         scope: 'shared',
         ...createN8nWorkflowUpdateTool({ approvalGate, audit: this.audit, auditActor: 'charlie' }),
       });
+      // Phase 5: lightweight read-only workflow lister — projects {id, name, active}
+      // so listing/finding-by-name never truncates on the ~2 MB full GET /workflows.
+      this.tools.registerBuiltin('n8n_workflow_list', {
+        scope: 'shared',
+        ...createN8nWorkflowListTool(),
+      });
       // Slice 5: claude_code_dispatch — Charlie queues audit/read_only briefs for
       // Claude Code (the claude-code-dispatcher PM2 worker runs them read-only).
       // Enqueue-only; scoped to the GATED agent set (QCLAW_GATES_AGENTS, default
@@ -266,9 +273,33 @@ class QuantumClaw {
       // and sub-agents (echo, patcher, …) cannot dispatch CC.
       const dispatchAgents = (process.env.QCLAW_GATES_AGENTS || 'charlie')
         .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+      // Phase 5: write/infra dispatches push a structured approval prompt to the
+      // owner's Telegram. Reuses the proven direct-fetch notifier (bot.api.sendMessage
+      // drops inside the @grammyjs/runner process — see 2026-04-28 build log). The
+      // closure resolves token/channel at CALL time, so boot-order (tools before
+      // channels) is fine — it only fires at runtime when Charlie dispatches write scope.
+      const ccOwnerChatId = this.config.channels?.telegram?.ownerChatId || 1375806243;
+      const ccApprovalNotify = async (text) => {
+        if (!this.channels?._channelsByName?.get('telegram')) {
+          log.warn('CC write-approval notify: Telegram channel unavailable');
+          return false;
+        }
+        const token = (await this.secrets.get('telegram_bot_token'))?.trim();
+        if (!token) { log.warn('CC write-approval notify: no bot token'); return false; }
+        try {
+          const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: ccOwnerChatId, text }),
+            signal: AbortSignal.timeout(10000),
+          });
+          if (!res.ok) { log.warn(`CC write-approval notify: Telegram ${res.status}`); return false; }
+          return true;
+        } catch (e) { log.warn(`CC write-approval notify failed: ${e.message}`); return false; }
+      };
       this.tools.registerBuiltin('claude_code_dispatch', {
         scope: dispatchAgents,
-        ...createClaudeCodeDispatchTool({ audit: this.audit, auditActor: 'charlie' }),
+        ...createClaudeCodeDispatchTool({ audit: this.audit, auditActor: 'charlie', notify: ccApprovalNotify }),
       });
       // Slice 6b: delegate_to — Charlie routes work to a Flow OS specialist.
       // Scoped to charlie only (specialists cannot delegate). Enqueue-only; in 6b
