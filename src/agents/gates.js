@@ -264,6 +264,17 @@ const isAnyResult = (n) => isClaudeCodeResult(n) || isSpecialistResult(n);
 // task; a bare DELEGATION_RE verb is only a DISPATCH claim.
 const CC_MENTION_RE = /(?<![\w-])claude[ _-]?code(?![\w-])/i;
 const CC_OUTCOME_RE = /(?<![\w-])(found|identified|flagged|caught|audited|reviewed|analy[sz]ed|inspected|checked|returned|reported|surfaced|produced|delivered|completed?|finished|done|fixed|resolved)(?![\w-])/i;
+// Slice 6d — specialist mention (the OUTCOME analogue of CC_MENTION_RE, for the
+// two live specialists). Matches a SPECIFIC specialist by name/role — the two
+// registry agentNames ("content-studio-operator" / "community-manager-fsc",
+// hyphen-or-space), plus natural attributions ("the Content Studio specialist",
+// "the community-manager-fsc specialist", "delegated to the Content Studio
+// operator", "delegated to the community manager"). Deliberately NOT so broad it
+// matches a nameless "the specialist" / "specialist skills": alt 3 requires a
+// word between "the" and "specialist", so "the specialist said" does not match.
+// Paired with CC_OUTCOME_RE it makes a specialist outcome claim gateable, which
+// is what activates isSpecialistResult (wired dormant in 6b).
+const SPECIALIST_MENTION_RE = /(?<![\w-])(content[- ]studio[- ](?:operator|specialist)|community[- ]manager[- ]fsc|the\s+\w+[\w\s-]*specialist|delegate[d]?\s+to\s+the\s+\w+[\w\s-]*(?:operator|manager|specialist))/i;
 
 // ── Slice 4.1: first-person THIS-SESSION action discriminator ──────────────
 // Input-scoping, NOT a detection-pattern change: the gate-firing regexes above
@@ -404,24 +415,41 @@ export function gateState(response, ctx) {
  *    entity-free outcome claim FAILS CLOSED. A sentence that is both grades is held
  *    to OUTCOME (the stronger requirement).
  * Replaces the pre-Slice-5 fail-closed stub.
+ *
+ * Slice 6d — the two grades now also cover LIVE SPECIALIST claims (parallel to the
+ * Claude Code path): a specialist mention (SPECIALIST_MENTION_RE) + an outcome verb
+ * is an OUTCOME claim backed ONLY by a `delegate_to_result` (isSpecialistResult),
+ * and a DELEGATION_RE verb is a DISPATCH claim backed by a `delegate_to` event
+ * (isAnyDispatch). OUTCOME evidence is attribution-matched so a specialist result
+ * never backs a Claude Code claim and vice versa (a sentence naming both accepts
+ * either). This is what makes isSpecialistResult — wired dormant in 6b — load-bearing.
  */
 export function gateDelegation(response, ctx) {
   const sentences = splitSentences(response).filter(s => !isSuppressed(s));
-  const cc = sentences.filter(s => DELEGATION_RE.test(s) || (CC_MENTION_RE.test(s) && CC_OUTCOME_RE.test(s)));
+  const cc = sentences.filter(s => DELEGATION_RE.test(s) || ((CC_MENTION_RE.test(s) || SPECIALIST_MENTION_RE.test(s)) && CC_OUTCOME_RE.test(s)));
   if (!cc.length) return { gate: 'delegation', fired: false };
   const events = windowEvents(ctx, ctx.windowMinComplete);
   const fired = [];
   for (const s of cc) {
-    const isOutcome = CC_MENTION_RE.test(s) && CC_OUTCOME_RE.test(s);
+    const ccMention = CC_MENTION_RE.test(s);
+    const specMention = SPECIALIST_MENTION_RE.test(s);
+    const isOutcome = (ccMention || specMention) && CC_OUTCOME_RE.test(s);
+    // OUTCOME evidence is attribution-matched: a Claude Code claim is backed ONLY
+    // by claude_code_result, a specialist claim ONLY by delegate_to_result
+    // (isSpecialistResult). A sentence naming both accepts either. This keeps a
+    // specialist result from backing a CC claim (and vice versa).
+    const outcomeRelevant = (ccMention && specMention) ? isAnyResult
+      : ccMention ? isClaudeCodeResult
+      : isSpecialistResult;
     const m = isOutcome
-      ? matchEvidence(s, events, { requireStatus: 'success', turnStartMs: ctx.turnStartMs ?? 0, relevant: isAnyResult, strictRelevant: true, noEntityFallback: false })
+      ? matchEvidence(s, events, { requireStatus: 'success', turnStartMs: ctx.turnStartMs ?? 0, relevant: outcomeRelevant, strictRelevant: true, noEntityFallback: false })
       : matchEvidence(s, events, { requireStatus: 'success', turnStartMs: ctx.turnStartMs ?? 0, relevant: isAnyDispatch, strictRelevant: true });
     if (!m.backed) fired.push({ text: s, verification_attempted: true, verified: false });
   }
   if (!fired.length) return { gate: 'delegation', fired: false };
   return {
     gate: 'delegation', fired: true, severity: 'hard', claims: fired, action: 'reprompt',
-    reason: 'Claude Code claim unbacked: a dispatch claim needs a this-turn claude_code_dispatch event; an outcome claim needs a completed claude_code_result for the cited task',
+    reason: 'delegation claim unbacked: a dispatch claim needs a this-turn claude_code_dispatch or delegate_to event; an outcome claim needs a completed claude_code_result (Claude Code) or delegate_to_result (specialist) for the cited task',
   };
 }
 
@@ -612,4 +640,4 @@ export async function regenerateWithGates({ generate, auditLog, toolRegistry, tu
   return { ...result, gateAttempts: attempt, gateOutcome: gateOut.result };
 }
 
-export const __testing = { GATES, isSpecialistDispatch, isSpecialistResult, isAnyDispatch, isAnyResult };
+export const __testing = { GATES, isSpecialistDispatch, isSpecialistResult, isAnyDispatch, isAnyResult, SPECIALIST_MENTION_RE };

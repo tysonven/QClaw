@@ -58,7 +58,9 @@ function loadOnDemandCandidates() {
 }
 
 // Combination triggers — kept in sync with skill-router.js COMBINATION_TRIGGERS.
-const COMBINATION_DISAMBIGUATOR = { 'content-studio': 'emma' };
+// Empty since Slice 6d (content-studio migrated to specialist-scope; its
+// Emma-combination trigger was removed).
+const COMBINATION_DISAMBIGUATOR = {};
 
 let passed = 0;
 let failed = 0;
@@ -154,25 +156,25 @@ check('whitespace-only message returns []',
 check('punctuation-only message returns []',
   routeKeywords('!!!.,.', candidates1).length === 0);
 
-// ─── Combination trigger: content-studio needs Emma ────────────────────
+// ─── Combination trigger mechanism — no skills configured (Slice 6d) ────
+// content-studio's Emma-combination trigger was removed when it migrated to
+// specialist-scope. COMBINATION_TRIGGERS is now empty, so no skill is
+// combination-gated: a matching keyword routes on its own.
 const candidates6 = [
   { name: 'content-studio', keywords: ['content', 'podcast', 'reel', 'buzzsprout'] },
 ];
 
-check('"podcast today" alone does NOT trigger content-studio',
-  routeKeywords('record a podcast today', candidates6).length === 0);
+check('content-studio no longer combination-gated — "podcast today" routes it',
+  routeKeywords('record a podcast today', candidates6).length === 1);
 
-check('"emma podcast today" triggers content-studio',
+check('"emma podcast today" also routes content-studio (no disambiguator needed)',
   routeKeywords('emma podcast today', candidates6).length === 1);
 
-check('"reel for Emma" triggers content-studio',
-  routeKeywords('cut a reel for emma', candidates6).length === 1);
-
-// Skill name not content-studio shouldn't get the combination filter applied.
+// With no combination triggers, an arbitrary skill routes on keyword alone too.
 const candidates7 = [
   { name: 'other-skill', keywords: ['podcast'] },
 ];
-check('combination filter only applies to content-studio',
+check('no combination filter applied to any skill (triggers empty)',
   routeKeywords('record a podcast today', candidates7).length === 1);
 
 // ─── Skills with empty keywords array are skipped ──────────────────────
@@ -192,8 +194,10 @@ check('candidates with empty/missing keywords are skipped',
 // changes, this test moves with it (no hardcoded keyword lists).
 
 const onDemandPool = loadOnDemandCandidates();
+// Floor was 15 pre-Slice-6d; content-studio + community-manager-fsc migrated to
+// specialist-scope, leaving 13 on-demand skills.
 check('loaded on-demand candidate pool from frontmatter',
-  onDemandPool.length >= 14, `got ${onDemandPool.length} on-demand skills`);
+  onDemandPool.length >= 13, `got ${onDemandPool.length} on-demand skills`);
 
 for (const cand of onDemandPool) {
   const disambig = COMBINATION_DISAMBIGUATOR[cand.name];

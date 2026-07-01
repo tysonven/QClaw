@@ -1,8 +1,7 @@
 ---
 name: community-manager-fsc
-category: on-demand
+category: specialist-scope
 surface: prompt
-keywords: [community, members, engagement, lives, gamification, retention, fsc, clientclub, flow-states-collective]
 description: Flow States Collective community manager — engagement strategy, member retention, lives, gamification for fsc.app.clientclub.net community
 ---
 

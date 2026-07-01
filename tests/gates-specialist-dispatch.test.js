@@ -17,7 +17,7 @@ import { join } from 'path';
 let passed = 0, failed = 0;
 const check = (l, c, d = '') => { if (c) { console.log(`  ✓ ${l}`); passed++; } else { console.error(`  ✗ ${l} ${d}`); failed++; } };
 
-const { isSpecialistDispatch, isSpecialistResult, isAnyDispatch, isAnyResult } = __testing;
+const { isSpecialistDispatch, isSpecialistResult, isAnyDispatch, isAnyResult, SPECIALIST_MENTION_RE } = __testing;
 
 function freshAudit() {
   const dir = mkdtempSync(join(tmpdir(), 'gates6b-'));
@@ -89,6 +89,68 @@ console.log('regression — unrelated tool does NOT back a delegation claim:');
   logResult(audit, 'shell_exec', 's1', 'ok');
   const out = gateDelegation('I delegated the work to content-studio-operator.', ctxFor(audit, turnStart));
   check('still fires (shell_exec is not a dispatch tool)', out.fired === true, JSON.stringify(out));
+  rmSync(dir, { recursive: true, force: true });
+}
+
+// ── Slice 6d Unit 2 — SPECIALIST_MENTION_RE + specialist outcome branch ──────
+console.log('SPECIALIST_MENTION_RE — matches a specific specialist, not a nameless one:');
+check('matches "content-studio-operator"', SPECIALIST_MENTION_RE.test('content-studio-operator') === true);
+check('matches "Content Studio specialist"', SPECIALIST_MENTION_RE.test('Content Studio specialist') === true);
+check('matches "the content-studio-operator"', SPECIALIST_MENTION_RE.test('the content-studio-operator') === true);
+check('matches "community-manager-fsc"', SPECIALIST_MENTION_RE.test('community-manager-fsc') === true);
+check('matches "the community-manager-fsc specialist"', SPECIALIST_MENTION_RE.test('the community-manager-fsc specialist') === true);
+check('matches "delegated to the community manager"', SPECIALIST_MENTION_RE.test('delegated to the community manager') === true);
+check('matches "delegated to the Content Studio operator"', SPECIALIST_MENTION_RE.test('delegated to the Content Studio operator') === true);
+check('does NOT match "the specialist" alone', SPECIALIST_MENTION_RE.test('the specialist') === false);
+check('does NOT match "specialist skills"', SPECIALIST_MENTION_RE.test('specialist skills') === false);
+check('does NOT match "the specialist is not available"', SPECIALIST_MENTION_RE.test('the specialist is not available') === false);
+check('does NOT match "the specialist said"', SPECIALIST_MENTION_RE.test('the specialist said') === false);
+
+// Entities below are ≥12-char ids so extractEntities (pattern 1) binds them —
+// a shorter token like "cc_task_777" is NOT extracted and would fail closed for
+// lack of an entity, masking what these cases mean to prove.
+const EP = 'ep-2026-0701-98765-abcd';
+const T_CC = '11112222-3333-4444-5555-666677778888';
+const T_ISO = '99998888-7777-6666-5555-444433332222';
+
+console.log('specialist OUTCOME branch PASSES when backed by a delegate_to_result (entity-bound):');
+{
+  const { audit, dir } = freshAudit();
+  const turnStart = Date.now() - 5000;
+  logCall(audit, 'delegate_to_result', 'r1', { specialist: 'content-studio-operator', task: `process ${EP}` });
+  logResult(audit, 'delegate_to_result', 'r1', '{"status":"complete"}');
+  const out = gateDelegation(`The content-studio-operator completed episode ${EP}.`, ctxFor(audit, turnStart));
+  check('does not fire (backed by delegate_to_result)', out.fired === false, JSON.stringify(out));
+  rmSync(dir, { recursive: true, force: true });
+}
+
+console.log('specialist OUTCOME branch FIRES hard when the claim has NO evidence:');
+{
+  const { audit, dir } = freshAudit();
+  const out = gateDelegation(`The content-studio-operator completed episode ${EP}.`, ctxFor(audit, Date.now() - 5000));
+  check('fires hard (no delegate_to_result event)', out.fired === true && out.severity === 'hard', JSON.stringify(out));
+  rmSync(dir, { recursive: true, force: true });
+}
+
+console.log('CC outcome regression — claude_code_result still backs a CC outcome claim:');
+{
+  const { audit, dir } = freshAudit();
+  const turnStart = Date.now() - 5000;
+  logCall(audit, 'claude_code_result', 'r2', { task: `audit ${T_CC}` });
+  logResult(audit, 'claude_code_result', 'r2', '{"status":"complete"}');
+  const out = gateDelegation(`Claude Code completed the audit of task ${T_CC}.`, ctxFor(audit, turnStart));
+  check('CC outcome backed by claude_code_result', out.fired === false, JSON.stringify(out));
+  rmSync(dir, { recursive: true, force: true });
+}
+
+console.log('attribution isolation — a delegate_to_result does NOT back a Claude Code claim:');
+{
+  const { audit, dir } = freshAudit();
+  const turnStart = Date.now() - 5000;
+  logCall(audit, 'delegate_to_result', 'r3', { task: `audit ${T_ISO}` });
+  logResult(audit, 'delegate_to_result', 'r3', '{"status":"complete"}');
+  const out = gateDelegation(`Claude Code completed the audit of task ${T_ISO}.`, ctxFor(audit, turnStart));
+  check('fires hard (isSpecialistResult must not back a CC claim)', out.fired === true && out.severity === 'hard', JSON.stringify(out));
   rmSync(dir, { recursive: true, force: true });
 }
 

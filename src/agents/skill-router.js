@@ -13,8 +13,12 @@
  * Combination triggers — keyword-only matches that require an additional
  * disambiguating token in the message before the skill loads.
  *
- * Currently hardcoded (per brief). If more combinations emerge, migrate
- * to a `combination_required: [...]` field in skill frontmatter.
+ * Currently EMPTY. The sole entry (content-studio → require "emma") was removed
+ * in Slice 6d when content-studio migrated to specialist-scope: it no longer
+ * keyword-routes under Charlie (Charlie reaches the Content Studio Operator via
+ * delegate_to), so the trigger was dead. The mechanism below is retained for
+ * future combinations. If more emerge, migrate to a `combination_required: [...]`
+ * field in skill frontmatter.
  *
  * Shape: {
  *   skill: string,                           // skill name to filter
@@ -22,13 +26,7 @@
  *   require_any_of: Set<string>,             // require any of these in message tokens
  * }
  */
-const COMBINATION_TRIGGERS = [
-  {
-    skill: 'content-studio',
-    trigger_keywords: new Set(['content', 'podcast', 'reel', 'buzzsprout']),
-    require_any_of: new Set(['emma']),
-  },
-];
+const COMBINATION_TRIGGERS = [];
 
 /**
  * Tokenize a string into lowercase alphanumeric tokens.

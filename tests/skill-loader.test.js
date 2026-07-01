@@ -101,17 +101,20 @@ check('crete-marketing (specialist-scope) NOT in any output bucket',
 check('ghl-marketing (specialist-scope) NOT in any output bucket',
   !allNames.includes('ghl-marketing'));
 
-// ─── Combination trigger via loadSkills ────────────────────────────────
+// ─── content-studio migrated to specialist-scope (Slice 6d) ────────────
+// It no longer keyword-loads under Charlie for ANY message — Charlie reaches the
+// Content Studio Operator via delegate_to. The old Emma-combination auto-load is
+// intentionally gone.
 const r6a = await loadSkills({ agent: 'charlie', message: 'record a podcast today' });
 const r6aNames = r6a.on_demand.map(s => s.name);
-check('"podcast today" alone does NOT load content-studio via loadSkills',
+check('"podcast today" does NOT load content-studio (now specialist-scope)',
   !r6aNames.includes('content-studio'),
   `on_demand: ${r6aNames.join(', ')}`);
 
 const r6b = await loadSkills({ agent: 'charlie', message: 'emma podcast today' });
 const r6bNames = r6b.on_demand.map(s => s.name);
-check('"emma podcast" loads content-studio via loadSkills',
-  r6bNames.includes('content-studio'),
+check('"emma podcast" also does NOT load content-studio (delegate_to path now)',
+  !r6bNames.includes('content-studio'),
   `on_demand: ${r6bNames.join(', ')}`);
 
 // ─── Bootstrap cache reuse ─────────────────────────────────────────────
@@ -205,15 +208,15 @@ check('zero-density message: 0 considered_but_dropped',
   `got ${r_zero.considered_but_dropped.length}`);
 
 // (5) All on-demand skills match — exactly 4 surface, rest drop.
-// Construct a message containing one distinctive keyword per on-demand
-// skill (no emma → content-studio is filtered out by combination rule).
+// Construct a message containing one distinctive keyword per on-demand skill.
+// Slice 6d: content-studio and community-manager-fsc migrated to
+// specialist-scope, so their tokens (buzzsprout / clientclub) match nothing —
+// they are no longer on-demand candidates.
 // Distinctive keywords per skill — chosen so each only matches its skill:
 //   build           → implement
 //   business-intel  → mrr
 //   clipper         → captions
-//   cm-flow-os      → portal-flowos        (multi-token; also "flowos" alone matches both cm variants)
-//   cm-fsc          → clientclub
-//   content-studio  → buzzsprout           (combination — filtered without "emma")
+//   cm-flow-os      → portal-flowos        (multi-token; "flowos" alone would also match)
 //   ghl             → ghl
 //   n8n-api         → webhook
 //   n8n-router      → dispatch
@@ -224,9 +227,8 @@ check('zero-density message: 0 considered_but_dropped',
 //   trading         → scanner              (also matches trading-api)
 //   trading-api     → scanner
 //
-// Note: cm-flow-os and cm-fsc share keywords ("community", "members" etc.).
-// Using "portal-flowos" + "clientclub" disambiguates: portal-flowos fires
-// only cm-flow-os, clientclub fires only cm-fsc.
+// content-studio (buzzsprout) and community-manager-fsc (clientclub) are
+// specialist-scope now — their tokens below match no on-demand skill.
 const allKwMessage = [
   'implement', 'mrr', 'captions',
   'portal flowos', 'clientclub', 'buzzsprout',
@@ -242,23 +244,22 @@ check('all-keywords message: drops reason hard-cap-4',
   r_all.considered_but_dropped.length > 0
     && r_all.considered_but_dropped.every(s => s.reason === 'hard-cap-4'),
   `drops: ${r_all.considered_but_dropped.map(s => `${s.name}:${s.reason}`).join(', ')}`);
-check('all-keywords message: content-studio absent (no "emma" disambiguator)',
-  !r_all.on_demand.some(s => s.name === 'content-studio')
-    && !r_all.considered_but_dropped.some(s => s.name === 'content-studio'),
+check('all-keywords message: specialist-scope skills absent (content-studio, community-manager-fsc)',
+  !r_all.on_demand.some(s => s.name === 'content-studio' || s.name === 'community-manager-fsc')
+    && !r_all.considered_but_dropped.some(s => s.name === 'content-studio' || s.name === 'community-manager-fsc'),
   `present in result: ${[
     ...r_all.on_demand.map(s => s.name),
     ...r_all.considered_but_dropped.map(s => s.name),
-  ].filter(n => n === 'content-studio').join(', ')}`);
-// All on-demand skills that matched = on_demand + dropped. Without
-// content-studio firing, every other on-demand skill should be present
-// somewhere. Total matched should equal (on-demand skill count - 1).
+  ].filter(n => n === 'content-studio' || n === 'community-manager-fsc').join(', ')}`);
+// All on-demand skills that matched = on_demand + dropped. Every on-demand skill
+// (13 after the Slice 6d migrations) should be present somewhere.
 const allMatchedNames = new Set([
   ...r_all.on_demand.map(s => s.name),
   ...r_all.considered_but_dropped.map(s => s.name),
 ]);
-// We at least expect 14 distinct skills matched (all but content-studio).
-check('all-keywords message: >= 14 on-demand skills matched in total (surfaced + dropped)',
-  allMatchedNames.size >= 14,
+// We at least expect 13 distinct on-demand skills matched.
+check('all-keywords message: >= 13 on-demand skills matched in total (surfaced + dropped)',
+  allMatchedNames.size >= 13,
   `got ${allMatchedNames.size}: ${[...allMatchedNames].join(', ')}`);
 
 // ─── Cleanup ───────────────────────────────────────────────────────────
