@@ -100,10 +100,10 @@ export function validateScope(scope) {
   return { ok: true };
 }
 
-/** Child env for CC: ONLY the API key + PATH + a worktree-local HOME. No SUPABASE_*,
+/** Minimal scrubbed env: ONLY the API key + PATH + a worktree-local HOME. No SUPABASE_*,
  * no inherited root env (so /proc/self/environ can't leak our other secrets).
- * For WRITE scope only, a GH_TOKEN is injected (CC + the dispatcher's git/gh share
- * one scrubbed env). ghToken MUST be absent for audit/read_only (secret minimisation). */
+ * The optional ghToken is used ONLY by pushAndOpenPr for the dispatcher's git/gh step —
+ * it is NEVER passed for a CC run (fix 1: CC is untrusted and must not hold the PAT). */
 export function scrubChildEnv(env, homeDir, ghToken = null) {
   const out = {
     PATH: env.PATH || '/usr/local/bin:/usr/bin:/bin',
@@ -331,9 +331,15 @@ export function workingTreeDirty(clonePath, ccUser, log = console) {
  * modifications AND untracked new files. Run AS ccUser (clone owner) so there is
  * no dubious-ownership warning. `--porcelain` with rename detection off keeps the
  * path list literal (safe to compare as JS strings, never shell-globbed). */
-export function changedFilesInClone(clonePath, ccUser, runner = execFileSync) {
-  const out = runner('git', ['-C', clonePath, 'status', '--porcelain', '--untracked-files=all', '--no-renames'],
-    { uid: ccUser.uid, gid: ccUser.gid, encoding: 'utf8' });
+export function changedFilesInClone(clonePath, ccUser, env = null, runner = execFileSync) {
+  // SECURITY (P5S2 adversarial fix 5): pass a scrubbed env (no root process.env, no
+  // secrets) rather than inheriting the dispatcher's full environment while running
+  // git on a CC-tampered clone. core.hooksPath=/dev/null neutralises any planted hook.
+  const opts = { uid: ccUser.uid, gid: ccUser.gid, encoding: 'utf8' };
+  if (env) opts.env = env;
+  const out = runner('git',
+    ['-C', clonePath, '-c', 'core.hooksPath=/dev/null', 'status', '--porcelain', '--untracked-files=all', '--no-renames'],
+    opts);
   return String(out).split('\n')
     .map((l) => l.slice(3).trim())   // strip the 2-char XY status + space
     .filter(Boolean);
@@ -347,7 +353,18 @@ export function changedFilesInClone(clonePath, ccUser, runner = execFileSync) {
  */
 export function pushAndOpenPr({ clonePath, homeDir, ccUser, ghToken, branch, commitMessage, title, body, runner = execFileSync }) {
   const env = scrubChildEnv({ PATH: process.env.PATH }, homeDir, ghToken);
-  const git = (...args) => runner('git', ['-C', clonePath, ...args], { uid: ccUser.uid, gid: ccUser.gid, env, encoding: 'utf8' });
+  // SECURITY (P5S2 adversarial fix 2): CC had write access to this clone's .git, and
+  // these git calls run with GH_TOKEN in env. Neutralise every git config-driven
+  // command-execution surface so a CC-planted hook/filter can't run with the token:
+  //  - core.hooksPath=/dev/null       → no repo hooks (pre-commit/pre-push/…) fire.
+  //  - core.attributesFile=/dev/null  → nulls the global attributes file, AND we also
+  //    delete .git/info/attributes below (the one untracked, in-.git attrs source that
+  //    the flag does NOT cover). A tracked .gitattributes is caught by expected_paths
+  //    validation (fix 3 makes that mandatory), so no path can be assigned a clean/
+  //    smudge filter ⇒ filter drivers never trigger even if defined in .git/config.
+  try { rmSync(join(clonePath, '.git', 'info', 'attributes'), { force: true }); } catch { /* */ }
+  const HARDEN = ['-c', 'core.hooksPath=/dev/null', '-c', 'core.attributesFile=/dev/null'];
+  const git = (...args) => runner('git', ['-C', clonePath, ...HARDEN, ...args], { uid: ccUser.uid, gid: ccUser.gid, env, encoding: 'utf8' });
   git('checkout', '-b', branch);
   git('add', '-A');
   git('-c', `user.name=${GIT_AUTHOR_NAME}`, '-c', `user.email=${GIT_AUTHOR_EMAIL}`, 'commit', '-m', commitMessage);
@@ -368,10 +385,9 @@ export function pushAndOpenPr({ clonePath, homeDir, ccUser, ghToken, branch, com
  * Single-flight: only the first of {exit, timeout} resolves. Returns
  * { ok, status, resultText, exitCode, costUsd, ccSessionId, error }.
  */
-export function runClaudeCode({ env, clonePath, homeDir, brief, ccUser, timeoutSeconds, budgetUsd = PER_DISPATCH_BUDGET_USD, writeMode = false, ghToken = null }) {
+export function runClaudeCode({ env, clonePath, homeDir, brief, ccUser, timeoutSeconds, budgetUsd = PER_DISPATCH_BUDGET_USD, writeMode = false }) {
   return new Promise((resolve) => {
-    // write scope runs under acceptEdits with the write settings; GH_TOKEN is only
-    // injected into the child env for write (secret minimisation for read-only runs).
+    // write scope runs under acceptEdits with the write settings.
     const argv = buildCcArgv({ clonePath, settingsPath: writeMode ? WRITE_SETTINGS_PATH : SETTINGS_PATH, budgetUsd, writeMode });
     const child = spawn(CC_BIN, argv, {
       cwd: clonePath,
@@ -381,7 +397,11 @@ export function runClaudeCode({ env, clonePath, homeDir, brief, ccUser, timeoutS
       // (.claude/, session files) into the repo clone and pollutes the post-hoc
       // git-status clean assert (false "mutated" failures). HOME falls back to the
       // clone only if no separate home was provided.
-      env: scrubChildEnv(env, homeDir || clonePath, writeMode ? ghToken : null),
+      // SECURITY (P5S2 adversarial fix 1): GH_TOKEN is NEVER injected into CC's env —
+      // CC is untrusted and does no git/gh itself (the dispatcher pushes). Giving the
+      // agent a live PAT let it be exfiltrated into a committed file / via git config.
+      // The token lives ONLY in pushAndOpenPr's own scrubbed env, after diff-validation.
+      env: scrubChildEnv(env, homeDir || clonePath),
       detached: true, // own process group so we can kill the whole tree on timeout
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -448,9 +468,10 @@ export async function processOne(env, rest, row, ccUser, log = console, deps = {
     return;
   }
   const isWrite = WRITE_SCOPES.has(row.scope);
-  // 1b. write-scope authorisation-provenance guard (defence in depth). The row is
-  // untrusted; only the ✅ handler re-queues a write row and stamps authorised_by/at.
-  // A directly-fabricated queued+write row (bypassing Telegram) lacks them → refuse.
+  // 1b. write-scope authorisation-provenance guard. This raises the bar against
+  // fabricated rows lacking provenance fields — it is NOT cryptographically binding
+  // to the Telegram ✅ approval; the real trust boundary is service_role custody
+  // (anyone holding it could set these fields directly). Presence check only.
   if (isWrite && !(row.authorised_at && row.authorised_by)) {
     await writeBack(rest, id, { status: 'failed', error_message: 'write-scope dispatch is not authorised (no authorised_by/authorised_at) — refusing to execute', completed_at: now() });
     log.warn?.(`[dispatcher] ${id} rejected: unauthorised write-scope row`);
@@ -472,8 +493,9 @@ export async function processOne(env, rest, row, ccUser, log = console, deps = {
       return;
     }
   }
-  // secret-scrub set — GH_TOKEN is added to the scrubber's known-values list BEFORE
-  // CC runs, so it can never survive into result/error/summary (criterion E).
+  // secret-scrub set. CC never receives GH_TOKEN (fix 1), but the token IS in the
+  // push step's env, so git/gh error text could carry it — keep ghToken in the
+  // known-values list so it can never survive into result/error/summary (criterion E).
   const secrets = [env.ANTHROPIC_API_KEY, env.SUPABASE_SERVICE_ROLE_KEY, env.SUPABASE_ANON_KEY, ghToken].filter(Boolean);
 
   let clonePath, homeDir;
@@ -488,7 +510,7 @@ export async function processOne(env, rest, row, ccUser, log = console, deps = {
     const r = await runCc({
       env, clonePath, homeDir, brief: row.brief, ccUser,
       timeoutSeconds: Number(row.timeout_seconds) || 600,
-      writeMode: isWrite, ghToken,
+      writeMode: isWrite,   // NB: ghToken deliberately NOT passed — CC never gets the PAT (fix 1)
     });
     // pause-(c) matrix raw capture (gated): write CC's RAW stdout/stderr +
     // permission_denials to a ROOT-ONLY file (0600) — NEVER to the DB row — so the
@@ -512,7 +534,8 @@ export async function processOne(env, rest, row, ccUser, log = console, deps = {
       // and (only if clean) commits + pushes + opens a PR. CC never pushes.
       if (status === 'complete') {
         let changed = [];
-        try { changed = listChanged(clonePath, ccUser); }
+        // fix 5: scrubbed env (no root secrets, no GH_TOKEN) for the validation git call.
+        try { changed = listChanged(clonePath, ccUser, scrubChildEnv({ PATH: process.env.PATH }, homeDir)); }
         catch (e) { status = 'failed'; error = `could not read git diff: ${e.message}`; }
         if (status === 'complete') {
           const expectedPaths = parseExpectedPaths(row.brief);
@@ -527,14 +550,21 @@ export async function processOne(env, rest, row, ccUser, log = console, deps = {
           } else {
             const oneLiner = briefTaskLine(row.brief);
             const branch = `cc/write-${String(id).slice(0, 8)}`;
-            try {
-              prUrl = pushPr({
-                clonePath, homeDir, ccUser, ghToken, branch,
-                commitMessage: `feat(dispatch): ${oneLiner}`,
-                title: oneLiner,
-                body: `Dispatched by Charlie. Task ID: ${id}. Review before merging.`,
-              });
-            } catch (e) { status = 'failed'; error = `push/PR failed: ${e.message}`; }
+            // fix 4: never push a branch name we didn't construct exactly. id is a uuid
+            // column so this always holds; the assert fail-closes if that ever changes.
+            if (!/^cc\/write-[0-9a-f]{8}$/.test(branch)) {
+              status = 'failed';
+              error = `refusing to push: computed branch name failed validation (${branch})`;
+            } else {
+              try {
+                prUrl = pushPr({
+                  clonePath, homeDir, ccUser, ghToken, branch,
+                  commitMessage: `feat(dispatch): ${oneLiner}`,
+                  title: oneLiner,
+                  body: `Dispatched by Charlie. Task ID: ${id}. Review before merging.`,
+                });
+              } catch (e) { status = 'failed'; error = `push/PR failed: ${e.message}`; }
+            }
           }
         }
       }

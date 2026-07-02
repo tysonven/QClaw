@@ -179,6 +179,13 @@ export function createClaudeCodeDispatchTool({
           ? `mode must be one of ${ALL_MODES.join(', ')} for write/infra scope.`
           : `mode must be ${RUN_MODES.join(', ')} for audit/read_only scope (read-only run).`);
       }
+      // P5S2 adversarial fix 3: write scope MUST declare expected_paths — the dispatcher
+      // path-validates the diff against it, and without it CC could push arbitrary files
+      // (incl. new ones). Reject at enqueue (throw → no row) so the gap can't be reached.
+      const expectedPaths = normaliseExpectedPaths(args.expected_paths);
+      if (scope === 'write' && (!expectedPaths || expectedPaths.length === 0)) {
+        throw new Error('expected_paths is required for write-scope dispatches');
+      }
       const repo = args.repo ? String(args.repo).trim() : DEFAULT_REPO;
       if (!REPO_RE.test(repo)) throw new Error('repo must be of the form "owner/name".');
       let priority = Number.isInteger(args.priority) ? args.priority : 5;
@@ -239,12 +246,18 @@ export function createClaudeCodeDispatchTool({
           ? String(args.risk).toLowerCase() : 'medium';
         const action = (args.action ? String(args.action)
           : args.deliverable ? String(args.deliverable) : task).trim().slice(0, 400);
+        // fix 3: surface the path allow-list so the approver can see exactly what CC may
+        // change. write always has it (enforced above); infra may omit it → warn plainly.
+        const pathsLine = (expectedPaths && expectedPaths.length)
+          ? `Paths: ${expectedPaths.join(', ').slice(0, 400)}`
+          : `Paths: ⚠️ none declared — NO path validation (dispatcher will push whatever CC changes)`;
         const approvalMsg =
           `⚠️ Write-scope dispatch — approval required\n\n`
           + `Fix: ${fix}\n`
           + `Scope: ${scope}\n`
           + `Risk: ${risk}\n`
           + `Action: ${action}\n`
+          + `${pathsLine}\n`
           + `Task ID: ${task8}\n\n`
           + `Reply ✅ ${task8} to approve\n`
           + `Reply ❌ ${task8} to cancel`;

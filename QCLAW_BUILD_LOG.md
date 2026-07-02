@@ -15049,3 +15049,73 @@ tysonven/QClaw (never upstream).
 **Not deployed this session:** dispatcher not restarted under PM2 —
 code is on the branch/PR only; live enablement is a follow-up after
 review + merge.
+
+## [2026-07-02] Phase 5 Session 2 — adversarial review remediation (PR #51)
+
+A separate adversarial-review pass over the write-scope dispatcher
+(per feedback_adversarial_review_before_pr_ready) found 1 HIGH, 1
+MEDIUM and several LOW issues. All six remediated on-branch; PR stays
+draft pending re-review.
+
+**HIGH — GH_TOKEN was handed to the untrusted CC.** Criterion B had
+injected the GitHub PAT into CC's own child env. Because the output
+scrubber only sanitises the DB result row (never committed file
+contents), an adversarial CC could read its own env (e.g.
+cat /proc/self/environ) and write the token into an edited file that
+the dispatcher then commits + pushes to the PR — a live-secret leak.
+Fix 1: GH_TOKEN is NEVER passed to a CC run. runClaudeCode dropped its
+ghToken param; scrubChildEnv is called with no token for CC. The token
+lives ONLY in pushAndOpenPr's own scrubbed env, after diff-validation.
+CC does no git/gh itself, so it never needed it.
+
+**HIGH (secondary) — git command-exec surfaces on a CC-tampered
+clone.** CC could plant a hook or a clean/smudge filter (via
+.git/config + .git/info/attributes, both untracked/invisible to
+expected_paths) that git would execute during the dispatcher's
+add/commit/push — with the push token in env. Fix 2: every git call in
+pushAndOpenPr now passes -c core.hooksPath=/dev/null -c
+core.attributesFile=/dev/null (argv, not shell), and .git/info/attributes
+is deleted before the ops. Combined with Fix 3 (a tracked .gitattributes
+is caught by expected_paths), no path can be assigned a filter ⇒ filter
+drivers never trigger even if defined. Fix 5 also scrubs the env on the
+validation `git status` call (was inheriting the dispatcher's full root
+env) and neutralises hooks there too.
+
+**MEDIUM — expected_paths was optional for write.** Omitting it made
+the dispatcher push whatever CC changed (incl. brand-new files), and
+the Telegram approval prompt didn't reveal whether path validation was
+active. Fix 3: the tool now THROWS "expected_paths is required for
+write-scope dispatches" at enqueue (no row) when scope='write' and
+expected_paths is absent/empty; the approval prompt gained a `Paths:`
+line listing the allow-list (or a plain "⚠️ none declared — NO path
+validation" warning for infra, which stays optional).
+
+**LOW — branch name not asserted.** Fix 4: after computing
+cc/write-<8hex>, the dispatcher asserts /^cc\/write-[0-9a-f]{8}$/ and
+fails closed (no push) if it ever doesn't match. id is a uuid column so
+this always holds today; the assert guards a future regression.
+
+**LOW — auth-guard comment overclaimed.** Fix 6: reworded to state the
+provenance guard is a presence check that raises the bar against
+fabricated rows lacking the fields — NOT cryptographically binding to
+the Telegram approval; the real trust boundary is service_role custody.
+
+Tests: cc-dispatcher.test.js 76 checks (added: GH_TOKEN NOT handed to
+CC; pushPr still gets it; pushAndOpenPr hooks/attrs hardening + no token
+in argv; bad-branch fail-closed; changedFilesInClone env+hooks).
+cc-write-scope.test.js 33 checks (added: write requires expected_paths
+throws + no row; empty array throws; approval prompt surfaces Paths;
+infra omits + warns). Full suite green (exit 0).
+
+**7 Pillars:** Frontend — approval message adds a server-built Paths
+line, no injection. Backend — path check still pure JS Set; branch
+regex; git hardening via argv. Databases — no schema change; invalid
+write rejected pre-insert. Auth — PAT no longer reaches the untrusted
+agent; guard comment honest. Payments — n/a. Security — the crux (see
+HIGH/HIGH above). Infrastructure — no new PM2, no new files, ccdispatch
+still unprivileged.
+
+**Residual (documented, not blocking):** the provenance guard remains
+non-cryptographic (service_role custody is the boundary); a fully
+belt-and-suspanders alternative to Fix 2 would commit from a pristine
+re-clone — deferred as it exceeds this remediation's scope.

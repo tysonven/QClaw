@@ -38,7 +38,7 @@ console.log('write scope → awaiting_authorisation row + authorisation_required
   const { client, posts } = fakeRest();
   let pushed = null;
   const tool = createClaudeCodeDispatchTool({ env: {}, restClient: client, notify: async (t) => { pushed = t; return true; } });
-  const out = JSON.parse(await tool.fn({ task: 'Bump the rate limit', mode: 'audit_then_implement', scope: 'write', fix: 'Raise API rate cap', risk: 'high', action: 'Edit config + redeploy' }, toolCtx));
+  const out = JSON.parse(await tool.fn({ task: 'Bump the rate limit', mode: 'audit_then_implement', scope: 'write', expected_paths: ['src/config.js'], fix: 'Raise API rate cap', risk: 'high', action: 'Edit config + redeploy' }, toolCtx));
   const body = posts()[0]?.body;
   check('one row inserted', posts().length === 1);
   check('row status = awaiting_authorisation', body?.status === 'awaiting_authorisation', JSON.stringify(body));
@@ -50,6 +50,23 @@ console.log('write scope → awaiting_authorisation row + authorisation_required
       && pushed.includes('Risk: high') && pushed.includes(`Task ID: ${ROW_ID.slice(0, 8)}`)
       && pushed.includes(`✅ ${ROW_ID.slice(0, 8)}`) && pushed.includes(`❌ ${ROW_ID.slice(0, 8)}`),
     JSON.stringify(pushed));
+  check('approval message surfaces the expected_paths allow-list (fix 3)', pushed.includes('Paths: src/config.js'));
+}
+
+console.log('write scope REQUIRES expected_paths (fix 3 — throws, no row):');
+{
+  const { client, posts } = fakeRest();
+  const tool = createClaudeCodeDispatchTool({ env: {}, restClient: client, notify: async () => true });
+  let err = null;
+  try { await tool.fn({ task: 'x', mode: 'audit_then_implement', scope: 'write' }, toolCtx); }
+  catch (e) { err = e; }
+  check('write without expected_paths throws', err && /expected_paths is required/.test(err.message));
+  check('no row inserted when expected_paths missing', posts().length === 0);
+  // empty array is also rejected
+  let err2 = null;
+  try { await tool.fn({ task: 'x', mode: 'audit_then_implement', scope: 'write', expected_paths: [] }, toolCtx); }
+  catch (e) { err2 = e; }
+  check('write with empty expected_paths throws', err2 && /expected_paths is required/.test(err2.message));
 }
 
 console.log('expected_paths renders into the brief (write-scope path guard):');
@@ -62,10 +79,13 @@ console.log('expected_paths renders into the brief (write-scope path guard):');
   check('paths rendered as a JSON array, ./ stripped + de-duped', brief.includes('["src/dispatch/start.js"]'));
 }
 {
+  // infra scope does NOT require expected_paths (only write does) — brief omits the section.
   const { client, posts } = fakeRest();
-  const tool = createClaudeCodeDispatchTool({ env: {}, restClient: client, notify: async () => true });
-  await tool.fn({ task: 'no paths declared', mode: 'audit_then_implement', scope: 'write' }, toolCtx);
-  check('no expected_paths → no # Expected paths section in brief', !(posts()[0]?.body?.brief || '').includes('# Expected paths'));
+  let pushed = null;
+  const tool = createClaudeCodeDispatchTool({ env: {}, restClient: client, notify: async (t) => { pushed = t; return true; } });
+  await tool.fn({ task: 'no paths declared', mode: 'implement_with_audit_gate', scope: 'infra' }, toolCtx);
+  check('infra without expected_paths → no # Expected paths section in brief', !(posts()[0]?.body?.brief || '').includes('# Expected paths'));
+  check('infra approval message warns no path validation (fix 3)', pushed.includes('none declared') && pushed.includes('NO path validation'));
 }
 
 console.log('infra scope also holds for approval:');
