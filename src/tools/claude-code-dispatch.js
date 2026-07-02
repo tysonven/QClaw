@@ -36,11 +36,11 @@ const execFileP = promisify(execFile);
 //                  'awaiting_authorisation' row + pushes a structured Telegram
 //                  approval request; the owner's ✅ reply flips it to 'queued'.
 //   'critical'   : hard-blocked here (throws, never writes a row).
-// NOTE (write-execution gap): approving a write/infra row flips it to 'queued', but
-// the dispatcher's own validateScope still only runs audit/read_only and executes
-// CC read-only — so an APPROVED write task will currently be claimed and fail at the
-// dispatcher. Dispatcher write-execution (ALLOWED_SCOPES + a non-read-only runner)
-// is a deliberate FUTURE session; this unit builds only the approval gate + lifecycle.
+// NOTE (write execution): approving a write row flips it to 'queued' (status), and as
+// of Phase 5 Session 2 the dispatcher RUNS write scope — CC mutates a throwaway clone
+// under acceptEdits, then the dispatcher validates the diff against the brief's
+// `# Expected paths` and opens a PR. `infra` still flips to 'queued' on approval but is
+// hard-rejected by the dispatcher's validateScope (only write joined audit/read_only).
 const RUN_SCOPES = ['audit', 'read_only'];
 const WRITE_SCOPES = ['write', 'infra'];
 const ALL_SCOPES = [...RUN_SCOPES, ...WRITE_SCOPES, 'critical'];
@@ -99,7 +99,18 @@ export function createClaudeCodeDispatchTool({
   }
   const rest = restClient || _defaultRest;
 
+  // Normalise expected_paths → a clean repo-relative string[] (or null if unset).
+  // The dispatcher parses the rendered `# Expected paths` section and refuses to push
+  // any write-scope change that touches a file outside this list.
+  function normaliseExpectedPaths(v) {
+    if (v == null) return null;
+    const arr = Array.isArray(v) ? v : [v];
+    const out = [...new Set(arr.map((p) => String(p).replace(/^\.\//, '').trim()).filter(Boolean))];
+    return out.length ? out : null;
+  }
+
   function assembleBrief(args, repo, mode) {
+    const expectedPaths = normaliseExpectedPaths(args.expected_paths);
     return [
       `# Task\n${String(args.task).trim()}`,
       `\n# Repo\n${repo}`,
@@ -109,6 +120,8 @@ export function createClaudeCodeDispatchTool({
       args.audit_scope ? `\n# Audit scope\n${String(args.audit_scope).trim()}` : '',
       args.acceptance_criteria ? `\n# Acceptance criteria\n${String(args.acceptance_criteria).trim()}` : '',
       args.constraints ? `\n# Constraints\n${String(args.constraints).trim()}` : '',
+      // Rendered as a JSON array on one line so the dispatcher parses it unambiguously.
+      expectedPaths ? `\n# Expected paths\n${JSON.stringify(expectedPaths)}` : '',
       args.deliverable ? `\n# Deliverable\n${String(args.deliverable).trim()}` : '',
     ].filter(Boolean).join('\n');
   }
@@ -135,7 +148,8 @@ export function createClaudeCodeDispatchTool({
         acceptance_criteria: { type: 'string', description: 'What a good result looks like.' },
         constraints: { type: 'string', description: 'Hard limits Claude Code must respect.' },
         deliverable: { type: 'string', description: 'The shape of the expected output.' },
-        priority: { type: 'integer', description: '1–10, higher runs first (default 5).' },
+        // write-scope path guard (ignored for audit/read_only — those never mutate):
+        expected_paths: { type: 'array', items: { type: 'string' }, description: 'write/infra only: the repo-relative files Claude Code is allowed to change (e.g. ["src/dispatch/start.js"]). After CC runs, the dispatcher diffs the clone; if any changed file is outside this list the write is ABORTED and nothing is pushed. Omit to skip path validation (the dispatcher pushes whatever CC changed).' },
         // write/infra approval-prompt fields (ignored for audit/read_only):
         fix: { type: 'string', description: 'One-line description of the fix (shown in the Telegram approval prompt). Defaults to the first line of task.' },
         risk: { type: 'string', enum: RISK_LEVELS, description: 'Risk level for the approval prompt (write/infra). Defaults to medium.' },
@@ -164,6 +178,13 @@ export function createClaudeCodeDispatchTool({
         throw new Error(isWrite
           ? `mode must be one of ${ALL_MODES.join(', ')} for write/infra scope.`
           : `mode must be ${RUN_MODES.join(', ')} for audit/read_only scope (read-only run).`);
+      }
+      // P5S2 adversarial fix 3: write scope MUST declare expected_paths — the dispatcher
+      // path-validates the diff against it, and without it CC could push arbitrary files
+      // (incl. new ones). Reject at enqueue (throw → no row) so the gap can't be reached.
+      const expectedPaths = normaliseExpectedPaths(args.expected_paths);
+      if (scope === 'write' && (!expectedPaths || expectedPaths.length === 0)) {
+        throw new Error('expected_paths is required for write-scope dispatches');
       }
       const repo = args.repo ? String(args.repo).trim() : DEFAULT_REPO;
       if (!REPO_RE.test(repo)) throw new Error('repo must be of the form "owner/name".');
@@ -225,12 +246,18 @@ export function createClaudeCodeDispatchTool({
           ? String(args.risk).toLowerCase() : 'medium';
         const action = (args.action ? String(args.action)
           : args.deliverable ? String(args.deliverable) : task).trim().slice(0, 400);
+        // fix 3: surface the path allow-list so the approver can see exactly what CC may
+        // change. write always has it (enforced above); infra may omit it → warn plainly.
+        const pathsLine = (expectedPaths && expectedPaths.length)
+          ? `Paths: ${expectedPaths.join(', ').slice(0, 400)}`
+          : `Paths: ⚠️ none declared — NO path validation (dispatcher will push whatever CC changes)`;
         const approvalMsg =
           `⚠️ Write-scope dispatch — approval required\n\n`
           + `Fix: ${fix}\n`
           + `Scope: ${scope}\n`
           + `Risk: ${risk}\n`
           + `Action: ${action}\n`
+          + `${pathsLine}\n`
           + `Task ID: ${task8}\n\n`
           + `Reply ✅ ${task8} to approve\n`
           + `Reply ❌ ${task8} to cancel`;

@@ -1,0 +1,50 @@
+{
+  "$comment": "Phase 5 Session 2 — Claude Code WRITE-scope policy (--settings). CC edits files in a throwaway clone under acceptEdits; the dispatcher (not CC) does all git/gh work. DEFENCE-IN-DEPTH only; the structural control is running CC as the unprivileged ccdispatch user (kernel perms) in a disposable clone that is diff-validated against expected_paths before any push. Edit/Write are ALLOWED here (unlike the read-only policy); the sensitive-read denies and network/mutation Bash denies remain — CC must not push, commit, curl, or read secrets itself.",
+  "permissions": {
+    "defaultMode": "acceptEdits",
+    "deny": [
+      "Read(/root/.quantumclaw/**)",
+      "Read(**/.env)",
+      "Read(/root/.ssh/**)",
+      "Read(/home/*/.ssh/**)",
+      "Read(/etc/ssh/**)",
+      "Read(/root/.pm2/**)",
+      "Read(/root/.claude.json)",
+      "Read(/root/.config/**)",
+      "Read(/root/.bash_history)",
+      "Read(/root/.zsh_history)",
+      "Read(/etc/sudoers)",
+      "Read(/etc/sudoers.d/**)",
+      "Read(/etc/shadow)",
+      "Read(/proc/**)",
+      "Bash(sudo:*)",
+      "Bash(rm:*)",
+      "Bash(git push:*)",
+      "Bash(git commit:*)",
+      "Bash(gh:*)",
+      "Bash(curl:*)",
+      "Bash(wget:*)",
+      "Bash(tee:*)",
+      "Bash(dd:*)"
+    ],
+    "allow": [
+      "Read",
+      "Edit",
+      "Write",
+      "Grep",
+      "Glob",
+      "Bash(ls:*)",
+      "Bash(cat:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(grep:*)",
+      "Bash(rg:*)",
+      "Bash(find:*)",
+      "Bash(wc:*)",
+      "Bash(git log:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git show:*)"
+    ]
+  }
+}

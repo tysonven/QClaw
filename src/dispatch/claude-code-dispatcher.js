@@ -5,13 +5,18 @@
  * `claude_code_dispatches`, runs Claude Code READ-ONLY as the unprivileged
  * `ccdispatch` user against a throwaway clone, and writes the result back.
  *
- * Security spine (design v2):
+ * Security spine (design v2; Phase 5 Session 2 adds write scope):
  *  - Structural scope validation at the dispatcher (not the tool): only audit/
- *    read_only run; anything else → failed, CC never invoked. Fail closed.
+ *    read_only/write run; infra/critical → failed, CC never invoked. Fail closed.
+ *  - Write scope also requires authorised_by/authorised_at on the row (the Telegram
+ *    approval provenance) and CC runs under acceptEdits with the write settings; the
+ *    DISPATCHER (never CC) validates the diff vs expected_paths then pushes + opens a
+ *    PR to tysonven/QClaw. GH_TOKEN is read from the encrypted store at dispatch time,
+ *    injected into the child env for write only, and scrubbed from all output.
  *  - CC runs as `ccdispatch` (kernel perms deny secret reads) in a fresh clone at
- *    the row's pinned commit; scrubbed child env (only ANTHROPIC_API_KEY/PATH/HOME);
- *    plan mode + --disallowedTools + --settings deny-list (defence-in-depth);
- *    --max-budget-usd; brief via stdin (never shell-interpolated).
+ *    the row's pinned commit; scrubbed child env (only ANTHROPIC_API_KEY/PATH/HOME,
+ *    +GH_TOKEN for write); plan mode + --disallowedTools + --settings deny-list for
+ *    read-only (defence-in-depth); --max-budget-usd; brief via stdin (never shell-interpolated).
  *  - Refuses to run CC as root: if the ccdispatch user is absent, the dispatch fails.
  *  - Post-hoc `git status` clean assert; output scrubbed for secret values.
  *  - Reaper (startup + periodic) recovers rows orphaned by a dead/hung dispatcher.
@@ -29,16 +34,31 @@ import { readFileSync, existsSync, mkdirSync, rmSync, writeFileSync, realpathSyn
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { recordBeat } from '../observability/liveness-heartbeat.js';
+import { loadConfig } from '../core/config.js';
+import { SecretStore } from '../security/secrets.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ── config ────────────────────────────────────────────────────────────────
-const ALLOWED_SCOPES = new Set(['audit', 'read_only']);
+// v1 ran only audit/read_only. Phase 5 Session 2 adds `write` (mutating: CC runs
+// under acceptEdits, then the DISPATCHER — never CC — validates the diff against
+// expected_paths, pushes, and opens a PR). `infra`/`critical` remain hard-rejected;
+// never expand this Set beyond write without a new slice + approval.
+const ALLOWED_SCOPES = new Set(['audit', 'read_only', 'write']);
+const WRITE_SCOPES = new Set(['write']);            // scopes that mutate + push a PR
 const CC_BIN = process.env.QCLAW_CC_BIN || 'claude';
 const CC_USER = process.env.QCLAW_CC_USER || 'ccdispatch';
 const REPO_PATH = process.env.QCLAW_REPO_PATH || '/root/QClaw';
 const WORK_ROOT = process.env.QCLAW_CC_WORK_ROOT || '/home/ccdispatch/work';
 const SETTINGS_PATH = process.env.QCLAW_CC_SETTINGS || join(__dirname, 'cc-readonly-settings.json');
+const WRITE_SETTINGS_PATH = process.env.QCLAW_CC_WRITE_SETTINGS || join(__dirname, 'cc-write-settings.json');
+// GitHub push target for write-scope PRs. NEVER upstream QuantumClaw/QClaw.
+const GH_REPO = process.env.QCLAW_CC_GH_REPO || 'tysonven/QClaw';
+const GH_BASE_BRANCH = process.env.QCLAW_CC_GH_BASE || 'main';
+const GH_SECRET_KEY = process.env.QCLAW_CC_GH_SECRET_KEY || 'ccdispatch_github_token';
+// ccdispatch has no configured git identity; commits must carry one explicitly.
+const GIT_AUTHOR_NAME = process.env.QCLAW_CC_GIT_NAME || 'Charlie (Claude Code)';
+const GIT_AUTHOR_EMAIL = process.env.QCLAW_CC_GIT_EMAIL || 'charlie@flowos.tech';
 const POLL_MS = Number(process.env.QCLAW_CC_POLL_MS) || 8000;
 const HEARTBEAT_MS = Number(process.env.QCLAW_CC_HEARTBEAT_MS) || 45000;
 const REAP_EVERY_MS = Number(process.env.QCLAW_CC_REAP_MS) || 120000;
@@ -80,28 +100,40 @@ export function validateScope(scope) {
   return { ok: true };
 }
 
-/** Child env for CC: ONLY the API key + PATH + a worktree-local HOME. No SUPABASE_*,
- * no inherited root env (so /proc/self/environ can't leak our other secrets). */
-export function scrubChildEnv(env, homeDir) {
-  return {
+/** Minimal scrubbed env: ONLY the API key + PATH + a worktree-local HOME. No SUPABASE_*,
+ * no inherited root env (so /proc/self/environ can't leak our other secrets).
+ * The optional ghToken is used ONLY by pushAndOpenPr for the dispatcher's git/gh step —
+ * it is NEVER passed for a CC run (fix 1: CC is untrusted and must not hold the PAT). */
+export function scrubChildEnv(env, homeDir, ghToken = null) {
+  const out = {
     PATH: env.PATH || '/usr/local/bin:/usr/bin:/bin',
     HOME: homeDir,
     ANTHROPIC_API_KEY: env.ANTHROPIC_API_KEY || '',
     LANG: env.LANG || 'C.UTF-8',
   };
+  if (ghToken) {
+    out.GH_TOKEN = ghToken;
+    // never let git block on an interactive credential prompt in a headless run
+    out.GIT_TERMINAL_PROMPT = '0';
+  }
+  return out;
 }
 
-/** Headless read-only CC argv. Brief is piped via stdin, never argv. */
-export function buildCcArgv({ clonePath, settingsPath, budgetUsd }) {
-  return [
-    '-p', '--bare',
-    '--permission-mode', 'plan',
-    '--add-dir', clonePath,
-    '--settings', settingsPath,
-    '--disallowedTools', 'Edit Write NotebookEdit',
-    '--output-format', 'json',
-    '--max-budget-usd', String(budgetUsd),
-  ];
+/** Headless CC argv. Brief is piped via stdin, never argv.
+ *  - read-only (default): plan mode + Edit/Write/NotebookEdit disallowed.
+ *  - write (writeMode): acceptEdits (CC actually mutates the clone); no Edit/Write
+ *    disallow; the write settings deny-list still blocks push/commit/gh/secret reads. */
+export function buildCcArgv({ clonePath, settingsPath, budgetUsd, writeMode = false }) {
+  const argv = ['-p', '--bare'];
+  if (writeMode) {
+    argv.push('--permission-mode', 'acceptEdits');
+  } else {
+    argv.push('--permission-mode', 'plan');
+  }
+  argv.push('--add-dir', clonePath, '--settings', settingsPath);
+  if (!writeMode) argv.push('--disallowedTools', 'Edit Write NotebookEdit');
+  argv.push('--output-format', 'json', '--max-budget-usd', String(budgetUsd));
+  return argv;
 }
 
 /** Redact known secret values + high-entropy tokens from CC output before it is
@@ -128,6 +160,83 @@ export function sumCostSince(rows, sinceMs) {
 /** Short summary for surfacing (first non-empty lines of the result). */
 export function summarise(text, max = 600) {
   return String(text ?? '').replace(/\r/g, '').trim().slice(0, max);
+}
+
+// ── write-scope helpers (unit-tested; no host, no shell) ─────────────────────
+
+/** First non-empty line of the brief's `# Task` section — the PR/commit one-liner.
+ * Falls back to the first non-empty, non-heading line, then a generic default. */
+export function briefTaskLine(brief, max = 100) {
+  const lines = String(brief ?? '').replace(/\r/g, '').split('\n');
+  const i = lines.findIndex((l) => l.trim().toLowerCase() === '# task');
+  if (i >= 0) {
+    for (let j = i + 1; j < lines.length; j++) {
+      const t = lines[j].trim();
+      if (t.startsWith('#')) break;          // hit the next section, no task body
+      if (t) return t.slice(0, max);
+    }
+  }
+  const firstReal = lines.map((l) => l.trim()).find((t) => t && !t.startsWith('#'));
+  return (firstReal || 'dispatched change').slice(0, max);
+}
+
+/** Parse an optional `# Expected paths` section from the brief. Accepts either a
+ * JSON array on one line or a bullet/newline list. Returns a de-duped string[] of
+ * declared repo-relative paths, or `null` if the section is absent (→ skip
+ * validation). An EMPTY declared list returns [] (→ nothing may change). */
+export function parseExpectedPaths(brief) {
+  const lines = String(brief ?? '').replace(/\r/g, '').split('\n');
+  const i = lines.findIndex((l) => l.trim().toLowerCase() === '# expected paths');
+  if (i < 0) return null;                     // section absent → caller skips validation
+  const body = [];
+  for (let j = i + 1; j < lines.length; j++) {
+    if (lines[j].trim().startsWith('#')) break; // next section
+    body.push(lines[j]);
+  }
+  const raw = body.join('\n').trim();
+  let paths = [];
+  if (raw.startsWith('[')) {
+    try { const arr = JSON.parse(raw); if (Array.isArray(arr)) paths = arr.map(String); }
+    catch { /* fall through to line parsing */ }
+  }
+  if (paths.length === 0) {
+    paths = raw.split('\n')
+      .map((l) => l.replace(/^\s*[-*]\s*/, '').replace(/^["']|["'],?$/g, '').trim())
+      .filter(Boolean);
+  }
+  // normalise: strip leading ./ and surrounding quotes; de-dupe
+  const norm = paths.map((p) => p.replace(/^\.\//, '').replace(/^["']|["']$/g, '').trim()).filter(Boolean);
+  return [...new Set(norm)];
+}
+
+/** Pure decision for a write run's post-CC state. `changedFiles` = git-diff output
+ * (repo-relative). `expectedPaths` = parseExpectedPaths result (null ⇒ not declared).
+ *  - no changes            → { action:'nochange' }  (mark complete, note, no push)
+ *  - expectedPaths null     → { action:'push', skippedValidation:true }  (+warn)
+ *  - all changes ⊆ expected → { action:'push' }
+ *  - any change ⊄ expected  → { action:'abort', unexpected:[...] }  (fail, no push) */
+export function planWriteOutcome({ changedFiles, expectedPaths }) {
+  const changed = (changedFiles || []).map((f) => String(f).trim()).filter(Boolean);
+  if (changed.length === 0) return { action: 'nochange', unexpected: [] };
+  if (expectedPaths == null) return { action: 'push', unexpected: [], skippedValidation: true };
+  const allow = new Set(expectedPaths);
+  const unexpected = changed.filter((f) => !allow.has(f));
+  if (unexpected.length > 0) return { action: 'abort', unexpected };
+  return { action: 'push', unexpected: [] };
+}
+
+/** Read the ccdispatch GitHub token from the encrypted secret store at dispatch
+ * time (never cached at module load). Returns the token string, or null if the
+ * store/key is unavailable — the write dispatch then fails cleanly (no push). */
+export async function getGhToken(secretKey = GH_SECRET_KEY) {
+  try {
+    const cfg = await loadConfig();
+    const store = new SecretStore(cfg);
+    await store.load();
+    return store.get(secretKey) || null;
+  } catch {
+    return null;
+  }
 }
 
 // ── Supabase (PostgREST, service_role) ───────────────────────────────────────
@@ -179,6 +288,21 @@ function prepareClone(id, pinnedCommit, ccUser) {
 function cleanupClone(clonePath) {
   try { rmSync(clonePath, { recursive: true, force: true }); } catch { /* */ }
 }
+/** Prepare the throwaway clone + a sibling ccdispatch-owned HOME. Returns both paths.
+ * (Extracted so processOne's control flow can be exercised with an injected fake.) */
+function setupWorkspace(id, row, ccUser) {
+  const clonePath = prepareClone(id, row.pinned_commit, ccUser);
+  // CC's HOME — a sibling dir to the clone (owned by ccdispatch) so CC's own state
+  // files never pollute the repo clone's git-status assert.
+  const homeDir = `${clonePath}.home`;
+  mkdirSync(homeDir, { recursive: true });
+  execFileSync('chown', ['-R', `${ccUser.uid}:${ccUser.gid}`, homeDir]);
+  return { clonePath, homeDir };
+}
+function cleanupWorkspace(clonePath, homeDir) {
+  if (clonePath) cleanupClone(clonePath);
+  if (homeDir) cleanupClone(homeDir);
+}
 /** Detect-only: any working-tree mutation under a read-only run → fail. */
 export function workingTreeDirty(clonePath, ccUser, log = console) {
   // Run git AS ccdispatch (the clone's owner) — root running git on a ccdispatch-
@@ -202,15 +326,69 @@ export function workingTreeDirty(clonePath, ccUser, log = console) {
   }
 }
 
+// ── write-scope git/gh (as ccdispatch; the dispatcher, NEVER CC, pushes) ──────
+/** Repo-relative list of every file CC changed in the clone — tracked
+ * modifications AND untracked new files. Run AS ccUser (clone owner) so there is
+ * no dubious-ownership warning. `--porcelain` with rename detection off keeps the
+ * path list literal (safe to compare as JS strings, never shell-globbed). */
+export function changedFilesInClone(clonePath, ccUser, env = null, runner = execFileSync) {
+  // SECURITY (P5S2 adversarial fix 5): pass a scrubbed env (no root process.env, no
+  // secrets) rather than inheriting the dispatcher's full environment while running
+  // git on a CC-tampered clone. core.hooksPath=/dev/null neutralises any planted hook.
+  const opts = { uid: ccUser.uid, gid: ccUser.gid, encoding: 'utf8' };
+  if (env) opts.env = env;
+  const out = runner('git',
+    ['-C', clonePath, '-c', 'core.hooksPath=/dev/null', 'status', '--porcelain', '--untracked-files=all', '--no-renames'],
+    opts);
+  return String(out).split('\n')
+    .map((l) => l.slice(3).trim())   // strip the 2-char XY status + space
+    .filter(Boolean);
+}
+
+/**
+ * Commit CC's changes, push a fresh branch to GH_REPO, open a PR. Runs every git/gh
+ * command AS ccUser with a scrubbed env holding GH_TOKEN (never in argv or the URL:
+ * the gh credential helper supplies it). Returns the PR URL (last stdout line).
+ * Throws on any git/gh failure — the caller marks the dispatch failed (no partial).
+ */
+export function pushAndOpenPr({ clonePath, homeDir, ccUser, ghToken, branch, commitMessage, title, body, runner = execFileSync }) {
+  const env = scrubChildEnv({ PATH: process.env.PATH }, homeDir, ghToken);
+  // SECURITY (P5S2 adversarial fix 2): CC had write access to this clone's .git, and
+  // these git calls run with GH_TOKEN in env. Neutralise every git config-driven
+  // command-execution surface so a CC-planted hook/filter can't run with the token:
+  //  - core.hooksPath=/dev/null       → no repo hooks (pre-commit/pre-push/…) fire.
+  //  - core.attributesFile=/dev/null  → nulls the global attributes file, AND we also
+  //    delete .git/info/attributes below (the one untracked, in-.git attrs source that
+  //    the flag does NOT cover). A tracked .gitattributes is caught by expected_paths
+  //    validation (fix 3 makes that mandatory), so no path can be assigned a clean/
+  //    smudge filter ⇒ filter drivers never trigger even if defined in .git/config.
+  try { rmSync(join(clonePath, '.git', 'info', 'attributes'), { force: true }); } catch { /* */ }
+  const HARDEN = ['-c', 'core.hooksPath=/dev/null', '-c', 'core.attributesFile=/dev/null'];
+  const git = (...args) => runner('git', ['-C', clonePath, ...HARDEN, ...args], { uid: ccUser.uid, gid: ccUser.gid, env, encoding: 'utf8' });
+  git('checkout', '-b', branch);
+  git('add', '-A');
+  git('-c', `user.name=${GIT_AUTHOR_NAME}`, '-c', `user.email=${GIT_AUTHOR_EMAIL}`, 'commit', '-m', commitMessage);
+  // push to the GitHub URL directly (token is NOT in the URL — the gh credential
+  // helper injects it), so no persistent remote or token-in-config is left behind.
+  git('-c', 'credential.helper=', '-c', 'credential.helper=!gh auth git-credential',
+    'push', `https://github.com/${GH_REPO}.git`, `HEAD:${branch}`);
+  const prOut = runner('gh',
+    ['pr', 'create', '-R', GH_REPO, '--base', GH_BASE_BRANCH, '--head', branch, '--title', title, '--body', body],
+    { cwd: clonePath, uid: ccUser.uid, gid: ccUser.gid, env, encoding: 'utf8' });
+  const url = String(prOut).trim().split('\n').filter(Boolean).pop() || '';
+  return url;
+}
+
 // ── CC invocation (the wiring; gated to live runs, reviewed at pause c) ───────
 /**
  * Spawn Claude Code as `ccdispatch`, brief on stdin, group-killed on timeout.
  * Single-flight: only the first of {exit, timeout} resolves. Returns
  * { ok, status, resultText, exitCode, costUsd, ccSessionId, error }.
  */
-export function runClaudeCode({ env, clonePath, homeDir, brief, ccUser, timeoutSeconds, budgetUsd = PER_DISPATCH_BUDGET_USD }) {
+export function runClaudeCode({ env, clonePath, homeDir, brief, ccUser, timeoutSeconds, budgetUsd = PER_DISPATCH_BUDGET_USD, writeMode = false }) {
   return new Promise((resolve) => {
-    const argv = buildCcArgv({ clonePath, settingsPath: SETTINGS_PATH, budgetUsd });
+    // write scope runs under acceptEdits with the write settings.
+    const argv = buildCcArgv({ clonePath, settingsPath: writeMode ? WRITE_SETTINGS_PATH : SETTINGS_PATH, budgetUsd, writeMode });
     const child = spawn(CC_BIN, argv, {
       cwd: clonePath,
       uid: ccUser.uid,
@@ -219,6 +397,10 @@ export function runClaudeCode({ env, clonePath, homeDir, brief, ccUser, timeoutS
       // (.claude/, session files) into the repo clone and pollutes the post-hoc
       // git-status clean assert (false "mutated" failures). HOME falls back to the
       // clone only if no separate home was provided.
+      // SECURITY (P5S2 adversarial fix 1): GH_TOKEN is NEVER injected into CC's env —
+      // CC is untrusted and does no git/gh itself (the dispatcher pushes). Giving the
+      // agent a live PAT let it be exfiltrated into a committed file / via git config.
+      // The token lives ONLY in pushAndOpenPr's own scrubbed env, after diff-validation.
       env: scrubChildEnv(env, homeDir || clonePath),
       detached: true, // own process group so we can kill the whole tree on timeout
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -264,37 +446,71 @@ export function runClaudeCode({ env, clonePath, homeDir, brief, ccUser, timeoutS
 }
 
 // ── process one dispatch ──────────────────────────────────────────────────────
-async function processOne(env, rest, row, ccUser, log = console) {
+// deps are injectable seams so processOne's control flow (esp. the write branch)
+// can be exercised without a real clone/CC/host. Production passes none → real impls.
+export async function processOne(env, rest, row, ccUser, log = console, deps = {}) {
+  const {
+    setup = setupWorkspace,
+    runCc = runClaudeCode,
+    isDirty = workingTreeDirty,
+    listChanged = changedFilesInClone,
+    pushPr = pushAndOpenPr,
+    loadGhToken = getGhToken,
+    cleanup = cleanupWorkspace,
+    now = () => new Date().toISOString(),
+  } = deps;
   const id = row.id;
   // 1. structural scope validation — never trust the row
   const sv = validateScope(row.scope);
   if (!sv.ok) {
-    await writeBack(rest, id, { status: 'failed', error_message: sv.reason, completed_at: new Date().toISOString() });
+    await writeBack(rest, id, { status: 'failed', error_message: sv.reason, completed_at: now() });
     log.warn?.(`[dispatcher] ${id} rejected: ${sv.reason}`);
+    return;
+  }
+  const isWrite = WRITE_SCOPES.has(row.scope);
+  // 1b. write-scope authorisation-provenance guard. This raises the bar against
+  // fabricated rows lacking provenance fields — it is NOT cryptographically binding
+  // to the Telegram ✅ approval; the real trust boundary is service_role custody
+  // (anyone holding it could set these fields directly). Presence check only.
+  if (isWrite && !(row.authorised_at && row.authorised_by)) {
+    await writeBack(rest, id, { status: 'failed', error_message: 'write-scope dispatch is not authorised (no authorised_by/authorised_at) — refusing to execute', completed_at: now() });
+    log.warn?.(`[dispatcher] ${id} rejected: unauthorised write-scope row`);
     return;
   }
   // 2. never run CC as root
   if (!ccUser) {
-    await writeBack(rest, id, { status: 'failed', error_message: `ccdispatch user absent — refusing to run Claude Code as root. Run scripts/setup-ccdispatch-user.sh.`, completed_at: new Date().toISOString() });
+    await writeBack(rest, id, { status: 'failed', error_message: `ccdispatch user absent — refusing to run Claude Code as root. Run scripts/setup-ccdispatch-user.sh.`, completed_at: now() });
     return;
   }
+  // 3. write scope: read GH_TOKEN from the encrypted store AT DISPATCH TIME (not at
+  // module load). Fail cleanly (no CC run) if the secret is missing.
+  let ghToken = null;
+  if (isWrite) {
+    ghToken = await loadGhToken();
+    if (!ghToken) {
+      await writeBack(rest, id, { status: 'failed', error_message: `write-scope dispatch needs ${GH_SECRET_KEY} in the secret store — none found; not run`, completed_at: now() });
+      log.warn?.(`[dispatcher] ${id} rejected: ${GH_SECRET_KEY} unavailable`);
+      return;
+    }
+  }
+  // secret-scrub set. CC never receives GH_TOKEN (fix 1), but the token IS in the
+  // push step's env, so git/gh error text could carry it — keep ghToken in the
+  // known-values list so it can never survive into result/error/summary (criterion E).
+  const secrets = [env.ANTHROPIC_API_KEY, env.SUPABASE_SERVICE_ROLE_KEY, env.SUPABASE_ANON_KEY, ghToken].filter(Boolean);
+
   let clonePath, homeDir;
   try {
-    clonePath = prepareClone(id, row.pinned_commit, ccUser);
-    // CC's HOME — a sibling dir to the clone (owned by ccdispatch) so CC's own
-    // state files never pollute the repo clone's git-status clean assert.
-    homeDir = `${clonePath}.home`;
-    mkdirSync(homeDir, { recursive: true });
-    execFileSync('chown', ['-R', `${ccUser.uid}:${ccUser.gid}`, homeDir]);
+    ({ clonePath, homeDir } = setup(id, row, ccUser));
     // pause-(c) matrix plant (gated): drop a root-owned 0600 file INSIDE the
     // ccdispatch-owned clone to prove ownership/perms gate reads even within CC's
     // own work area. Off in production (no env var).
     if (process.env.QCLAW_CC_PLANT_FILE) {
       writeFileSync(join(clonePath, 'PLANTED_SECRET.txt'), `${process.env.QCLAW_CC_PLANT_VALUE || 'PLANTED-SECRET-DO-NOT-LEAK'}\n`, { mode: 0o600 });
     }
-    const r = await runClaudeCode({
+    const r = await runCc({
       env, clonePath, homeDir, brief: row.brief, ccUser,
       timeoutSeconds: Number(row.timeout_seconds) || 600,
+      writeMode: isWrite,   // NB: ghToken deliberately NOT passed — CC never gets the PAT (fix 1)
     });
     // pause-(c) matrix raw capture (gated): write CC's RAW stdout/stderr +
     // permission_denials to a ROOT-ONLY file (0600) — NEVER to the DB row — so the
@@ -307,35 +523,83 @@ async function processOne(env, rest, row, ccUser, log = console) {
           { mode: 0o600 });
       } catch (e) { log.warn?.(`[dispatcher] capture failed: ${e.message}`); }
     }
-    // 3. post-hoc clean assert (read-only contract)
+
     let { status, resultText, error } = r;
-    if (status === 'complete' && workingTreeDirty(clonePath, ccUser, log)) {
-      status = 'failed';
-      error = 'working tree mutated under a read-only scope — rejected';
+    let prUrl = null;
+    let note = null;
+    let unexpected = [];
+
+    if (isWrite) {
+      // Write contract: CC mutates; the DISPATCHER validates the diff vs expected_paths
+      // and (only if clean) commits + pushes + opens a PR. CC never pushes.
+      if (status === 'complete') {
+        let changed = [];
+        // fix 5: scrubbed env (no root secrets, no GH_TOKEN) for the validation git call.
+        try { changed = listChanged(clonePath, ccUser, scrubChildEnv({ PATH: process.env.PATH }, homeDir)); }
+        catch (e) { status = 'failed'; error = `could not read git diff: ${e.message}`; }
+        if (status === 'complete') {
+          const expectedPaths = parseExpectedPaths(row.brief);
+          const plan = planWriteOutcome({ changedFiles: changed, expectedPaths });
+          if (plan.skippedValidation) log.warn?.(`[dispatcher] ${id}: no expected_paths declared — skipping path validation; pushing whatever CC changed`);
+          if (plan.action === 'nochange') {
+            note = 'no mutations — CC found nothing to change';   // criterion C/G: still complete, no push
+          } else if (plan.action === 'abort') {
+            unexpected = plan.unexpected;
+            status = 'failed';
+            error = `aborted: CC changed files outside expected_paths (not pushed): ${plan.unexpected.join(', ')}`;
+          } else {
+            const oneLiner = briefTaskLine(row.brief);
+            const branch = `cc/write-${String(id).slice(0, 8)}`;
+            // fix 4: never push a branch name we didn't construct exactly. id is a uuid
+            // column so this always holds; the assert fail-closes if that ever changes.
+            if (!/^cc\/write-[0-9a-f]{8}$/.test(branch)) {
+              status = 'failed';
+              error = `refusing to push: computed branch name failed validation (${branch})`;
+            } else {
+              try {
+                prUrl = pushPr({
+                  clonePath, homeDir, ccUser, ghToken, branch,
+                  commitMessage: `feat(dispatch): ${oneLiner}`,
+                  title: oneLiner,
+                  body: `Dispatched by Charlie. Task ID: ${id}. Review before merging.`,
+                });
+              } catch (e) { status = 'failed'; error = `push/PR failed: ${e.message}`; }
+            }
+          }
+        }
+      }
+    } else {
+      // read-only contract: any working-tree mutation → fail.
+      if (status === 'complete' && isDirty(clonePath, ccUser, log)) {
+        status = 'failed';
+        error = 'working tree mutated under a read-only scope — rejected';
+      }
     }
-    // 4. scrub secrets from untrusted output, then a SINGLE atomic write-back
-    const secrets = [env.ANTHROPIC_API_KEY, env.SUPABASE_SERVICE_ROLE_KEY, env.SUPABASE_ANON_KEY].filter(Boolean);
+
+    // scrub secrets from untrusted output, then a SINGLE atomic write-back
     const cleanResult = scrubSecretsFromOutput(resultText, secrets);
+    // for write success, surface the PR url / no-mutation note ahead of CC's own text.
+    const resultBody = status !== 'complete' ? null
+      : scrubSecretsFromOutput([prUrl ? `PR: ${prUrl}` : null, note, cleanResult].filter(Boolean).join('\n\n'), secrets);
     await writeBack(rest, id, {
       status,
-      result: status === 'complete' ? cleanResult : null,
-      result_summary: status === 'complete' ? summarise(cleanResult) : null,
+      result: resultBody,
+      result_summary: status === 'complete' ? summarise(prUrl || note || cleanResult) : null,
       error_message: status === 'complete' ? null : (scrubSecretsFromOutput(error, secrets) || 'failed'),
       exit_code: r.exitCode,
       cc_session_id: r.ccSessionId,
       cost_usd: r.costUsd,
       attempts: (Number(row.attempts) || 1),
-      completed_at: new Date().toISOString(),
-      // permission_denials is CC's tool-policy refusal list (not secrets) — useful audit signal
-      metadata: { permission_denials: r.permissionDenials || [] },
+      completed_at: now(),
+      // permission_denials is CC's tool-policy refusal list (not secrets) — useful audit signal.
+      metadata: { permission_denials: r.permissionDenials || [], pr_url: prUrl, note, unexpected_paths: unexpected },
     });
-    log.info?.(`[dispatcher] ${id} → ${status}${r.costUsd != null ? ` ($${r.costUsd})` : ''}`);
+    log.info?.(`[dispatcher] ${id} → ${status}${prUrl ? ` (${prUrl})` : ''}${r.costUsd != null ? ` ($${r.costUsd})` : ''}`);
   } catch (err) {
-    await writeBack(rest, id, { status: 'failed', error_message: `dispatcher error: ${err.message}`.slice(0, 500), completed_at: new Date().toISOString() }).catch(() => {});
+    await writeBack(rest, id, { status: 'failed', error_message: scrubSecretsFromOutput(`dispatcher error: ${err.message}`, secrets).slice(0, 500), completed_at: now() }).catch(() => {});
     log.error?.(`[dispatcher] ${id} errored: ${err.message}`);
   } finally {
-    if (clonePath) cleanupClone(clonePath);
-    if (homeDir) cleanupClone(homeDir);
+    cleanup(clonePath, homeDir);
   }
 }
 

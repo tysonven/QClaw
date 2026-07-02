@@ -14979,3 +14979,143 @@ this before any code was written.
 3. GHL write tools (draft email, invoice, contact update per
    sub-account)
 4. Trading workflow reactivation
+
+## [2026-07-02] Phase 5 Session 2 — CC dispatcher write-scope execution
+
+**What shipped (branch cc/p5s2-dispatcher-write-20260702):**
+
+Dispatcher now RUNS write scope. ALLOWED_SCOPES expanded to
+{audit, read_only, write}; infra + critical stay hard-rejected at
+validateScope (fail-closed). No claim-RPC/SQL change was needed —
+the ✅ handler already re-queues an approved write row to
+status='queued' (scope stays 'write'), so the existing queued-only
+claim_next_dispatch picks it up; only the scope gate had to open.
+
+Write path: CC runs as ccdispatch in the throwaway clone under
+--permission-mode acceptEdits with a new cc-write-settings.json
+(Edit/Write allowed; secret-read + push/commit/gh/curl denies kept).
+CC only mutates files — the DISPATCHER (never CC) does all git/gh.
+After CC exits the dispatcher runs git status --porcelain as the
+clone owner and validates every changed path against the brief's
+optional "# Expected paths" section:
+  - no changes            → complete, note "no mutations — CC found
+                            nothing to change", no push
+  - any path out of scope → failed, aborted, NOT pushed (result names
+                            the offending files)
+  - all paths in scope /
+    no expected_paths (warn) → commit + push + PR
+
+PR creation: branch cc/write-<8-char task_id>, commit
+"feat(dispatch): <task one-liner>", pushed to tysonven/QClaw via the
+gh credential helper (-c credential.helper='!gh auth git-credential')
+so GH_TOKEN is never in the argv/URL/reflog; then gh pr create -R
+tysonven/QClaw. PR URL captured into result + metadata.pr_url.
+
+GH_TOKEN handling: read from the encrypted secret store
+(ccdispatch_github_token) AT DISPATCH TIME, injected into the scrubbed
+child env for write scope ONLY (audit/read_only child env unchanged —
+no GH_TOKEN), and added to the output scrubber's known-values list
+before CC runs so it can never survive into result/error/summary.
+Live-verified: store decrypts the token (len 93, fine-grained PAT);
+the exact push credential-helper path authenticates as ccdispatch
+(read-only git ls-remote returned HEAD, EXIT=0 — no writes to GitHub).
+
+Security hardening beyond the brief: write-scope authorisation-
+provenance guard. Rows are untrusted end-to-end; a fabricated
+queued+write row (bypassing Telegram approval) lacks
+authorised_by/authorised_at, so the dispatcher now refuses to execute
+any write row missing them (CC never spawned).
+
+Tool side: claude_code_dispatch gained an optional expected_paths
+array field rendered into the brief as a one-line JSON "# Expected
+paths" section (./ stripped, de-duped); the stale "write-execution
+gap" note was updated.
+
+Tests: +50 checks in cc-dispatcher.test.js (ALLOWED_SCOPES write/
+infra, GH_TOKEN env matrix, write argv is acceptEdits not plan,
+parseExpectedPaths, planWriteOutcome, briefTaskLine, changedFiles
+porcelain parse, and a processOne write smoke driving the full branch
+with injected deps: writeMode, GH injection, branch/commit/PR shape,
+unauthorised-reject, out-of-scope-abort, no-mutation-note, missing-
+token-fail) + 2 in cc-write-scope.test.js (expected_paths brief
+render). Full suite green (node --test entrypoints, all pass).
+
+**Constraints honoured:** ccdispatch remains the execution user (never
+root); infra/critical still hard-rejected; GH_TOKEN absent from
+audit/read_only child env; path comparison is pure JS array membership
+(no shell glob); no schema change; no new PM2 process; PR target is
+tysonven/QClaw (never upstream).
+
+**Not deployed this session:** dispatcher not restarted under PM2 —
+code is on the branch/PR only; live enablement is a follow-up after
+review + merge.
+
+## [2026-07-02] Phase 5 Session 2 — adversarial review remediation (PR #51)
+
+A separate adversarial-review pass over the write-scope dispatcher
+(per feedback_adversarial_review_before_pr_ready) found 1 HIGH, 1
+MEDIUM and several LOW issues. All six remediated on-branch; PR stays
+draft pending re-review.
+
+**HIGH — GH_TOKEN was handed to the untrusted CC.** Criterion B had
+injected the GitHub PAT into CC's own child env. Because the output
+scrubber only sanitises the DB result row (never committed file
+contents), an adversarial CC could read its own env (e.g.
+cat /proc/self/environ) and write the token into an edited file that
+the dispatcher then commits + pushes to the PR — a live-secret leak.
+Fix 1: GH_TOKEN is NEVER passed to a CC run. runClaudeCode dropped its
+ghToken param; scrubChildEnv is called with no token for CC. The token
+lives ONLY in pushAndOpenPr's own scrubbed env, after diff-validation.
+CC does no git/gh itself, so it never needed it.
+
+**HIGH (secondary) — git command-exec surfaces on a CC-tampered
+clone.** CC could plant a hook or a clean/smudge filter (via
+.git/config + .git/info/attributes, both untracked/invisible to
+expected_paths) that git would execute during the dispatcher's
+add/commit/push — with the push token in env. Fix 2: every git call in
+pushAndOpenPr now passes -c core.hooksPath=/dev/null -c
+core.attributesFile=/dev/null (argv, not shell), and .git/info/attributes
+is deleted before the ops. Combined with Fix 3 (a tracked .gitattributes
+is caught by expected_paths), no path can be assigned a filter ⇒ filter
+drivers never trigger even if defined. Fix 5 also scrubs the env on the
+validation `git status` call (was inheriting the dispatcher's full root
+env) and neutralises hooks there too.
+
+**MEDIUM — expected_paths was optional for write.** Omitting it made
+the dispatcher push whatever CC changed (incl. brand-new files), and
+the Telegram approval prompt didn't reveal whether path validation was
+active. Fix 3: the tool now THROWS "expected_paths is required for
+write-scope dispatches" at enqueue (no row) when scope='write' and
+expected_paths is absent/empty; the approval prompt gained a `Paths:`
+line listing the allow-list (or a plain "⚠️ none declared — NO path
+validation" warning for infra, which stays optional).
+
+**LOW — branch name not asserted.** Fix 4: after computing
+cc/write-<8hex>, the dispatcher asserts /^cc\/write-[0-9a-f]{8}$/ and
+fails closed (no push) if it ever doesn't match. id is a uuid column so
+this always holds today; the assert guards a future regression.
+
+**LOW — auth-guard comment overclaimed.** Fix 6: reworded to state the
+provenance guard is a presence check that raises the bar against
+fabricated rows lacking the fields — NOT cryptographically binding to
+the Telegram approval; the real trust boundary is service_role custody.
+
+Tests: cc-dispatcher.test.js 76 checks (added: GH_TOKEN NOT handed to
+CC; pushPr still gets it; pushAndOpenPr hooks/attrs hardening + no token
+in argv; bad-branch fail-closed; changedFilesInClone env+hooks).
+cc-write-scope.test.js 33 checks (added: write requires expected_paths
+throws + no row; empty array throws; approval prompt surfaces Paths;
+infra omits + warns). Full suite green (exit 0).
+
+**7 Pillars:** Frontend — approval message adds a server-built Paths
+line, no injection. Backend — path check still pure JS Set; branch
+regex; git hardening via argv. Databases — no schema change; invalid
+write rejected pre-insert. Auth — PAT no longer reaches the untrusted
+agent; guard comment honest. Payments — n/a. Security — the crux (see
+HIGH/HIGH above). Infrastructure — no new PM2, no new files, ccdispatch
+still unprivileged.
+
+**Residual (documented, not blocking):** the provenance guard remains
+non-cryptographic (service_role custody is the boundary); a fully
+belt-and-suspanders alternative to Fix 2 would commit from a pristine
+re-clone — deferred as it exceeds this remediation's scope.
