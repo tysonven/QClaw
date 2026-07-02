@@ -59,6 +59,11 @@ const GH_SECRET_KEY = process.env.QCLAW_CC_GH_SECRET_KEY || 'ccdispatch_github_t
 // ccdispatch has no configured git identity; commits must carry one explicitly.
 const GIT_AUTHOR_NAME = process.env.QCLAW_CC_GIT_NAME || 'Charlie (Claude Code)';
 const GIT_AUTHOR_EMAIL = process.env.QCLAW_CC_GIT_EMAIL || 'charlie@flowos.tech';
+// Telegram completion notification (additive). Chat id is config, not a secret; the
+// bot token is read from the secret store ONCE at startup into TELEGRAM_BOT_TOKEN.
+const TYSON_CHAT_ID = process.env.QCLAW_CC_TG_CHAT_ID || '1375806243';
+const TELEGRAM_SECRET_KEY = process.env.QCLAW_CC_TG_SECRET_KEY || 'telegram_bot_token';
+let TELEGRAM_BOT_TOKEN = null;   // loaded in mainLoop; null → notifications skipped
 const POLL_MS = Number(process.env.QCLAW_CC_POLL_MS) || 8000;
 const HEARTBEAT_MS = Number(process.env.QCLAW_CC_HEARTBEAT_MS) || 45000;
 const REAP_EVERY_MS = Number(process.env.QCLAW_CC_REAP_MS) || 120000;
@@ -236,6 +241,53 @@ export async function getGhToken(secretKey = GH_SECRET_KEY) {
     return store.get(secretKey) || null;
   } catch {
     return null;
+  }
+}
+
+/** Read an arbitrary key from the encrypted store (same shape as getGhToken; used at
+ * startup to load the Telegram bot token). Returns the value or null. */
+export async function getStoredSecret(secretKey) {
+  try {
+    const cfg = await loadConfig();
+    const store = new SecretStore(cfg);
+    await store.load();
+    return store.get(secretKey) || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Build the Markdown (parse_mode:Markdown → single *bold*) completion message. */
+export function buildDispatchMessage({ status, taskLine, prUrl, note, errorMessage, costUsd, id }) {
+  const id8 = String(id ?? '').slice(0, 8);
+  const cost = `$${costUsd != null ? costUsd : 0}`;
+  const task = taskLine || '(no task)';
+  if (status === 'timeout') {
+    return `⏱ *CC dispatch timed out*\n\n*Task:* ${task}\n*ID:* \`${id8}\``;
+  }
+  if (status === 'complete') {
+    if (!prUrl && note) {
+      return `✅ *CC dispatch complete (no changes)*\n\n*Task:* ${task}\n*Note:* CC found nothing to mutate\n*Cost:* ${cost}\n*ID:* \`${id8}\``;
+    }
+    return `✅ *CC dispatch complete*\n\n*Task:* ${task}\n*PR:* ${prUrl || 'no PR — no mutations'}\n*Cost:* ${cost}\n*ID:* \`${id8}\``;
+  }
+  // failed (and any other non-complete/non-timeout status)
+  return `❌ *CC dispatch failed*\n\n*Task:* ${task}\n*Reason:* ${String(errorMessage || 'failed').slice(0, 200)}\n*Cost:* ${cost}\n*ID:* \`${id8}\``;
+}
+
+/** Fire-and-forget Telegram Bot API send. Never throws (returns a status object);
+ * null token → skipped silently. A single HTTPS POST — no library, no dependency. */
+export async function sendDispatchNotification({ token, chatId, text }, fetchImpl = fetch) {
+  if (!token) return { skipped: true };
+  try {
+    const res = await fetchImpl(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'Markdown' }),
+    });
+    return { ok: !!(res && res.ok), status: res && res.status };
+  } catch (e) {
+    return { ok: false, error: e.message };
   }
 }
 
@@ -457,6 +509,7 @@ export async function processOne(env, rest, row, ccUser, log = console, deps = {
     pushPr = pushAndOpenPr,
     loadGhToken = getGhToken,
     cleanup = cleanupWorkspace,
+    notify = sendDispatchNotification,
     now = () => new Date().toISOString(),
   } = deps;
   const id = row.id;
@@ -595,6 +648,20 @@ export async function processOne(env, rest, row, ccUser, log = console, deps = {
       metadata: { permission_denials: r.permissionDenials || [], pr_url: prUrl, note, unexpected_paths: unexpected },
     });
     log.info?.(`[dispatcher] ${id} → ${status}${prUrl ? ` (${prUrl})` : ''}${r.costUsd != null ? ` ($${r.costUsd})` : ''}`);
+    // Telegram completion notification (additive). Its OWN try/catch — a send failure
+    // must never fail the (already-committed) write-back, nor fall into the outer catch
+    // and re-PATCH a success as failed. error text is the scrubbed value (never raw).
+    try {
+      const text = buildDispatchMessage({
+        status,
+        taskLine: briefTaskLine(row.brief),
+        prUrl, note,
+        errorMessage: status === 'complete' ? null : scrubSecretsFromOutput(error, secrets),
+        costUsd: r.costUsd, id,
+      });
+      const nr = await notify({ token: TELEGRAM_BOT_TOKEN, chatId: TYSON_CHAT_ID, text });
+      if (nr && nr.ok === false) log.warn?.(`[dispatcher] ${id} notification send failed${nr.error ? `: ${nr.error}` : ''}`);
+    } catch (e) { log.warn?.(`[dispatcher] ${id} notification error (ignored): ${e.message}`); }
   } catch (err) {
     await writeBack(rest, id, { status: 'failed', error_message: scrubSecretsFromOutput(`dispatcher error: ${err.message}`, secrets).slice(0, 500), completed_at: now() }).catch(() => {});
     log.error?.(`[dispatcher] ${id} errored: ${err.message}`);
@@ -609,6 +676,11 @@ export async function mainLoop(env, log = console) {
   const ccUser = resolveCcUser();
   log.info?.(`[dispatcher] starting — ccUser=${ccUser ? `${ccUser.uid}:${ccUser.gid}` : 'MISSING'}, poll=${POLL_MS}ms, heartbeat=${HEARTBEAT_MS}ms, supabase=${env.SUPABASE_URL ? 'set' : 'MISSING'}`);
   if (!ccUser) log.warn?.(`[dispatcher] ccdispatch user not found — dispatches will FAIL (never run CC as root). Run scripts/setup-ccdispatch-user.sh`);
+
+  // Load the Telegram bot token ONCE at startup (module-level). Missing → warn once,
+  // completion notifications are then skipped silently (never blocks dispatch).
+  TELEGRAM_BOT_TOKEN = await getStoredSecret(TELEGRAM_SECRET_KEY);
+  log.info?.(`[dispatcher] telegram notifications ${TELEGRAM_BOT_TOKEN ? 'enabled' : 'DISABLED (no telegram_bot_token in secret store)'}`);
 
   // startup reaper: recover rows orphaned by a previous dead/hung dispatcher
   try { await reapStale(rest); } catch (e) { log.warn?.(`[dispatcher] startup reap failed: ${e.message}`); }

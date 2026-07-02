@@ -9,7 +9,7 @@ import {
   validateScope, scrubChildEnv, buildCcArgv, scrubSecretsFromOutput,
   sumCostSince, summarise, parseEnvFile, resolveCcUser, workingTreeDirty,
   parseExpectedPaths, planWriteOutcome, briefTaskLine, changedFilesInClone,
-  processOne, pushAndOpenPr,
+  processOne, pushAndOpenPr, buildDispatchMessage, sendDispatchNotification,
 } from '../src/dispatch/claude-code-dispatcher.js';
 
 let passed = 0, failed = 0;
@@ -236,6 +236,88 @@ console.log('pushAndOpenPr hardens git against CC-planted hooks/filters (fix 2):
   check('GH_TOKEN never in any git/gh argv', calls.every((c) => !c.argv.join(' ').includes('ghp_x')));
   check('push targets the hardcoded GH repo URL', gitCalls.some((c) => c.argv.join(' ').includes('https://github.com/tysonven/QClaw.git')));
   check('returns the PR url', url === 'https://github.com/tysonven/QClaw/pull/7');
+}
+
+// ── Telegram completion notification (additive) ─────────────────────────────
+console.log('buildDispatchMessage format (parse_mode Markdown — single *bold*):');
+{
+  const complete = buildDispatchMessage({ status: 'complete', taskLine: 'Bump rate limit', prUrl: 'https://github.com/tysonven/QClaw/pull/9', costUsd: 0.42, id: 'abcd1234-xx' });
+  check('complete: ✅ header + PR + cost + id8', complete.startsWith('✅ *CC dispatch complete*') && complete.includes('*PR:* https://github.com/tysonven/QClaw/pull/9') && complete.includes('*Cost:* $0.42') && complete.includes('*ID:* `abcd1234`'));
+  check('complete: no ** double-bold (Markdown not MarkdownV2)', !complete.includes('**'));
+  const nochange = buildDispatchMessage({ status: 'complete', taskLine: 'noop', note: 'no mutations — CC found nothing to change', prUrl: null, costUsd: 0.1, id: 'ffff0000-yy' });
+  check('complete no-change: distinct header + note', nochange.startsWith('✅ *CC dispatch complete (no changes)*') && nochange.includes('*Note:* CC found nothing to mutate'));
+  const failed = buildDispatchMessage({ status: 'failed', taskLine: 'do x', errorMessage: 'aborted: out of scope '.repeat(20), costUsd: 0.2, id: 'dead0000-zz' });
+  check('failed: ❌ header + reason truncated ≤200', failed.startsWith('❌ *CC dispatch failed*') && failed.includes('*Reason:*') && failed.length < 400);
+  const timeout = buildDispatchMessage({ status: 'timeout', taskLine: 'slow task', id: 'beef1234-qq' });
+  check('timeout: ⏱ header + task + id, no cost line', timeout.startsWith('⏱ *CC dispatch timed out*') && timeout.includes('*ID:* `beef1234`') && !timeout.includes('*Cost:*'));
+}
+
+console.log('sendDispatchNotification (never throws; skips on null token):');
+{
+  const skip = await sendDispatchNotification({ token: null, chatId: '1', text: 'x' });
+  check('null token → skipped, no send', skip.skipped === true);
+  let posted = null;
+  const okFetch = async (url, opts) => { posted = { url, opts }; return { ok: true, status: 200 }; };
+  const ok = await sendDispatchNotification({ token: 'BOT:TOK', chatId: '1375806243', text: 'hello' }, okFetch);
+  check('posts to the Telegram sendMessage URL', posted.url === 'https://api.telegram.org/botBOT:TOK/sendMessage');
+  const body = JSON.parse(posted.opts.body);
+  check('body has chat_id, text, parse_mode Markdown', body.chat_id === '1375806243' && body.text === 'hello' && body.parse_mode === 'Markdown');
+  check('returns ok:true on 200', ok.ok === true);
+  const boom = await sendDispatchNotification({ token: 'T', chatId: '1', text: 'x' }, async () => { throw new Error('network down'); });
+  check('fetch throw → caught, ok:false, does NOT throw', boom.ok === false && boom.error === 'network down');
+}
+
+console.log('processOne fires notify with correct args (complete/failed/timeout):');
+{
+  const baseDeps = (over = {}) => ({
+    setup: () => ({ clonePath: '/c', homeDir: '/h' }), cleanup: () => {},
+    loadGhToken: async () => 'tok', now: () => 't', ...over,
+  });
+  const runOne = async (row, deps) => {
+    const notifies = []; const rest = async () => null;
+    await processOne({ ANTHROPIC_API_KEY: 'sk-ant-x' }, rest, row, { uid: 1, gid: 1 }, { info(){}, warn(){}, error(){} },
+      { ...deps, notify: async (a) => { notifies.push(a); return { ok: true }; } });
+    return notifies;
+  };
+  // complete + PR (write)
+  {
+    const row = { id: 'aaaa1111-x', scope: 'write', brief: '# Task\nBump cap\n# Expected paths\n["src/a.js"]', authorised_by: 't', authorised_at: 't' };
+    const n = await runOne(row, baseDeps({
+      runCc: async () => ({ ok: true, status: 'complete', resultText: 'ok', exitCode: 0, costUsd: 0.5 }),
+      listChanged: () => ['src/a.js'], pushPr: () => 'https://github.com/tysonven/QClaw/pull/12',
+    }));
+    check('complete → one notify to Tyson chat with ✅ + PR', n.length === 1 && n[0].chatId === '1375806243' && n[0].text.includes('✅ *CC dispatch complete*') && n[0].text.includes('pull/12'));
+  }
+  // failed (out-of-scope abort)
+  {
+    const row = { id: 'bbbb2222-x', scope: 'write', brief: '# Task\nedit\n# Expected paths\n["src/a.js"]', authorised_by: 't', authorised_at: 't' };
+    const n = await runOne(row, baseDeps({
+      runCc: async () => ({ ok: true, status: 'complete', resultText: 'ok', exitCode: 0, costUsd: 0.3 }),
+      listChanged: () => ['src/a.js', 'src/evil.js'], pushPr: () => 'url',
+    }));
+    check('failed → notify with ❌ + reason', n.length === 1 && n[0].text.includes('❌ *CC dispatch failed*') && n[0].text.includes('src/evil.js'));
+  }
+  // timeout (read-only)
+  {
+    const row = { id: 'cccc3333-x', scope: 'audit', brief: '# Task\naudit x' };
+    const n = await runOne(row, baseDeps({
+      runCc: async () => ({ ok: false, status: 'timeout', resultText: '', error: 'exceeded 600s', exitCode: null }),
+      isDirty: () => false,
+    }));
+    check('timeout → notify with ⏱ header', n.length === 1 && n[0].text.includes('⏱ *CC dispatch timed out*'));
+  }
+  // notify throwing must NOT fail the dispatch (write-back already happened)
+  {
+    const writes = []; const rest = async (m, p, o = {}) => { writes.push(o.body); return null; };
+    let threw = false;
+    try {
+      await processOne({}, rest, { id: 'dddd4444-x', scope: 'audit', brief: '# Task\nx' }, { uid: 1, gid: 1 }, { info(){}, warn(){}, error(){} },
+        { setup: () => ({ clonePath: '/c', homeDir: '/h' }), cleanup: () => {}, isDirty: () => false, now: () => 't',
+          runCc: async () => ({ ok: true, status: 'complete', resultText: 'ok', exitCode: 0, costUsd: 0.1 }),
+          notify: async () => { throw new Error('boom'); } });
+    } catch { threw = true; }
+    check('notify throw → processOne does not throw, write-back stands', threw === false && writes[writes.length - 1].status === 'complete');
+  }
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
