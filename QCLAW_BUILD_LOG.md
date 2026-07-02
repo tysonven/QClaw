@@ -15159,3 +15159,115 @@ the real token + Tyson's chat (Telegram API 200 / ok:true). A full
 CC write-scope e2e (real PR + budget spend) was NOT run — the deployed
 send path + the processOne→notify wiring are proven by the live send
 and the unit tests respectively.
+
+## [2026-07-02] Phase 5 Session 2 — COMPLETE (CC write-execution + approval fix + notifications)
+
+Session summary. CC dispatcher gained write-scope execution (approved
+write briefs now run CC, validate the diff, and open a PR), the CC
+approval handler bug was fixed, and completion notifications were added.
+Granular entries for the individual slices appear above; this is the
+consolidated session record. Full loop proven live end-to-end.
+
+**Pre-conditions (infrastructure, not code):**
+- gh CLI 2.95.0 installed on the qclaw droplet (/usr/bin/gh).
+- Fine-grained GitHub PAT (CCDISPATCH_GITHUB_TOKEN) created, scoped to
+  tysonven/QClaw (Contents + Pull requests read/write). Added to
+  /root/.quantumclaw/.env (mode 600) AND the encrypted secrets store
+  (key ccdispatch_github_token). ccdispatch verified:
+  GH_TOKEN=<token> gh repo view tysonven/QClaw → {"name":"QClaw"} ✓
+
+**Slice 1 — Dispatcher write-execution (PR #51, merged main)**
+- ALLOWED_SCOPES expanded to {audit, read_only, write}. infra/critical
+  remain hard-rejected at validateScope (fail-closed). No claim-RPC/SQL
+  change needed — the ✅ handler already re-queues an approved write row
+  to status='queued' (scope stays 'write'), so the existing queued-only
+  claim_next_dispatch picks it up; only the scope gate had to open.
+- Write CC invocation: --permission-mode acceptEdits + new
+  cc-write-settings.json (Edit/Write allowed; secret-read + push/commit/
+  gh/curl denies kept). CC only mutates files — the dispatcher, never
+  CC, does all git/gh.
+- expected_paths MANDATORY for write scope — enforced at enqueue
+  (claude-code-dispatch.js throws "expected_paths is required for
+  write-scope dispatches" if absent/empty → no row); surfaced in the
+  Telegram approval prompt as a "Paths:" line.
+- PR creation: branch cc/write-<8-char task_id>, commit via git, push
+  via the gh credential helper (-c credential.helper='!gh auth
+  git-credential' → GH_TOKEN never in argv/URL/reflog), gh pr create -R
+  tysonven/QClaw. PR URL captured into result + metadata.pr_url.
+- GH_TOKEN: read from the encrypted store AT DISPATCH TIME, injected
+  into the write push env only (audit/read_only unchanged), and added
+  to the output scrubber's known-values list before write-back.
+- Auth-provenance guard: dispatcher refuses write rows missing
+  authorised_by/authorised_at (presence check, defence-in-depth — the
+  real trust boundary is service_role custody, not this guard).
+- Branch name validated: ^cc/write-[0-9a-f]{8}$ assertion, fail-closed
+  (no push if it ever doesn't match).
+- git hooks/filters neutralised: every pushAndOpenPr git call prepends
+  -c core.hooksPath=/dev/null -c core.attributesFile=/dev/null, and
+  .git/info/attributes is deleted pre-op (CC had write access to the
+  clone's .git).
+- Tests: npm test green — cc-dispatcher 76 checks, cc-write-scope 33.
+- Adversarial review (separate CC dispatch session against the branch):
+  surfaced HIGH (GH_TOKEN in CC's own env → exfiltrable via committed
+  file content / git config command-exec, since the scrubber covers the
+  DB row not committed files), MEDIUM (expected_paths optional), 3 LOWs.
+  All remediated in commit fea3a3d before un-draft — GH_TOKEN removed
+  from CC env entirely (push step keeps its own), hooks/filters
+  neutralised, expected_paths made mandatory, branch asserted,
+  validation git env scrubbed, guard comment corrected. PR un-drafted
+  and merged after a clean re-review.
+- 5 files: claude-code-dispatcher.js, cc-write-settings.json (new),
+  claude-code-dispatch.js, cc-dispatcher.test.js (+50),
+  cc-write-scope.test.js (+2). +503/-55 lines.
+
+**Bug fix — CC approval handler (commit 6ff03c3, direct to main)**
+- manager.js findAwaiting() queried a task_id column that does not
+  exist → 400 (42703) on every ✅ reply. The column is id, but a
+  PostgREST LIKE on the uuid id errors too (42883: no uuid ~~ text
+  operator), so a task_id→id + % swap would still fail at runtime.
+  Fixed to a client-side prefix filter: fetch the awaiting_authorisation
+  set and match the 8-hex reply in JS, case-insensitively (uuids stored
+  lowercase; the ✅/❌ regex is /i). Verified against the live table:
+  matches real awaiting rows, returns nothing for a non-match.
+  Channel-handler tests 33/33.
+
+**Slice 2 — Telegram completion notifications (commit aa2de26, direct to main)**
+- Dispatcher fires a Telegram Bot API sendMessage after every result
+  write-back (complete/failed/timeout), in its OWN try/catch — a
+  notification failure cannot fail the dispatch nor re-PATCH the result.
+- 4 message variants: complete+PR, complete+no-mutations, failed
+  (scrubbed reason, ≤200 chars), timeout. Each carries the task
+  one-liner, PR URL, cost, and 8-char ID. parse_mode Markdown (*bold*).
+- Bot token read once at startup from the encrypted store
+  (telegram_bot_token, via getStoredSecret); TYSON_CHAT_ID is a
+  non-secret config constant (1375806243). Null token → skipped
+  silently, logged once at startup.
+- Untrusted fields use the already-scrubbed values (never raw CC output).
+- Tests: cc-dispatcher.test.js 90 checks (+4 message-format variants,
+  send-path coverage, null-token/throw-safe, processOne→notify wiring).
+- Live verified: Telegram API 200/ok:true, message delivered to Tyson's
+  chat with the real token.
+
+**End-to-end smoke test (live, 2026-07-02)**
+- Charlie dispatched a write-scope brief via Telegram.
+- Approval prompt fired with the Paths: field visible ✓
+- Tyson replied ✅ 8d210a0c.
+- Dispatcher claimed the row, ran CC in acceptEdits mode.
+- PR #53 opened: https://github.com/tysonven/QClaw/pull/53
+- Telegram completion notification fired immediately: PR URL + cost ✓
+- PR #53 closed without merge (smoke test).
+- Full loop proven: dispatch → approval → execution → PR → notification ✓
+
+**Not done — carry to Session 3:**
+- Priority 3: GHL write tools (multi-account: FSC / Flow OS / Crete /
+  SproutCode). Current state: single read-only sub-account, one API key
+  + location ID in the secrets store. Multi-account credential structure
+  + write tools (contact update, email draft, note, tag) need a scoping
+  design before build.
+- Priority 4: Trading workflow reactivation.
+- Dashboard: Dispatches tab (surface claude_code_dispatches as a named
+  UI view — currently Supabase-only).
+- Dashboard: sidebar polish (labels not visible, non-functional items).
+- Kernel reboot: 6.8.0-107 → 6.8.0-134 (schedule a low-stakes window).
+- dashboard/server.js:669 TypeError (pre-existing, NOT introduced this
+  session — logged for the dashboard-polish slice).
