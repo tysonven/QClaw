@@ -14979,3 +14979,73 @@ this before any code was written.
 3. GHL write tools (draft email, invoice, contact update per
    sub-account)
 4. Trading workflow reactivation
+
+## [2026-07-02] Phase 5 Session 2 — CC dispatcher write-scope execution
+
+**What shipped (branch cc/p5s2-dispatcher-write-20260702):**
+
+Dispatcher now RUNS write scope. ALLOWED_SCOPES expanded to
+{audit, read_only, write}; infra + critical stay hard-rejected at
+validateScope (fail-closed). No claim-RPC/SQL change was needed —
+the ✅ handler already re-queues an approved write row to
+status='queued' (scope stays 'write'), so the existing queued-only
+claim_next_dispatch picks it up; only the scope gate had to open.
+
+Write path: CC runs as ccdispatch in the throwaway clone under
+--permission-mode acceptEdits with a new cc-write-settings.json
+(Edit/Write allowed; secret-read + push/commit/gh/curl denies kept).
+CC only mutates files — the DISPATCHER (never CC) does all git/gh.
+After CC exits the dispatcher runs git status --porcelain as the
+clone owner and validates every changed path against the brief's
+optional "# Expected paths" section:
+  - no changes            → complete, note "no mutations — CC found
+                            nothing to change", no push
+  - any path out of scope → failed, aborted, NOT pushed (result names
+                            the offending files)
+  - all paths in scope /
+    no expected_paths (warn) → commit + push + PR
+
+PR creation: branch cc/write-<8-char task_id>, commit
+"feat(dispatch): <task one-liner>", pushed to tysonven/QClaw via the
+gh credential helper (-c credential.helper='!gh auth git-credential')
+so GH_TOKEN is never in the argv/URL/reflog; then gh pr create -R
+tysonven/QClaw. PR URL captured into result + metadata.pr_url.
+
+GH_TOKEN handling: read from the encrypted secret store
+(ccdispatch_github_token) AT DISPATCH TIME, injected into the scrubbed
+child env for write scope ONLY (audit/read_only child env unchanged —
+no GH_TOKEN), and added to the output scrubber's known-values list
+before CC runs so it can never survive into result/error/summary.
+Live-verified: store decrypts the token (len 93, fine-grained PAT);
+the exact push credential-helper path authenticates as ccdispatch
+(read-only git ls-remote returned HEAD, EXIT=0 — no writes to GitHub).
+
+Security hardening beyond the brief: write-scope authorisation-
+provenance guard. Rows are untrusted end-to-end; a fabricated
+queued+write row (bypassing Telegram approval) lacks
+authorised_by/authorised_at, so the dispatcher now refuses to execute
+any write row missing them (CC never spawned).
+
+Tool side: claude_code_dispatch gained an optional expected_paths
+array field rendered into the brief as a one-line JSON "# Expected
+paths" section (./ stripped, de-duped); the stale "write-execution
+gap" note was updated.
+
+Tests: +50 checks in cc-dispatcher.test.js (ALLOWED_SCOPES write/
+infra, GH_TOKEN env matrix, write argv is acceptEdits not plan,
+parseExpectedPaths, planWriteOutcome, briefTaskLine, changedFiles
+porcelain parse, and a processOne write smoke driving the full branch
+with injected deps: writeMode, GH injection, branch/commit/PR shape,
+unauthorised-reject, out-of-scope-abort, no-mutation-note, missing-
+token-fail) + 2 in cc-write-scope.test.js (expected_paths brief
+render). Full suite green (node --test entrypoints, all pass).
+
+**Constraints honoured:** ccdispatch remains the execution user (never
+root); infra/critical still hard-rejected; GH_TOKEN absent from
+audit/read_only child env; path comparison is pure JS array membership
+(no shell glob); no schema change; no new PM2 process; PR target is
+tysonven/QClaw (never upstream).
+
+**Not deployed this session:** dispatcher not restarted under PM2 —
+code is on the branch/PR only; live enablement is a follow-up after
+review + merge.

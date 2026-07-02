@@ -52,6 +52,22 @@ console.log('write scope → awaiting_authorisation row + authorisation_required
     JSON.stringify(pushed));
 }
 
+console.log('expected_paths renders into the brief (write-scope path guard):');
+{
+  const { client, posts } = fakeRest();
+  const tool = createClaudeCodeDispatchTool({ env: {}, restClient: client, notify: async () => true });
+  await tool.fn({ task: 'Bump rate limit', mode: 'audit_then_implement', scope: 'write', expected_paths: ['./src/dispatch/start.js', 'src/dispatch/start.js'] }, toolCtx);
+  const brief = posts()[0]?.body?.brief || '';
+  check('brief has an # Expected paths section', brief.includes('# Expected paths'));
+  check('paths rendered as a JSON array, ./ stripped + de-duped', brief.includes('["src/dispatch/start.js"]'));
+}
+{
+  const { client, posts } = fakeRest();
+  const tool = createClaudeCodeDispatchTool({ env: {}, restClient: client, notify: async () => true });
+  await tool.fn({ task: 'no paths declared', mode: 'audit_then_implement', scope: 'write' }, toolCtx);
+  check('no expected_paths → no # Expected paths section in brief', !(posts()[0]?.body?.brief || '').includes('# Expected paths'));
+}
+
 console.log('infra scope also holds for approval:');
 {
   const { client, posts } = fakeRest();
