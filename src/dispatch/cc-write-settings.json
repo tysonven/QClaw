@@ -1,3 +1,4 @@
+// Phase 5 Session 2 smoke test — write-scope verified 2026-07-02
 {
   "$comment": "Phase 5 Session 2 — Claude Code WRITE-scope policy (--settings). CC edits files in a throwaway clone under acceptEdits; the dispatcher (not CC) does all git/gh work. DEFENCE-IN-DEPTH only; the structural control is running CC as the unprivileged ccdispatch user (kernel perms) in a disposable clone that is diff-validated against expected_paths before any push. Edit/Write are ALLOWED here (unlike the read-only policy); the sensitive-read denies and network/mutation Bash denies remain — CC must not push, commit, curl, or read secrets itself.",
   "permissions": {
