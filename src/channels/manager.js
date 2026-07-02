@@ -199,8 +199,12 @@ export function makeCcAuthDb(env = getEnv()) {
   return {
     configured: () => !!(url && key),
     async findAwaiting(prefix) {
-      const rows = await rest('GET', `claude_code_dispatches?task_id=like.${encodeURIComponent(prefix)}*&status=eq.awaiting_authorisation&select=id,task_id`);
-      return Array.isArray(rows) ? rows : [];
+      // `id` is a uuid column (no LIKE operator: `uuid ~~ text` doesn't exist), so fetch
+      // the awaiting_authorisation set and prefix-match the 8-hex reply client-side,
+      // case-insensitively (uuids are stored lowercase; the ✅/❌ reply regex is /i).
+      const rows = await rest('GET', `claude_code_dispatches?status=eq.awaiting_authorisation&select=id`);
+      const p = String(prefix).toLowerCase();
+      return Array.isArray(rows) ? rows.filter((r) => String(r.id).toLowerCase().startsWith(p)) : [];
     },
     // status filter on the PATCH is a race guard: a second ✅ (or a reap) can't
     // re-queue a row that already left awaiting_authorisation.
