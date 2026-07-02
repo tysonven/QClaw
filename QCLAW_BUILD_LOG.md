@@ -15119,3 +15119,43 @@ still unprivileged.
 non-cryptographic (service_role custody is the boundary); a fully
 belt-and-suspanders alternative to Fix 2 would commit from a pristine
 re-clone — deferred as it exceeds this remediation's scope.
+
+## [2026-07-02] Phase 5 Session 2 — Telegram completion notification (aa2de26)
+
+Additive feature on the claude-code-dispatcher: after the result
+write-back, processOne fires a Telegram Bot API sendMessage to Tyson
+(chat 1375806243) so a dispatch outcome surfaces without polling the
+row. Four message variants — complete (with PR link), complete (no
+changes — CC found nothing to mutate), failed (scrubbed reason,
+truncated 200 chars), timeout. parse_mode Markdown (single *bold*).
+
+Bot token read ONCE at startup from the secret store (key
+telegram_bot_token, via getStoredSecret — same shape as getGhToken,
+which was left untouched) into a module-level const; missing token →
+startup logs "telegram notifications DISABLED" and sends are skipped
+silently. Chat id is a config constant (TYSON_CHAT_ID), not a secret.
+
+Send is a single HTTPS POST (no library, no new dependency) via
+sendDispatchNotification, which never throws (returns a status object;
+null token → {skipped}). The call site in processOne has its OWN
+try/catch so a send failure can never (a) fail the already-committed
+write-back or (b) fall into the outer catch and re-PATCH a success as
+failed. Untrusted fields (briefTaskLine, error_message) use the
+already-scrubbed values, never raw CC output.
+
+No existing logic changed, no schema change, no new PM2 process. Fires
+only after the main result write-back (complete/failed/timeout) — the
+early guard rejects (scope/auth/missing-token) do not notify.
+
+Tests: cc-dispatcher.test.js now 90 checks (added: 4 message-format
+variants; sendDispatchNotification null-token-skip / posts-correct-URL
++ body / ok-on-200 / fetch-throw-caught; processOne fires notify with
+correct args on complete/failed/timeout; notify-throw does not fail the
+write-back). Full suite green.
+
+Deployed: pm2 restart claude-code-dispatcher + pm2 save; startup log
+confirms "telegram notifications enabled". Live send verified against
+the real token + Tyson's chat (Telegram API 200 / ok:true). A full
+CC write-scope e2e (real PR + budget spend) was NOT run — the deployed
+send path + the processOne→notify wiring are proven by the live send
+and the unit tests respectively.
