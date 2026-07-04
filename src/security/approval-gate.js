@@ -69,6 +69,16 @@ export class ApprovalGate {
 
     this.autoApproveTools = config.autoApproveTools || [];
 
+    // TODO (Phase 5 — FSC write slice): skill-defined HTTP tools using
+    // POST/PUT/PATCH/DELETE (e.g. charlie__ghl-fsc__* create/update, or the
+    // live charlie__ghl__ghl__create_notes) are NOT gated here. This list
+    // covers only shell_exec; check() otherwise gates just destructive shell
+    // verbs and Stripe charges — so a skill write tool returns
+    // requiresApproval:false and executes autonomously against an external
+    // CRM. Before enabling GHL/skill write endpoints, expand gating to route
+    // method-mutating skill HTTP tools through requestApproval (add their
+    // generated tool names to gatedTools, or classify by HTTP method at
+    // registration and gate the mutating verbs).
     this.gatedTools = config.gatedTools || [
       'shell_exec',
     ];
