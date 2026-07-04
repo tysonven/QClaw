@@ -15271,3 +15271,88 @@ consolidated session record. Full loop proven live end-to-end.
 - Kernel reboot: 6.8.0-107 → 6.8.0-134 (schedule a low-stakes window).
 - dashboard/server.js:669 TypeError (pre-existing, NOT introduced this
   session — logged for the dashboard-polish slice).
+
+
+---
+
+## Phase 5 Session 3 — GHL FSC read tools (2026-07-04)
+
+**Branch:** cc/p5s3-ghl-fsc-write-tools-20260703 → PR #54 (draft)
+**Commit:** dd53185
+
+**Audit correction (reshaped the slice):**
+- Brief assumed GHL tools are registry presets referenced by a skill's
+  `tools:` frontmatter. Reality: the live GHL tools are **skill-parsed** —
+  `parseSkill(ghl.md)` → `skillToTools` → `registerSkillTool` produce
+  `charlie__ghl__ghl__*`. The `ghl` preset in `src/tools/registry.js` is
+  dead code; `config.tools.mcp` enables only `filesystem`, so the boot loop
+  never registers it, and the ghl.md `tools:[ghl__search_contacts,…]`
+  frontmatter references names that never exist at runtime.
+- ghl.md is 9 live tools incl. 5 writes (create/update contact, note, task,
+  opportunity) — not "4 read tools". `{{secrets.ghl_api_key}}` in the body
+  is resolved at runtime by the generic skill executor (registry.js:~1405).
+- Secrets already provisioned in the encrypted store: `ghl_fsc_api_key`,
+  `ghl_fsc_location_id`, `ghl_flowos_api_key`, `ghl_flowos_location_id`
+  (+ original `ghl_api_key`/`ghl_location_id`). Note `ghl_flowos_api_key ≠
+  ghl_api_key` (different tokens, same location — both HTTP 200). Decision:
+  leave ghl.md on `ghl_api_key` this slice; rename deferred to its own change.
+
+**Write-gate finding (why read-only):**
+- `ApprovalGate.check()` gates only `shell_exec`, destructive shell verbs,
+  and Stripe charges (`gatedTools` defaults to `['shell_exec']`;
+  `config.tools.requireApproval` is undefined). Skill HTTP write tools return
+  `requiresApproval:false` and execute autonomously.
+- Empirical proof in audit.db: `shared__ghl__ghl__create_notes` executed 2×,
+  no denial path; the only `*_denied` actions anywhere are
+  `shell_exec_denied_by_policy` (50) and `n8n_workflow_update_denied` (6).
+  `tool-call.log` records no executions at all (only registration/activation/
+  routing) — it was the wrong log for this question.
+- Shipping FSC writes the same way would break the "surface proposals, never
+  autonomous" constraint, so writes are deferred. TODO added in
+  approval-gate.js to route method-mutating skill HTTP tools through
+  requestApproval before GHL writes are enabled.
+
+**Built (read-only replica pattern):**
+- `src/agents/skills/ghl-fsc.md` — FSC GHL skill, auth via
+  `{{secrets.ghl_fsc_api_key}}` / `{{secrets.ghl_fsc_location_id}}`.
+  Endpoints: `GET /contacts/?locationId=…&query=…`, `GET /contacts/{{id}}`,
+  `GET /opportunities/search?location_id=…`. Template for Flow OS/Crete/
+  SproutCode (swap secret key names).
+- `tests/ghl-tools.test.js` — parse/auth/read-only assertions (17 checks);
+  wired into the `test` script.
+- `src/security/approval-gate.js` — TODO on the ungated skill-write gap.
+
+**GHL API notes (verified live):**
+- Location scoping is per-endpoint: contacts require `locationId` (camelCase),
+  opportunities require `location_id` (snake_case). The `Location-Id` header
+  alone returns 403 (contacts) / 422 (opportunities).
+- Tool-name length: the doubled `charlie__ghl-fsc__ghl-fsc__` prefix makes
+  the opportunities tool 66 chars. Confirmed accepted by the Anthropic
+  messages/count_tokens API (200) — the documented 64-char limit is not
+  enforced here (matches the live 65-char `charlie__n8n-api__…` tool).
+
+**Verification:**
+- Live registration after `pm2 restart quantumclaw`:
+  `charlie__ghl-fsc__ghl-fsc__get_contacts_locationid_id_query_id`,
+  `…__get_contacts_id`, `…__get_opportunities_search_location_id_id` — all
+  GET, scope charlie. Clean boot (Telegram ready, 18 specialists, liveness up).
+- FSC credential: `GET /contacts/?locationId=…&limit=1` → HTTP 200.
+- Tests: ghl-tools 17/0, skill-frontmatter 268/0, cli-skill-list 65/0,
+  tool-skill-coupling 41/0, skill-loader 52/0, skill-router 129/0,
+  tool-registry-scope 19/0.
+
+**Pre-existing, NOT introduced this session:**
+- `npm test` fails one assertion — `probes.test.js` → `pm2_processes:
+  failure carries error string` — identical on origin/main (this branch does
+  not touch probes).
+- Dashboard `server.js` TypeError (`reading 'list'`) from inbound bad-JSON
+  webhook traffic — same pre-existing dashboard issue already logged.
+
+**Deploy state:** prod /root/QClaw is on this branch and running it (FSC read
+tools live). On merge, fast-forward main so prod converges; the charlie
+skills-dir symlink (`ghl-fsc.md → repo`) stays valid.
+
+**Carry forward:** FSC write tools (create/update contact, add note, create
+task, email-to-contact draft) after skill HTTP writes are gated; then
+replicate the ghl-fsc template for Flow OS / Crete / SproutCode; ghl.md
+ghl_api_key → ghl_flowos_api_key rename as its own change.
