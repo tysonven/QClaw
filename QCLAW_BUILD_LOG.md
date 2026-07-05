@@ -15356,3 +15356,60 @@ skills-dir symlink (`ghl-fsc.md → repo`) stays valid.
 task, email-to-contact draft) after skill HTTP writes are gated; then
 replicate the ghl-fsc template for Flow OS / Crete / SproutCode; ghl.md
 ghl_api_key → ghl_flowos_api_key rename as its own change.
+
+
+---
+
+## [2026-07-05] Trading cluster — pre-reactivation audit + partial reactivation
+
+Audit-only diagnostic, then a controlled partial reactivation (n8n API +
+Supabase only; no application code changed). Trade Executor deliberately left
+OFF.
+
+**Audit findings:**
+- trading-worker HEALTHY: `src/trading/monte_carlo.py`, Flask on port **4001**
+  (PM2 online, 0 restarts, 31d). `GET /health` → 200 JSON; `POST /simulate`
+  → 200 valid JSON in ~1.8s (yfinance live). Only routes are /health +
+  /simulate — no trade/DB side effects. Error log is pure internet-scanner
+  404 noise. (Minor: binds 0.0.0.0:4001, publicly reachable; `macro.tnx`
+  came back null.)
+- All 4 workflows inactive. Position Monitor ID (was unknown) =
+  **UYA0JppH7eqyI7fQ**. No execution history on any (deactivated 2026-05-13,
+  pruned — no last-failure node recoverable). Only Market Scanner had an
+  errorWorkflow set.
+- Node-level: only **Trade Executor** (fq7spfyiNcpt8Mf7) places trades —
+  webhook-triggered, `Fetch Config → Trading Enabled? (IF)` gate on
+  `trading_config`, executes via main app port **4000** `/trading/execute`
+  (TRADING_WEBHOOK_SECRET). Position Monitor / Market Scanner / Weekly Analyst
+  are monitor/analysis/notify only and do NOT auto-POST the executor webhook.
+- Supabase (fdabygmromuqtysitodp): `trading_positions` count **0** (never
+  traded). `trading_config.trading_enabled` was **TRUE** — contradicted
+  trading.md ("false") and the deactivation intent; the executor's gate was
+  effectively open. Table is a single columnar row, not key/value.
+- trading.md: the "do not attempt tool calls if cluster is deactivated" guard
+  flagged missing in May 2026 was STILL missing; plus port 4000-vs-4001 and
+  schema/value doc mismatches.
+
+**Executed (each step verified via API response):**
+1. Supabase `UPDATE trading_config SET trading_enabled = false WHERE id=1`
+   → confirmed false (execution gate closed first, before any activation).
+2. Added `errorWorkflow = 7kpNnMtnuDWXgWcX` (Shared Error Handler) to Position
+   Monitor + Weekly Analyst via PUT (200, nodes preserved).
+3. Activated Position Monitor, Market Scanner, Weekly Analyst
+   (POST /activate → 200, active=true).
+4. Trade Executor left INACTIVE (unchanged).
+5. Fixed trading.md (commit **9d955e2**, direct to main): added Cluster State
+   & Guard; corrected worker port 4001 and that it serves only /health +
+   /simulate; documented the columnar trading_config schema + values; noted
+   Trade Executor is the only trade-placing workflow and is intentionally off.
+
+**Final state:** Position Monitor / Market Scanner / Weekly Analyst = active,
+errorWorkflow=7kpNnMtnuDWXgWcX; Trade Executor = inactive; Shared Error
+Handler untouched. `trading_config`: trading_enabled=false, max_position=10,
+min_edge=30, daily_loss=20. Two independent brakes on execution
+(trading_enabled=false AND Trade Executor inactive).
+
+**Carry-forward (before enabling live execution, with Tyson confirmation):**
+verify wallet/Polymarket funds, TRADING_WEBHOOK_SECRET, the port-4000
+/trading/execute route surface, and the min_edge unit (stored 30 vs a 0.30
+fraction) — then set trading_enabled=true and activate Trade Executor.
