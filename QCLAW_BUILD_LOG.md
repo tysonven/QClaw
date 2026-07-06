@@ -15413,3 +15413,61 @@ min_edge=30, daily_loss=20. Two independent brakes on execution
 verify wallet/Polymarket funds, TRADING_WEBHOOK_SECRET, the port-4000
 /trading/execute route surface, and the min_edge unit (stored 30 vs a 0.30
 fraction) — then set trading_enabled=true and activate Trade Executor.
+
+
+---
+
+## [2026-07-06] Market Scanner — short-horizon `/events` expansion (LIVE)
+
+Expanded Trading - Market Scanner (3YahxqOguET3pifj) to surface weekly/monthly
+Polymarket bracket markets. Applied via n8n API PUT (settings re-asserted:
+availableInMCP=false, errorWorkflow=7kpNnMtnuDWXgWcX), re-activated. Backup of
+pre-change JSON at n8n-workflows/backups/trading-market-scanner.LIVE-20260706.json
+(rollback point); canonical n8n-workflows/trading-market-scanner.json updated to
+the live post-change definition.
+
+**Root cause fixed:** the scanner fetched the flat `/markets` endpoint, which
+does NOT contain the bracket ladders — those are Polymarket *events* with nested
+sub-markets. Result: only "$1m before GTA VI" ever surfaced.
+
+**Node changes (15 nodes, net 0):**
+- Removed Fetch Page 2/3/4 (overlapping offset pagination).
+- Added Fetch Events p1/p2 (`/events?closed=false&tag_id=1312&order=volume24hr&limit=100&offset=0|100`)
+  and a Flatten Events code node (`event.markets[]` -> individual sub-markets;
+  sub-markets are full market objects, drop straight into Analyse Edge).
+- Merge Pages -> 2 inputs (Fetch Polymarket + Flatten Events).
+- Analyse Edge: YES floor 0.02->0.01, horizon cap <=35d, pre-sim volume floor
+  >=20000, +sol/xrp/natgas (worker confirmed live), per-event rung selector
+  (<=3 rungs nearest yes~0.5), global top-30 cap by volume (bounds sim dispatch).
+- Build Run Summary: pass confidence_lower/upper + event_slug into merged.
+- Notify Edge: add current_price, CI, polymarket.com/event/<slug> link, and
+  explicit Side (BUY YES/NO by edge sign); noEdge now renders full fields.
+- Run Market Simulations: batchSize 1 -> 5 (worker verified: 5 concurrent = 5/5,
+  0.88s; do NOT exceed — single Flask process + yfinance throttle).
+
+**Live verification (forced-cron test run, execution 1110740, success):**
+- /markets 100 + /events 100+100 -> Flatten 920 -> Merge 1020 candidates.
+- Analyse Edge -> Run Market Simulations = **21 items (<=30 cap confirmed)**,
+  0 sim errors. 1020 -> 21 via rung selection + top-30 cap.
+
+**CALIBRATION CAVEAT — must be resolved before enabling Trade Executor:**
+The same run produced high_edge=0 and **no_edge=18** (18 markets the sim flags as
+"overpriced / potential NO edge"). This is the fixed 90-day daily-vol GBM being
+systematically more conservative than the market on short-dated OTM crypto rungs
+— i.e. a horizon/calibration mismatch, not real alpha. Short-horizon edge signals
+from this scanner are NOT trade-grade as-is. Before Trade Executor is ever
+enabled:
+  1. Recalibrate the NO-edge threshold (currently -10%) — 18 flags/run is noise.
+  2. Consider a shorter historical lookback for short horizons in monte_carlo.py
+     (currently a fixed 90d daily-vol window regardless of horizon).
+  3. Keep the HIGH-edge bar at 7% (do NOT lower for short-horizon).
+Until then, treat scanner output as informational only.
+
+**Safety state unchanged:** Trade Executor INACTIVE, trading_config.trading_enabled
+= false (two independent brakes). The scanner only notifies; it does not trigger
+the executor. NOTE: the authorized test run fired one Telegram to the trading
+channel (the 18 no-edge markets routed through Notify Edge).
+
+**Carry-forward:** watch the next few natural runs; recalibrate NO-edge threshold
++ short-horizon lookback; commodity ladders (gold/oil) are near-absent on
+Polymarket today (crypto tag 1312 is the whole win).
