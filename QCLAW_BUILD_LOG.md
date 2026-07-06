@@ -15471,3 +15471,53 @@ channel (the 18 no-edge markets routed through Notify Edge).
 **Carry-forward:** watch the next few natural runs; recalibrate NO-edge threshold
 + short-horizon lookback; commodity ladders (gold/oil) are near-absent on
 Polymarket today (crypto tag 1312 is the whole win).
+
+
+---
+
+## [2026-07-06] Market Scanner — "Invalid JSON" regression fix (batchSize 5 -> 1)
+
+Same-day follow-up to the /events expansion. Every natural run of Trading -
+Market Scanner (3YahxqOguET3pifj) failed with "Invalid JSON in response body",
+last node Run Market Simulations (executions 1110735, 1110849, 1110986, ...),
+each within ~10s. Worker logs showed all 200s.
+
+**Root cause:** the `batchSize: 5` introduced on Run Market Simulations during
+the /events expansion. `yf.download` (yfinance) is NOT thread-safe, so 5
+concurrent *mixed-asset* /simulate calls interleave in yfinance's shared state
+and corrupt each other -> `daily_mu:NaN, daily_sigma:NaN` and cross-contaminated
+`current_price` (observed wti->1786.79, gold->81.55, silver->1.15). Flask's
+`jsonify` serializes those as bare `NaN` literals at HTTP 200, and n8n's strict
+JSON parser rejects `NaN` -> "Invalid JSON in response body". Intermittent
+because it only triggers on concurrent DIFFERENT-asset collisions (a btc-only
+concurrency test and the lucky forced run 1110740 both passed). The 200s masked
+it in worker access logs; n8n stdout did not carry the node error and the
+execution API had pruned it.
+
+**Evidence:** direct worker probe — sequential 27/27 valid; concurrent burst
+7/18 returned NaN + wrong prices.
+
+**Fix (minimal, no code change):** Run Market Simulations
+`options.batching.batch.batchSize` 5 -> 1 (serialize sims; the original
+pre-expansion value). PUT with settings re-asserted (availableInMCP=false,
+errorWorkflow=7kpNnMtnuDWXgWcX), re-activated. Pre-fix backup at
+n8n-workflows/backups/trading-market-scanner.PRE-BATCHFIX-20260706.json;
+canonical n8n-workflows/trading-market-scanner.json updated to batchSize 1.
+
+**Verification:** forced run 1111129 = success, 25 markets simulated,
+sim_errors=0, no Invalid JSON, ~35s end-to-end. Final state: active=true,
+batchSize=1, original cron, settings preserved, 15 nodes.
+
+**DEBT — worker not concurrency-safe (revisit when speed is needed):**
+src/trading/monte_carlo.py has two latent issues that only bite under
+concurrent /simulate load:
+  1. Thread-safety: yfinance's shared session/cache corrupts data across
+     simultaneous downloads (wrong prices + NaN mu/sigma). It also re-downloads
+     the same asset history per request (no caching).
+  2. NaN serialization: Flask jsonify defaults to allow_nan=True, emitting
+     `NaN`/`Infinity` literals that ANY strict JSON client rejects.
+To re-enable batching for speed later, the worker must first: (a) serialize or
+lock yfinance (or simulate once per asset per run and derive all target
+probabilities from the shared paths), and (b) sanitize NaN/Infinity -> null
+before jsonify. Until both are done, Run Market Simulations must stay at
+batchSize 1. Trade Executor remains inactive + trading_enabled=false regardless.
