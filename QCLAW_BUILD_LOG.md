@@ -15521,3 +15521,115 @@ lock yfinance (or simulate once per asset per run and derive all target
 probabilities from the shared paths), and (b) sanitize NaN/Infinity -> null
 before jsonify. Until both are done, Run Market Simulations must stay at
 batchSize 1. Trade Executor remains inactive + trading_enabled=false regardless.
+
+## 2026-07-06 — Crete content calendar v1.4 refill + SYSTEM_PROMPT identity honesty + em-dash reinforcement
+
+Branch `cc/crete-calendar-v1.4-20260706`, built in an isolated `git worktree` at
+`/root/QClaw-v14` off fresh `origin/main` (prod `/root/QClaw` checkout never touched;
+parallel Phase-5 session undisturbed). Dispatch: Tyson via Claude chat.
+
+### Two mutations (both live + verified)
+
+1. **R2 `crete-projects/content-calendar.json`:** v1.3 (40 slots, 2026-05-20 → 2026-06-26,
+   exhausted 06-26) overwritten with **v1.4 (43 slots, 2026-07-07 → 2026-08-31)**. 8-week arc:
+   Wk1 Community Integration (four commitments); Wk2-4 Objection Handling (foreigner question
+   head-on, timeline/Foundation phase, worldschooling/EU/entity); Wk5-7 Three Pillars echo
+   (Agricultural Land, Village Restoration, Health & Wellness, fresh angles); Wk8 Investor Case
+   + EOI close. Cadence IG Mon/Wed/Fri, FB Wed/Fri, LinkedIn Tue/Thu. Platform mix IG 18 / FB 9
+   / LinkedIn 16. New `content_mix` value `objection_handling` (passes through Build Prompt
+   userPrompt verbatim, no workflow change). v1.3 already archived at
+   `n8n-workflows/content-calendars/content-calendar-v1.3.json` (unchanged); v1.4 mirrored to
+   repo. boto3 PUT (server has no rclone/aws), HTTP 200, prior etag
+   `84a619fddeee7bc0b34acf1f62b2aa6a` → new etag `b3950672ddda67916daea267dac13e14`
+   (= local md5, single-PUT), 27543 bytes, ContentType application/json, no Cache-Control
+   (cf-cache-status DYNAMIC, no purge). Public verify
+   `https://media.creteprojects.com/content-calendar.json` HTTP 200: version 1.4, 43 slots,
+   first 2026-07-07, last 2026-08-31, 0 cadence violations.
+
+2. **n8n `tnvXFYvODL1PrhJa` (Crete - Content Generator), Build Prompt Code node, SYSTEM_PROMPT
+   only:** **Block A (identity honesty)** inserted after the DO-NOT-FABRICATE block — no
+   overclaiming Greek connection (no family ties / no prior residency / first project of this
+   scale); what CAN be referenced honestly (four site commitments; Cyprus holding + Greek
+   operating entity + first-stage gated on Cyprus completion; the existing Cretan vineyard as
+   operating-pattern evidence, NOT a Crete Projects credential; the deliberate anti-model).
+   **Block B (em-dash reinforcement)** extended the "No em dashes." line. jsCode 3777 → 5838
+   chars, **0 em-dash (U+2014) in result** (verified). PUT body limited to
+   {name,nodes,connections,settings}; `settings.availableInMCP: true` preserved (+ executionOrder
+   v1, callerPolicy workflowsFromSameOwner, errorWorkflow 7kpNnMtnuDWXgWcX); HTTP 200; re-GET
+   confirmed Block A+B present, 0 em-dash, 19 nodes intact, model `claude-sonnet-4-6` unchanged,
+   DO-NOT-FABRICATE + userPrompt byte-intact. Repo mirror
+   `tnvXFYvODL1PrhJa-crete-content-generator.json` updated (jsCode only, 2-line diff).
+
+### Audit-first (Step 0)
+Live GET before edit: SYSTEM_PROMPT no drift vs `/tmp/pre_v14_grounding_20260706.md`
+(0 em-dash, literal "No em dashes." present, DO-NOT-FABRICATE intact), model `claude-sonnet-4-6`,
+workflow `updatedAt 2026-06-17` (no parallel-session conflict). Filter Due Slots / Claude API
+model / Build Row NOT touched (per scope).
+
+### Dispatcher-authorised deviations
+- **43 slots, not 56.** Dispatch table totalled 43 (slot-062..104); the 56 in
+  anchoring/meta.notes/ID-range was stale. Confirmed with Tyson → ship 43; meta.notes corrected
+  to "43 total slots".
+- **Dates regenerated to cadence.** 36/43 slots as delivered violated the calendar's own
+  weekly_cadence (incl. 3 weekend posts + 13 LinkedIn slots colliding with the Flow OS
+  Mon/Wed/Fri the note says to avoid). Tyson approved regeneration: Wk1/Wk2/Wk8 as drafted;
+  Wk3-7 re-dated Mon IG / Tue LI / Wed IG / Wed FB / Thu LI so original narrative order maps
+  onto ascending day order (zero brief edits, full platform/image coherence). Result: 0 cadence
+  violations, reading order = narrative order within every week.
+- **Block B rendered em-dash-free.** Dispatch Block B example strings themselves contained
+  em-dashes while the dispatch mandated 0 em-dashes in the prompt; per the dispatch's own
+  "additions must not contain em-dashes" rule, the illustrations were rendered descriptively
+  (no U+2014).
+- **Isolated worktree** instead of switching the prod `/root/QClaw` checkout (parallel Phase-5
+  safety).
+- **Briefs kept verbatim** — 15 contain em-dashes as written by the dispatcher; briefs are input
+  to Claude (not output), so left byte-verbatim per anchoring rule.
+
+### Smoke test — STRUCTURAL PASS; live generation NOT run this session
+Verified: R2 v1.4 live + correct; SYSTEM_PROMPT deployed (Block A+B, 0 em-dash, decodes to 4973
+chars incl. identity block); slot-062 (LinkedIn, 2026-07-07) is due tomorrow under the unchanged
+Filter Due Slots logic. Could NOT trigger a live end-to-end generation headless:
+- `docker exec n8n-project-n8n-1 n8n execute --id tnvXFYvODL1PrhJa` (also with
+  `N8N_RUNNERS_ENABLED=false`):
+  ```
+  n8n Task Broker's port 5679 is already in use. Do you have another instance of n8n running already?
+  ```
+  (CLI execute conflicts with the running instance; public API v1 has no run endpoint; no UI
+  this session.)
+- Fallback direct replica Claude call (new SYSTEM_PROMPT + slot-062 userPrompt, model
+  claude-sonnet-4-6) using qclaw `ANTHROPIC_API_KEY`:
+  ```
+  400 {"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."},"request_id":"req_011CcmQom3yG5GzruJS5D54Z"}
+  ```
+Live generation defers to the 2026-07-07 scheduled run (processes slot-062 for 07-07 and
+slot-063 for 07-08), landing pending_review rows. Nothing auto-published.
+
+### WARNING — Anthropic credit balance
+The org `ANTHROPIC_API_KEY` returned "credit balance too low." Anthropic prepaid credits are
+account-level. If the Crete Claude API node's n8n credential draws on the same account, the
+07-07 generation will fail at the Claude node and produce no rows until credits are topped up.
+Verify Anthropic billing before relying on tomorrow's run. Independent of this dispatch (which
+deployed the calendar + prompt correctly).
+
+### Security gate
+- No hardcoded creds added; R2 creds read from `/root/.quantumclaw/.env` in-memory only;
+  workflow keeps `$env`/httpHeaderAuth bindings — PASS
+- Secret-scan of both committed files: 0 hits (sk-ant / bot token / service-role JWT / R2
+  endpoint / private key / AWS key) — PASS
+- No new webhooks / endpoints / RLS / schema; no financial features — PASS
+- `.env` untouched (perms 600) — PASS
+- `settings.availableInMCP: true` preserved — PASS
+- SYSTEM_PROMPT 0 em-dash after edit; calendar has no real names / financial figures /
+  unverified claims (project-level positioning only) — PASS
+- R2 object ContentType application/json, publicly readable (media.creteprojects.com 200) — PASS
+- Credential refs unchanged (Anthropic httpHeaderAuth, Supabase $env.SUPABASE_ANON_KEY) — PASS
+
+### Backlog (separate slices)
+- Runway alerter (Option B out-of-band check node)
+- Text card generator 1080×1080 → 1080×1350 IG feed crop
+- Text card em-dash investigation (SYSTEM_PROMPT purge in place since v1.3; visible em-dashes are
+  template-side)
+- Sonnet 4.6 already the live model — no upgrade needed
+- Anthropic credit top-up (see WARNING above)
+
+References: `/tmp/pre_v14_grounding_20260706.md`, `/tmp/grounding_refresh_20260706.md`.
