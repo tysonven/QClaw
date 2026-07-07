@@ -168,6 +168,16 @@ Each gap maps to a step above. Documented to keep the runbook honest about what 
 - Workflow inactive, so the failure didn't surface in execution logs.
 - Maps to step 3.2 + the **inactive-workflow blind spot**: an audit query filtered by `active=true` would have missed this entirely. The query in step 1.a deliberately includes inactive workflows.
 
+## QCLAW_API_TOKEN / dashboard authToken
+
+- **Canonical store:** `/root/.quantumclaw/config.json` -> `dashboard.authToken`. The qclaw dashboard server reads this; it is the single source of truth.
+- **Real rotation trigger:** running `qclaw dashboard` >24h after the last mint (the CLI's 24h expiry check). This is the only routine rotation path -- **not** PM2 restarts (51 restarts observed 2026-07 with a stable token; tokenCreatedAt 2026-07-06 12:21 UTC survived the 2026-07-07 restart unchanged). As of 2026-07-08 `cli/index.js` no longer expires a persistent config token, closing this trigger.
+  - Do **not** treat config.json mtime as a rotation signal -- it bumps after every restart from unrelated `saveConfig` writes (channel/agent state) without touching the token. Compare the token value or `tokenCreatedAt` instead.
+- **n8n consumer:** `QCLAW_API_TOKEN` env var, referenced in workflow `tnvXFYvODL1PrhJa` (Crete Content Generator). A static baked copy with no auto-propagation.
+- **On rotation (manual re-sync):** set `QCLAW_API_TOKEN` in `/home/n8nadmin/n8n-project/.env` to config.json's current `dashboard.authToken`, then `docker compose up -d` on the n8n host (env_file requires recreate, not `restart`).
+- **Orphan:** `DASHBOARD_AUTH_TOKEN` in qclaw's `.env` is not loaded (PM2 `env_file: none`) and is not consulted by the server -- commented out 2026-07-08. Do not reintroduce it as an auth source.
+- **Fix landed (2026-07-08):** `cli/index.js` -- persistent (config-stored) tokens no longer expire.
+
 ## Related
 
 - [SECURITY.md](../../SECURITY.md) — overall security posture, AGEX protocol (future automation of this runbook)
