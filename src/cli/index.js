@@ -397,7 +397,10 @@ switch (command) {
       const age = Date.now() - config.dashboard.tokenCreatedAt;
       const hours = Math.floor(age / 3600000);
       const expiry = config.dashboard?.tokenExpiry || 86400000;
-      if (age > expiry) {
+      const isAutoToken = !config.dashboard?.authToken;
+      if (!isAutoToken) {
+        ok(`Token age: ${hours}h (persistent — does not expire)`);
+      } else if (age > expiry) {
         warn(`Token age: ${hours}h (expired — run qclaw dashboard for a fresh URL)`);
       } else {
         ok(`Token age: ${hours}h (expires in ${Math.floor((expiry - age) / 3600000)}h)`);
