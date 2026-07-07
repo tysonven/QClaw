@@ -15633,3 +15633,111 @@ deployed the calendar + prompt correctly).
 - Anthropic credit top-up (see WARNING above)
 
 References: `/tmp/pre_v14_grounding_20260706.md`, `/tmp/grounding_refresh_20260706.md`.
+
+---
+
+## [2026-07-07] Crete Content Generator — QCLAW_API_TOKEN drift re-sync + latent Telegram Notify JSON-body bug (both fixed)
+
+Follow-on to the 2026-07-06 v1.4 dispatch, which logged `WARNING — Anthropic credit balance`
+and predicted the 07-07 run would fail at the Claude node. Credits were topped up; the manual
+re-fire of `tnvXFYvODL1PrhJa` then failed on a **different** wall — token drift — and fixing that
+exposed a second, pre-existing bug in the Telegram Notify node.
+
+### Bug 1 — QCLAW_API_TOKEN drift (root cause of the re-fire failure)
+QClaw re-mints `dashboard.authToken` in `/root/.quantumclaw/config.json` on process restart. The
+`quantumclaw` PM2 process was recreated `2026-07-06T20:22:38Z` (credit-top-up bring-up; clean
+restart, error log's last write was 14:44 that day) and wrote a new token `20:23:12Z`. n8n's
+`/home/n8nadmin/n8n-project/.env` still held the `2026-05-29` token (`e7d3100d5bf5…`), so it
+presented a stale credential. The dashboard returned its **login HTML page** on the content
+endpoint; the *Merge Image URL* Code node threw parsing HTML as JSON.
+
+Verbatim (n8n execution 1113667, manual re-fire 13:10:44; also 1113502 scheduled 12:00, 1114115 16:32:17):
+```
+node: Merge Image URL  (n8n-nodes-base.code, node id 5) — lastNodeExecuted
+error message (resolved from flatted runData): Unknown error [line 10]
+payload embedded in execution_data: ...DOCTYPE html...   (the dashboard login page)
+```
+Endpoint probe isolation (read-only diagnostic):
+```
+stale n8n token  → HTTP 401 {"error":"Unauthorised"}
+fresh qclaw token→ HTTP 400 {"error":"text is required for quote style"}   (auth passed, hit handler)
+```
+This is the same class as 2026-05-19 (exec 961378) and the 2026-04-30 unresolved image-generator
+failure — never structurally closed, only manually re-synced (last sync 2026-05-29 held ~5.5 wks
+until the 07-06 20:22 restart rotated the token again).
+
+**Fix applied (mutation):**
+- Backed up `/home/n8nadmin/n8n-project/.env` → `.env.bak.20260707-qclaw-token` (perms 600).
+- Swapped `QCLAW_API_TOKEN` `e7d3100d5bf5…` → `6ff077ae727a…` (from qclaw config.json), all other
+  lines byte-for-byte preserved (34→34 lines, exactly 1 line changed), perms 600.
+- `docker compose up -d` (recreate, NOT restart — env_file needs container recreate): n8n
+  container recreated, postgres + flowos-overlay left running.
+- In-container `QCLAW_API_TOKEN` first-12 = `6ff077ae727a` = qclaw config.json first-12 ✓.
+
+**Verified green:** endpoint probe with new token → HTTP 400 JSON (auth passes, not HTML). Full
+workflow **execution 1114118 succeeded 2026-07-07 16:32:57** (reached node 6, past Merge Image
+URL) — first success since 2026-07-06 12:00.
+
+### Bug 2 — Telegram Notify sends invalid JSON body (LATENT, surfaced by the Bug 1 fix; NOW FIXED)
+With Bug 1 fixed, exec 1114118 advanced far enough to reach the *Telegram Notify* node, which had
+never been reached during the recent failures. It failed:
+```
+node: Telegram Notify  (n8n-nodes-base.httpRequest, onError: continueRegularOutput)
+error (string in execution_data): JSON parameter needs to be valid JSON
+```
+Root cause — hand-written `jsonBody` has a **trailing comma** after the `text` value and uses raw,
+un-escaped `{{ }}` interpolation:
+```
+={
+  "chat_id": 1375806243,
+  "text": "🆕 New Crete content for review: {{ $('Build Row').item.json.title }} ({{ $('Build Row').item.json.content_type }}). Review at agentboardroom.flowos.tech",
+}
+```
+Proven invalid regardless of interpolated content — static parse of the body with a clean title
+still throws `Expecting property name enclosed in double quotes` (the trailing comma before `}`).
+So the node fails on **every** run; because `onError: continueRegularOutput`, the execution reports
+`success` while the review notification to chat `1375806243` is **silently never delivered**. It was
+invisible until now only because upstream failures (Merge Image URL / credit exhaustion) meant the
+flow rarely reached this node.
+
+The sibling *Telegram Fallback Alert* node in the same workflow already does it correctly:
+`={{ JSON.stringify({ chat_id: 1375806243, text: '…' }) }}` — builds the object in JS and
+stringifies (no trailing-comma risk, auto-escapes interpolated values).
+
+**Fix applied (mutation):** rewrote the *Telegram Notify* `jsonBody` to match the *Telegram
+Fallback Alert* pattern:
+```
+={{ JSON.stringify({ chat_id: 1375806243, text: '🆕 New Crete content for review: ' + $('Build Row').item.json.title + ' (' + $('Build Row').item.json.content_type + '). Review at agentboardroom.flowos.tech' }) }}
+```
+Fixes both the trailing comma and unescaped interpolation. No usable public-API key on this
+n8n 2.4.8 instance, so applied as a surgical DB edit: backed up `workflow_entity.nodes`
+(19 nodes) → `/tmp/notify_nodes_before.20260707-notify.json`; deep-diff proved the ONLY changed
+field was `Telegram Notify → parameters.jsonBody` (all 19 nodes preserved); transactional UPDATE
+(`BEGIN; UPDATE 1; COMMIT`) with a bumped `versionId` (`9da27ed4…` → `c9948b5f…`) and
+`updatedAt=now()`, mirroring a normal save. `docker compose restart n8n` reloaded the active
+workflow from DB; healthz OK, workflow still `active=true`, no activation errors. End-to-end
+(live generation + real Telegram send) deferred to Tyson's manual re-fire — not triggered here to
+avoid content/notification side effects.
+Rollback: restore `nodes` + `versionId` from the backup file and `restart n8n`.
+
+### Security gate
+- Token moved host→host via stdin only; never echoed beyond first-12 chars — PASS
+- `.env` perms 600 confirmed; `.env.bak.20260707-qclaw-token` perms 600 confirmed — PASS
+- New token verified live via direct endpoint probe (401→400, JSON not HTML) — PASS
+- No new creds/endpoints/webhooks/schema; no financial features — PASS
+- Token rollback: `cp .env.bak.20260707-qclaw-token .env && docker compose up -d` — PASS
+- Bug 2 workflow edit: full `nodes` backup taken; transactional single-row UPDATE; deep-diff
+  confirmed single-field change; no secrets in nodes touched; Telegram bot token stays `$env`
+  binding — PASS
+- Read-only diagnostic queries against n8n Postgres (execution_entity/execution_data) — no writes — PASS
+
+### Backlog (separate slices)
+- **STRUCTURAL — stop token drift recurrence:** pin QClaw `dashboard.authToken` so restarts don't
+  rotate it, OR push-on-rotate to n8n `.env`, OR add a token-drift probe. (Manual re-sync is a
+  patch, not a fix — 3rd recurrence.)
+- Merge Image URL defensive validator (guard non-JSON / content-type before JSON.parse) — backlog
+  since 2026-05-20.
+- Runway alerter; text card 1080×1080 → 1080×1350 IG crop (carried from prior entry).
+
+References: `/tmp/crete_generator_failure_20260707.md` (diagnostic verdict); memory
+`project_qclaw_token_rotates_on_restart.md`.
