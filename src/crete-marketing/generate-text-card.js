@@ -28,9 +28,10 @@ const CHARCOAL   = '#2C2C2C';
 const WARM_GREY  = '#8C8478';
 const ACCENT_GOLD= '#B8A179';
 
-const SIZE = 1080;
+const WIDTH  = 1080;
+const HEIGHT = 1350;
 const PAD  = 100;           // outer padding
-const TEXT_W = SIZE - PAD * 2; // usable text width
+const TEXT_W = WIDTH - PAD * 2; // usable text width
 
 // ─── Helpers ─────────────────────────────────────────────────
 
@@ -100,7 +101,7 @@ function drawOliveBranch(ctx, x, y, scale = 1, flip = false) {
 
 /** Draw thin decorative horizontal line. */
 function drawDivider(ctx, y, width = 120) {
-  const x = (SIZE - width) / 2;
+  const x = (WIDTH - width) / 2;
   ctx.strokeStyle = ACCENT_GOLD;
   ctx.lineWidth = 1.5;
   ctx.beginPath();
@@ -114,17 +115,17 @@ function drawDivider(ctx, y, width = 120) {
 function renderQuoteCard(ctx, text) {
   // Background
   ctx.fillStyle = CREAM;
-  ctx.fillRect(0, 0, SIZE, SIZE);
+  ctx.fillRect(0, 0, WIDTH, HEIGHT);
 
   // Top olive branch accents
   drawOliveBranch(ctx, PAD - 20, PAD + 20, 1.2, false);
-  drawOliveBranch(ctx, SIZE - PAD + 20, PAD + 20, 1.2, true);
+  drawOliveBranch(ctx, WIDTH - PAD + 20, PAD + 20, 1.2, true);
 
   // Opening quote mark
   ctx.fillStyle = OLIVE_LIGHT;
   ctx.font = 'bold 120px "Cormorant Garamond"';
   ctx.textAlign = 'center';
-  ctx.fillText('\u201C', SIZE / 2, PAD + 130);
+  ctx.fillText('\u201C', WIDTH / 2, PAD + 130);
 
   // Quote text — large italic serif
   ctx.fillStyle = CHARCOAL;
@@ -134,42 +135,42 @@ function renderQuoteCard(ctx, text) {
   const lines = wrapText(ctx, text, TEXT_W - 40);
   const lineHeight = 58;
   const totalHeight = lines.length * lineHeight;
-  let startY = (SIZE / 2) - (totalHeight / 2) + 40;
+  let startY = (HEIGHT / 2) - (totalHeight / 2) + 40;
   // Clamp so text doesn't overflow
-  startY = Math.max(PAD + 170, Math.min(startY, SIZE - PAD - 180 - totalHeight));
+  startY = Math.max(PAD + 170, Math.min(startY, HEIGHT - PAD - 180 - totalHeight));
 
   for (let i = 0; i < lines.length; i++) {
-    ctx.fillText(lines[i], SIZE / 2, startY + i * lineHeight);
+    ctx.fillText(lines[i], WIDTH / 2, startY + i * lineHeight);
   }
 
   // Closing quote mark
   ctx.fillStyle = OLIVE_LIGHT;
   ctx.font = 'bold 120px "Cormorant Garamond"';
-  ctx.fillText('\u201D', SIZE / 2, startY + totalHeight + 60);
+  ctx.fillText('\u201D', WIDTH / 2, startY + totalHeight + 60);
 
   // Divider
-  const divY = SIZE - PAD - 80;
+  const divY = HEIGHT - PAD - 80;
   drawDivider(ctx, divY);
 
   // Brand footer
   ctx.fillStyle = OLIVE_DARK;
   ctx.font = '600 22px "Montserrat"';
   ctx.textAlign = 'center';
-  ctx.fillText('C R E T E   P R O J E C T S', SIZE / 2, divY + 36);
+  ctx.fillText('C R E T E   P R O J E C T S', WIDTH / 2, divY + 36);
 
   ctx.fillStyle = WARM_GREY;
   ctx.font = '14px "Montserrat"';
-  ctx.fillText('creteprojects.com', SIZE / 2, divY + 60);
+  ctx.fillText('creteprojects.com', WIDTH / 2, divY + 60);
 }
 
 function renderEditorialCard(ctx, headline, body) {
   // Background
   ctx.fillStyle = CREAM;
-  ctx.fillRect(0, 0, SIZE, SIZE);
+  ctx.fillRect(0, 0, WIDTH, HEIGHT);
 
   // Accent bar at top
   ctx.fillStyle = OLIVE_DARK;
-  ctx.fillRect(0, 0, SIZE, 6);
+  ctx.fillRect(0, 0, WIDTH, 6);
 
   // Brand header
   ctx.fillStyle = OLIVE_MID;
@@ -185,7 +186,7 @@ function renderEditorialCard(ctx, headline, body) {
   ctx.lineWidth = 1;
   ctx.beginPath();
   ctx.moveTo(PAD, PAD + 30);
-  ctx.lineTo(SIZE - PAD, PAD + 30);
+  ctx.lineTo(WIDTH - PAD, PAD + 30);
   ctx.stroke();
 
   // Headline
@@ -219,27 +220,27 @@ function renderEditorialCard(ctx, headline, body) {
   const bodyLines = wrapText(ctx, body, TEXT_W);
   const bodyLineH = 40;
   for (const line of bodyLines) {
-    if (y + bodyLineH > SIZE - PAD - 70) break; // prevent overflow
+    if (y + bodyLineH > HEIGHT - PAD - 70) break; // prevent overflow
     ctx.fillText(line, PAD, y);
     y += bodyLineH;
   }
 
   // Bottom olive branches
-  drawOliveBranch(ctx, PAD - 10, SIZE - PAD + 10, 1.0, false);
-  drawOliveBranch(ctx, SIZE - PAD + 10, SIZE - PAD + 10, 1.0, true);
+  drawOliveBranch(ctx, PAD - 10, HEIGHT - PAD + 10, 1.0, false);
+  drawOliveBranch(ctx, WIDTH - PAD + 10, HEIGHT - PAD + 10, 1.0, true);
 
   // Footer
   ctx.fillStyle = WARM_GREY;
   ctx.font = '14px "Montserrat"';
   ctx.textAlign = 'center';
-  ctx.fillText('creteprojects.com', SIZE / 2, SIZE - PAD + 35);
+  ctx.fillText('creteprojects.com', WIDTH / 2, HEIGHT - PAD + 35);
 }
 
 // ─── Public API ──────────────────────────────────────────────
 
 export async function generateTextCard(opts) {
   const style = opts.style || 'quote';
-  const canvas = createCanvas(SIZE, SIZE);
+  const canvas = createCanvas(WIDTH, HEIGHT);
   const ctx = canvas.getContext('2d');
 
   // Anti-aliasing
@@ -280,7 +281,7 @@ if (isMain) {
   try {
     const buf = await generateTextCard(values);
     writeFileSync(values.output, buf);
-    console.log(`✓ ${values.output} (${buf.length} bytes, ${SIZE}×${SIZE})`);
+    console.log(`✓ ${values.output} (${buf.length} bytes, ${WIDTH}×${HEIGHT})`);
   } catch (err) {
     console.error(`Error: ${err.message}`);
     process.exit(1);
