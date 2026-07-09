@@ -36,9 +36,15 @@ const TEXT_W = WIDTH - PAD * 2; // usable text width
 // ─── Helpers ─────────────────────────────────────────────────
 
 /** Strip dangerous chars; keep printable text + common punctuation + emojis. */
-function sanitise(str) {
+export function sanitise(str) {
   if (typeof str !== 'string') return '';
-  return str.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '').trim().slice(0, 2000);
+  return str
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')   // strip control chars
+    .replace(/\s+[–—―]\s+/g, ' - ')      // spaced clause dash -> " - "
+    .replace(/[–—―]/g, '-')              // tight/compound dash -> "-"
+    .replace(/ {2,}/g, ' ')                             // collapse doubled spaces
+    .trim()
+    .slice(0, 2000);
 }
 
 /** Word-wrap text to fit within maxWidth using the current ctx font. */
