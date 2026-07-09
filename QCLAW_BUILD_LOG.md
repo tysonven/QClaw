@@ -15836,3 +15836,34 @@ Probe code is untouched by this branch (`git status` scope = the 4 files + new t
 References: memory `project_skill_http_writes_ungated`, `project_ghl_locations`,
 `feedback_adversarial_review_before_pr_ready`; audit query scripts under session scratchpad
 (`audit_query.cjs`, `audit_query2.cjs`).
+
+### Adversarial review verdict + fix applied (2026-07-09, same branch)
+Both residual items were **CONFIRMED as real bypasses** by a PoC importing the live
+`ApprovalGate`/`ToolRegistry` — not theoretical:
+- **S1 (HIGH) — skill-dir path-arg bypass.** Step 2b sat AFTER `_isSkillDirOperation`, which
+  inspects `toolArgs.path/cwd/destination` and returns `requiresApproval:false` for anything under
+  `/root/QClaw/src/agents/skills/`. `call.args` is the raw model tool input (no schema stripping —
+  grep-confirmed in executor/registry), so a write call carrying e.g.
+  `path:'/root/QClaw/src/agents/skills/'` skipped the gate and still hit GHL (extra body field
+  ignored). Prompt-injection reachable.
+- **S3 (MEDIUM-HIGH) — non-`charlie__` prefix bypass.** Step 2b required
+  `toolName.startsWith('charlie__')`, but skill tools register under the loading agent's name
+  (`registerSkillTool(this.name…)` / `registerSpecialistSkills(specialist.name…)`). The code's
+  DEFAULT agent name is `echo` (`agents/registry.js:67`); prod `config.agent.name` is the brand
+  `"QClaw"`; `charlie` is a workspace-agent name. PoC: `echo__ghl__ghl__create_notes` POST →
+  `requiresApproval:false`. Any non-charlie agent (echo, live specialists QA-Operator/GHL-Support-Bot)
+  with a write skill was ungated.
+- S2 (LOW) — no `String()` guard: whitespace-padded method bypassed; non-string threw. Not reachable
+  via the real path (getSkillToolMethod → `string|null`) but hardened anyway.
+- SAFE: S4 (getSkillToolMethod null-safety — no input throws), S5 (sole caller executor.js;
+  `?? null`; 2-arg back-compat), S6 (43/44 files green; probes env-only, `26 passed,0 failed` on droplet).
+
+**Fix (this commit):** step 2b **moved above** the destructive-verb and skill-dir bypass steps and
+**rewritten to key on the HTTP method, not the agent name** —
+`String(context?.httpMethod ?? '').trim().toUpperCase()` against a module-level `HTTP_WRITE_METHODS`.
+`context.httpMethod` is non-null ONLY for skill tools (getSkillToolMethod contract), so a write verb
+uniquely identifies a skill HTTP write for ANY owning agent. Dropped the `charlie__`/`split('__')`
+coupling entirely. PoC re-run against the patched gate: S1 all-args GATED, S3 echo GATED, S2
+whitespace GATED / non-string no-throw. Regression tests added (echo agent, specialist DELETE,
+path/cwd/destination smuggling, whitespace + non-string method); `approval-gate.test.js` now 27/27.
+No change to executor.js or registry.js — the fix is contained to `check()`.

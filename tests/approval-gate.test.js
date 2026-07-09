@@ -2,16 +2,18 @@
  * Phase 5 Session 5 — Skill HTTP write approval gate
  *
  * Covers the gate that routes skill-parsed HTTP write tools
- * (charlie__<skill>__<skill>__<endpoint> using POST/PUT/PATCH/DELETE)
- * through requestApproval, closing the gap where GHL write tools
- * (create_notes, create_contacts, …) executed autonomously.
+ * (POST/PUT/PATCH/DELETE) through requestApproval, closing the gap where
+ * GHL write tools (create_notes, create_contacts, …) executed autonomously.
  *
  * Three seams:
  *   1. ToolRegistry.getSkillToolMethod() — HTTP verb lookup for skill
  *      tools (null for builtins / non-skill presets / unknown names).
- *   2. ApprovalGate.check() step 2b — gates charlie__ prefixed skill
- *      tools whose HTTP method mutates, backward-compatible with the
- *      existing two-arg signature.
+ *   2. ApprovalGate.check() skill HTTP write gate — gates ANY skill tool
+ *      whose HTTP method mutates, keyed on the method (not the agent-name
+ *      prefix), evaluated BEFORE the destructive-verb and skill-dir bypass
+ *      steps, backward-compatible with the existing two-arg signature.
+ *      Includes adversarial regressions: non-charlie agents (echo /
+ *      specialists), skill-dir path-arg smuggling, and method robustness.
  *   3. Integration — the executor seam (getSkillToolMethod feeding
  *      check() with { httpMethod }) actually routes a create_notes
  *      call to approval inside ToolExecutor.run().
@@ -52,6 +54,10 @@ function buildRegistry() {
   r.registerSkillTool('charlie', 'ghl', skill('ghl'), def('ghl__get_contacts_locationid_id_limit_25', 'GET'));
   // FSC GHL — read-only (GET)
   r.registerSkillTool('charlie', 'ghl-fsc', skill('ghl-fsc'), def('ghl-fsc__get_contacts', 'GET'));
+  // A NON-charlie agent's write tool (echo is the code's default agent name;
+  // specialists register under their own names). Its verb must be discoverable
+  // exactly like charlie's — the gate keys on method, not the name prefix.
+  r.registerSkillTool('echo', 'ghl', skill('ghl'), def('ghl__create_notes', 'POST'));
   // A skill tool with no explicit method (mirrors the `|| 'GET'` default)
   r.registerSkillTool('charlie', 'ghl', skill('ghl'), { name: 'ghl__ping', path: '/p/', description: 'ping', inputSchema: { type: 'object', properties: {} } });
   // A builtin — must be invisible to getSkillToolMethod
@@ -88,8 +94,11 @@ async function main() {
     `got ${registry.getSkillToolMethod('NewsAPI__get_headlines')}`);
   check('getSkillToolMethod: unknown name -> null',
     registry.getSkillToolMethod('does__not__exist') === null);
+  check('getSkillToolMethod: NON-charlie agent write tool -> "POST" (agent-agnostic)',
+    registry.getSkillToolMethod('echo__ghl__ghl__create_notes') === 'POST',
+    `got ${registry.getSkillToolMethod('echo__ghl__ghl__create_notes')}`);
 
-  // ── 2. ApprovalGate.check() step 2b ─────────────────────────
+  // ── 2. ApprovalGate.check() skill HTTP write gate ───────────
   const approvals = new ExecApprovals({ _dir: dir });
   approvals.attach(null);
   const gate = new ApprovalGate(approvals);
@@ -118,17 +127,48 @@ async function main() {
 
   // Backward compatibility: two-arg call (no context) must still work.
   const legacyRes = await gate.check('charlie__ghl__ghl__create_notes', { body: 'hi' });
-  check('check: two-arg (no context) is backward-compatible -> not gated by step 2b',
+  check('check: two-arg (no context) is backward-compatible -> not gated',
     legacyRes.requiresApproval === false, JSON.stringify(legacyRes));
 
-  // Non-skill tool with a write method must NOT be gated by step 2b
-  // (the charlie__ prefix is required). shell_exec is still gated by its
-  // own rule; use a neutral name to isolate step 2b.
-  const nonSkillRes = await gate.check('some_random_tool', {}, { httpMethod: 'POST' });
-  check('check: non-charlie tool with POST -> NOT gated by step 2b',
-    nonSkillRes.requiresApproval === false, JSON.stringify(nonSkillRes));
+  // ── S3 regression: the gate keys on the HTTP method, not the agent-name
+  // prefix. getSkillToolMethod yields a verb ONLY for skill tools, so a write
+  // verb from ANY agent (echo, a specialist, a renamed primary) must gate.
+  // Pre-fix these bypassed because the name wasn't `charlie__`-prefixed.
+  const echoRes = await gate.check('echo__ghl__ghl__create_notes', { data: 'n' }, { httpMethod: 'POST' });
+  check('check: NON-charlie skill write (echo) POST -> requiresApproval:true medium',
+    echoRes.requiresApproval === true && echoRes.riskLevel === 'medium', JSON.stringify(echoRes));
+  const specialistRes = await gate.check('qa-operator__ghl__ghl__delete_thing', {}, { httpMethod: 'DELETE' });
+  check('check: NON-charlie specialist DELETE -> gated, riskLevel:high',
+    specialistRes.requiresApproval === true && specialistRes.riskLevel === 'high', JSON.stringify(specialistRes));
 
-  // A charlie__ tool with a GET method is not gated by step 2b.
+  // ── S1 regression: a crafted path/cwd/destination arg resolving into the
+  // skill-edit allowlist must NOT short-circuit the write gate. The write gate
+  // now runs BEFORE _isSkillDirOperation, so the skill-dir bypass can't be
+  // abused to smuggle an ungated CRM write.
+  const skillDirArgs = [
+    { data: 'n', path: '/root/QClaw/src/agents/skills/' },
+    { data: 'n', cwd: '/root/QClaw/src/agents/skills/ghl.md' },
+    { data: 'n', destination: '/root/QClaw/src/agents/skills/evil' },
+  ];
+  for (const args of skillDirArgs) {
+    const res = await gate.check('charlie__ghl__ghl__create_notes', args, { httpMethod: 'POST' });
+    check(`check: skill-dir arg [${Object.keys(args).filter(k => k !== 'data')}] does NOT bypass write gate`,
+      res.requiresApproval === true, JSON.stringify({ args, res }));
+  }
+
+  // ── S2 regression: whitespace-padded method still gates (trim); a
+  // non-string method must not throw (String() guard) and must not gate.
+  const wsRes = await gate.check('charlie__ghl__ghl__create_notes', { data: 'n' }, { httpMethod: 'POST\n' });
+  check('check: whitespace-padded method "POST\\n" -> still gated',
+    wsRes.requiresApproval === true, JSON.stringify(wsRes));
+  let threw = false;
+  let objRes;
+  try { objRes = await gate.check('charlie__ghl__ghl__create_notes', { data: 'n' }, { httpMethod: {} }); }
+  catch { threw = true; }
+  check('check: non-string method ({}) does not throw and does not gate',
+    threw === false && objRes?.requiresApproval === false, `threw=${threw} res=${JSON.stringify(objRes)}`);
+
+  // A charlie__ tool with a GET method is not gated by the write gate.
   const charlieGetRes = await gate.check('charlie__ghl__ghl__get_drafts_by_status', {}, { httpMethod: 'GET' });
   check('check: charlie__ GET tool -> NOT gated',
     charlieGetRes.requiresApproval === false, JSON.stringify(charlieGetRes));

@@ -61,6 +61,10 @@ const DEFAULT_DESTRUCTIVE_PATTERNS = [
 // registered) dropped in Slice 3c (2026-05-15).
 const SHELL_TOOLS = ['shell_exec', 'ssh_exec'];
 
+// Mutating HTTP verbs. A skill-parsed tool using one of these requires
+// approval — see check()'s skill HTTP write gate.
+const HTTP_WRITE_METHODS = ['POST', 'PUT', 'PATCH', 'DELETE'];
+
 export class ApprovalGate {
   constructor(approvals, config = {}) {
     this.approvals = approvals;
@@ -69,7 +73,7 @@ export class ApprovalGate {
 
     this.autoApproveTools = config.autoApproveTools || [];
 
-    // Skill HTTP write gate: see check() step 2b.
+    // Skill HTTP write gate: see check() (skill HTTP write gate step).
     this.gatedTools = config.gatedTools || [
       'shell_exec',
     ];
@@ -157,8 +161,8 @@ export class ApprovalGate {
    * @param {object} toolArgs
    * @param {{ httpMethod?: string }} [context] - optional per-call metadata.
    *   `httpMethod` is the skill tool's HTTP verb (from the registry, via the
-   *   executor); drives the skill HTTP write gate (step 2b). Defaults to {}
-   *   so existing two-arg callers are unaffected.
+   *   executor); drives the skill HTTP write gate. Defaults to {} so existing
+   *   two-arg callers are unaffected.
    * @returns {{ requiresApproval: boolean, reason?: string, riskLevel?: string }}
    */
   async check(toolName, toolArgs, context = {}) {
@@ -193,6 +197,27 @@ export class ApprovalGate {
       // tool function will reject with {error:'empty_command'}.
     }
 
+    // 1b. Skill HTTP write gate — MUST precede the destructive-verb and
+    // skill-dir bypass steps below.
+    //
+    // `context.httpMethod` is non-null ONLY for skill-parsed tools
+    // (ToolRegistry.getSkillToolMethod returns null for builtins, MCP tools,
+    // and non-"skill:" presets), so a mutating verb here uniquely identifies a
+    // skill HTTP write for ANY owning agent — charlie, echo, a specialist, or
+    // a renamed/rebranded primary — not just a `charlie__`-prefixed name.
+    // Placed above `_isSkillDirOperation` so a crafted path/cwd/destination arg
+    // cannot short-circuit the gate via the skill-dir allowlist. String()+
+    // trim() so a non-string or whitespace-padded method can neither throw at
+    // `.toUpperCase()` nor slip past `includes()`.
+    const skillWriteMethod = String(context?.httpMethod ?? '').trim().toUpperCase();
+    if (HTTP_WRITE_METHODS.includes(skillWriteMethod)) {
+      return {
+        requiresApproval: true,
+        reason: `Skill HTTP ${skillWriteMethod} requires approval`,
+        riskLevel: skillWriteMethod === 'DELETE' ? 'high' : 'medium',
+      };
+    }
+
     // 2. Destructive verb match (shell tools only) — always gates, even
     // when the target is inside the skill-edit allowlist. `rm` on a
     // skill file still requires approval.
@@ -210,22 +235,6 @@ export class ApprovalGate {
     if (this._isSkillDirOperation(toolName, toolArgs)) {
       log.info(`Skill-dir operation bypassed approval gate: ${toolName}`);
       return { requiresApproval: false };
-    }
-
-    // 2b. Skill HTTP write gate
-    // Skill-parsed tools using mutating HTTP methods require approval.
-    // Tool names follow pattern: charlie__<skill>__<skill>__<endpoint>
-    // HTTP method passed from executor via context.httpMethod.
-    const HTTP_WRITE_METHODS = ['POST', 'PUT', 'PATCH', 'DELETE'];
-    if (context?.httpMethod &&
-        HTTP_WRITE_METHODS.includes(context.httpMethod.toUpperCase()) &&
-        toolName.startsWith('charlie__') &&
-        toolName.split('__').length >= 3) {
-      return {
-        requiresApproval: true,
-        reason: `Skill HTTP ${context.httpMethod.toUpperCase()} requires approval`,
-        riskLevel: context.httpMethod.toUpperCase() === 'DELETE' ? 'high' : 'medium',
-      };
     }
 
     // 3. Gated tool list
