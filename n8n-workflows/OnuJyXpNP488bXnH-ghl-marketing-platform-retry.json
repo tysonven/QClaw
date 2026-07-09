@@ -1,0 +1,507 @@
+{
+  "updatedAt": "2026-07-09T17:12:36.003Z",
+  "createdAt": "2026-07-09T15:02:48.602Z",
+  "id": "OnuJyXpNP488bXnH",
+  "name": "GHL Marketing: Platform Retry",
+  "description": null,
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ghl-marketing-retry",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "10000000-0000-4000-8000-000000000001",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -100,
+        300
+      ],
+      "webhookId": "a0000000-0000-4000-8000-0000000000aa"
+    },
+    {
+      "parameters": {
+        "url": "=https://fdabygmromuqtysitodp.supabase.co/rest/v1/marketing_drafts?id=eq.{{ $json.body.draftId }}&select=*",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{ $env.SUPABASE_ANON_KEY }}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.SUPABASE_ANON_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "10000000-0000-4000-8000-000000000002",
+      "name": "Fetch Draft",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        120,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const DEFAULT_IMAGE = $env.GHL_DEFAULT_IMAGE_URL || 'https://pub-1fa192ebc8ff40dba2b9a0f1890e6f7a.r2.dev/marketing-templates/ghl-template-value-led.jpg';\nconst rows = $input.first().json;\nconst draft = Array.isArray(rows) ? rows[0] : rows;\nif (!draft || !draft.id) throw new Error('Draft not found for the provided draftId');\nconst orig_published = Array.isArray(draft.published_platforms) ? draft.published_platforms : [];\nconst orig_errors = (draft.publish_errors && typeof draft.publish_errors === 'object') ? draft.publish_errors : {};\nconst effective_image_url = draft.image_url || DEFAULT_IMAGE;\nconst isMissing = (p) => Object.prototype.hasOwnProperty.call(orig_errors, p) && !orig_published.includes(p);\nconst has = (v) => typeof v === 'string' && v.trim().length > 0;\nconst do_facebook = isMissing('facebook') && has(draft.facebook_post) && has(effective_image_url);\nconst do_instagram = isMissing('instagram') && has(draft.instagram_caption) && has(effective_image_url);\nconst do_linkedin = isMissing('linkedin') && has(draft.linkedin_post);\nreturn [{ json: Object.assign({}, draft, { orig_published, orig_errors, effective_image_url, do_facebook, do_instagram, do_linkedin }) }];"
+      },
+      "id": "10000000-0000-4000-8000-000000000003",
+      "name": "Plan",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        340,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "cond-fb",
+              "leftValue": "={{ $('Plan').item.json.do_facebook }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "10000000-0000-4000-8000-000000000004",
+      "name": "Post FB?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        560,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v19.0/{{$env.FLOWOS_META_PAGE_ID}}/photos",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"url\": {{ JSON.stringify($json.effective_image_url) }},\n  \"caption\": {{ JSON.stringify($json.facebook_post || \"\") }},\n  \"access_token\": \"{{$env.FLOWOS_META_PAGE_ACCESS_TOKEN}}\"\n}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "10000000-0000-4000-8000-000000000005",
+      "name": "Facebook Post",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        780,
+        180
+      ],
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "cond-ig",
+              "leftValue": "={{ $('Plan').item.json.do_instagram }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "10000000-0000-4000-8000-000000000006",
+      "name": "Post IG?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1000,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "accountId": {
+          "__rl": true,
+          "value": "27064",
+          "mode": "list",
+          "cachedResultName": "flow_os",
+          "cachedResultUrl": "https://backend.blotato.com/v2/accounts/27064"
+        },
+        "postContentText": "={{ $('Plan').item.json.instagram_caption || '' }}",
+        "postContentMediaUrls": "={{ $('Plan').item.json.effective_image_url }}",
+        "options": {}
+      },
+      "id": "10000000-0000-4000-8000-000000000007",
+      "name": "IG Post (Blotato)",
+      "type": "@blotato/n8n-nodes-blotato.blotato",
+      "typeVersion": 2,
+      "position": [
+        1220,
+        180
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "blotatoApi": {
+          "id": "Bs2TEAOA9mVKfcR3",
+          "name": "Blotato account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "cond-li",
+              "leftValue": "={{ $('Plan').item.json.do_linkedin }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "10000000-0000-4000-8000-000000000008",
+      "name": "Post LinkedIn?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1440,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "platform": "linkedin",
+        "accountId": {
+          "__rl": true,
+          "value": "11109",
+          "mode": "list",
+          "cachedResultName": "Tyson Venables",
+          "cachedResultUrl": "https://backend.blotato.com/v2/accounts/11109"
+        },
+        "postContentText": "={{ $('Plan').item.json.linkedin_post || '' }}",
+        "postContentMediaUrls": "={{ $('Plan').item.json.effective_image_url }}",
+        "options": {}
+      },
+      "id": "10000000-0000-4000-8000-000000000009",
+      "name": "LinkedIn Post (Blotato)",
+      "type": "@blotato/n8n-nodes-blotato.blotato",
+      "typeVersion": 2,
+      "position": [
+        1660,
+        180
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "blotatoApi": {
+          "id": "Bs2TEAOA9mVKfcR3",
+          "name": "Blotato account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const plan = $('Plan').first().json;\nconst published = Array.isArray(plan.orig_published) ? plan.orig_published.slice() : [];\nconst errors = Object.assign({}, plan.orig_errors || {});\nconst add = (p) => { if (!published.includes(p)) published.push(p); delete errors[p]; };\nconst node = (name) => { try { return $(name).first(); } catch (e) { return undefined; } };\nconst msg = (n, j, fb) => (n && n.error && n.error.description) || (j && j.error && (j.error.message || j.error.error_user_msg || j.error)) || (j && j.message) || fb;\nif (plan.do_facebook) { const n = node('Facebook Post'); const j = n && n.json; if (j && j.id && !j.error) add('facebook'); else errors.facebook = msg(n, j, 'facebook retry failed'); }\nif (plan.do_instagram) { const n = node('IG Post (Blotato)'); const j = n && n.json; if (j && j.postSubmissionId && !j.error) add('instagram'); else errors.instagram = msg(n, j, 'instagram retry failed'); }\nif (plan.do_linkedin) { const n = node('LinkedIn Post (Blotato)'); const j = n && n.json; if (j && j.postSubmissionId && !j.error) add('linkedin'); else errors.linkedin = msg(n, j, 'linkedin retry failed'); }\nconst final_status = Object.keys(errors).length === 0 ? 'published' : 'partially_published';\nreturn [{ json: { id: plan.id, published_platforms: published, publish_errors: errors, final_status, now_iso: new Date().toISOString() } }];"
+      },
+      "id": "10000000-0000-4000-8000-00000000000a",
+      "name": "Compute Merge",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1880,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "=https://fdabygmromuqtysitodp.supabase.co/rest/v1/marketing_drafts?id=eq.{{ $json.id }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "return=representation"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "apikey",
+              "value": "={{ $env.SUPABASE_ANON_KEY }}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.SUPABASE_ANON_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  status: $json.final_status,\n  published_at: $json.now_iso,\n  updated_at: $json.now_iso,\n  published_platforms: $json.published_platforms,\n  publish_errors: Object.keys($json.publish_errors).length ? $json.publish_errors : null\n}) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "10000000-0000-4000-8000-00000000000b",
+      "name": "Update Supabase",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2100,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($('Compute Merge').item.json) }}",
+        "options": {}
+      },
+      "id": "10000000-0000-4000-8000-00000000000c",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        2320,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Fetch Draft",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Draft": {
+      "main": [
+        [
+          {
+            "node": "Plan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Plan": {
+      "main": [
+        [
+          {
+            "node": "Post FB?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Post FB?": {
+      "main": [
+        [
+          {
+            "node": "Facebook Post",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Post IG?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Facebook Post": {
+      "main": [
+        [
+          {
+            "node": "Post IG?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Post IG?": {
+      "main": [
+        [
+          {
+            "node": "IG Post (Blotato)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Post LinkedIn?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IG Post (Blotato)": {
+      "main": [
+        [
+          {
+            "node": "Post LinkedIn?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Post LinkedIn?": {
+      "main": [
+        [
+          {
+            "node": "LinkedIn Post (Blotato)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Compute Merge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LinkedIn Post (Blotato)": {
+      "main": [
+        [
+          {
+            "node": "Compute Merge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compute Merge": {
+      "main": [
+        [
+          {
+            "node": "Update Supabase",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Supabase": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "meta": null,
+  "pinData": {},
+  "versionId": "a5b0f167-869c-4a1d-b229-7f7ce17694dc",
+  "activeVersionId": "a5b0f167-869c-4a1d-b229-7f7ce17694dc",
+  "versionCounter": 4,
+  "triggerCount": 1,
+  "tags": [],
+  "shared": [
+    {
+      "updatedAt": "2026-07-09T15:02:48.602Z",
+      "createdAt": "2026-07-09T15:02:48.602Z",
+      "role": "workflow:owner",
+      "workflowId": "OnuJyXpNP488bXnH",
+      "projectId": "KwpTDWcFWL3DfyW3",
+      "project": {
+        "updatedAt": "2026-04-08T20:28:08.726Z",
+        "createdAt": "2025-06-06T11:27:14.830Z",
+        "id": "KwpTDWcFWL3DfyW3",
+        "name": "Tyson Venables <tysonvenables@protonmail.com>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "b1512bca-25b8-4b8b-add0-b86540e5144d"
+      }
+    }
+  ]
+}
