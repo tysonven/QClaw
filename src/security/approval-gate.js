@@ -69,16 +69,7 @@ export class ApprovalGate {
 
     this.autoApproveTools = config.autoApproveTools || [];
 
-    // TODO (Phase 5 — FSC write slice): skill-defined HTTP tools using
-    // POST/PUT/PATCH/DELETE (e.g. charlie__ghl-fsc__* create/update, or the
-    // live charlie__ghl__ghl__create_notes) are NOT gated here. This list
-    // covers only shell_exec; check() otherwise gates just destructive shell
-    // verbs and Stripe charges — so a skill write tool returns
-    // requiresApproval:false and executes autonomously against an external
-    // CRM. Before enabling GHL/skill write endpoints, expand gating to route
-    // method-mutating skill HTTP tools through requestApproval (add their
-    // generated tool names to gatedTools, or classify by HTTP method at
-    // registration and gate the mutating verbs).
+    // Skill HTTP write gate: see check() step 2b.
     this.gatedTools = config.gatedTools || [
       'shell_exec',
     ];
@@ -162,9 +153,15 @@ export class ApprovalGate {
 
   /**
    * Check if a tool call requires approval.
+   * @param {string} toolName
+   * @param {object} toolArgs
+   * @param {{ httpMethod?: string }} [context] - optional per-call metadata.
+   *   `httpMethod` is the skill tool's HTTP verb (from the registry, via the
+   *   executor); drives the skill HTTP write gate (step 2b). Defaults to {}
+   *   so existing two-arg callers are unaffected.
    * @returns {{ requiresApproval: boolean, reason?: string, riskLevel?: string }}
    */
-  async check(toolName, toolArgs) {
+  async check(toolName, toolArgs, context = {}) {
     // 0. Auto-approved tools bypass all further checks
     if (this.autoApproveTools.includes(toolName)) {
       log.debug(`Auto-approved: ${toolName}`);
@@ -213,6 +210,22 @@ export class ApprovalGate {
     if (this._isSkillDirOperation(toolName, toolArgs)) {
       log.info(`Skill-dir operation bypassed approval gate: ${toolName}`);
       return { requiresApproval: false };
+    }
+
+    // 2b. Skill HTTP write gate
+    // Skill-parsed tools using mutating HTTP methods require approval.
+    // Tool names follow pattern: charlie__<skill>__<skill>__<endpoint>
+    // HTTP method passed from executor via context.httpMethod.
+    const HTTP_WRITE_METHODS = ['POST', 'PUT', 'PATCH', 'DELETE'];
+    if (context?.httpMethod &&
+        HTTP_WRITE_METHODS.includes(context.httpMethod.toUpperCase()) &&
+        toolName.startsWith('charlie__') &&
+        toolName.split('__').length >= 3) {
+      return {
+        requiresApproval: true,
+        reason: `Skill HTTP ${context.httpMethod.toUpperCase()} requires approval`,
+        riskLevel: context.httpMethod.toUpperCase() === 'DELETE' ? 'high' : 'medium',
+      };
     }
 
     // 3. Gated tool list

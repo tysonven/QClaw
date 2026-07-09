@@ -15741,3 +15741,98 @@ Rollback: restore `nodes` + `versionId` from the backup file and `restart n8n`.
 
 References: `/tmp/crete_generator_failure_20260707.md` (diagnostic verdict); memory
 `project_qclaw_token_rotates_on_restart.md`.
+
+## Phase 5 Session 5 — Skill HTTP write approval gate (2026-07-09)
+
+**Branch:** `cc/p5s5-skill-write-gate-20260709` → DRAFT PR to `tysonven/QClaw` (base `main` @ `c23cb43`).
+**Status:** built, tested, pushed as DRAFT. NOT merged, NOT deployed. PM2 restart of `quantumclaw`
+owed post-merge. Adversarial review owed before un-drafting (security-relevant slice — see memory
+`feedback_adversarial_review_before_pr_ready`).
+
+### Problem
+`ApprovalGate.check()` gated only `shell_exec`, destructive shell verbs, and Stripe charges.
+Skill-parsed HTTP tools (`charlie__ghl__*`, `charlie__ghl-fsc__*`) bypassed the gate entirely — a
+POST/PUT skill write executed autonomously against an external CRM with no denial path. TODO
+documenting the gap lived at `approval-gate.js:72-81`.
+
+### Audit (read-only, pre-implementation)
+1. Sole gate caller is `executor.js:268` `approvalGate.check(call.name, call.args)`. `call` carries
+   only `{name, args, id}`.
+2. `this.tools._builtins?.get(call.name)` (executor:315) covers builtins ONLY. Skill tools live in
+   `_apiTools`, keyed `charlie__<skill>__<toolDef.name>`, entry `{preset, toolDef, skill, scope}`
+   with `preset.name='skill:<skill>'` and `toolDef.method` = uppercase verb (`skill-parser.js:208`).
+3. No pre-existing public getter for skill toolDefs → new `getSkillToolMethod` required.
+4. `tests/approval-gate.test.js` did NOT exist; `check()` was exercised only in
+   `approval-gate-shell-exec-parser.test.js`. The runner is a hand-rolled `&&` chain in
+   `package.json` (not a glob) → new test file must be wired in explicitly.
+5. **Live audit.db (`/root/.quantumclaw/audit.db`, table `audit`, 9,686 rows) — premise NOT
+   corroborated.** Every `charlie__ghl__*` execution ever recorded is a GET read; ZERO write-verb
+   skill tool has ever fired (across all 16 distinct `charlie__` skill actions). Verbatim query
+   output:
+```
+charlie__ghl__ghl__get_contacts_locationid_id_limit_25          c=87  latest 2026-07-09T05:00:03.277Z
+charlie__ghl__ghl__get_contacts_search_locationid_id_query_id   c=2   latest 2026-07-03T07:36:43.288Z
+charlie__ghl__ghl__get_drafts_by_status                         c=2   latest 2026-06-26T08:09:58.760Z
+WRITE_VERB_SKILL_FIRES: []
+DENIED_ROWS (approved=0): {"c":0,"latest":null}
+SINCE_JUL4: {"c":10,"latest":"2026-07-09T05:00:03.277Z"}
+```
+   Session-3's "create_notes fired twice" most likely documented the *capability* (gate returns
+   `requiresApproval:false` for skill writes — confirmed by reading `check()`), not an observed
+   production fire. Gap is real regardless; closed before any write fires.
+
+### Change (4 files modified + 1 new test)
+- `src/tools/registry.js`: `getSkillToolMethod(toolName)` → uppercase HTTP verb for `skill:`-preset
+  tools; `null` for builtins / non-skill presets / unknown. Mirrors `executeSkillTool`'s
+  `toolDef.method || 'GET'` default.
+- `src/tools/executor.js:268`: compute `httpMethod = this.tools?.getSkillToolMethod?.(call.name) ?? null`,
+  pass `check(call.name, call.args, { httpMethod })`.
+- `src/security/approval-gate.js`: `check()` signature → `(toolName, toolArgs, context = {})`
+  (backward-compatible); new **step 2b** between the skill-dir bypass and the gatedTools list — gates
+  `charlie__`-prefixed tools with a mutating HTTP method (`DELETE`→high, `POST/PUT/PATCH`→medium).
+  TODO block (72-81) removed, replaced with one-line pointer. `gatedTools`/`shell_exec` list unchanged.
+- `package.json`: `tests/approval-gate.test.js` wired into the test chain (after
+  `approval-gate-shell-exec-parser.test.js`).
+
+### Tests
+New suite `tests/approval-gate.test.js` — 20/20 (7 `getSkillToolMethod` unit, 10 `check()` unit incl.
+backward-compat two-arg + FSC-GET-not-gated + DELETE-high + non-`charlie__`-not-gated + Stripe-unchanged,
+3 integration via real `ToolExecutor.run()`). Verbatim:
+```
+20 passed, 0 failed
+```
+Integration log confirms live routing: `🚨 Approval required: Skill HTTP POST requires approval` →
+`Error executing charlie__ghl__ghl__create_notes: Action denied: denied-by-test`.
+
+Full chain: **43/44 test FILES green locally.** Sole local failure `probes.test.js → pm2_processes:
+failure carries error string` is environmental (pm2 installed on the dev Mac at `/usr/local/bin/pm2`
+flips the forced-failure branch); on the qclaw droplet the same file passes (`26 passed, 0 failed`).
+Probe code is untouched by this branch (`git status` scope = the 4 files + new test only).
+
+### Security gate (7 Pillars)
+- charlie__ghl__ghl__create_notes NOW requires approval — PASS (unit + integration)
+- charlie__ghl-fsc__ghl-fsc__get_contacts still auto-passes (GET) — PASS
+- `shell_exec` bypass/gatedTools path unchanged — PASS (approval-gate-shell-exec-parser.test.js green)
+- Stripe charge gate unchanged (critical) — PASS (test-asserted)
+- Backward-compatible: two-arg `check()` still works — PASS (test-asserted)
+- No new credentials / endpoints / schema / financial features — PASS
+- Frontend: no UI changes; Infra: no new processes — PASS
+
+### Residual for adversarial review (before un-drafting)
+- Step 2b sits AFTER the skill-dir allowlist bypass (per spec). GHL write args carry no
+  path/destination/cwd so they never hit that bypass; a reviewer should confirm no skill HTTP write
+  tool can smuggle a skills-dir `path` arg to dodge 2b.
+- `context.httpMethod.toUpperCase()` assumes a string; `getSkillToolMethod` only ever returns
+  `string|null` and the executor passes `?? null`, so safe today — reviewer may still prefer a
+  `String()` hardening.
+- FSC write tools remain deferred (ghl-fsc.md is read-only); this gate is the prerequisite that lets
+  them be enabled behind approval.
+
+### Deploy (owed, post-merge)
+- Merge → on qclaw droplet `/root/QClaw`: `git pull --ff-only`, then
+  `pm2 restart quantumclaw --update-env` (executor.js + approval-gate.js are runtime-loaded; skill
+  `.md` files unchanged, so no reparse needed).
+
+References: memory `project_skill_http_writes_ungated`, `project_ghl_locations`,
+`feedback_adversarial_review_before_pr_ready`; audit query scripts under session scratchpad
+(`audit_query.cjs`, `audit_query2.cjs`).
