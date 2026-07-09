@@ -397,7 +397,10 @@ switch (command) {
       const age = Date.now() - config.dashboard.tokenCreatedAt;
       const hours = Math.floor(age / 3600000);
       const expiry = config.dashboard?.tokenExpiry || 86400000;
-      if (age > expiry) {
+      const isAutoToken = !config.dashboard?.authToken;
+      if (!isAutoToken) {
+        ok(`Token age: ${hours}h (persistent — does not expire)`);
+      } else if (age > expiry) {
         warn(`Token age: ${hours}h (expired — run qclaw dashboard for a fresh URL)`);
       } else {
         ok(`Token age: ${hours}h (expires in ${Math.floor((expiry - age) / 3600000)}h)`);
@@ -1159,11 +1162,17 @@ switch (command) {
     const host = config.dashboard?.host || '127.0.0.1';
     const localHost = (host === '0.0.0.0' || host === '127.0.0.1') ? 'localhost' : host;
 
-    // Get or generate auth token (refresh if expired)
+    // Get or generate auth token.
+    // A token persisted in config.json is operator-persistent and MUST NOT expire —
+    // mirror the dashboard server's isAutoToken logic (server.js:421-425). Only an
+    // auto-generated token (one never written to config) is subject to the 24h expiry.
+    // Without this guard, running `qclaw dashboard` >24h after the last mint silently
+    // rotated the persistent token and drifted n8n's baked QCLAW_API_TOKEN copy.
     let token = config.dashboard?.authToken || process.env.DASHBOARD_AUTH_TOKEN;
+    const isAutoToken = !config.dashboard?.authToken;
     const tokenAge = config.dashboard?.tokenCreatedAt ? Date.now() - config.dashboard.tokenCreatedAt : 0;
     const tokenExpiry = config.dashboard?.tokenExpiry || 86400000;
-    const tokenExpired = tokenAge > tokenExpiry;
+    const tokenExpired = isAutoToken && tokenAge > tokenExpiry;
 
     if (!token || tokenExpired) {
       const { randomBytes } = await import('crypto');
