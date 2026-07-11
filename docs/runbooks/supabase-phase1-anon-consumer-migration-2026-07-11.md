@@ -2,8 +2,7 @@
 
 **Parent plan:** `docs/runbooks/supabase-anon-rls-remediation-2026-07-11.md` (Phase 1).
 **Project:** Supabase `fdabygmromuqtysitodp`. **Branch:** `cc/supabase-phase1-anon-consumer-migration-20260711`.
-**Status:** 🔴 DRAFT — **nothing executed.** No credential created, no workflow edited, no DB/host touched. All
-prep is local: the transform script + this runbook. Live apply is gated on Tyson sign-off.
+**Status:** 🟢 **DEPLOYED + VERIFIED 2026-07-11** (Tyson-approved). See "Deployment record" at the bottom.
 **Tool:** `scripts/n8n/phase1-anon-to-service-role.mjs` (pure local transform; never connects to n8n).
 
 > Goal: every n8n consumer that currently authenticates to Supabase PostgREST with the **publishable anon key**
@@ -57,17 +56,18 @@ runs (or retire it).
 One reusable credential injects both Supabase headers from the service-role key; the 19 http nodes reference it.
 
 - **n8n → Credentials → New → "HTTP Custom Auth"** (type `httpCustomAuth`). Name it **`Supabase Service Role (main)`**.
-- JSON body (both headers, apikey + Bearer):
+- JSON body — **expression form** (single source of truth = host env; confirmed to resolve in n8n credential
+  fields, ζ-arc). Keep the literal `Bearer ` prefix on `Authorization`:
   ```json
   { "headers": {
-      "apikey": "<SUPABASE_SERVICE_ROLE_KEY>",
-      "Authorization": "Bearer <SUPABASE_SERVICE_ROLE_KEY>"
+      "apikey": "={{ $env.SUPABASE_SERVICE_ROLE_KEY }}",
+      "Authorization": "=Bearer {{ $env.SUPABASE_SERVICE_ROLE_KEY }}"
   } }
   ```
-  Paste the current service-role key from the host `.env` (`/root/.quantumclaw/.env` or n8n `.env`). **Do not
-  commit the key.** This one credential becomes the single rotation point (Phase 6 updates it, not 11 nodes).
-  - *Alternative* (single source of truth with env): value `={{ $env.SUPABASE_SERVICE_ROLE_KEY }}` — only if your
-    n8n resolves `$env` inside credential fields; verify on one node before relying on it. Literal is the safe default.
+  No key is committed; the value resolves from `SUPABASE_SERVICE_ROLE_KEY` in the n8n container env at run time,
+  so Phase 6 rotation is a `.env` swap + container recreate (nothing to edit here).
+  - *Fallback* (if a future n8n version stops resolving `$env` in credential fields): paste the literal key and
+    treat this one credential as the single rotation point.
 - Create via the **UI** (DB-inserting an encrypted credential by hand is error-prone). **Copy the resulting
   credential id** — it's the `--cred-id` for the transform. Same owner/project as the workflows (Tyson personal).
 
@@ -166,5 +166,35 @@ The credential can stay (harmless when unreferenced) or be deleted.
 
 ## Appendix — not changed here
 No RLS/GRANT change (Phase 2/3), no `workout_*` (Tyson opening a triple-a-tracker issue separately;
-short-term risk accepted), no JWT rotation (Phase 6), no host `.env`/PM2 change. This PR = the transform
-script + this runbook only.
+short-term risk accepted), no JWT rotation (Phase 6), no host `.env`/PM2 change.
+
+---
+
+## Deployment record — 2026-07-11 (executed + verified)
+
+Credential created by Tyson: `httpCustomAuth` **`Supabase Service Role (main)`**, id **`fgbywZowo5p5iu9F`**,
+expression form (§3). Applied from the local repo via read-only export → local transform → transactional psql UPDATE.
+
+- **Pre-flight:** credential exists, no name dupes; `workflow_entity.nodes` is type `json` (UPDATE cast `::json`).
+- **Backup:** all 10 workflows' `nodes` exported before write (rollback baseline).
+- **Transform:** `--cred-id fgbywZowo5p5iu9F`. Validated vs backup: **20 nodes changed** (19 http→httpCustomAuth,
+  1 code env-swap), **0 `SUPABASE_ANON_KEY` remaining**, credential refs = http-node counts, idempotent.
+- **Apply (transaction, guard rolls back unless 10/10):**
+  ```
+  BEGIN … 10× UPDATE 1 … DO guard → NOTICE: guard ok: 10 of 10 updated … COMMIT
+  ```
+  Each UPDATE: `nodes = <new>::json`, `"versionId" = gen_random_uuid()::text`, `"updatedAt" = now()`.
+- **Reload:** `docker restart n8n-project-n8n-1` (started 19:17:46Z). All 10 re-activated, no JSON/load errors.
+- **Static verify:** all 10 `active`, `anon=false`, credential wired on the 9 http workflows, `SERVICE_ROLE` env
+  on the trading code node.
+- **Live verify (post-restart executions):**
+  ```
+  dHceOMijUOcnEowO  success  started=19:30:24   ← httpCustomAuth credential GET (proves cred + $env resolve)
+  UYA0JppH7eqyI7fQ  success  started=19:30:19   ← trading code-node env swap
+  ```
+
+**Rollback (if ever needed):** re-apply the backup `nodes` for the affected id(s) with the same UPDATE shape
+(`::json` + `versionId` bump), then `docker restart n8n-project-n8n-1`. The credential can stay.
+
+**Follow-ups still open:** refresh `n8n-workflows/*.json` repo snapshots to as-deployed (incl. adding
+`OnuJyXpNP488bXnH`); Content Studio Pipeline triage; then Phase 2 (`REVOKE ALL FROM anon`) + Phase 3 (RLS lock).

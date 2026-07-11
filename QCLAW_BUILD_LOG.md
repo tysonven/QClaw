@@ -15741,3 +15741,64 @@ Rollback: restore `nodes` + `versionId` from the backup file and `restart n8n`.
 
 References: `/tmp/crete_generator_failure_20260707.md` (diagnostic verdict); memory
 `project_qclaw_token_rotates_on_restart.md`.
+
+---
+
+## [2026-07-11] Supabase remediation Phase 1 — n8n anon→service-role consumer migration (DEPLOYED + VERIFIED)
+
+**Branch:** `cc/supabase-phase1-anon-consumer-migration-20260711` (PR #61). Follows the audit
+(`[2026-07-11] Supabase main project … security audit`, PR #60) and its plan
+`docs/runbooks/supabase-anon-rls-remediation-2026-07-11.md` Phase 1. **Tyson-approved deploy.**
+Runbook + as-deployed record: `docs/runbooks/supabase-phase1-anon-consumer-migration-2026-07-11.md`.
+
+### What + why
+Migrated **10 live n8n workflows (20 nodes)** off the Supabase publishable **anon key** onto the **service-role
+key**, so Phase 2 (`REVOKE ALL FROM anon`) + Phase 3 (RLS lock) won't break them. 19 `httpRequest` nodes now use
+one reusable `httpCustomAuth` credential; 1 `code` node (Trading Position Monitor) had its `$env` var swapped.
+
+### Credential (created by Tyson in UI)
+`httpCustomAuth` **`Supabase Service Role (main)`** id **`fgbywZowo5p5iu9F`**, expression form (confirmed to
+resolve in n8n credential fields, ζ-arc; keep literal `Bearer ` prefix):
+```
+apikey        = ={{ $env.SUPABASE_SERVICE_ROLE_KEY }}
+Authorization = =Bearer {{ $env.SUPABASE_SERVICE_ROLE_KEY }}
+```
+
+### Content Studio Pipeline EXCLUDED (verified first, per instruction)
+`Qf39NEOEgz2W0uls` is `active` but has **0 executions ever** (execution history spans 2025-09-17→2026-07-11,
+10,148 rows, unpruned — so genuinely never run). It is the only target writing service-role-only
+`content_studio_jobs` (anon writes would 403 if it fired). Dormant + unverifiable → excluded, tracked for triage.
+
+### Tooling
+`scripts/n8n/phase1-anon-to-service-role.mjs` — pure local transform (never connects to n8n). Deploy = read-only
+export of `workflow_entity.nodes` → local transform → transactional psql UPDATE (`nodes::json` + `versionId`
+bump + `updatedAt`) → `docker restart n8n-project-n8n-1`. n8n Postgres = container `n8n-postgres`, `-U n8nuser -d n8n`;
+`nodes` column type is `json` (cast `::json`, not `jsonb`).
+
+### Verification (verbatim)
+Transform vs backup: **20 nodes changed** (19 http→httpCustomAuth, 1 code env-swap), **0 `SUPABASE_ANON_KEY`
+remaining**, idempotent. Apply:
+```
+BEGIN … 10× UPDATE 1 … NOTICE: guard ok: 10 of 10 updated … COMMIT
+```
+Static (post-restart): all 10 `active`, `anon=false`, cred wired on 9 http workflows, `SERVICE_ROLE` on trading node.
+Live (post-restart executions — the two 19:15 runs were pre-restart and don't count):
+```
+dHceOMijUOcnEowO  success  started=19:30:24   ← httpCustomAuth credential GET → proves cred + $env resolve
+UYA0JppH7eqyI7fQ  success  started=19:30:19   ← code-node env swap
+```
+
+### 7 Pillars
+- Backend: consumers now on service_role (both header shapes handled); anon fully removed from these nodes — PASS
+- Databases: no RLS/GRANT change this phase (Phase 2/3); `nodes` UPDATE transactional + guarded — PASS
+- Security: no key committed (env-expression credential); anon-key nodes eliminated — PASS
+- Infra: single n8n restart, all workflows re-activated, health `{"status":"ok"}` — PASS
+- Frontend/Payments: n/a (workout_* deferred to triple-a-tracker issue; short-term risk accepted)
+
+### Residual / follow-ups
+- Refresh `n8n-workflows/*.json` repo snapshots to as-deployed (add missing `OnuJyXpNP488bXnH`).
+- Content Studio Pipeline triage (why never runs).
+- Then Phase 2 `REVOKE ALL FROM anon` + Phase 3 RLS lock; Phase 6 JWT rotation (rotation now = update the one credential's env).
+
+References: memory `project_supabase_main_anon_rls_exposure`, `project_n8n_edit_workflow_no_api_key`,
+`project_n8n_supabase_fsc_credential`; PRs #60 (audit) + #61 (this).
