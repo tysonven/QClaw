@@ -1499,6 +1499,30 @@ export class ToolRegistry {
   }
 
   /**
+   * Return the HTTP method for a skill-parsed tool, for the approval gate.
+   *
+   * Skill tools are registered into `_apiTools` (not `_builtins`) with a
+   * preset whose name is prefixed `skill:` (see registerSkillTool). That
+   * prefix is the discriminator: built-in and MCP tools are not in
+   * `_apiTools` at all, and non-skill API presets (e.g. NewsAPI, Stripe)
+   * live there too but carry a display-name preset — both yield null so
+   * the gate never treats them as skill HTTP writes.
+   *
+   * Mirrors executeSkillTool's `toolDef.method || 'GET'` default, so a
+   * skill tool with no explicit method reads as the harmless GET (never
+   * gated). The returned verb is upper-cased for a stable comparison.
+   *
+   * @param {string} toolName
+   * @returns {'GET'|'POST'|'PUT'|'PATCH'|'DELETE'|string|null}
+   */
+  getSkillToolMethod(toolName) {
+    const entry = this._apiTools.get(toolName);
+    if (!entry) return null;
+    if (!entry.preset?.name?.startsWith('skill:')) return null;
+    return String(entry.toolDef?.method || 'GET').toUpperCase();
+  }
+
+  /**
    * Public registration API for built-in tools.
    *
    * Replaces the Slice-2-era pattern of mutating ToolRegistry._builtins

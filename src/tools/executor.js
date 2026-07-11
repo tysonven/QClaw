@@ -265,7 +265,11 @@ export class ToolExecutor {
 
           // AGEX: Check approval gate
           if (this.approvalGate) {
-            const gateCheck = await this.approvalGate.check(call.name, call.args);
+            // Skill-parsed HTTP tools (charlie__<skill>__*) are not builtins,
+            // so their mutating verb is invisible to the gate unless we pass
+            // it in. null for builtins/presets/unknown — gate ignores those.
+            const httpMethod = this.tools?.getSkillToolMethod?.(call.name) ?? null;
+            const gateCheck = await this.approvalGate.check(call.name, call.args, { httpMethod });
             if (gateCheck.requiresApproval) {
               log.warn(`🚨 Approval required: ${gateCheck.reason}`);
               const approval = await this.approvalGate.requestApproval(

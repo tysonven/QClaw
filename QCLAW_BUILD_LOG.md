@@ -15742,6 +15742,325 @@ Rollback: restore `nodes` + `versionId` from the backup file and `restart n8n`.
 References: `/tmp/crete_generator_failure_20260707.md` (diagnostic verdict); memory
 `project_qclaw_token_rotates_on_restart.md`.
 
+## Phase 5 Session 5 — Skill HTTP write approval gate (2026-07-09)
+
+**Branch:** `cc/p5s5-skill-write-gate-20260709` → DRAFT PR to `tysonven/QClaw` (base `main` @ `c23cb43`).
+**Status:** built, tested, pushed as DRAFT. NOT merged, NOT deployed. PM2 restart of `quantumclaw`
+owed post-merge. Adversarial review owed before un-drafting (security-relevant slice — see memory
+`feedback_adversarial_review_before_pr_ready`).
+
+### Problem
+`ApprovalGate.check()` gated only `shell_exec`, destructive shell verbs, and Stripe charges.
+Skill-parsed HTTP tools (`charlie__ghl__*`, `charlie__ghl-fsc__*`) bypassed the gate entirely — a
+POST/PUT skill write executed autonomously against an external CRM with no denial path. TODO
+documenting the gap lived at `approval-gate.js:72-81`.
+
+### Audit (read-only, pre-implementation)
+1. Sole gate caller is `executor.js:268` `approvalGate.check(call.name, call.args)`. `call` carries
+   only `{name, args, id}`.
+2. `this.tools._builtins?.get(call.name)` (executor:315) covers builtins ONLY. Skill tools live in
+   `_apiTools`, keyed `charlie__<skill>__<toolDef.name>`, entry `{preset, toolDef, skill, scope}`
+   with `preset.name='skill:<skill>'` and `toolDef.method` = uppercase verb (`skill-parser.js:208`).
+3. No pre-existing public getter for skill toolDefs → new `getSkillToolMethod` required.
+4. `tests/approval-gate.test.js` did NOT exist; `check()` was exercised only in
+   `approval-gate-shell-exec-parser.test.js`. The runner is a hand-rolled `&&` chain in
+   `package.json` (not a glob) → new test file must be wired in explicitly.
+5. **Live audit.db (`/root/.quantumclaw/audit.db`, table `audit`, 9,686 rows) — premise NOT
+   corroborated.** Every `charlie__ghl__*` execution ever recorded is a GET read; ZERO write-verb
+   skill tool has ever fired (across all 16 distinct `charlie__` skill actions). Verbatim query
+   output:
+```
+charlie__ghl__ghl__get_contacts_locationid_id_limit_25          c=87  latest 2026-07-09T05:00:03.277Z
+charlie__ghl__ghl__get_contacts_search_locationid_id_query_id   c=2   latest 2026-07-03T07:36:43.288Z
+charlie__ghl__ghl__get_drafts_by_status                         c=2   latest 2026-06-26T08:09:58.760Z
+WRITE_VERB_SKILL_FIRES: []
+DENIED_ROWS (approved=0): {"c":0,"latest":null}
+SINCE_JUL4: {"c":10,"latest":"2026-07-09T05:00:03.277Z"}
+```
+   Session-3's "create_notes fired twice" most likely documented the *capability* (gate returns
+   `requiresApproval:false` for skill writes — confirmed by reading `check()`), not an observed
+   production fire. Gap is real regardless; closed before any write fires.
+
+### Change (4 files modified + 1 new test)
+- `src/tools/registry.js`: `getSkillToolMethod(toolName)` → uppercase HTTP verb for `skill:`-preset
+  tools; `null` for builtins / non-skill presets / unknown. Mirrors `executeSkillTool`'s
+  `toolDef.method || 'GET'` default.
+- `src/tools/executor.js:268`: compute `httpMethod = this.tools?.getSkillToolMethod?.(call.name) ?? null`,
+  pass `check(call.name, call.args, { httpMethod })`.
+- `src/security/approval-gate.js`: `check()` signature → `(toolName, toolArgs, context = {})`
+  (backward-compatible); new **step 2b** between the skill-dir bypass and the gatedTools list — gates
+  `charlie__`-prefixed tools with a mutating HTTP method (`DELETE`→high, `POST/PUT/PATCH`→medium).
+  TODO block (72-81) removed, replaced with one-line pointer. `gatedTools`/`shell_exec` list unchanged.
+- `package.json`: `tests/approval-gate.test.js` wired into the test chain (after
+  `approval-gate-shell-exec-parser.test.js`).
+
+### Tests
+New suite `tests/approval-gate.test.js` — 20/20 (7 `getSkillToolMethod` unit, 10 `check()` unit incl.
+backward-compat two-arg + FSC-GET-not-gated + DELETE-high + non-`charlie__`-not-gated + Stripe-unchanged,
+3 integration via real `ToolExecutor.run()`). Verbatim:
+```
+20 passed, 0 failed
+```
+Integration log confirms live routing: `🚨 Approval required: Skill HTTP POST requires approval` →
+`Error executing charlie__ghl__ghl__create_notes: Action denied: denied-by-test`.
+
+Full chain: **43/44 test FILES green locally.** Sole local failure `probes.test.js → pm2_processes:
+failure carries error string` is environmental (pm2 installed on the dev Mac at `/usr/local/bin/pm2`
+flips the forced-failure branch); on the qclaw droplet the same file passes (`26 passed, 0 failed`).
+Probe code is untouched by this branch (`git status` scope = the 4 files + new test only).
+
+### Security gate (7 Pillars)
+- charlie__ghl__ghl__create_notes NOW requires approval — PASS (unit + integration)
+- charlie__ghl-fsc__ghl-fsc__get_contacts still auto-passes (GET) — PASS
+- `shell_exec` bypass/gatedTools path unchanged — PASS (approval-gate-shell-exec-parser.test.js green)
+- Stripe charge gate unchanged (critical) — PASS (test-asserted)
+- Backward-compatible: two-arg `check()` still works — PASS (test-asserted)
+- No new credentials / endpoints / schema / financial features — PASS
+- Frontend: no UI changes; Infra: no new processes — PASS
+
+### Residual for adversarial review (before un-drafting)
+- Step 2b sits AFTER the skill-dir allowlist bypass (per spec). GHL write args carry no
+  path/destination/cwd so they never hit that bypass; a reviewer should confirm no skill HTTP write
+  tool can smuggle a skills-dir `path` arg to dodge 2b.
+- `context.httpMethod.toUpperCase()` assumes a string; `getSkillToolMethod` only ever returns
+  `string|null` and the executor passes `?? null`, so safe today — reviewer may still prefer a
+  `String()` hardening.
+- FSC write tools remain deferred (ghl-fsc.md is read-only); this gate is the prerequisite that lets
+  them be enabled behind approval.
+
+### Deploy (owed, post-merge)
+- Merge → on qclaw droplet `/root/QClaw`: `git pull --ff-only`, then
+  `pm2 restart quantumclaw --update-env` (executor.js + approval-gate.js are runtime-loaded; skill
+  `.md` files unchanged, so no reparse needed).
+
+References: memory `project_skill_http_writes_ungated`, `project_ghl_locations`,
+`feedback_adversarial_review_before_pr_ready`; audit query scripts under session scratchpad
+(`audit_query.cjs`, `audit_query2.cjs`).
+
+### Adversarial review verdict + fix applied (2026-07-09, same branch)
+Both residual items were **CONFIRMED as real bypasses** by a PoC importing the live
+`ApprovalGate`/`ToolRegistry` — not theoretical:
+- **S1 (HIGH) — skill-dir path-arg bypass.** Step 2b sat AFTER `_isSkillDirOperation`, which
+  inspects `toolArgs.path/cwd/destination` and returns `requiresApproval:false` for anything under
+  `/root/QClaw/src/agents/skills/`. `call.args` is the raw model tool input (no schema stripping —
+  grep-confirmed in executor/registry), so a write call carrying e.g.
+  `path:'/root/QClaw/src/agents/skills/'` skipped the gate and still hit GHL (extra body field
+  ignored). Prompt-injection reachable.
+- **S3 (MEDIUM-HIGH) — non-`charlie__` prefix bypass.** Step 2b required
+  `toolName.startsWith('charlie__')`, but skill tools register under the loading agent's name
+  (`registerSkillTool(this.name…)` / `registerSpecialistSkills(specialist.name…)`). The code's
+  DEFAULT agent name is `echo` (`agents/registry.js:67`); prod `config.agent.name` is the brand
+  `"QClaw"`; `charlie` is a workspace-agent name. PoC: `echo__ghl__ghl__create_notes` POST →
+  `requiresApproval:false`. Any non-charlie agent (echo, live specialists QA-Operator/GHL-Support-Bot)
+  with a write skill was ungated.
+- S2 (LOW) — no `String()` guard: whitespace-padded method bypassed; non-string threw. Not reachable
+  via the real path (getSkillToolMethod → `string|null`) but hardened anyway.
+- SAFE: S4 (getSkillToolMethod null-safety — no input throws), S5 (sole caller executor.js;
+  `?? null`; 2-arg back-compat), S6 (43/44 files green; probes env-only, `26 passed,0 failed` on droplet).
+
+**Fix (this commit):** step 2b **moved above** the destructive-verb and skill-dir bypass steps and
+**rewritten to key on the HTTP method, not the agent name** —
+`String(context?.httpMethod ?? '').trim().toUpperCase()` against a module-level `HTTP_WRITE_METHODS`.
+`context.httpMethod` is non-null ONLY for skill tools (getSkillToolMethod contract), so a write verb
+uniquely identifies a skill HTTP write for ANY owning agent. Dropped the `charlie__`/`split('__')`
+coupling entirely. PoC re-run against the patched gate: S1 all-args GATED, S3 echo GATED, S2
+whitespace GATED / non-string no-throw. Regression tests added (echo agent, specialist DELETE,
+path/cwd/destination smuggling, whitespace + non-string method); `approval-gate.test.js` now 27/27.
+No change to executor.js or registry.js — the fix is contained to `check()`.
+
+## 2026-07-09 — P0 token fix + P2 text card + GHL Marketing retry + continueOnFail audit + P1 IG SYSTEM_PROMPT
+
+### P0 — QCLAW_API_TOKEN root cause fixed (PR #56)
+
+**Root cause (corrected mental model):** Token drift was NOT caused by
+PM2 restarts (empirically disproved — 51 restarts, stable tokenCreatedAt
+Jul 6). Real trigger: `qclaw dashboard` CLI run >24h after last mint
+fires `tokenExpired = age > 86400000ms` check in cli/index.js:1167,
+silently rotating config.json on a routine "show me the login URL"
+command. `DASHBOARD_AUTH_TOKEN` in `.env` confirmed orphan — different
+hash, never loaded by PM2 (env_file: none), never consulted by server.
+
+**Fix (PR #56, 2 commits):**
+- `3634911` — cli/index.js: gate expiry on `isAutoToken` — persistent
+  config tokens never expire via CLI, mirroring server.js:421-425.
+- `c29bb92` — `qclaw status` token-age display aligned: gated on
+  `isAutoToken`, shows "persistent — does not expire" for config tokens.
+- Orphan `DASHBOARD_AUTH_TOKEN` in `.env` commented out (3 comment lines,
+  zero active assignments).
+- `docs/runbooks/credential-rotation.md` — new section: canonical store,
+  real trigger, mtime false-positive warning, n8n consumer
+  (tnvXFYvODL1PrhJa), re-sync procedure.
+
+**Adversarial review findings:** Q1 (isAutoToken bypass) PASS. Q2
+(security regression) MEDIUM pre-existing — server already never expired
+config token; CLI churn was not a security control. Q3 (LOW) — `qclaw
+status` stale "expired" warning fixed in c29bb92. Q4 (orphan .env) PASS.
+Token exposure incident: CC inadvertently printed live token via
+`cat dashboard.url`; token rotated post-merge as remediation.
+
+**Post-merge operator steps completed:**
+- git checkout main + pull on qclaw droplet
+- New token set in config.json, quantumclaw restarted (restart_count 54)
+- QCLAW_API_TOKEN synced to /home/n8nadmin/n8n-project/.env
+- docker compose restart on n8n-project (real compose, not n8nadmin/)
+- Smoke test: Charlie responded on Telegram ✅
+
+**n8n host incident (side effect of token sync):**
+docker compose down/up cycles on the wrong compose file
+(/home/n8nadmin/docker-compose.yml) created a duplicate n8n stack that
+competed for port 5678 with the real instance (n8n-project/). Real
+production n8n was `n8n-project-n8n-1` all along — healthy, holding
+port 5678. Stale docker-proxy ghost processes required `fuser -k 5678/tcp`
+to clear. Duplicate containers removed. Real n8n restarted via correct
+compose at /home/n8nadmin/n8n-project/. Compose file hardened with
+explicit `n8n-network` + `depends_on` to prevent future DNS resolution
+failures between n8n and postgres containers.
+
+---
+
+### P2 — Text card 4:5 resize + em-dash normalisation (PR #57)
+
+**File:** `src/crete-marketing/generate-text-card.js`
+
+**Resize:** Split `const SIZE = 1080` → `WIDTH = 1080 / HEIGHT = 1350`.
+21 SIZE references repointed to correct axis. Canvas, backgrounds,
+vertical centering, bottom-anchored elements, overflow guard, footer,
+olive branches all updated. Downstream (R2, n8n, Supabase) confirmed
+dimension-agnostic — no downstream changes needed.
+
+**Em-dash:** `sanitise()` now normalises em/en/horizontal-bar dashes
+context-aware: spaced → `" - "`, tight → `"-"`. Fixes em-dashes in
+rendered card text regardless of LLM output.
+
+**Tests:** New `tests/text-card.test.js` — 6 dimension checks (PNG IHDR
+verified 1080×1350) + 11 sanitise dash-rule checks. 17/17 pass.
+`file(1)` independently confirmed `PNG 1080 x 1350 RGBA`. Full suite
+green (EXIT 0).
+
+**Instagram publish gate confirmed:** Blotato IG node passes raw URL,
+no dimension constraint. Instagram accepts 4:5 natively.
+
+**Latent finding (filed, not fixed):** `registerFont` imported but never
+called; rendering depends on system fontconfig. Works on this host;
+fragile in containers without the fonts.
+
+---
+
+### P2 — GHL Marketing partially_published triage + Platform Retry workflow
+
+**Triage:** 13 rows in `marketing_drafts` with `status=partially_published`.
+Root cause: Blotato LinkedIn OAuth expired ~late June (now self-healed —
+confirmed via n8n-postgres execution history, LinkedIn posting cleanly
+since Jul 7–8 on acct 11109).
+
+**Row disposition:**
+- Archived (6): cf5ce528, a78794b6, 82294451, 691160c3, a19997f3,
+  2fcfbab3 — stale (56–78d), smoke test row, or permanent media failure
+- Retriable (6): c62b84af, 1ef39f85, db5944aa, 346e2aa6, e4df0617,
+  5aae076b — recent, evergreen, LinkedIn/IG/FB confirmed healthy
+
+**New workflow deployed:** `GHL Marketing: Platform Retry`
+(ID: `OnuJyXpNP488bXnH`, webhook POST /webhook/ghl-marketing-retry).
+Per-platform idempotency gates — only posts missing platforms, never
+re-posts already-live ones. Merge semantics: append to
+`published_platforms`, remove from `publish_errors`, recompute status.
+Designed to close the double-post gap in the existing publisher
+(fonuRTyqepxdyIdf resets published_platforms to [] — separate fix
+tracked as P2 backlog Design 2).
+
+**Batch results:** All 6 retriable rows → `published`. 9 posts total
+(LinkedIn ×6, Instagram ×2, Facebook ×1). Canary (c62b84af) verified
+first; remaining 5 spaced 30–60 min.
+
+**Security findings filed (separate slices):**
+- `marketing_drafts` anon RLS policy over-permissive — named "Service
+  role full access" but scoped to public/ALL. Anon key has full
+  SELECT/INSERT/UPDATE/DELETE. Tighten separately.
+- Publisher `fonuRTyqepxdyIdf` has no per-platform skip guards — full
+  re-post on retry. Fix tracked as Design 2 (separate dispatch).
+
+**Workflow JSON committed to:** `n8n-workflows/OnuJyXpNP488bXnH-ghl-marketing-platform-retry.json`
+
+---
+
+### P2 — continueOnFail cluster audit (read-only, findings only)
+
+49 active workflows (of 81 total) audited for httpRequest nodes with
+`continueOnFail: true` / `onError: continueRegularOutput` that could
+silently swallow errors — same masked-failure pattern as May 19 incident.
+
+**HIGH (fix in separate slice):**
+- `Content Studio – Publish + Distribution` (yu3gEaDsd6d1E9e8):
+  WordPress, Blotato LinkedIn, YouTube nodes all `continueRegularOutput`.
+  `patch_body.status` hardcoded `full_complete` regardless of surface
+  failures. `*_status` derived from absence of `.error` not positive
+  success signal. Exact May 19 shape on the busiest publish path.
+  Fix: derive `*_status` from positive signal per platform; gate
+  `patch_body.status` on `allSuccess`.
+
+**MEDIUM (backlog, separate slices):**
+- GHL Marketing Scheduled Publisher — Fire Publisher → Heartbeat with
+  no validation (trigger failure masked as success)
+- Crete Scheduled Publisher — Trigger Publish terminal, no error branch
+- Master avatar social media machine — Bluesky + Pinterest error outputs
+  not wired (7 of 9 siblings wired correctly)
+- Content Studio Pipeline — 5 Patch nodes legacy `continueOnFail: true`,
+  terminal, no validation
+- Meta Ads Telegram Bot Router — Supabase error indistinguishable from
+  "no active session"
+- Trading Market Scanner — Save Simulations silent data loss
+- Workflow Dormancy Alerter — alert failure masked as success heartbeat
+- GHL Changelog Emails — email send failure masked as success
+- Meta Ads Ad Creation Agent — success inferred from absence of .error,
+  not valid .id (budget-adjacent)
+
+**LOW:** ~15 workflows with properly validated downstream or correctly
+wired error outputs. ~40 Heartbeat postgres nodes intentional.
+
+---
+
+### P1 — SYSTEM_PROMPT IG URL-in-body tightening
+
+**Workflow:** `tnvXFYvODL1PrhJa` (Crete - Content Generator)
+**Node:** Build Prompt (jsCode only)
+
+**Root cause confirmed:** Existing URL-in-body rule had an IG clause
+("For Instagram, this is in addition to any 'link in bio' language")
+but too soft to beat model's platform prior.
+
+**Fix:** Block C inserted immediately after existing URL-in-body
+paragraph. Key addition:
+- `INSTAGRAM SPECIFICALLY:` emphatic reinforcement — "link in bio"
+  does NOT replace the URL requirement; `creteprojects.com` must appear
+  as literal string in the Instagram post body
+- Correct + incorrect few-shot examples (blank line before hashtags per
+  existing rule)
+
+**Applied via:** versionId-guarded Postgres UPDATE of nodes column only
+(n8n REST API keyless on this host). Settings preserved byte-for-byte.
+jsCode: 5838 → 6623 (+785 chars). 0 em/en dashes.
+
+**Smoke test:** Surgical Claude API call for real IG slot-065
+(2026-07-10) with new SYSTEM_PROMPT + claude-sonnet-4-6. Result:
+`creteprojects.com` in body, 0 em-dashes, 5 hashtags with blank-line
+separator. Zero queue/Telegram footprint.
+
+**Deployed:** n8n container restarted (0 executions running), new
+prompt loaded. Next scheduled run ~12:00 UTC 2026-07-10 will be the
+real-world validation.
+
+### Security gate
+- [x] No hardcoded credentials added
+- [x] No new webhooks introduced (Platform Retry uses new webhook path,
+      auth via n8n webhook pattern — consistent with cluster)
+- [x] No new endpoints on QClaw
+- [x] No RLS changes (anon policy over-permissive finding filed separately)
+- [x] No financial features touched
+- [x] settings.availableInMCP: true preserved on all workflow PUTs
+- [x] No stack traces or secrets in error messages
+- [x] .env permissions 600 unchanged on both hosts
+- [x] Token rotation completed post-PR #56 merge
+
 ---
 
 ## [2026-07-11] Supabase remediation Phase 1 — n8n anon→service-role consumer migration (DEPLOYED + VERIFIED)
