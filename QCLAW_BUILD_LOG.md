@@ -16185,3 +16185,39 @@ References: dispatch brief "CC Brief: Supabase Main Project Security Audit + JWT
 plan `docs/runbooks/supabase-anon-rls-remediation-2026-07-11.md`; memory
 `project_flowos_sms_gateway_supabase`, `project_n8n_supabase_fsc_credential`,
 `feedback_adversarial_review_before_pr_ready`.
+
+---
+
+## [2026-07-11] Supabase remediation Phase 2 — ABORTED at pre-flight (no table is anon-clean; consumer map built)
+
+**Branch:** `cc/supabase-phase2-anon-revoke-20260711`. **Status:** 🛑 Phase 2 (`REVOKE ALL FROM anon`) **not
+applied — nothing revoked, no DB/host/code changes.** Pre-flight found every exposed table still has a live
+anon-role consumer, so no single-table lockdown is safe yet. Full map:
+`docs/runbooks/supabase-anon-consumer-map-2026-07-11.md`.
+
+### Why aborted
+Plan was: revoke anon on `trading_*` (assumed clean) + replace its policies, then stop. **`trading_*` is not
+clean.** Verification (grep for the anon **JWT literal**, not just the `SUPABASE_ANON_KEY` env var) found:
+- **`server.js` hardcodes the anon JWT ~13×** (lines 1216–1399) across `trading_positions`/`trading_simulations`/
+  `trading_config` routes (R/W), plus the Crete (`crete_content_queue`), GHL (`marketing_drafts`), and
+  Content-Studio (`social_clip_schedules`, line 1245) paths already known.
+- **`src/trading/polymarket_scanner.py:25`** hardcodes the anon JWT and POSTs `trading_markets`.
+- 3 more trading workflows (`3YahxqOguET3pifj` Market Scanner, `vjj2uBIPc07FpIxx` Weekly Analyst,
+  `fq7spfyiNcpt8Mf7` Trade Executor[inactive]) hit Supabase REST with unverified auth.
+
+Revoking anon on `trading_*` would have broken the trading dashboard + the Polymarket scanner. Same story for
+every other exposed table (Meta Ads workflows on `ad_creation_sessions`/`competitor_ads`/`copy_agent_output`;
+triple-a-tracker on `workout_*`, deferred).
+
+### Key discovery — Phase 1 grep undercounted the anon surface
+Phase 1 found consumers by grepping for the env var `SUPABASE_ANON_KEY`. The anon **JWT literal** is hardcoded
+in committed source (`server.js`, `polymarket_scanner.py`) and inline in n8n nodes — missed by that grep. Going
+forward, hunt with the fingerprint `x5x8Dk` (end of the anon JWT), not the env-var name. **Security note:** a
+credential literal hardcoded ~13× in committed source is worth cleaning up regardless of Phase 2.
+
+### Outcome
+Full consumer map documented for next session. Recommended order: migrate `server.js` (service-role key,
+server-side) → `polymarket_scanner.py` → remaining workflows → then Phase 2/3 **per table** with anon-probe
+verification between each. `workout_*` stays deferred (triple-a-tracker Supabase-Auth migration).
+
+References: `docs/runbooks/supabase-anon-consumer-map-2026-07-11.md`; memory `project_supabase_main_anon_rls_exposure`.
