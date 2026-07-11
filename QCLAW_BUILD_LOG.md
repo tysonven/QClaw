@@ -16060,3 +16060,128 @@ real-world validation.
 - [x] No stack traces or secrets in error messages
 - [x] .env permissions 600 unchanged on both hosts
 - [x] Token rotation completed post-PR #56 merge
+
+---
+
+## [2026-07-11] Supabase main project (`fdabygmromuqtysitodp`) — security audit: anon-role RLS exposure + rotation not performed (AUDIT-ONLY, no remediation run)
+
+**Branch:** `cc/supabase-security-audit-20260711` (base `main` @ `c23cb43`). Audit-only session per dispatch
+brief. **No writes to the DB, hosts, or RLS.** Remediation plan drafted for sign-off at
+`docs/runbooks/supabase-anon-rls-remediation-2026-07-11.md` — NOT executed.
+**Status:** findings surfaced, STOP. Rotation (Step 0/Step 1) was **not** performed by the time the audit
+ran, so acceptance-criteria Tasks 3 & 4 are **blocked**.
+
+### Prerequisite check — JWT rotation NOT done
+Both hosts still carry the **legacy JWT** service-role key, not `sb_secret_*`. Masked `.env` probe:
+```
+qclaw /root/.quantumclaw/.env      SUPABASE_SERVICE_ROLE_KEY=eyJh…(masked)   perms 600 root:root
+n8n   /home/n8nadmin/…/.env         SUPABASE_SERVICE_ROLE_KEY=eyJh…(masked)   perms 600 n8nadmin:n8nadmin
+```
+→ No `sb_secret_*` key deployed. **Do NOT disable legacy keys in the dashboard** — every consumer on both
+hosts still authenticates with them (disabling = full outage). Task 3 (new key authenticates) and Task 4
+(legacy key 401) cannot run until Step 0/Step 1 actually happen.
+
+### Root cause — `anon` role has `GRANT ALL` on every table
+`information_schema.role_table_grants` (grantee `anon`) returns `SELECT, INSERT, UPDATE, DELETE, TRUNCATE,
+REFERENCES, TRIGGER` on **all 39 `public` tables** — the Supabase default was never revoked. RLS policies
+are therefore the ONLY control. RLS is `enabled=true` on all 39 tables (cosmetically clean), but a single
+permissive-policy mistake = full public exposure, and that has occurred on 13 tables.
+
+### 13 tables reachable by the public anon key (confirmed live, read-only PoC)
+| Table | Policy as written | `anon` effective access |
+|---|---|---|
+| `trading_simulations` | `allow_anon_all` `{anon}` `USING(true)` | full R/W — **2,569 rows read via anon key** |
+| `trading_positions` | `allow_anon_all` | full R/W (0 rows now) |
+| `trading_config` | `allow_anon_all` | full R/W (tamper trading config) |
+| `trading_markets` | `allow_anon_all` | full R/W |
+| `trading_analyst_reports` | `allow_anon_all` | full R/W |
+| `crete_content_queue` | **`"Service role full access"` but `{public}` `USING(true)`** | full R/W — **149 rows read** |
+| `marketing_drafts` | **`"Service role full access"` but `{public}` `USING(true)`** | full R/W — **48 rows read** |
+| `ad_creation_sessions` | `allow_anon_all` (+ inert `"No public access"`) | full R/W — 1 row read |
+| `competitor_ads` | `allow_anon_all` (+ inert `"No public access"`) | full R/W |
+| `social_clip_schedules` | `allow_anon_all` | full R/W |
+| `copy_agent_output` | `allow_anon_insert` | INSERT (pollution) |
+| `workout_logs` | `"Users see own logs"` but `{public}` `USING(true)` | SELECT/INSERT/UPDATE, **not** user-scoped |
+| `workout_settings` | `"Users see own settings"` but `{public}` `USING(true)` | SELECT/INSERT/UPDATE, **not** user-scoped |
+
+Two traps: (1) **misnamed policies** — `crete_content_queue`/`marketing_drafts` policies are *named*
+"Service role full access" but defined `TO public USING(true)`; a name-only inventory hides this. (2) the
+`"No public access"` policies are `PERMISSIVE`, so they OR with `allow_anon_all` and do nothing (only a
+`RESTRICTIVE` policy could deny).
+
+Verbatim PoC (anon key from inside n8n container, `Prefer: count=exact` + `Range: 0-0`, **no row data
+printed** — only counts). Controls `tenants`/`emma_credits`/`highlevel_tokens_backup` return 0, proving the
+key is valid and the difference is purely RLS:
+```
+trading_simulations      HTTP=206 rows_visible_to_anon=0-0/2569
+trading_positions        HTTP=200 rows_visible_to_anon=*/0
+crete_content_queue      HTTP=206 rows_visible_to_anon=0-0/149
+marketing_drafts         HTTP=206 rows_visible_to_anon=0-0/48
+ad_creation_sessions     HTTP=200 rows_visible_to_anon=0-0/1
+tenants                  HTTP=200 rows_visible_to_anon=*/0     (RLS deny — correct)
+emma_credits             HTTP=200 rows_visible_to_anon=*/0     (RLS deny — correct)
+highlevel_tokens_backup  HTTP=200 rows_visible_to_anon=*/0     (RLS deny — correct)
+```
+
+### 26 tables correctly locked (anon blocked — verified by roles+qual)
+- `service_role`-only policy (14): `anthropic_spend_daily`, `anthropic_spend_rollup`, `content_studio_jobs`,
+  `highlevel_tokens`, and all 10 `li_*`.
+- deny-all (`public USING(false)`) (5): `device_registry`, `emma_credits`, `message_log`, `sub_accounts`, `tenants`.
+- RLS-on / 0 policies → implicit deny except service bypass (6): `advisor_conversations`, `charlie_tasks`,
+  `claude_code_dispatches`, `clip_jobs`, `highlevel_tokens_backup`, `specialist_dispatches`.
+  → **Secure but fail the "≥1 explicit policy" criterion** — add explicit `service_role_all` to document intent.
+- `authenticated`-read only (1): `workflow_heartbeats` (anon blocked).
+
+### Task 2 — `SUPABASE_ANON_KEY` consumers
+qclaw: **5 source files + 24 workflow-JSON files**. Source write-path triage:
+- `src/dashboard/server.js:1490` — loads anon key for **Crete dashboard routes** (writes `crete_content_queue`). Live anon write path.
+- `src/observability/liveness-watcher.js:162` — `SERVICE_ROLE_KEY || SUPABASE_ANON_KEY` read fallback (anon would fail RLS on `workflow_heartbeats`). Fragility, not a hole.
+- `src/agents/probes/{supabase,heartbeat-freshness}.js` — read-only probes. Fine.
+- `src/dispatch/claude-code-dispatcher.js:552` — anon key in a **log-redaction list**. Not a write path.
+- `src/agents/{qa-runner,run-task,task-watcher}.sh` — reference the var (task tables anon-blocked; likely use service key).
+
+**Coupling that dictates ordering:** every exposed table is exposed *because* a live n8n workflow writes it
+with the anon key (`trading-position-monitor`→`trading_*`; `crete-content-*`→`crete_content_queue`;
+`ghl-marketing-*`→`marketing_drafts`; `content-studio-pipeline`, ad workflows→the rest). RLS was loosened to
+`allow_anon_all` to make anon-key workflows function. **Locking RLS without first migrating consumers off the
+anon key WILL break these workflows.** (Ties to tracked ζ.6 follow-up: replace credential `XTzNI4kxIpHcVjlB`
+with `httpCustomAuth`.)
+
+### `workout_logs` / `workout_settings` — belong to `github.com/tysonven/triple-a-tracker`
+- FK check: `user_id` is **`text NOT NULL`, NO foreign key to `auth.users`**.
+- `src/App.jsx:6-7` **hardcodes the anon JWT** (`SB_KEY`, suffix `…x5x8Dk` — same anon key as n8n `.env`) →
+  the anon key is **definitively browser-/git-exposed**, confirming exposure is real-world.
+- `getUserId()` (App.jsx:15-26) = client-generated `crypto.randomUUID()` in `localStorage` (or `?uid=` param).
+  **No Supabase Auth.** All requests use the raw anon key, so `auth.uid()` is `NULL` for every request and
+  "isolation" is client-side `&user_id=eq.<uid>` filters only → any anon-key holder can read/overwrite all users' rows.
+- ⇒ A naive `auth.uid()` RLS policy would **deny 100% of app traffic**. Target (`auth.uid()` scoping, per
+  Tyson) is correct but **blocked on an app-level prerequisite**: triple-a-tracker must adopt Supabase Auth
+  (e.g. `signInAnonymously()`) first, plus a `user_id` (text→uuid) backfill. Detailed in the remediation plan.
+
+### Other findings
+- **Secret sprawl:** 11 `*.env.bak*` files under `/home/n8nadmin/n8n-project/` each contain the anon JWT (and
+  presumably prior service-role keys) in plaintext. In remediation scope (cleanup, no execution this session).
+- `highlevel_tokens_backup` — OAuth-token duplicate table; correctly locked (0-policy) but a sensitive copy to review/purge.
+- `n8n-workflows/migrations/2026_05_06_rollback_rls_clip_jobs.sql` — historical RLS rollback on `clip_jobs` (now re-enabled, 0-policy). Context only.
+- qclaw `/root/QClaw` has untracked files literally named `chmod` and `sudo` (`git status` `?? chmod`, `?? sudo`) — likely botched-command artifacts; harmless, worth deleting.
+
+### Acceptance-criteria status
+| Criterion | Status |
+|---|---|
+| New `sb_secret_*` key authenticates | ⛔ blocked — never deployed |
+| Legacy JWT returns 401 | ⛔ blocked — legacy key still live & in use |
+| All tables RLS + ≥1 explicit policy | ❌ 13 anon-exposed; 6 tables 0-policy |
+| Zero anon-key write paths | ❌ `server.js` + ~24 workflows + triple-a-tracker |
+| `.env` perms 600 | ✅ both hosts |
+
+### Proposed remediation ordering (drafted, NOT executed — awaiting sign-off)
+1. Migrate anon-key **consumers** (n8n workflows + `server.js`) to service-role / `httpCustomAuth`.
+2. `REVOKE ALL … FROM anon, authenticated` on `public` (defense-in-depth).
+3. Replace `allow_anon_all` / misnamed-`public` policies with `service_role`-scoped policies;
+   `workout_*` → `auth.uid()`-scoped **after** triple-a-tracker adopts Supabase Auth.
+4. Verify every consumer still runs; then (separately) the JWT rotation Tasks 3/4; then `.env.bak*` cleanup.
+
+References: dispatch brief "CC Brief: Supabase Main Project Security Audit + JWT Rotation" (2026-07-11);
+plan `docs/runbooks/supabase-anon-rls-remediation-2026-07-11.md`; memory
+`project_flowos_sms_gateway_supabase`, `project_n8n_supabase_fsc_credential`,
+`feedback_adversarial_review_before_pr_ready`.
