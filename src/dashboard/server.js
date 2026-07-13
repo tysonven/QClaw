@@ -18,6 +18,21 @@ import cookieParser from 'cookie-parser';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+// Supabase service-role key — SERVER-SIDE ONLY (never sent to the browser).
+// Read from the dashboard's .env (same file creteEnv uses); falls back to process.env.
+// Replaces the hardcoded anon-key literals that previously lived inline in the
+// trading / content-studio routes (Supabase anon→service-role migration).
+const SB_SERVICE_ROLE_KEY = (() => {
+  try {
+    const envFile = readFileSync('/root/.quantumclaw/.env', 'utf-8');
+    for (const line of envFile.split('\n')) {
+      const m = line.match(/^SUPABASE_SERVICE_ROLE_KEY=(.*)$/);
+      if (m) return m[1].trim().replace(/^["']|["']$/g, '');
+    }
+  } catch { /* not on the server host (local/CI) — fall through to process.env */ }
+  return process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+})();
+
 // Slice 6b: agent spawning is disabled. The /api/agents/spawn backend route was
 // already removed; this defensive handler returns a clear 403 (not a 404) so any
 // stale dashboard client gets an explicit signal. Specialists are registered via
@@ -1213,7 +1228,7 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
             const publicUrl = `https://pub-70c436931e9e4611a135e7405c596611.r2.dev/${fileKey}`;
 
             // Update Supabase job record
-            const anonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZkYWJ5Z21yb211cXR5c2l0b2RwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTk2NjI2OTQsImV4cCI6MjA3NTIzODY5NH0.6JJMkPXBufpLxlisH1ig32Xm8YM3p0jcXRlBzx5x8Dk';
+            const anonKey = SB_SERVICE_ROLE_KEY; // service_role (server-side only) — was a hardcoded anon literal
             const col = imageType === 'hero' ? 'hero_image_url' : 'thumbnail_url';
             await fetch(`https://fdabygmromuqtysitodp.supabase.co/rest/v1/content_studio_jobs?id=eq.${encodeURIComponent(jobId)}`, {
               method: 'PATCH',
@@ -1241,7 +1256,7 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
         if (!clipUrl || !platform || !jobId) {
           return res.status(400).json({ error: 'clipUrl, platform, and jobId are required' });
         }
-        const anonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZkYWJ5Z21yb211cXR5c2l0b2RwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTk2NjI2OTQsImV4cCI6MjA3NTIzODY5NH0.6JJMkPXBufpLxlisH1ig32Xm8YM3p0jcXRlBzx5x8Dk';
+        const anonKey = SB_SERVICE_ROLE_KEY; // service_role (server-side only) — was a hardcoded anon literal
         const sbRes = await fetch('https://fdabygmromuqtysitodp.supabase.co/rest/v1/social_clip_schedules', {
           method: 'POST',
           headers: {
@@ -1264,7 +1279,7 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
     this.app.get('/api/content-studio/jobs', async (req, res) => {
       try {
         const limit = Math.min(parseInt(req.query.limit) || 10, 50);
-        const anonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZkYWJ5Z21yb211cXR5c2l0b2RwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTk2NjI2OTQsImV4cCI6MjA3NTIzODY5NH0.6JJMkPXBufpLxlisH1ig32Xm8YM3p0jcXRlBzx5x8Dk';
+        const anonKey = SB_SERVICE_ROLE_KEY; // service_role (server-side only) — was a hardcoded anon literal
         const sbRes = await fetch(`https://fdabygmromuqtysitodp.supabase.co/rest/v1/content_studio_jobs?order=created_at.desc&limit=${limit}`, {
           headers: { apikey: anonKey, Authorization: `Bearer ${anonKey}` }
         });
@@ -1274,7 +1289,7 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
 
     this.app.get('/api/content-studio/jobs/:id', async (req, res) => {
       try {
-        const anonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZkYWJ5Z21yb211cXR5c2l0b2RwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTk2NjI2OTQsImV4cCI6MjA3NTIzODY5NH0.6JJMkPXBufpLxlisH1ig32Xm8YM3p0jcXRlBzx5x8Dk';
+        const anonKey = SB_SERVICE_ROLE_KEY; // service_role (server-side only) — was a hardcoded anon literal
         const sbRes = await fetch(`https://fdabygmromuqtysitodp.supabase.co/rest/v1/content_studio_jobs?id=eq.${encodeURIComponent(req.params.id)}`, {
           headers: { apikey: anonKey, Authorization: `Bearer ${anonKey}` }
         });
@@ -1296,7 +1311,7 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
           usdcBalance = balance;
         } catch { usdcBalance = 0; }
 
-        const anonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZkYWJ5Z21yb211cXR5c2l0b2RwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTk2NjI2OTQsImV4cCI6MjA3NTIzODY5NH0.6JJMkPXBufpLxlisH1ig32Xm8YM3p0jcXRlBzx5x8Dk';
+        const anonKey = SB_SERVICE_ROLE_KEY; // service_role (server-side only) — was a hardcoded anon literal
         const headers = { apikey: anonKey, Authorization: `Bearer ${anonKey}` };
 
         const [closedRes, openRes] = await Promise.all([
@@ -1325,7 +1340,7 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
         if (!mcRes.ok) return res.status(mcRes.status).json(data);
 
         // Save simulation to Supabase
-        const anonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZkYWJ5Z21yb211cXR5c2l0b2RwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTk2NjI2OTQsImV4cCI6MjA3NTIzODY5NH0.6JJMkPXBufpLxlisH1ig32Xm8YM3p0jcXRlBzx5x8Dk';
+        const anonKey = SB_SERVICE_ROLE_KEY; // service_role (server-side only) — was a hardcoded anon literal
         await fetch('https://fdabygmromuqtysitodp.supabase.co/rest/v1/trading_simulations', {
           method: 'POST',
           headers: { apikey: anonKey, Authorization: `Bearer ${anonKey}`, 'Content-Type': 'application/json' },
@@ -1363,7 +1378,7 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
     // ─── Trading: Positions ─────────────────────────────────
     this.app.get('/api/trading/positions', async (req, res) => {
       try {
-        const anonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZkYWJ5Z21yb211cXR5c2l0b2RwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTk2NjI2OTQsImV4cCI6MjA3NTIzODY5NH0.6JJMkPXBufpLxlisH1ig32Xm8YM3p0jcXRlBzx5x8Dk';
+        const anonKey = SB_SERVICE_ROLE_KEY; // service_role (server-side only) — was a hardcoded anon literal
         const sbRes = await fetch('https://fdabygmromuqtysitodp.supabase.co/rest/v1/trading_positions?status=eq.open&order=created_at.desc&limit=50', {
           headers: { apikey: anonKey, Authorization: `Bearer ${anonKey}` }
         });
@@ -1374,7 +1389,7 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
     // ─── Trading: Simulations ───────────────────────────────
     this.app.get('/api/trading/simulations', async (req, res) => {
       try {
-        const anonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZkYWJ5Z21yb211cXR5c2l0b2RwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTk2NjI2OTQsImV4cCI6MjA3NTIzODY5NH0.6JJMkPXBufpLxlisH1ig32Xm8YM3p0jcXRlBzx5x8Dk';
+        const anonKey = SB_SERVICE_ROLE_KEY; // service_role (server-side only) — was a hardcoded anon literal
         const sbRes = await fetch('https://fdabygmromuqtysitodp.supabase.co/rest/v1/trading_simulations?select=asset,probability,current_price,macro_factors,created_at&order=created_at.desc&limit=10', {
           headers: { apikey: anonKey, Authorization: `Bearer ${anonKey}` }
         });
@@ -1385,7 +1400,7 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
     // ─── Trading: Config ────────────────────────────────────
     this.app.get('/api/trading/config', async (req, res) => {
       try {
-        const anonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZkYWJ5Z21yb211cXR5c2l0b2RwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTk2NjI2OTQsImV4cCI6MjA3NTIzODY5NH0.6JJMkPXBufpLxlisH1ig32Xm8YM3p0jcXRlBzx5x8Dk';
+        const anonKey = SB_SERVICE_ROLE_KEY; // service_role (server-side only) — was a hardcoded anon literal
         const sbRes = await fetch('https://fdabygmromuqtysitodp.supabase.co/rest/v1/trading_config?id=eq.1&select=*', {
           headers: { apikey: anonKey, Authorization: `Bearer ${anonKey}` }
         });
@@ -1396,7 +1411,7 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
 
     this.app.post('/api/trading/config', async (req, res) => {
       try {
-        const anonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZkYWJ5Z21yb211cXR5c2l0b2RwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTk2NjI2OTQsImV4cCI6MjA3NTIzODY5NH0.6JJMkPXBufpLxlisH1ig32Xm8YM3p0jcXRlBzx5x8Dk';
+        const anonKey = SB_SERVICE_ROLE_KEY; // service_role (server-side only) — was a hardcoded anon literal
         const { trading_enabled, max_position_usdc, min_edge_threshold, daily_loss_limit } = req.body;
         // Upsert config (single row)
         const sbRes = await fetch('https://fdabygmromuqtysitodp.supabase.co/rest/v1/trading_config?id=eq.1', {

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Polymarket market scanner — finds commodity/crypto markets via Gamma API."""
 
+import os
 import re
 import requests
 import json
@@ -22,7 +23,26 @@ KEYWORDS = {
 }
 
 SUPABASE_URL = "https://fdabygmromuqtysitodp.supabase.co/rest/v1"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZkYWJ5Z21yb211cXR5c2l0b2RwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTk2NjI2OTQsImV4cCI6MjA3NTIzODY5NH0.6JJMkPXBufpLxlisH1ig32Xm8YM3p0jcXRlBzx5x8Dk"
+
+
+def _service_role_key():
+    """Supabase service-role key — SERVER-SIDE ONLY (never exposed). Prefer the
+    environment; fall back to reading the root .env the rest of QClaw uses.
+    Replaces the hardcoded anon-key literal (anon→service-role migration)."""
+    key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+    if key:
+        return key
+    try:
+        with open("/root/.quantumclaw/.env") as fh:
+            for line in fh:
+                if line.startswith("SUPABASE_SERVICE_ROLE_KEY="):
+                    return line.split("=", 1)[1].strip().strip('"').strip("'")
+    except OSError:
+        pass
+    return ""
+
+
+SUPABASE_KEY = _service_role_key()
 
 
 def fetch_markets():
