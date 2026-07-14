@@ -192,13 +192,14 @@ async function drawFooter(ctx, { line, tint, alpha }) {
 
 // ─── Card Renderers ──────────────────────────────────────────
 
-async function renderEditorial(ctx, { headline, subtext, post_type }) {
+async function renderEditorial(ctx, { headline, subtext }) {
   ctx.fillStyle = DARK_BG;
   ctx.fillRect(0, 0, WIDTH, HEIGHT);
   drawRadialGlow(ctx, WIDTH - 80, 80, 720, 'rgba(153,204,204,0.08)');
 
-  // Pill label — post type. Spec said 10px; at 1080px wide that is illegible, so 2× applied.
-  const label = (post_type || 'FLOW OS').toUpperCase();
+  // Pill label — always the brand, never internal taxonomy (post_type is not consumer-facing).
+  // Spec said 10px; at 1080px wide that is illegible, so 2× applied.
+  const label = 'FLOW OS';
   ctx.font = 'bold 20px "Montserrat"';
   const track = 4;
   const labelW = measureTracked(ctx, label, track);
