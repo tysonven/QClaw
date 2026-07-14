@@ -73,3 +73,48 @@ not "it succeeds while anon is open." Only then re-attempt Phase 2 (REVOKE + RLS
 a false positive. Valid tests: (a) hit a service-role-only table (`content_studio_jobs`) and expect 200 where
 anon gets 401/empty; (b) decode the JWT the request sends and confirm `role=service_role`; (c) anon-revoke canary
 on one table. Use one of these on every consumer before any REVOKE.
+
+---
+
+## Update 2026-07-14 (later) — credential fixed & verified; FSC migration built
+
+### Step 1 result — `fgbywZowo5p5iu9F` re-saved with the literal key ✅ (with one caveat)
+Tyson replaced the value. Decrypted export now shows **no `{{ $env }}`** and the stored `apikey` decodes to
+**`role=service_role`**; using that key, `content_studio_jobs` (service-role-only) returns **16 rows** while anon
+returns **0**. So the key is genuinely service_role and the interpolation that broke it is gone.
+- **Caveat:** the `json` field is still stored in n8n **expression mode** (leading `=`, but no `{{}}`) — the
+  plain-JSON toggle didn't persist. With no `{{}}` to interpolate, this resolves to the literal, so it's expected
+  to work; not yet proven at *server runtime*.
+- **Runtime proof deferred to apply-day canary.** An `n8n execute` CLI probe was attempted but is unreliable here
+  (broker-port collision; no `--file`; httpRequest node errors under `--id`) AND the CLI resolves credentials in
+  its own context, so it isn't a faithful proxy for the live server. The faithful test is the **canary** below.
+
+### Step 3 built — FSC → service-role migration (NOT applied)
+Tool: `scripts/n8n/fsc-to-service-role.mjs` (pure local transform; idempotent; validated all-JSON-valid, 0 FSC
+refs remaining, Weekly Analyst's broken `apikey=undefined` stripped). **15 FSC nodes across 7 workflows:**
+
+```
+0sIugM5o5wTwpflq  Copy Agent        [POST] Save Copy            -> copy_agent_output        [IN-SCOPE]
+3YahxqOguET3pifj  Market Scanner    [POST] Save Simulations     -> trading_simulations      [IN-SCOPE]
+UYA0JppH7eqyI7fQ  Position Monitor  [GET]  Fetch Open Positions -> trading_positions        [IN-SCOPE]
+fq7spfyiNcpt8Mf7  Trade Executor    [GET]  Fetch Config / [POST] Save Position -> trading_config/positions [IN-SCOPE, inactive]
+vjj2uBIPc07FpIxx  Weekly Analyst    [GET]  Fetch Week Trades / [POST] Save Report -> trading_positions/analyst_reports  [IN-SCOPE, strips apikey=undefined]
+QnCEES9T7WxW5vVR  Competitor Ad Res [POST] Save Ad / [GET] Fetch -> competitor_ads          [EXCLUDED table — defer]
+lrGcirtmOHb1xTq8  Ad Creation Agent 6 nodes                     -> ad_creation_sessions     [EXCLUDED table — defer]
+```
+
+**Apply scope (tomorrow):** the **5 IN-SCOPE workflows** (7 nodes) — required before the trading/`copy_agent_output`
+REVOKE. Defer the 2 EXCLUDED-table workflows (their tables aren't locked this round; migrating them is anon-cleanup,
+optional).
+
+**Deploy mechanism** (same as Phase 1): read-only export of `workflow_entity.nodes` → run the transform `--out` →
+transactional psql UPDATE (`nodes::json` + `versionId=gen_random_uuid()::text` + `updatedAt`) →
+`docker restart n8n-project-n8n-1`. n8n Postgres = container `n8n-postgres`, `-U n8nuser -d n8n`.
+
+### Apply-day sequence (with the canary that actually proves service_role)
+1. Apply the FSC migration to the 5 in-scope workflows; restart n8n.
+2. **Canary:** `REVOKE ALL ON public.trading_positions FROM anon` (one table only). Wait for the next Position
+   Monitor run (~15 min, live server). If it **succeeds** → the fixed credential genuinely sends service_role →
+   proceed. If **42501** → instant rollback (`GRANT`), the credential still isn't right → stop.
+3. On green canary: run the full Phase 2 REVOKE + Phase 3 (the 9 tables), then re-verify (anon 401 on all 9,
+   service_role 200, consumers green).
