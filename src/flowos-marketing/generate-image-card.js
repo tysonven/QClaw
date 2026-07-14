@@ -203,7 +203,8 @@ async function renderEditorial(ctx, { headline, subtext, post_type }) {
   const track = 4;
   const labelW = measureTracked(ctx, label, track);
   const pillH = 44;
-  roundRectPath(ctx, PAD, PAD, labelW + 48, pillH, pillH / 2);
+  const pillY = 80;
+  roundRectPath(ctx, PAD, pillY, labelW + 48, pillH, pillH / 2);
   ctx.fillStyle = 'rgba(153,204,204,0.08)';
   ctx.fill();
   ctx.strokeStyle = 'rgba(153,204,204,0.35)';
@@ -211,31 +212,45 @@ async function renderEditorial(ctx, { headline, subtext, post_type }) {
   ctx.stroke();
   ctx.fillStyle = TEAL_ACCENT;
   ctx.textBaseline = 'middle';
-  drawTrackedText(ctx, label, PAD + 24, PAD + pillH / 2 + 1, track);
+  drawTrackedText(ctx, label, PAD + 24, pillY + pillH / 2 + 1, track);
   ctx.textBaseline = 'alphabetic';
 
+  // Measure the content block (accent bar + headline + body), then centre it
+  // vertically between the pill and the footer.
+  const HEAD_SIZE = 56, HEAD_LH = 72, BODY_SIZE = 30, BODY_LH = 46;
+  ctx.font = `bold ${HEAD_SIZE}px "Montserrat"`;
+  const headLines = wrapText(ctx, headline, TEXT_W, 3);
+  ctx.font = `${BODY_SIZE}px "Raleway"`;
+  const bodyLines = subtext ? wrapText(ctx, subtext, TEXT_W, 4) : [];
+
+  const blockH = 60 + HEAD_SIZE + (headLines.length - 1) * HEAD_LH
+    + (bodyLines.length ? 40 + BODY_SIZE + (bodyLines.length - 1) * BODY_LH : 0);
+  const zoneTop = pillY + pillH + 40;
+  const zoneBottom = HEIGHT - FOOTER_H - 40;
+  const top = zoneTop + Math.max(0, (zoneBottom - zoneTop - blockH) / 2);
+
   // Teal accent bar above headline
-  let y = PAD + 150;
   ctx.fillStyle = TEAL_ACCENT;
-  ctx.fillRect(PAD, y, 60, 5);
-  y += 85;
+  ctx.fillRect(PAD, top, 60, 5);
 
   // Headline
+  let y = top + 60 + HEAD_SIZE;
   ctx.fillStyle = CREAM_TEXT;
-  ctx.font = 'bold 48px "Montserrat"';
-  for (const l of wrapText(ctx, headline, TEXT_W, 3)) {
+  ctx.font = `bold ${HEAD_SIZE}px "Montserrat"`;
+  for (const l of headLines) {
     ctx.fillText(l, PAD, y);
-    y += 62;
+    y += HEAD_LH;
   }
+  y -= HEAD_LH;
 
   // Body
-  if (subtext) {
-    y += 30;
+  if (bodyLines.length) {
+    y += 40 + BODY_SIZE;
     ctx.fillStyle = 'rgba(234,229,218,0.65)';
-    ctx.font = '28px "Raleway"';
-    for (const l of wrapText(ctx, subtext, TEXT_W, 4)) {
+    ctx.font = `${BODY_SIZE}px "Raleway"`;
+    for (const l of bodyLines) {
       ctx.fillText(l, PAD, y);
-      y += 42;
+      y += BODY_LH;
     }
   }
 
@@ -248,37 +263,53 @@ async function renderStat(ctx, { stat, stat_label, headline }) {
   drawRadialGlow(ctx, WIDTH - 80, 80, 720, 'rgba(153,204,204,0.08)');
 
   // Accent bar top-left
+  const barY = 80;
   ctx.fillStyle = TEAL_ACCENT;
-  ctx.fillRect(PAD, PAD, 60, 5);
+  ctx.fillRect(PAD, barY, 60, 5);
+
+  // Hook line — pinned to the bottom third, above the footer
+  const HOOK_SIZE = 42, HOOK_LH = 58;
+  ctx.font = `600 ${HOOK_SIZE}px "Montserrat"`;
+  const hookLines = wrapText(ctx, headline, TEXT_W, 3);
+  const hookLast = HEIGHT - FOOTER_H - 70;
+  const hookFirst = hookLast - (hookLines.length - 1) * HOOK_LH;
 
   // Stat number — auto-shrink to fit width
-  let size = 120;
+  let size = 140;
   ctx.font = `bold ${size}px "Montserrat"`;
-  while (size > 48 && ctx.measureText(stat).width > TEXT_W) {
+  while (size > 60 && ctx.measureText(stat).width > TEXT_W) {
     size -= 4;
     ctx.font = `bold ${size}px "Montserrat"`;
   }
+  const LABEL_SIZE = 32, LABEL_LH = 48;
+  ctx.font = `${LABEL_SIZE}px "Raleway"`;
+  const labelLines = wrapText(ctx, stat_label, TEXT_W, 2);
+
+  // Centre the stat + label block between the accent bar and the hook
+  const blockH = size + 70 + (labelLines.length - 1) * LABEL_LH;
+  const zoneTop = barY + 5 + 40;
+  const zoneBottom = hookFirst - HOOK_SIZE - 50;
+  const top = zoneTop + Math.max(0, (zoneBottom - zoneTop - blockH) / 2);
+
   ctx.fillStyle = TEAL_ACCENT;
-  const statBaseline = PAD + 160 + size;
+  ctx.font = `bold ${size}px "Montserrat"`;
+  const statBaseline = top + size;
   ctx.fillText(stat, PAD, statBaseline);
 
-  // Stat label
   ctx.fillStyle = 'rgba(234,229,218,0.70)';
-  ctx.font = '28px "Raleway"';
+  ctx.font = `${LABEL_SIZE}px "Raleway"`;
   let ly = statBaseline + 70;
-  for (const l of wrapText(ctx, stat_label, TEXT_W, 2)) {
+  for (const l of labelLines) {
     ctx.fillText(l, PAD, ly);
-    ly += 42;
+    ly += LABEL_LH;
   }
 
-  // Hook line — bottom third
   ctx.fillStyle = CREAM_TEXT;
-  ctx.font = '600 36px "Montserrat"';
-  const hookLines = wrapText(ctx, headline, TEXT_W, 3);
-  let hy = HEIGHT - FOOTER_H - 70 - (hookLines.length - 1) * 50;
+  ctx.font = `600 ${HOOK_SIZE}px "Montserrat"`;
+  let hy = hookFirst;
   for (const l of hookLines) {
     ctx.fillText(l, PAD, hy);
-    hy += 50;
+    hy += HOOK_LH;
   }
 
   await drawFooter(ctx, { line: 'rgba(153,204,204,0.2)', tint: TEAL_ACCENT, alpha: 0.4 });
@@ -295,7 +326,8 @@ async function renderFeature(ctx, { headline, subtext, badge_label, feature_line
   const track = 3;
   const labelW = measureTracked(ctx, label, track);
   const pillH = 42;
-  roundRectPath(ctx, PAD, PAD, labelW + 56, pillH, 20);
+  const pillY = 80;
+  roundRectPath(ctx, PAD, pillY, labelW + 56, pillH, 20);
   ctx.fillStyle = 'rgba(153,204,204,0.25)';
   ctx.fill();
   ctx.strokeStyle = 'rgba(153,204,204,0.4)';
@@ -303,33 +335,47 @@ async function renderFeature(ctx, { headline, subtext, badge_label, feature_line
   ctx.stroke();
   ctx.fillStyle = TEAL_DEEP;
   ctx.textBaseline = 'middle';
-  drawTrackedText(ctx, label, PAD + 28, PAD + pillH / 2 + 1, track);
+  drawTrackedText(ctx, label, PAD + 28, pillY + pillH / 2 + 1, track);
   ctx.textBaseline = 'alphabetic';
 
+  // Measure headline + body, then centre the block between badge and callout strip
+  const HEAD_SIZE = 56, HEAD_LH = 72, BODY_SIZE = 30, BODY_LH = 46;
+  const stripH = 150;
+  const stripY = HEIGHT - FOOTER_H - stripH - 60;
+  ctx.font = `bold ${HEAD_SIZE}px "Montserrat"`;
+  const headLines = wrapText(ctx, headline, TEXT_W, 3);
+  ctx.font = `${BODY_SIZE}px "Raleway"`;
+  const bodyLines = subtext ? wrapText(ctx, subtext, TEXT_W, 4) : [];
+
+  const blockH = HEAD_SIZE + (headLines.length - 1) * HEAD_LH
+    + (bodyLines.length ? 40 + BODY_SIZE + (bodyLines.length - 1) * BODY_LH : 0);
+  const zoneTop = pillY + pillH + 40;
+  const zoneBottom = (feature_line ? stripY : HEIGHT - FOOTER_H) - 40;
+  const top = zoneTop + Math.max(0, (zoneBottom - zoneTop - blockH) / 2);
+
   // Headline
-  let y = PAD + 170;
+  let y = top + HEAD_SIZE;
   ctx.fillStyle = TEAL_DARK;
-  ctx.font = 'bold 48px "Montserrat"';
-  for (const l of wrapText(ctx, headline, TEXT_W, 3)) {
+  ctx.font = `bold ${HEAD_SIZE}px "Montserrat"`;
+  for (const l of headLines) {
     ctx.fillText(l, PAD, y);
-    y += 62;
+    y += HEAD_LH;
   }
+  y -= HEAD_LH;
 
   // Body
-  if (subtext) {
-    y += 30;
+  if (bodyLines.length) {
+    y += 40 + BODY_SIZE;
     ctx.fillStyle = TEAL_BODY;
-    ctx.font = '28px "Raleway"';
-    for (const l of wrapText(ctx, subtext, TEXT_W, 4)) {
+    ctx.font = `${BODY_SIZE}px "Raleway"`;
+    for (const l of bodyLines) {
       ctx.fillText(l, PAD, y);
-      y += 42;
+      y += BODY_LH;
     }
   }
 
   // Feature callout strip — white rounded rect, bottom third
   if (feature_line) {
-    const stripH = 150;
-    const stripY = HEIGHT - FOOTER_H - stripH - 60;
     ctx.save();
     ctx.shadowColor = 'rgba(42,90,90,0.10)';
     ctx.shadowBlur = 24;
