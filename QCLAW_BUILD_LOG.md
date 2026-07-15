@@ -16282,3 +16282,87 @@ server-side) → `polymarket_scanner.py` → remaining workflows → then Phase 
 verification between each. `workout_*` stays deferred (triple-a-tracker Supabase-Auth migration).
 
 References: `docs/runbooks/supabase-anon-consumer-map-2026-07-11.md`; memory `project_supabase_main_anon_rls_exposure`.
+
+---
+
+## [2026-07-15] Supabase anon→service_role — Phase 2 + Phase 3 COMPLETE & VERIFIED (main project `fdabygmromuqtysitodp`)
+
+The anon-RLS remediation is **done**. All consumers migrated to `service_role`, anon `GRANT`s revoked, and permissive
+policies replaced on the 9 in-scope tables. Verified end-to-end against live production traffic under the lock.
+
+### What was applied (single transaction, COMMIT ok)
+- **REVOKE ALL ... FROM anon** on the 9 in-scope tables: `trading_simulations`, `trading_positions`, `trading_config`,
+  `trading_markets`, `trading_analyst_reports`, `crete_content_queue`, `marketing_drafts`, `social_clip_schedules`,
+  `copy_agent_output`.
+- **DROPed** the permissive/decoy policies on each (`allow_anon_all`, `allow_anon_insert`, `"No public access"`,
+  and the mis-named `"Service role full access"` which was actually `TO public USING(true)`).
+- **CREATEd** `service_role_all` on each: `FOR ALL TO service_role USING (true) WITH CHECK (true)`.
+- **Excluded (still anon-open, deliberately):** `ad_creation_sessions`, `competitor_ads` (Meta Ads workflows still on
+  anon — separate follow-up), `workout_logs`, `workout_settings` (triple-a-tracker; blocked on app Supabase-Auth
+  migration, short-term risk accepted).
+
+### Root cause that blocked us for two sessions — n8n 2.4.8 PUBLISH model
+n8n 2.4.8 **executes the PUBLISHED version**, not the draft. Execution reads `workflow_history` where
+`versionId = workflow_entity.activeVersionId` (FK `FK_08d6c67b7f722b0039d9d5ed620`). Our direct-DB edits to
+`workflow_entity.nodes` (the draft) + random `versionId` bumps therefore **did nothing at runtime** and also broke
+UI Publish (`"Version not found"`) and API PUT (FK violation), because no matching `workflow_history` row existed.
+**Fix = sync the active-published history row's nodes to the draft:**
+```sql
+UPDATE workflow_history h SET nodes=w.nodes, connections=w.connections, "updatedAt"=now()
+FROM workflow_entity w
+WHERE h."workflowId"=w.id AND h."versionId"=w."activeVersionId" AND w.id IN (...);
+```
+Applied per-workflow across all 13 → `q309_ok=13, anon_bad=0`. **Lesson: under 2.4.8, direct-DB node edits are unsafe
+unless you also update the published `workflow_history` row; a draft-only edit is a silent no-op at runtime.**
+
+### The credential
+`q309m8yfLKGxywMb` ("Supabase Service Role (main)", type `httpCustomAuth`). MUST be stored as **plain JSON**
+(expression-mode / leading `=` does NOT deliver the key at runtime — it silently falls back to anon; this was the
+earlier `fgbywZowo5p5iu9F` false-positive). Old broken cred `fgbywZowo5p5iu9F` deleted; FSC cred `Nd2uuX5t9KEwbQPv`
+(httpHeaderAuth, held the ANON key) retired from the migrated nodes.
+
+### Verification (verbatim)
+- Direct REST probes: `anon 401 on: 9/9   service_role 200 on: 9/9`. Re-audit: each of the 9 has `rls=true`, a single
+  `service_role_all [{service_role}]` policy, `anon_grants=(none)`. Excluded controls (`ad_creation_sessions`,
+  `competitor_ads`, `workout_logs`) still `anon HTTP=200` as expected.
+- Anon-revoke **canary** (before full apply): `trading_positions` anon revoked → live Position Monitor run
+  `id=1136950 status=success` (executed service_role). Green.
+- **Live consumers under the full lock** (watcher baseline exec `1137013`, `errors: 0`):
+  ```
+  1137044|success|Trading - Position Monitor        (trading_positions)
+  1137045|success|GHL Marketing: Scheduled Pub      (marketing_drafts)
+  1137076|success|Crete - Scheduled Publisher       (crete_content_queue)
+  1137079|success|Trading - Position Monitor
+  1137080|success|GHL Marketing: Scheduled Pub
+  ```
+  Market Scanner (`trading_simulations`, `3YahxqOguET3pifj`) — hourly runs `1138001`→`1139070` (04:00–12:00 07-15),
+  all `success`.
+
+### Known follow-up regression — dashboard (server.js), queued as the NEXT PR
+`src/dashboard/server.js:1505` still builds `CRETE_SUPABASE_KEY = creteEnv.SUPABASE_ANON_KEY` (reads
+`SUPABASE_ANON_KEY` from `.env` — a different pattern than the 9 handlers already on `SB_SERVICE_ROLE_KEY` at
+1231–1403, so the earlier pass missed it). It feeds the `crete_content_queue` route (`:1506`) and the
+`marketing_drafts` route (`:1705`). Since Phase 2 locked both tables, **those two dashboard routes now 42501
+("permission denied")**. Fix (next PR): `CRETE_SUPABASE_KEY = SB_SERVICE_ROLE_KEY`. This region does not overlap
+PR #65's server.js hunks (116, 1962–2034), so it auto-merges.
+
+### Still deferred (tracked, not done)
+- JWT service-role rotation (both hosts still on legacy `eyJh…`, not `sb_secret_*`).
+- Meta Ads workflows still on anon for `ad_creation_sessions` / `competitor_ads`.
+- `workout_*` auth.uid() scoping (needs triple-a-tracker `signInAnonymously()` + user_id text→uuid).
+- `.env.bak*` cleanup on the n8n droplet.
+- Draft `versionId` metadata reconciliation (cosmetic — drafts show an orphaned versionId; runtime unaffected).
+
+### Infra incident during verification — n8n droplet `/tmp` vanished
+Mid-verification, `docker exec` began failing with `OCI runtime exec failed: open /tmp/runc-process...: no such file
+or directory`, and both containers flipped to `(unhealthy)`. **Cause: `/tmp` did not exist** — a buggy
+`/etc/cron.daily/cleanup-tmp` whose second line `find /tmp -type d -empty -delete` deletes `/tmp` **itself** once it
+is empty (intermittent; only triggers when /tmp happens to be empty at cron time). Workflow execution was unaffected
+(that path doesn't use `docker exec`; `healthz` stayed `200`). **Fixed:** recreated `/tmp` (`mkdir -p /tmp && chmod
+1777 /tmp`) and patched the cron with `-mindepth 1` on both `find` lines so `/tmp` itself is never a deletion
+candidate (backup: `/etc/cron.daily/cleanup-tmp.bak.pre-mindepth`). Containers back to `(healthy)`.
+
+References: memory `project_supabase_main_anon_rls_exposure`, `project_n8n_supabase_fsc_credential`,
+`project_n8n_edit_workflow_no_api_key` (corrected for the 2.4.8 publish model); PR #65 note (build-log EOF + server.js
+regions do not overlap). Deployment via SSH to n8n droplet + `docker exec n8n-postgres psql` and per-workflow
+published-version sync.
