@@ -1,5 +1,5 @@
 {
-  "updatedAt": "2026-05-13T20:29:42.993Z",
+  "updatedAt": "2026-07-14T16:12:36.164Z",
   "createdAt": "2026-04-13T12:03:02.932Z",
   "id": "Awo65rdSe5BvDHtC",
   "name": "GHL Marketing: Content Generator",
@@ -43,26 +43,16 @@
     {
       "parameters": {
         "url": "https://fdabygmromuqtysitodp.supabase.co/rest/v1/marketing_drafts?select=hooks_used,instagram_hook_text&status=eq.published&order=created_at.desc&limit=10",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "apikey",
-              "value": "={{$env.SUPABASE_ANON_KEY}}"
-            },
-            {
-              "name": "Authorization",
-              "value": "=Bearer {{$env.SUPABASE_ANON_KEY}}"
-            }
-          ]
-        },
+        "sendHeaders": false,
         "options": {
           "response": {
             "response": {
               "responseFormat": "json"
             }
           }
-        }
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth"
       },
       "id": "a1000001-0001-4000-8000-000000000003",
       "name": "Fetch Recent Hooks",
@@ -72,7 +62,13 @@
         640,
         304
       ],
-      "alwaysOutputData": true
+      "alwaysOutputData": true,
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "q309m8yfLKGxywMb",
+          "name": "Supabase Service Role (main)"
+        }
+      }
     },
     {
       "parameters": {
@@ -108,7 +104,7 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: 2000, system: \"You are a marketing copywriter for GHL Support Specialist. Product: AI-powered 24/7 support for GoHighLevel users. URL: support.flowos.tech/ghl/landing. Price: $29/month or $290/year. Founders Offer: first 50 members get 3 months free with code GHLPOWER50.\\n\\nTone: Direct, practical, slightly irreverent. Speak like a GHL power user. No corporate language. Short sentences. No em dashes. No hashtags in body copy (Instagram hashtags go in a separate block).\\n\\nNever say: game-changer, revolutionary, unlock your potential, or generic SaaS language.\\n\\nThree pain points to rotate:\\n1. Time lost \\u2014 hours in YouTube, Facebook groups, help docs\\n2. Support frustration \\u2014 tickets take days, group answers unreliable\\n3. Confidence gap \\u2014 'I know GHL can do this, I just don't know how'\\n\\nOne promise: Ask it anything about GHL. Get an expert answer in seconds.\\n\\nUse specific GHL terms: workflows, automations, pipelines, funnels, SaaS mode, merge fields, calendars, triggers, actions.\", messages: [{ role: 'user', content: 'Generate a ' + $json.postType + ' organic post for GHL Support Specialist. Today is ' + new Date().toLocaleDateString('en-US', {weekday:'long',month:'long',day:'numeric'}) + '.\\n\\nProvide output as JSON with these exact keys:\\n- facebook_post (plain text, no hashtags, 100-200 words)\\n- linkedin_post (plain text, no hashtags, 80-150 words)\\n- instagram_caption (with hashtag block at end, 60-120 words before hashtags)\\n- instagram_hook_text (5-8 words, overlay text for image)\\n- ad_headline (under 10 words)\\n- ad_body (80-120 words, includes pain point + solution + Founders Offer + URL with UTMs: support.flowos.tech/ghl/landing?utm_source=facebook&utm_medium=paid_social&utm_campaign=founders_offer)\\n- ad_cta (3-4 words for button text)\\n- retargeting_copy (60-100 words, acknowledges they visited, restates value, urgency)\\n\\nDo NOT repeat any of these recently used hooks: ' + $json.recentHooks + '\\n\\nReturn ONLY valid JSON. No markdown fences. No explanation.' }] }) }}",
+        "jsonBody": "={{ JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 2000, system: \"You are a marketing copywriter for GHL Support Specialist. Product: AI-powered 24/7 support for GoHighLevel users. URL: support.flowos.tech/ghl/landing. Price: $29/month or $290/year. Founders Offer: first 50 members get 3 months free with code GHLPOWER50.\\n\\nTone: Direct, practical, slightly irreverent. Speak like a GHL power user. No corporate language. Short sentences. No em dashes. No hashtags in body copy (Instagram hashtags go in a separate block).\\n\\nNever say: game-changer, revolutionary, unlock your potential, or generic SaaS language.\\n\\nThree pain points to rotate:\\n1. Time lost \\u2014 hours in YouTube, Facebook groups, help docs\\n2. Support frustration \\u2014 tickets take days, group answers unreliable\\n3. Confidence gap \\u2014 'I know GHL can do this, I just don't know how'\\n\\nOne promise: Ask it anything about GHL. Get an expert answer in seconds.\\n\\nUse specific GHL terms: workflows, automations, pipelines, funnels, SaaS mode, merge fields, calendars, triggers, actions.\", messages: [{ role: 'user', content: 'Generate a ' + $json.postType + ' organic post for GHL Support Specialist. Today is ' + new Date().toLocaleDateString('en-US', {weekday:'long',month:'long',day:'numeric'}) + '.\\n\\nProvide output as JSON with these exact keys:\\n- facebook_post (plain text, no hashtags, 100-200 words)\\n- linkedin_post (plain text, no hashtags, 80-150 words)\\n- instagram_caption (with hashtag block at end, 60-120 words before hashtags)\\n- instagram_hook_text (5-8 words, overlay text for image)\\n- ad_headline (under 10 words)\\n- ad_body (80-120 words, includes pain point + solution + Founders Offer + URL with UTMs: support.flowos.tech/ghl/landing?utm_source=facebook&utm_medium=paid_social&utm_campaign=founders_offer)\\n- ad_cta (3-4 words for button text)\\n- retargeting_copy (60-100 words, acknowledges they visited, restates value, urgency)\\n- headline (punchy 8-12 word hook, no full stop, stands alone without the caption body)\\n- stat (a specific statistic, number, or percentage relevant to this post; null if not applicable)\\n- stat_label (6-10 word phrase contextualising the stat; null if stat is null)\\n\\nExample of the three new fields for a value-led Wednesday post:\\n\"headline\": \"Every GHL answer you need in under thirty seconds\",\\n\"stat\": \"73%\",\\n\"stat_label\": \"of GHL builders lose an hour daily searching for answers\"\\n\\nDo NOT repeat any of these recently used hooks: ' + $json.recentHooks + '\\n\\nReturn ONLY valid JSON. No markdown fences. No explanation.' }] }) }}",
         "options": {
           "response": {
             "response": {
@@ -127,8 +123,8 @@
       ],
       "credentials": {
         "httpHeaderAuth": {
-          "id": "V9YcuDfp9lqydyDH",
-          "name": "Anthropic Header Auth"
+          "id": "LUUeAdpObQjzRbct",
+          "name": "Anthropic - QuantumClaw"
         }
       }
     },
@@ -153,20 +149,12 @@
         "headerParameters": {
           "parameters": [
             {
-              "name": "apikey",
-              "value": "={{$env.SUPABASE_ANON_KEY}}"
-            },
-            {
               "name": "Content-Type",
               "value": "application/json"
             },
             {
               "name": "Prefer",
               "value": "return=representation"
-            },
-            {
-              "name": "Authorization",
-              "value": "=Bearer {{$env.SUPABASE_ANON_KEY}}"
             }
           ]
         },
@@ -179,21 +167,29 @@
               "responseFormat": "json"
             }
           }
-        }
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth"
       },
       "id": "a1000001-0001-4000-8000-000000000007",
       "name": "Save to Supabase",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1744,
+        2128,
         304
-      ]
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "q309m8yfLKGxywMb",
+          "name": "Supabase Service Role (main)"
+        }
+      }
     },
     {
       "parameters": {
         "chatId": "1375806243",
-        "text": "=\ud83d\udce3 <b>New GHL marketing draft ready for review</b>\nType: {{ $('Parse Response').first().json.post_type }}\nDraft ID: <code>{{ $json[0].id }}</code>\n\nReview at https://agentboardroom.flowos.tech (GHL Marketing tab).",
+        "text": "=📣 <b>New GHL marketing draft ready for review</b>\nType: {{ $('Parse Response').first().json.post_type }}\nDraft ID: <code>{{ $json.id }}</code>\n\nReview at https://agentboardroom.flowos.tech (GHL Marketing tab).",
         "additionalFields": {
           "parse_mode": "HTML"
         }
@@ -203,7 +199,7 @@
       "type": "n8n-nodes-base.telegram",
       "typeVersion": 1.2,
       "position": [
-        1904,
+        2304,
         304
       ],
       "webhookId": "78c28696-5041-402a-a116-2f5c00bc05d3",
@@ -216,19 +212,6 @@
     },
     {
       "parameters": {
-        "jsCode": "// Map post_type -> R2 template URL; rotation for Mon/Wed/Fri.\nconst BASE = 'https://pub-1fa192ebc8ff40dba2b9a0f1890e6f7a.r2.dev/marketing-templates';\nconst IMAGE_MAP = {\n  'pain-led':  BASE + '/ghl-template-pain-led.jpg',\n  'value-led': BASE + '/ghl-template-value-led.jpg',\n  'offer-led': BASE + '/ghl-template-offer-led.jpg'\n};\nconst draft = $input.first().json;\nconst image_url = IMAGE_MAP[draft.post_type] || IMAGE_MAP['value-led'];\nreturn [{ json: { ...draft, image_url } }];"
-      },
-      "id": "a1000001-0001-4000-8000-000000000009",
-      "name": "Assign Image URL",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        1424,
-        304
-      ]
-    },
-    {
-      "parameters": {
         "jsCode": "// Cap IG hashtags to 5; defensive against AI drift\n// Pattern source: kJ2EdkOeEAwVbMwU 'Cap Hashtags' (commit e4ad82c, Apr 29)\nconst MAX_HASHTAGS = 5;\nconst item = $input.first().json;\nconst caption = item.instagram_caption;\nif (typeof caption !== 'string' || !caption) {\n  return [{ json: item }];\n}\nlet count = 0;\nconst stripped = caption.replace(/#\\w+/g, (m) => (++count <= MAX_HASHTAGS ? m : ''));\nconst cleaned = stripped\n  .replace(/[ \\t]+/g, ' ')\n  .replace(/\\n[ \\t]+/g, '\\n')\n  .replace(/\\n{3,}/g, '\\n\\n')\n  .trim();\nreturn [{\n  json: {\n    ...item,\n    instagram_caption: cleaned,\n    _hashtag_cap_applied: { max: MAX_HASHTAGS, original_count: count, dropped: Math.max(0, count - MAX_HASHTAGS), at: new Date().toISOString() }\n  }\n}];"
       },
       "id": "a1000001-0001-4000-8000-000000000020",
@@ -236,7 +219,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1504,
+        1952,
         304
       ]
     },
@@ -275,7 +258,7 @@
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.6,
       "position": [
-        2160,
+        2480,
         304
       ],
       "retryOnFail": true,
@@ -289,6 +272,107 @@
         }
       },
       "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Map post_type -> card_type; build the /api/flowos/generate-image request body.\n// Mon/pain-led -> editorial; Wed/value-led -> stat (editorial if no stat); Fri/offer-led -> feature.\nconst draft = $input.first().json;\nconst CARD_MAP = { 'pain-led': 'editorial', 'value-led': 'stat', 'offer-led': 'feature' };\nlet card_type = CARD_MAP[draft.post_type] || 'editorial';\nif (card_type === 'stat' && (!draft.stat || !draft.stat_label)) card_type = 'editorial';\n\nconst firstSentences = (draft.facebook_post || '')\n  .split(/(?<=[.!?])\\s+/).slice(0, 2).join(' ').slice(0, 220);\n\nconst imageRequest = {\n  card_type,\n  post_type: draft.post_type,\n  headline: draft.headline || draft.ad_headline || draft.instagram_hook_text || '',\n  subtext: firstSentences || draft.instagram_hook_text || ''\n};\nif (card_type === 'stat') {\n  imageRequest.stat = String(draft.stat);\n  imageRequest.stat_label = draft.stat_label;\n}\nif (card_type === 'feature') {\n  imageRequest.feature_line = 'Founders Offer: 3 months free with code GHLPOWER50';\n}\nreturn [{ json: { draft, imageRequest } }];"
+      },
+      "id": "f71a3ad0-b2f6-4bcd-bf9e-132e803acb92",
+      "name": "Build Image Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1424,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://agentboardroom.flowos.tech/api/flowos/generate-image",
+        "method": "POST",
+        "options": {
+          "timeout": 60000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        },
+        "jsonBody": "={{ JSON.stringify($json.imageRequest) }}",
+        "sendBody": true,
+        "sendHeaders": true,
+        "specifyBody": "json",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.QCLAW_API_TOKEN }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        }
+      },
+      "id": "f4bedc9c-2640-48b0-9176-a5a3d4501a15",
+      "name": "Generate Flow OS Image",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1600,
+        304
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const resp = $input.first().json;\nif (!resp.url) throw new Error(\n  'Flow OS image gen returned no URL. Response: ' +\n  JSON.stringify(resp).slice(0,300)\n);\nconst draft = $('Build Image Request').first().json.draft;\nreturn [{ json: { ...draft, image_url: resp.url } }];"
+      },
+      "id": "e3c0d25d-a783-49fc-b74e-791b69dfa8ed",
+      "name": "Merge Image URL",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1776,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Image generation failed - continue with a null image so the draft still saves.\nconst draft = $('Build Image Request').first().json.draft;\nconst errItem = $input.first().json;\nconst detail = JSON.stringify(errItem.error ?? errItem).slice(0, 300);\nreturn [{ json: { ...draft, image_url: null, _image_gen_error: detail } }];"
+      },
+      "id": "a06cf54a-f654-4617-8e85-acb4638df44c",
+      "name": "Image Gen Fallback",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1600,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "text": "=⚠️ <b>GHL marketing image generation FAILED</b>\nType: {{ $json.post_type }}\nDraft continues with no image. Error: <code>{{ $json._image_gen_error }}</code>",
+        "chatId": "1375806243",
+        "additionalFields": {
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "dbd7422a-a749-4972-b7ee-bf5b4ab8dba3",
+      "name": "Alert: Image Gen Failed",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1776,
+        680
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "UR6xX8CchGBKaP3h",
+          "name": "Flow States Ads Bot"
+        }
+      }
     }
   ],
   "connections": {
@@ -356,7 +440,7 @@
       "main": [
         [
           {
-            "node": "Assign Image URL",
+            "node": "Build Image Request",
             "type": "main",
             "index": 0
           }
@@ -368,17 +452,6 @@
         [
           {
             "node": "Send to Telegram",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Assign Image URL": {
-      "main": [
-        [
-          {
-            "node": "Cap Hashtags",
             "type": "main",
             "index": 0
           }
@@ -411,6 +484,62 @@
           }
         ]
       ]
+    },
+    "Build Image Request": {
+      "main": [
+        [
+          {
+            "node": "Generate Flow OS Image",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Flow OS Image": {
+      "main": [
+        [
+          {
+            "node": "Merge Image URL",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Image Gen Fallback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Image URL": {
+      "main": [
+        [
+          {
+            "node": "Cap Hashtags",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Image Gen Fallback": {
+      "main": [
+        [
+          {
+            "node": "Cap Hashtags",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Alert: Image Gen Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
   "settings": {
@@ -425,9 +554,9 @@
   },
   "meta": null,
   "pinData": {},
-  "versionId": "9404b9b6-a95d-4610-9932-7864f158fd7d",
-  "activeVersionId": "9404b9b6-a95d-4610-9932-7864f158fd7d",
-  "versionCounter": 69,
+  "versionId": "593188b5-7b3b-427b-a87e-4a250553adc8",
+  "activeVersionId": "7ef7d704-43b5-4bd3-b0f0-cfa787f6646d",
+  "versionCounter": 99,
   "triggerCount": 1,
   "shared": [
     {
@@ -452,7 +581,7 @@
             "userId": "b1512bca-25b8-4b8b-add0-b86540e5144d",
             "projectId": "KwpTDWcFWL3DfyW3",
             "user": {
-              "updatedAt": "2026-05-13T02:04:11.362Z",
+              "updatedAt": "2026-07-14T18:38:42.164Z",
               "createdAt": "2025-06-06T11:27:13.858Z",
               "id": "b1512bca-25b8-4b8b-add0-b86540e5144d",
               "email": "tysonvenables@protonmail.com",
@@ -479,7 +608,7 @@
               },
               "disabled": false,
               "mfaEnabled": false,
-              "lastActiveAt": "2026-05-13",
+              "lastActiveAt": "2026-07-14",
               "isPending": false
             }
           }
@@ -489,9 +618,9 @@
   ],
   "tags": [],
   "activeVersion": {
-    "updatedAt": "2026-05-13T20:29:42.997Z",
-    "createdAt": "2026-05-13T20:29:42.997Z",
-    "versionId": "9404b9b6-a95d-4610-9932-7864f158fd7d",
+    "updatedAt": "2026-06-18T20:20:22.221Z",
+    "createdAt": "2026-06-18T20:20:20.248Z",
+    "versionId": "7ef7d704-43b5-4bd3-b0f0-cfa787f6646d",
     "workflowId": "Awo65rdSe5BvDHtC",
     "nodes": [
       {
@@ -595,7 +724,7 @@
           },
           "sendBody": true,
           "specifyBody": "json",
-          "jsonBody": "={{ JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: 2000, system: \"You are a marketing copywriter for GHL Support Specialist. Product: AI-powered 24/7 support for GoHighLevel users. URL: support.flowos.tech/ghl/landing. Price: $29/month or $290/year. Founders Offer: first 50 members get 3 months free with code GHLPOWER50.\\n\\nTone: Direct, practical, slightly irreverent. Speak like a GHL power user. No corporate language. Short sentences. No em dashes. No hashtags in body copy (Instagram hashtags go in a separate block).\\n\\nNever say: game-changer, revolutionary, unlock your potential, or generic SaaS language.\\n\\nThree pain points to rotate:\\n1. Time lost \\u2014 hours in YouTube, Facebook groups, help docs\\n2. Support frustration \\u2014 tickets take days, group answers unreliable\\n3. Confidence gap \\u2014 'I know GHL can do this, I just don't know how'\\n\\nOne promise: Ask it anything about GHL. Get an expert answer in seconds.\\n\\nUse specific GHL terms: workflows, automations, pipelines, funnels, SaaS mode, merge fields, calendars, triggers, actions.\", messages: [{ role: 'user', content: 'Generate a ' + $json.postType + ' organic post for GHL Support Specialist. Today is ' + new Date().toLocaleDateString('en-US', {weekday:'long',month:'long',day:'numeric'}) + '.\\n\\nProvide output as JSON with these exact keys:\\n- facebook_post (plain text, no hashtags, 100-200 words)\\n- linkedin_post (plain text, no hashtags, 80-150 words)\\n- instagram_caption (with hashtag block at end, 60-120 words before hashtags)\\n- instagram_hook_text (5-8 words, overlay text for image)\\n- ad_headline (under 10 words)\\n- ad_body (80-120 words, includes pain point + solution + Founders Offer + URL with UTMs: support.flowos.tech/ghl/landing?utm_source=facebook&utm_medium=paid_social&utm_campaign=founders_offer)\\n- ad_cta (3-4 words for button text)\\n- retargeting_copy (60-100 words, acknowledges they visited, restates value, urgency)\\n\\nDo NOT repeat any of these recently used hooks: ' + $json.recentHooks + '\\n\\nReturn ONLY valid JSON. No markdown fences. No explanation.' }] }) }}",
+          "jsonBody": "={{ JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 2000, system: \"You are a marketing copywriter for GHL Support Specialist. Product: AI-powered 24/7 support for GoHighLevel users. URL: support.flowos.tech/ghl/landing. Price: $29/month or $290/year. Founders Offer: first 50 members get 3 months free with code GHLPOWER50.\\n\\nTone: Direct, practical, slightly irreverent. Speak like a GHL power user. No corporate language. Short sentences. No em dashes. No hashtags in body copy (Instagram hashtags go in a separate block).\\n\\nNever say: game-changer, revolutionary, unlock your potential, or generic SaaS language.\\n\\nThree pain points to rotate:\\n1. Time lost \\u2014 hours in YouTube, Facebook groups, help docs\\n2. Support frustration \\u2014 tickets take days, group answers unreliable\\n3. Confidence gap \\u2014 'I know GHL can do this, I just don't know how'\\n\\nOne promise: Ask it anything about GHL. Get an expert answer in seconds.\\n\\nUse specific GHL terms: workflows, automations, pipelines, funnels, SaaS mode, merge fields, calendars, triggers, actions.\", messages: [{ role: 'user', content: 'Generate a ' + $json.postType + ' organic post for GHL Support Specialist. Today is ' + new Date().toLocaleDateString('en-US', {weekday:'long',month:'long',day:'numeric'}) + '.\\n\\nProvide output as JSON with these exact keys:\\n- facebook_post (plain text, no hashtags, 100-200 words)\\n- linkedin_post (plain text, no hashtags, 80-150 words)\\n- instagram_caption (with hashtag block at end, 60-120 words before hashtags)\\n- instagram_hook_text (5-8 words, overlay text for image)\\n- ad_headline (under 10 words)\\n- ad_body (80-120 words, includes pain point + solution + Founders Offer + URL with UTMs: support.flowos.tech/ghl/landing?utm_source=facebook&utm_medium=paid_social&utm_campaign=founders_offer)\\n- ad_cta (3-4 words for button text)\\n- retargeting_copy (60-100 words, acknowledges they visited, restates value, urgency)\\n\\nDo NOT repeat any of these recently used hooks: ' + $json.recentHooks + '\\n\\nReturn ONLY valid JSON. No markdown fences. No explanation.' }] }) }}",
           "options": {
             "response": {
               "response": {
@@ -614,8 +743,8 @@
         ],
         "credentials": {
           "httpHeaderAuth": {
-            "id": "V9YcuDfp9lqydyDH",
-            "name": "Anthropic Header Auth"
+            "id": "LUUeAdpObQjzRbct",
+            "name": "Anthropic - QuantumClaw"
           }
         }
       },
@@ -680,7 +809,7 @@
       {
         "parameters": {
           "chatId": "1375806243",
-          "text": "=\ud83d\udce3 <b>New GHL marketing draft ready for review</b>\nType: {{ $('Parse Response').first().json.post_type }}\nDraft ID: <code>{{ $json[0].id }}</code>\n\nReview at https://agentboardroom.flowos.tech (GHL Marketing tab).",
+          "text": "=📣 <b>New GHL marketing draft ready for review</b>\nType: {{ $('Parse Response').first().json.post_type }}\nDraft ID: <code>{{ $json[0].id }}</code>\n\nReview at https://agentboardroom.flowos.tech (GHL Marketing tab).",
           "additionalFields": {
             "parse_mode": "HTML"
           }
@@ -723,7 +852,7 @@
         "type": "n8n-nodes-base.code",
         "typeVersion": 2,
         "position": [
-          1504,
+          1600,
           304
         ]
       },
@@ -901,15 +1030,15 @@
       }
     },
     "authors": "Tyson Venables",
-    "name": null,
-    "description": null,
+    "name": "Version 7ef7d704",
+    "description": "",
     "autosaved": false,
     "workflowPublishHistory": [
       {
-        "createdAt": "2026-05-13T20:29:43.194Z",
-        "id": 966,
+        "createdAt": "2026-06-18T20:20:22.213Z",
+        "id": 1014,
         "workflowId": "Awo65rdSe5BvDHtC",
-        "versionId": "9404b9b6-a95d-4610-9932-7864f158fd7d",
+        "versionId": "7ef7d704-43b5-4bd3-b0f0-cfa787f6646d",
         "event": "activated",
         "userId": "b1512bca-25b8-4b8b-add0-b86540e5144d"
       }

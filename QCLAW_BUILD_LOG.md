@@ -16366,3 +16366,76 @@ References: memory `project_supabase_main_anon_rls_exposure`, `project_n8n_supab
 `project_n8n_edit_workflow_no_api_key` (corrected for the 2.4.8 publish model); PR #65 note (build-log EOF + server.js
 regions do not overlap). Deployment via SSH to n8n droplet + `docker exec n8n-postgres psql` and per-workflow
 published-version sync.
+
+---
+
+## [2026-07-14] GHL Marketing image staleness → standalone Flow OS image generator (LIVE end-to-end)
+
+**Branch:** `flowos-image-generator` (PR #65, **draft** — adversarial review owed before un-draft).
+**Status:** ✅ endpoint live on qclaw, ✅ workflow `Awo65rdSe5BvDHtC` PUT applied + verified. First scheduled
+production run: Wed 2026-07-15.
+
+### Root cause (read-only audit, same day)
+Images were never generated: `Assign Image URL` code node hardcoded 3 static R2 JPGs keyed by weekday
+(pain/value/offer-led), files unchanged since 27 Apr / 13 May. 20 most recent `marketing_drafts` rows → 3 unique
+`image_url`s. The healthy Crete generator (`/api/crete/generate-image`) was never wired to GHL Marketing.
+
+### Shipped
+- `src/flowos-marketing/generate-image-card.js` — standalone (zero crete-marketing imports), 1080×1350 PNG,
+  three card types (`editorial`/`stat`/`feature`), measure-then-center layout, 422-coded validation, logomark
+  fetched once from `https://media.flowos.tech/brand/logo-mark.png` and cached (text-only footer fallback).
+  Pill label hardcoded `FLOW OS` — internal `post_type` taxonomy cannot leak onto cards (fffb59b).
+- `server.js` — `POST /api/flowos/generate-image` after the Crete block; global auth middleware inherited,
+  `express-rate-limit` 20/min, uploads via `FLOWOS_R2_*` creds (`.env` read per-request, `process.env` fallback)
+  to `flowos-content` at `marketing/images/{uuid}.png`, public via `media.flowos.tech`. No stack traces in
+  responses (422 descriptive / 500 generic).
+- Host: Raleway Regular+SemiBold TTFs → `/usr/share/fonts/truetype/flowos/` + `fc-cache -f` (system-font
+  pattern; skipped @fontsource — ships woff2 only). Logo mark cropped from `FlowOsLogoWordmark.png` (alpha-trim,
+  268×455) → `flowos-content/brand/logo-mark.png`.
+- Workflow rewire: Claude prompt outputs `headline`/`stat`/`stat_label` (+ 3-field few-shot, value-led example);
+  `Assign Image URL` → `Build Image Request` (pain→editorial, value→stat w/ editorial degrade on null stat,
+  offer→feature) → `Generate Flow OS Image` (HTTP) → `Merge Image URL`; error output → `Image Gen Fallback`
+  (`image_url: null`, draft still saves) → `Alert: Image Gen Failed` (Telegram). Telegram draft-ID fix
+  `{{ $json[0].id }}` → `{{ $json.id }}`. Backup: `n8n-workflows/Awo65rdSe5BvDHtC.before-image-gen.json`.
+
+### Evidence (verbatim)
+Endpoint suite: valid editorial/stat → `{"success":true,"url":"https://media.flowos.tech/marketing/images/<uuid>.png",...}`;
+`{"success":false,"error":"card_type must be one of: editorial, stat, feature (got: bogus)"} [422]`;
+`{"success":false,"error":"stat_label is required for stat cards"} [422]`;
+`{"success":false,"error":"headline is required and must be a non-empty string"} [422]`; no-auth → `[401]`;
+Crete regression → `{"success":true,...}` (token unchanged post-restart). Cross-host from n8n droplet via
+`https://agentboardroom.flowos.tech/api/flowos/generate-image` + `Bearer $QCLAW_API_TOKEN` → success
+(token sha256 prefix `8bd25dcda796067c` identical on both hosts — no drift).
+PUT `https://webhook.flowos.tech/api/v1/workflows/Awo65rdSe5BvDHtC` → `HTTP 200`; re-GET:
+`updatedAt: 2026-07-14T19:47:19.151Z`, `versionId: 9f70057e-919b-492a-99de-7a02862434f1`, `active: true`,
+16 nodes, `settings: {"executionOrder": "v1", "callerPolicy": "workflowsFromSameOwner", "availableInMCP": true}`,
+error branch `Generate Flow OS Image --[err]--> Image Gen Fallback` present.
+Approved samples: editorial `2ea4de6e-c4ab-4089-95ab-f1a3261294ec.png`, stat
+`e6bab3d3-2837-4827-8497-cf8be63b6f78.png`, feature `3de34825-a5a8-49e7-b1c8-a44ac8584d07.png`.
+
+### Discoveries / gotchas
+- **n8n API key 401 RESOLVED**: qclaw `.env` `N8N_API_KEY` now returns 200 on `webhook.flowos.tech/api/v1`
+  (GET + PUT both used this session). May 2026 memory was stale; memory file updated.
+- n8n→qclaw calls MUST use `https://agentboardroom.flowos.tech/...` — dashboard binds `127.0.0.1:4000` only;
+  brief's `localhost:4000` is a different-droplet trap. Crete precedent uses `?token=` query auth; new node
+  uses the cleaner `Authorization: Bearer` header (verified through the tunnel).
+- Root CLI renders into `/tmp` hit `Error: EACCES: permission denied, open '/tmp/sample-editorial.png'` when the
+  file pre-existed owned by `flowos` (`fs.protected_regular` + sticky bit blocks root O_CREAT over others'
+  files). `rm` first.
+- Spec deviations (approved via samples): pill/badge label 2× spec size (10→20px, 9→18px — spec sizes illegible
+  at 1080px); type upsized + center-weighted layout per review round 2; editorial pill brand-only per round 3.
+
+### Residual / follow-ups
+- Observe Wed 2026-07-15 run end-to-end (first live generation; check Telegram draft message + `marketing_drafts.image_url`).
+- Adversarial review session against the branch, then un-draft PR #65.
+- `headline`/`stat`/`stat_label` are not persisted to `marketing_drafts` (image-gen only); add columns if the
+  approval UI should show/edit them.
+- `feature_line` hardcodes "Founders Offer: 3 months free with code GHLPOWER50" in `Build Image Request` —
+  update when the promo changes (also lives in the Claude system prompt).
+- Cron node labeled "MWF 07:00 UTC" but drafts historically land 11:00 UTC — label/timezone mismatch, benign,
+  worth renaming.
+- Old `marketing-templates/*.jpg` statics + unused `ghl-template-story.png` (emma-content-studio) can be
+  retired once the new pipeline proves out.
+
+References: memory `project_flowos_image_generator`, `project_n8n_api_key_401` (resolved),
+`reference_gh_not_on_qclaw_host`; PR #65; commits dae3b37, d4f4c1e, fffb59b.
