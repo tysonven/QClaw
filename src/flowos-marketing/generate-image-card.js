@@ -136,7 +136,7 @@ let _logoPromise = null;
 function getLogoMark() {
   if (!_logoPromise) {
     _logoPromise = (async () => {
-      const res = await fetch(LOGO_URL);
+      const res = await fetch(LOGO_URL, { signal: AbortSignal.timeout(5000) });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const buf = Buffer.from(await res.arrayBuffer());
       return await loadImage(buf);
