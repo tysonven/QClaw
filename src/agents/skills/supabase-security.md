@@ -1,3 +1,11 @@
+---
+name: supabase-security
+category: on-demand
+surface: prompt
+keywords: [supabase, anon, rls, service_role, postgrest]
+description: Supabase security playbook — anon-key/RLS traps, service_role migration, n8n 2.4.8 publish model; load before any Supabase-touching work
+---
+
 # Supabase Security — CC Skill
 **Project:** QClaw / Flow OS  
 **Supabase project:** `fdabygmromuqtysitodp` ("n8n database" — correct but misleading label)  
