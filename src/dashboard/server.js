@@ -1502,11 +1502,11 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
       } catch { return {}; }
     })();
     const CRETE_SUPABASE_URL = creteEnv.SUPABASE_URL || '';
-    const CRETE_SUPABASE_KEY = creteEnv.SUPABASE_ANON_KEY || '';
+    const CRETE_SUPABASE_KEY = SB_SERVICE_ROLE_KEY; // service_role (server-side only) — was creteEnv.SUPABASE_ANON_KEY; anon was revoked on crete_content_queue/marketing_drafts (Phase 2), so the anon key now 42501s
     const CRETE_TABLE = `${CRETE_SUPABASE_URL}/rest/v1/crete_content_queue`;
     const CRETE_N8N_BASE = 'https://webhook.flowos.tech/webhook';
     if (!CRETE_SUPABASE_URL || !CRETE_SUPABASE_KEY) {
-      log.warn('[CRETE] SUPABASE_URL or SUPABASE_ANON_KEY missing in /root/.quantumclaw/.env — Crete routes will 500');
+      log.warn('[CRETE] SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY missing in /root/.quantumclaw/.env — Crete/GHL dashboard routes will 500');
     }
 
     const creteHeaders = (extra = {}) => ({
