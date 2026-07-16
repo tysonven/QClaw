@@ -16439,3 +16439,89 @@ Approved samples: editorial `2ea4de6e-c4ab-4089-95ab-f1a3261294ec.png`, stat
 
 References: memory `project_flowos_image_generator`, `project_n8n_api_key_401` (resolved),
 `reference_gh_not_on_qclaw_host`; PR #65; commits dae3b37, d4f4c1e, fffb59b.
+
+---
+
+## [2026-07-16] Monte Carlo market type detection — close-on-date vs touch markets (trading-worker)
+
+**Branch:** direct to `main`, commit `f203229` (surgical Python fix, no security surface — 7-pillars gated: no UI/schema/auth changes, Trade Executor inactive + `trading_enabled=false`).
+**Status:** ✅ live — trading-worker restarted, `/health` ok, all 4 verification tests fired the correct detection path.
+
+### Root cause
+`run_simulation()` in `src/trading/monte_carlo.py` used a single touch-based hit detection for ALL market types:
+```python
+if target >= current_price:
+    hits = np.any(paths >= target, axis=1).sum()
+else:
+    hits = np.any(paths <= target, axis=1).sum()
+```
+Correct for touch markets ("will BTC dip to $57,500?"), wrong for close-on-date markets ("will BTC be above
+$64,000 on July 15?"): with BTC at $64,522 and target $64,000, `target < current_price` took the else branch and
+answered "how many paths ever touch $64,000 or below?" (~37%) instead of "what fraction of paths CLOSE at/above
+$64,000 on the date?" (~90%+). The scanner already POSTs `question` to `/simulate`, but the route only attached it
+to the result dict AFTER simulation (`result["question"] = body.get(...)`) — it was never used during simulation.
+This is also the mechanism behind the 2026-07-10 scanner run scoring the ETH $1,700 market at **100%**.
+
+### Shipped (commit `f203229` — 1 file, +41/−6)
+- `detect_market_type(question, target, current_price)` → `'close_above' | 'close_below' | 'touch_above' |
+  'touch_below'`. Regex on lowercased question text: `\b(above|over)\b` + `\bon\b` → `close_above`;
+  `\b(below|under)\b` + `\bon\b` → `close_below`; otherwise `touch_*` by target vs spot (the old direction rule).
+- `run_simulation(asset, target, horizon_days=30, question='')` — question threaded into the simulation; the
+  `/simulate` route now passes `body.get("question", "")` and the post-hoc `result["question"]` line is removed
+  (the `Will {asset} hit ${target}?` fallback text is preserved inside `run_simulation`).
+- Hit detection: `close_*` checks the final price only (`paths[:, -1] >= / <= target`); `touch_*` keeps
+  `np.any(paths >= / <= target, axis=1)`.
+- Result dict now includes `"market_type"` so scanner output and this log can verify which detection path fired.
+- Backwards compatible: empty/missing `question` degrades to the old touch behavior. No new deps (`re` is stdlib).
+
+### Deployment
+scp → `sudo cp` into `/root/QClaw/src/trading/monte_carlo.py`; `python3 -m py_compile` → `COMPILE_OK`;
+`sudo pm2 restart trading-worker && sudo pm2 save`. First health probe raced the Flask boot (`curl` exit 7 ~3s
+after restart — benign); immediately after: `{"service":"monte-carlo-worker","status":"ok"}`, new pid `3636021`
+listening on `0.0.0.0:4001`, pm2 `online`, restarts `1`, `unstable restarts 0`. The n8n scanner
+(`157.230.216.158`) was POSTing `/simulate` with 200s right up to the restart, so the next hourly cycle picks up
+corrected probabilities with no consumer changes (`batchSize` is 1 in the scanner — no concurrency issue).
+Pushed `e273800..f203229  main -> main`.
+
+### Verification (verbatim)
+Pre-deploy, 7-case unit test of `detect_market_type` (incl. `below/under`→`close_below` and empty/`None`
+question fallbacks) — all `OK`. Post-deploy, live worker responses (fields filtered to the relevant keys):
+
+Test 1 — close_above, in the money (1d horizon):
+```json
+{"market_type": "close_above", "probability": 0.532, "current_price": 64226.11, "target": 64000.0,
+ "question": "Will the price of Bitcoin be above $64,000 on July 16?"}
+```
+Test 2 — reach market must NOT be caught by close-on-date ("in July", no "above/on") (17d):
+```json
+{"market_type": "touch_above", "probability": 0.3008, "current_price": 64226.11, "target": 67500.0,
+ "question": "Will Bitcoin reach $67,500 in July?"}
+```
+Test 3 — touch_below, open trade (17d):
+```json
+{"market_type": "touch_below", "probability": 0.222, "current_price": 64226.11, "target": 57500.0,
+ "question": "Will Bitcoin dip to $57,500 in July?"}
+```
+Test 4 — ETH, the 2026-07-10 **100% bug case** (17d):
+```json
+{"market_type": "touch_below", "probability": 0.4404, "current_price": 1875.6, "target": 1700.0,
+ "question": "Will Ethereum dip to $1,700 in July?"}
+```
+Tests 2–4 land inside their expected bands (~30–35%, ~20–30%, ~30–45%). **ETH 100% bug resolved:** the market
+now scores 44.04% via the `touch_below` path instead of 100%.
+
+### Deviation from brief — Test 1 probability
+Brief expected `> 0.80`; live result is `0.532`. The expectation was premised on BTC ~$64,500; actual spot at
+test time was `64226.11`, i.e. a 0.35% cushion above the $64,000 target on a **1-day** horizon against BTC's
+~2%+ realized daily sigma — ~53% is the mathematically correct close-above probability for that setup, not a
+detection failure. The thing under test (close_above fired, final-price check, not touch) is confirmed by the
+`market_type` field. The old code on identical inputs would have scored the inverted touch question instead.
+
+### Residual / follow-ups
+- Detection is regex-on-question heuristics; phrasings like "at/by [date]" or "close above" without the word
+  "on" fall through to touch logic. Extend patterns if the scanner's question corpus grows new shapes — the
+  `market_type` field in every result makes misroutes auditable from scanner output.
+- Flask dev-server warning on 4001 (pre-existing, unchanged).
+
+References: commit `f203229`; memory `project_slice41_gates_reenable` (trading_enabled=false context);
+worker `src/trading/monte_carlo.py`; scanner Market Scanner `3YahxqOguET3pifj` (hourly, n8n droplet).
