@@ -53,6 +53,7 @@ POST /conversations/messages - Create email DRAFT to an existing FSC contact onl
 - Notes and tasks use GHL_FSC_USER_ID as the assigned user — read from env, do not hardcode.
 - Location scoping is per-endpoint: contacts require the `locationId` query parameter (camelCase); opportunities require `location_id` (snake_case). The Location-Id header alone is not sufficient for these two endpoints.
 - Email in GHL cannot be sent to arbitrary addresses — POST /conversations/messages requires a contactId, so a contact must exist first. This queues a DRAFT only; Tyson sends after review.
-- GHL_FSC_NOTIFY_CONTACT_ID (.env) is Tyson's internal FSC contact for operator notifications — use for system alerts, not client comms.
+- Tyson's internal FSC notify contact ID is SbPJpeihuGK3RT6bspyq — use this literal value when adding operator notes or notifications. Do not use {{secrets.ghl_fsc_notify_contact_id}} in tool call arguments — template refs only resolve in headers and URLs, not in argument values Charlie constructs.
+- When a tool argument requires a known ID value (contact_id, assignedTo etc.), use the literal value from Usage Notes — never pass {{secrets.X}} syntax as an argument value.
 - British English in all notes and communications.
 - This file is the template for Flow OS, Crete and SproutCode — replicate it with the matching per-brand secret key names.
