@@ -16525,3 +16525,85 @@ detection failure. The thing under test (close_above fired, final-price check, n
 
 References: commit `f203229`; memory `project_slice41_gates_reenable` (trading_enabled=false context);
 worker `src/trading/monte_carlo.py`; scanner Market Scanner `3YahxqOguET3pifj` (hourly, n8n droplet).
+
+---
+
+## [2026-07-16] GHL FSC write tools — 5 gated write endpoints (skill file only)
+
+**Branch:** direct to `main`, commit `977bc28` (skill markdown edit only — no registry.js / executor.js /
+approval-gate.js changes, no new secrets).
+**Status:** ✅ live — all 8 ghl-fsc tools registered (3 existing GETs + 5 new writes) on quantumclaw restart.
+
+### Context
+`ghl-fsc.md` was shipped read-only because skill-defined HTTP write tools were ungated (ApprovalGate.check()
+only covered shell_exec / destructive shell verbs / Stripe charges). That constraint is resolved: PR #58
+(`2dda643 feat(security): gate skill HTTP write tools behind approval (P5S5)`) is merged and live —
+`HTTP_WRITE_METHODS = ['POST', 'PUT', 'PATCH', 'DELETE']` at `src/security/approval-gate.js:66`, DELETE→high /
+other writes→medium risk at `:217`. Verified on-droplet before editing (the old header comment in the skill file
+itself documented the ungated state and pointed at the gate TODO — both now updated).
+
+### Shipped (commit `977bc28` — 1 file, +21/−14)
+- 5 write endpoints under `## Endpoints` (all gated: Telegram approval before execution):
+  `POST /contacts/?locationId={{secrets.ghl_fsc_location_id}}` (create contact — email-search dedup mandatory),
+  `PUT /contacts/{{contact_id}}` (update fields), `POST /contacts/{{contact_id}}/notes` (note, userId =
+  `GHL_FSC_USER_ID`), `POST /contacts/{{contact_id}}/tasks` (task, assignedTo = `GHL_FSC_USER_ID`),
+  `POST /conversations/messages` (email DRAFT only — contactId mandatory, never arbitrary addresses; Tyson
+  reviews before send).
+- Frontmatter `tools:` extended to 8 names and `description:` updated (reads + gated writes). Note this list is
+  **documentation only** — see gotchas.
+- Header comment rewritten: WRITES ENABLED 2026-07-16, gate mechanism referenced; stale "READ-ONLY this slice /
+  ungated writes" rationale removed. Usage Notes updated: gate is runtime-enforced (not prompt-only), dedup rule,
+  env-sourced `GHL_FSC_USER_ID`, draft-only email, `GHL_FSC_NOTIFY_CONTACT_ID` = operator notifications only.
+- Same `{{secrets.ghl_fsc_api_key}}` / `{{secrets.ghl_fsc_location_id}}` pattern as the read endpoints; all
+  credentials pre-provisioned (encrypted secrets store + .env). FSC location only — Flow OS/FSC split respected.
+
+### Verification (verbatim)
+Symlink intact:
+```
+lrwxrwxrwx 1 root root 40 Jul  4 19:58 /root/.quantumclaw/workspace/agents/charlie/skills/ghl-fsc.md -> /root/QClaw/src/agents/skills/ghl-fsc.md
+```
+`sudo pm2 restart quantumclaw && sudo pm2 save` → boot 20:06:48Z, registration block 20:06:50Z contains exactly
+**8** ghl-fsc entries (`grep '20:06:50' tool-call.log | grep ghl-fsc | grep -c registration` → `8`):
+```
+{"ts":"2026-07-16T20:06:50.572Z","event":"registration","source":"skill","agent":"charlie","tool":"charlie__ghl-fsc__ghl-fsc__get_contacts_locationid_id_query_id","scope":["charlie"],"skill":"ghl-fsc"}
+{"ts":"2026-07-16T20:06:50.572Z","event":"registration","source":"skill","agent":"charlie","tool":"charlie__ghl-fsc__ghl-fsc__get_contacts_id","scope":["charlie"],"skill":"ghl-fsc"}
+{"ts":"2026-07-16T20:06:50.572Z","event":"registration","source":"skill","agent":"charlie","tool":"charlie__ghl-fsc__ghl-fsc__get_opportunities_search_location_id_id","scope":["charlie"],"skill":"ghl-fsc"}
+{"ts":"2026-07-16T20:06:50.572Z","event":"registration","source":"skill","agent":"charlie","tool":"charlie__ghl-fsc__ghl-fsc__create_contacts_locationid_id","scope":["charlie"],"skill":"ghl-fsc"}
+{"ts":"2026-07-16T20:06:50.572Z","event":"registration","source":"skill","agent":"charlie","tool":"charlie__ghl-fsc__ghl-fsc__update_contacts_id","scope":["charlie"],"skill":"ghl-fsc"}
+{"ts":"2026-07-16T20:06:50.572Z","event":"registration","source":"skill","agent":"charlie","tool":"charlie__ghl-fsc__ghl-fsc__create_contacts_id_notes","scope":["charlie"],"skill":"ghl-fsc"}
+{"ts":"2026-07-16T20:06:50.572Z","event":"registration","source":"skill","agent":"charlie","tool":"charlie__ghl-fsc__ghl-fsc__create_contacts_id_tasks","scope":["charlie"],"skill":"ghl-fsc"}
+{"ts":"2026-07-16T20:06:50.572Z","event":"registration","source":"skill","agent":"charlie","tool":"charlie__ghl-fsc__ghl-fsc__create_conversations_messages","scope":["charlie"],"skill":"ghl-fsc"}
+```
+Pre-deploy the new file was validated against the parser's exact endpoint regex
+(`^(GET|POST|PUT|PATCH|DELETE)\s+(\/[^\s]*)\s*-\s*(.+)/i`, replicated locally) — 8/8 endpoints parse.
+Live-fire gate round-trip deliberately NOT run: it would execute a real FSC CRM write and needs Tyson's Telegram
+approval — first real write serves as the live test (gate verified at code level; skill tools carry
+`method`/`path` metadata the gate discriminates on).
+
+### Discoveries / gotchas
+- **Endpoint-line grammar is strict**: skill-parser.js requires single-line `METHOD /path - description` with a
+  plain ` - ` hyphen separator. An em dash (`—`) as separator or a wrapped/multi-line description silently drops
+  the endpoint (no error, no tool). Lines starting `# ` inside `## Endpoints` are safely ignored (used as a
+  section comment for the write block).
+- **Frontmatter `tools:` is dead code** (confirmed in source): real tool names are auto-generated by
+  `skillToTools()` from method + path slug, e.g. `charlie__ghl-fsc__ghl-fsc__create_contacts_locationid_id` —
+  not the friendly `ghl_fsc__create_contact` style names. Kept the frontmatter list accurate for docs anyway.
+- **tool-call.log flushes async**: a `grep` ~6s after `pm2 restart` showed only a stale earlier block
+  (19:55:16Z, pre-edit file, 3 tools) and briefly looked like the write tools failed to register; the 20:06:50Z
+  block with all 8 appeared on re-check ~90s later. Verify registrations by boot-timestamp block, not by tail
+  recency immediately after restart.
+- quantumclaw had two prior same-day restarts (19:01:46Z, 19:55:16Z) before this work's 20:06:50Z boot — source
+  not investigated (CI auto-deploy on main pushes is a known trigger; restart counter at 81). The 977bc28 push
+  itself triggers one more auto-deploy restart — idempotent, same 8 tools.
+
+### Residual / follow-ups
+- First real FSC write = live gate test: confirm the Telegram approval prompt fires and DENY leaves GHL
+  untouched before trusting the surface for routine use.
+- Replicate the write-enabled template to the remaining brands (Crete, SproutCode) with per-brand secret key
+  names; Flow OS `ghl` skill already registers write tools (create_contacts / update_contacts_id /
+  create_opportunities / create_tasks / create_notes seen in the same registration block).
+- Memory note `project_skill_http_writes_ungated` (operator-side) was stale — corrected to reflect PR #58.
+
+References: commits `977bc28`, `2dda643` (PR #58); `src/agents/skill-parser.js` (endpoint grammar +
+`skillToTools()` naming); `src/security/approval-gate.js:66,217`; memory `project_ghl_locations`,
+`project_ghl_skill_architecture`.
