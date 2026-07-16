@@ -7,6 +7,7 @@ import numpy as np
 from scipy import stats
 from datetime import datetime, timedelta
 import math
+import re
 
 app = Flask(__name__)
 
@@ -41,6 +42,31 @@ def wilson_interval(successes, total, z=1.96):
     return round(centre, 4), round(max(0, centre - spread), 4), round(min(1, centre + spread), 4)
 
 
+def detect_market_type(question, target, current_price):
+    """
+    Detect whether this is a touch market or close-on-date market.
+
+    Touch market: "will X dip to/reach/hit Y" — checks any path touch
+    Close-on-date: "will X be above/below Y on [date]" — checks final price only
+
+    Returns: 'touch_above' | 'touch_below' | 'close_above' | 'close_below'
+    """
+    q = (question or '').lower()
+
+    # Close-on-date patterns: "above X on [date]" or "over X on [date]"
+    if re.search(r'\b(above|over)\b', q) and re.search(r'\bon\b', q):
+        return 'close_above'
+
+    # Close-on-date patterns: "below X on [date]" or "under X on [date]"
+    if re.search(r'\b(below|under)\b', q) and re.search(r'\bon\b', q):
+        return 'close_below'
+
+    # Touch market: direction based on target vs current price
+    if target < current_price:
+        return 'touch_below'
+    return 'touch_above'
+
+
 def fetch_macro():
     """Fetch macro factors: DXY and 10Y yield."""
     factors = {}
@@ -60,7 +86,7 @@ def fetch_macro():
     return factors
 
 
-def run_simulation(asset, target, horizon_days=30):
+def run_simulation(asset, target, horizon_days=30, question=''):
     """Run Monte Carlo simulation for an asset."""
     ticker_symbol = TICKERS.get(asset)
     if not ticker_symbol:
@@ -93,11 +119,18 @@ def run_simulation(asset, target, horizon_days=30):
     log_paths = np.cumsum(log_increments, axis=1)
     paths = current_price * np.exp(log_paths)
 
-    # Determine direction and count hits
-    if target >= current_price:
+    # Determine market type and count hits
+    market_type = detect_market_type(question, target, current_price)
+    if market_type == 'close_above':
+        hits = (paths[:, -1] >= target).sum()
+    elif market_type == 'close_below':
+        hits = (paths[:, -1] <= target).sum()
+    elif market_type == 'touch_above':
         hits = np.any(paths >= target, axis=1).sum()
-    else:
+    else:  # touch_below
         hits = np.any(paths <= target, axis=1).sum()
+
+    market_type_used = market_type
 
     hits = int(hits)
     prob, ci_lower, ci_upper = wilson_interval(hits, NUM_SIMULATIONS)
@@ -125,6 +158,8 @@ def run_simulation(asset, target, horizon_days=30):
         "target": target,
         "asset": asset,
         "horizon_days": horizon_days,
+        "market_type": market_type_used,
+        "question": question or f"Will {asset} hit ${target}?",
         "simulations": NUM_SIMULATIONS,
         "daily_mu": round(mu, 6),
         "daily_sigma": round(sigma, 6),
@@ -150,11 +185,11 @@ def simulate():
         except (ValueError, TypeError):
             return jsonify({"error": "target must be numeric"}), 400
 
-        result, error = run_simulation(asset, target, horizon)
+        question = body.get("question", "")
+        result, error = run_simulation(asset, target, horizon, question)
         if error:
             return jsonify({"error": error}), 400
 
-        result["question"] = body.get("question", f"Will {asset} hit ${target}?")
         return jsonify(result)
     except Exception as e:
         return jsonify({"error": str(e), "type": type(e).__name__}), 500
