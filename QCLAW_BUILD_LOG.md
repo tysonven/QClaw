@@ -16607,3 +16607,68 @@ approval — first real write serves as the live test (gate verified at code lev
 References: commits `977bc28`, `2dda643` (PR #58); `src/agents/skill-parser.js` (endpoint grammar +
 `skillToTools()` naming); `src/security/approval-gate.js:66,217`; memory `project_ghl_locations`,
 `project_ghl_skill_architecture`.
+
+---
+
+## [2026-07-17] Skill HTTP executor fix — body serialisation + error propagation (P5S6, PR #68 draft)
+
+**Branch:** `cc/p5s6-skill-executor-fix-20260717` (PR #68, **draft** — adversarial review owed before un-draft;
+touches the gated write path). Companion test fix landed direct on main as `a3120cb`.
+**Status:** ✅ built + 18/18 new checks + full `npm test` green. ⏳ NOT live — needs merge + `pm2 restart
+quantumclaw`, then the live Telegram round-trip.
+
+### Root cause (audit, same day)
+Approval 114 (FSC write gate live test, 08:09) looked like an approved-but-never-executed call. The audit proved
+the opposite: the call executed and GHL rejected it, verbatim from `audit.db` row 9914 (`result_status:
+"success"`):
+```
+skill:ghl-fsc error 422: {"message":["property contact_id should not exist","property data should not exist","body must be shorter than or e
+```
+Two compounding bugs in the Generic Skill HTTP Executor (`_executeAPITool`, `src/tools/registry.js`):
+1. **Malformed non-GET body** — `body = JSON.stringify(args)`: path params already consumed into the URL
+   (`contact_id`) re-sent as body properties (the `consumedArgs` exclusion existed only in the GET branch), and
+   `data` sent as a raw JSON string. The trap is schema-set: skill-parser.js declares `data` as a JSON *string*
+   payload, so the model complies and the executor never unwrapped it.
+2. **Non-2xx swallowed as success** — `if (!res.ok) return \`…\`` returned a string; the executor loop marks any
+   returned value `error: false`; the function's catch-all also converts thrown errors to strings. Combined with
+   zero info-level logging on the success path, pm2 log lines 36342→36343 were consecutive: nothing between
+   "Approval 114 granted" and the next gate check. The identical approval 115 two seconds later was the model
+   emitting two identical tool_use blocks in one response (`toolu_014Be5Q6…`, `toolu_01BYghck…`) — both handled
+   correctly by the loop; 115's deny left GHL untouched. **The approval gate itself passed its live test.**
+
+### Shipped (branch commit `4fda6bd`)
+- `consumedArgs` excluded from non-GET bodies (mirrors GET branch).
+- `data` string parsed and lifted to the body root; unparseable JSON → validation string returned, **no HTTP
+  call**; array/scalar payloads sent verbatim as the body.
+- Non-2xx now throws a `rethrow`-marked error that escapes the string-returning catch-all → executor loop records
+  `error: true`, logs `Error executing …`, audit.db `result_status` correct. Unmarked errors (network etc.) keep
+  the legacy `API error (…)` string path — blast radius limited to HTTP status handling.
+- `log.info('Skill tool <name> → <status>')` on success — approval→execution now traceable in pm2 logs.
+- `tests/skill-executor.test.js` (18 checks: POST body shape/lift, invalid-data short-circuit, throw-on-422/401,
+  GET parity incl. secrets + query building, array payload, legacy string path) wired into the npm test chain
+  (package.json).
+
+### Also fixed — main CI was red since 2026-07-16
+`tests/ghl-tools.test.js` still asserted ghl-fsc is READ-ONLY with exactly 3 endpoints — stale since `977bc28`
+added the 5 write endpoints (that skill-file-only change skipped `npm test`; `ci.yml` runs on every push, so every
+push since had failing CI). Updated on main (`a3120cb`): 8 endpoints (3 GET, 4 POST, 1 PUT), no DELETE/PATCH, each
+read/write tool asserted by name → 23/23. Lesson: **"skill file only" changes still need `npm test`** — tests
+assert skill-file content.
+
+### Verification (verbatim)
+New test standalone: `18 passed, 0 failed` (includes live `Skill tool ghl-fsc__create_contacts_id_notes → 201`
+info line from the mocked 201 path). Full chain after rebase on a3120cb: reaches the final test file →
+`17 passed, 0 failed` (text-card), no failures anywhere in the chain.
+
+### Residual / follow-ups
+- Adversarial review session against the branch, then un-draft PR #68 (gated-write path rule).
+- Post-merge: `pm2 restart quantumclaw`, then live round-trip — Charlie adds a note to FSC contact
+  `SbPJpeihuGK3RT6bspyq`, approve gate, confirm `Skill tool … → 201` in pm2 + note visible in GHL. Double
+  identical tool_use blocks may still occur (model behaviour, no executor dedup) — each call now executes
+  correctly; consider a same-response dedup guard as a future hardening slice.
+- audit.db rows recorded before this fix: failed writes show `result_status: "success"` — inspect the result
+  text, not the status column, for anything pre-2026-07-17.
+
+References: PR #68; commits `4fda6bd` (branch), `a3120cb` (main, test fix); audit.db rows 9889/9890 (20:16
+{{secrets.*}}-as-argument 400), 9913–9916 (08:09 incident); memory `project_skill_http_writes_ungated`
+(RESOLVED), `project_ghl_skill_architecture`.
