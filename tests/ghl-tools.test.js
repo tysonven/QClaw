@@ -8,9 +8,9 @@
  *     (the live mechanism — see charlie__ghl__ghl__* in production)
  *   - authenticates with the FSC secret keys (ghl_fsc_api_key /
  *     ghl_fsc_location_id), NOT the Flow OS ghl_api_key
- *   - is READ-ONLY this slice (no POST/PUT/PATCH/DELETE endpoints —
- *     writes are deferred until skill HTTP write tools are gated)
- *   - registers exactly the three read tools (search / get / list)
+ *   - registers the 3 read tools plus the 5 gated write tools added
+ *     2026-07-16 (PR #58 gate live; commit 977bc28) — and nothing
+ *     destructive (no DELETE endpoints)
  *
  * Also guards that the Flow OS ghl.md skill still resolves to
  * ghl_api_key (this slice deliberately did NOT rename it).
@@ -54,31 +54,44 @@ if (fsc) {
   check('ghl-fsc Location-Id header uses {{secrets.ghl_fsc_location_id}}',
     locHeader.includes('{{secrets.ghl_fsc_location_id}}'), `got "${locHeader}"`);
 
-  // Read-only lock: every endpoint must be GET this slice.
+  // Endpoint surface: 3 reads + 5 gated writes (2026-07-16), nothing destructive.
   const methods = fsc.endpoints.map(e => e.method);
-  check('ghl-fsc has exactly 3 endpoints', fsc.endpoints.length === 3,
+  check('ghl-fsc has exactly 8 endpoints', fsc.endpoints.length === 8,
     `got ${fsc.endpoints.length}: ${methods.join(',')}`);
-  check('ghl-fsc is READ-ONLY (all endpoints GET)',
-    methods.length > 0 && methods.every(m => m === 'GET'),
+  check('ghl-fsc has 3 GET endpoints', methods.filter(m => m === 'GET').length === 3,
     `methods: ${methods.join(',')}`);
+  check('ghl-fsc has 4 POST + 1 PUT write endpoints',
+    methods.filter(m => m === 'POST').length === 4 && methods.filter(m => m === 'PUT').length === 1,
+    `methods: ${methods.join(',')}`);
+  check('ghl-fsc has NO destructive endpoints (DELETE/PATCH)',
+    !methods.some(m => m === 'DELETE' || m === 'PATCH'), `methods: ${methods.join(',')}`);
 
-  // Tool generation: three read tools, no mutating verbs.
+  // Tool generation: 8 tools, write verbs present but no delete_.
   const tools = skillToTools(fsc);
   const names = tools.map(t => t.name);
-  check('ghl-fsc generates 3 tools', tools.length === 3, names.join(','));
-  check('ghl-fsc tool names all use the get_ verb (reads)',
-    names.length > 0 && names.every(n => n.startsWith('ghl-fsc__get')),
-    names.join(','));
-  check('ghl-fsc registers NO write tools (create/update/delete)',
-    !names.some(n => /__(create|update|delete)/.test(n)), names.join(','));
+  check('ghl-fsc generates 8 tools', tools.length === 8, names.join(','));
+  check('ghl-fsc registers no delete_ tools',
+    !names.some(n => n.includes('__delete')), names.join(','));
 
-  // The three intended read surfaces are present.
+  // The three read surfaces are present.
   check('ghl-fsc has a contact search tool',
     names.some(n => n.includes('contacts') && n.includes('query')), names.join(','));
   check('ghl-fsc has a get-contact-by-id tool',
     names.some(n => n === 'ghl-fsc__get_contacts_id'), names.join(','));
   check('ghl-fsc has an opportunities list tool',
     names.some(n => n.includes('opportunities')), names.join(','));
+
+  // The five write surfaces are present (gated at runtime by ApprovalGate — PR #58).
+  check('ghl-fsc has a create-contact tool',
+    names.some(n => n.startsWith('ghl-fsc__create_contacts_locationid')), names.join(','));
+  check('ghl-fsc has an update-contact tool',
+    names.some(n => n === 'ghl-fsc__update_contacts_id'), names.join(','));
+  check('ghl-fsc has an add-note tool',
+    names.some(n => n === 'ghl-fsc__create_contacts_id_notes'), names.join(','));
+  check('ghl-fsc has a create-task tool',
+    names.some(n => n === 'ghl-fsc__create_contacts_id_tasks'), names.join(','));
+  check('ghl-fsc has an email-draft tool',
+    names.some(n => n === 'ghl-fsc__create_conversations_messages'), names.join(','));
 
   // Registered (agent-scoped) names stay within a safe length bound.
   const registered = names.map(n => `charlie__ghl-fsc__${n}`);
