@@ -16691,3 +16691,83 @@ throw extension; no re-review needed):
 References: PR #68; commits `4fda6bd` (branch), `a3120cb` (main, test fix); audit.db rows 9889/9890 (20:16
 {{secrets.*}}-as-argument 400), 9913–9916 (08:09 incident); memory `project_skill_http_writes_ungated`
 (RESOLVED), `project_ghl_skill_architecture`.
+
+---
+
+## [2026-07-18] Phase 5 Session 6 — Monte Carlo fix, FSC write tools LIVE, skill executor hardening (session roll-up)
+
+**Span:** 2026-07-17 → 2026-07-18. All work merged to `main` and deployed. **Milestone:** first end-to-end GHL
+FSC write executed through the approval gate — note created in GHL, HTTP 201, note ID `fFnDIgsTcMRLpsUDZDF2`.
+This roll-up indexes the detailed entries above (dates/commits in each subsection).
+
+### 1. Monte Carlo market type detection (`f203229`, build log `6a97367`)
+`run_simulation()` used one touch-based hit detection for all markets, so close-on-date questions ("will BTC be
+above $64,000 on July 16?") were scored as touch probabilities (~37% instead of ~90%+). Added
+`detect_market_type()` (above/over/below/under + "on" → `close_*` checking final price only; else `touch_*` by
+target vs spot), threaded `question` into the sim, exposed `market_type` in the result. trading-worker restarted;
+4 verification cases fired the correct path; the 2026-07-10 ETH $1,700 "100%" case now scores `touch_below`.
+
+### 2. GHL FSC write tools LIVE (`977bc28` + doc corrections `aef64bb` / `8776e95` / `060c74d`; build log `735ceba`)
+Added 5 gated write endpoints to `ghl-fsc.md` (create/update contact, note, task, email draft), safe now that the
+skill HTTP write gate (PR #58) is live — ApprovalGate keys on HTTP method. All 8 tools registered on restart.
+Follow-up doc fixes resolved `{{secrets.X}}`/env-name-as-argument confusion: literal notify contact ID
+`SbPJpeihuGK3RT6bspyq` and user ID `XGcWbD2WFPr2hP2oTMGJ` written into Usage Notes; tool descriptions point at
+Usage Notes for the literal value (template refs only resolve in headers/URLs, not in argument values Charlie
+constructs). Memory `project_skill_http_writes_ungated` corrected to RESOLVED.
+
+### 3. Skill executor body serialisation + error propagation (PR #68 → merged `4538b49` at 14:25:10Z)
+Root cause (audit of approval 114): the approved write **did** execute; GHL 422'd and the Generic Skill HTTP
+Executor swallowed it as a success-shaped string (`audit.db` row 9914, `result_status:"success"`). Two bugs in
+`_executeAPITool`: (1) non-GET body was `JSON.stringify(args)` — consumed path params (`contact_id`) re-sent as
+body properties and `data` sent as a raw JSON string; (2) non-2xx returned a string the executor marked
+`error:false`. Fix (branch commits `4fda6bd` base, `c97cdba` transport-error extension, `a872ea6` build-log
+reconcile): `consumedArgs` excluded from non-GET bodies; `data` parsed and lifted to the body root; **every**
+failure (HTTP status AND transport/AbortSignal timeout) throws a `rethrow`-marked error escaping the string-
+returning catch-all → `error:true`; `log.info('Skill tool <name> → <status>')` on success. `tests/skill-executor.test.js`
+(21 checks) added.
+
+### 4. CI fix (`a3120cb`)
+`tests/ghl-tools.test.js` still asserted ghl-fsc is READ-ONLY / exactly 3 endpoints — stale since `977bc28` added
+the writes (that skill-file-only change skipped `npm test`, so `ci.yml` had been red on every push since). Updated
+to 8 endpoints (3 GET, 4 POST, 1 PUT), no DELETE/PATCH, each tool asserted by name → 23/23. **Lesson: "skill file
+only" changes still need `npm test` — tests assert skill-file content.**
+
+### 5. Live round-trip verification (2026-07-18, verbatim)
+Ran on the branch build immediately before merge (same code that merged as `4538b49`). Single clean approval
+(116) — no double-call this time (contrast the 114/115 double on 2026-07-16):
+```
+14:21:44 ⏸️  Approval required: charlie__ghl-fsc__ghl-fsc__create_contacts_id_notes({"contact_id":"SbPJpeihuGK3RT6bspyq","data":"{\"body\":\"GHL FSC executor fix verified — 2026-07-17\",\"userId\":\"XGcWbD2WFPr2hP2oTMGJ\"}"})
+14:21:44 Approval needed: [116] charlie wants to charlie__ghl-fsc__ghl-fsc__create_contacts_id_notes
+14:21:50 ▸ Skill tool ghl-fsc__create_contacts_id_notes → 201
+```
+GHL returned note ID `fFnDIgsTcMRLpsUDZDF2` (confirmed in the GHL contact UI screenshot). Gate → approve → parsed
+body → 201 → traceable log line: the whole chain works end-to-end. PR #68 merged at 14:25:10Z; CI auto-deploy
+restarted quantumclaw (running the fixed code on `main`).
+
+### Adversarial review of PR #68 (2026-07-18, audit-only) — summary
+**No security blockers.** Ten attack probes + full suite. Security surfaces cleared: no injection privilege bypass
+(URL routing is fixed before body construction; the whole args blob incl. the `data` string is what the gate
+approves), no prototype pollution (`__proto__`/`constructor` payloads dropped by `Object.assign` + own-enumerable
+`JSON.stringify`; global `Object.prototype` untouched), path traversal neutralised by `encodeURIComponent`, and
+the rethrow marker is not spoofable from tool args. **Three reconciliation items applied (docs + one contained
+throw extension, no re-review needed):**
+1. **GET-path claim corrected** — the `if (!res.ok)` check is shared, so read tools now throw on 4xx/5xx where
+   they previously returned a string. Correct behaviour (a 404/401 read is a genuine failure), kept; earlier
+   "GET unchanged" claim was inaccurate.
+2. **Transport-error gap closed** (`c97cdba`) — AbortSignal timeout / network errors previously kept the legacy
+   string path, leaving a success-shaped audit row on a timed-out write (the exact incident class). Now thrown +
+   marked; `result_status` gap closed completely.
+3. **`data` override note** — the `data` payload is lifted last-writer-wins and can add body fields named like
+   path params (`contact_id`, `contactId`, `assignedTo`). Not a routing bypass, but reviewers approving a write
+   should read the `data` payload in the prompt, not just the top-level `contact_id`. Added to PR notes.
+
+### Net state after Session 6
+- FSC CRM writes are live, gated, and verified end-to-end (note/task/contact create/update, email draft).
+- Skill HTTP executor is correct for all body-carrying POST/PUT and surfaces every failure class to `error:true`
+  / `audit.db`. Flow OS `ghl` skill write tools share this path and are fixed by the same change.
+- `audit.db` `result_status` is now trustworthy going forward; rows before 2026-07-17 still show `"success"` on
+  failed writes — inspect the result text, not the status column, for anything earlier.
+
+References: commits `f203229`, `977bc28`, `aef64bb`, `8776e95`, `060c74d`, `a3120cb`, `4538b49` (PR #68 merge);
+build log commits `6a97367`, `735ceba`; memory `project_skill_http_writes_ungated` (RESOLVED),
+`project_ghl_skill_architecture`, `project_crete_content_generator` (Monte Carlo scanner context).
