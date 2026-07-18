@@ -1511,7 +1511,16 @@ export class ToolRegistry {
       return `API tool ${toolName} not implemented for ${preset.name}`;
     } catch (err) {
       if (err.rethrow) throw err;
-      return `API error (${preset.name}/${toolName}): ${err.message}`;
+      // Any exception reaching here (transport failure, AbortSignal timeout,
+      // secrets fetch error) means the call did not complete. Re-throw it
+      // marked so the executor loop records error:true instead of a
+      // success-shaped string — previously these were swallowed and left a
+      // "success" result_status in audit.db, the same gap the HTTP-status
+      // fix above closes. Wrap in a fresh Error so we never mutate an exotic
+      // error object (e.g. the timeout DOMException).
+      const wrapped = new Error(`API error (${preset.name}/${toolName}): ${err.message}`);
+      wrapped.rethrow = true;
+      throw wrapped;
     }
   }
 

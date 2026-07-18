@@ -1,8 +1,9 @@
 /**
  * Generic Skill HTTP Executor — body serialisation + error propagation.
  * Covers the P5S6 fix: consumedArgs excluded from non-GET bodies, `data`
- * string payload parsed and lifted to the body root, non-2xx responses
- * thrown (escaping the catch-all) instead of returned as success strings.
+ * string payload parsed and lifted to the body root, and every failure
+ * (non-2xx HTTP status AND transport/timeout errors) thrown out of the
+ * catch-all instead of returned as success-shaped strings.
  * Run: node tests/skill-executor.test.js
  */
 
@@ -104,11 +105,23 @@ async function main() {
   await exec(PRESET, notesToolDef(), { contact_id: 'X', data: '[1,2,3]' });
   check('array data is the body verbatim', lastCall.opts.body === '[1,2,3]', lastCall.opts.body);
 
-  // ── 7. Unmarked errors (network etc.) still return the legacy string
-  lastCall = null;
+  // ── 7. Transport errors (network, AbortSignal timeout) now throw (marked)
+  // so the executor records error:true — closes the audit.db result_status gap
+  // completely, not just for HTTP-status failures.
   global.fetch = async () => { throw new Error('socket hang up'); };
-  const r7 = await exec(PRESET, notesToolDef(), args1);
-  check('network error returns legacy API-error string', typeof r7 === 'string' && r7.includes('API error') && r7.includes('socket hang up'), r7);
+  let threw7 = null;
+  try { await exec(PRESET, notesToolDef(), args1); } catch (e) { threw7 = e; }
+  check('network error throws', threw7 !== null);
+  check('network error throw is rethrow-marked', threw7?.rethrow === true, String(threw7?.rethrow));
+  check('network error message preserves API-error context',
+    threw7 !== null && threw7.message.includes('API error') && threw7.message.includes('socket hang up'), threw7?.message);
+
+  // AbortSignal.timeout surfaces as an AbortError — must throw too, not swallow.
+  global.fetch = async () => { const e = new Error('The operation was aborted'); e.name = 'AbortError'; throw e; };
+  let threw7b = null;
+  try { await exec(PRESET, notesToolDef(), args1); } catch (e) { threw7b = e; }
+  check('AbortError/timeout throws and is rethrow-marked',
+    threw7b?.rethrow === true && threw7b.message.includes('aborted'), threw7b?.message);
 
   global.fetch = realFetch;
   console.log(`\n${passed} passed, ${failed} failed`);
