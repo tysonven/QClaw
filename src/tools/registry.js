@@ -1460,13 +1460,46 @@ export class ToolRegistry {
             fetchUrl = `${url}${sep}${params}`;
           }
         } else if (method !== 'GET' && args) {
-          body = JSON.stringify(args);
+          // Exclude args already consumed into the URL path (e.g. contact_id) —
+          // mirrors the GET branch; APIs like GHL 422 on unknown body properties.
+          const bodyArgs = {};
+          for (const [k, v] of Object.entries(args)) {
+            if (consumedArgs.has(k)) continue;
+            bodyArgs[k] = v;
+          }
+          // The generated input schema (skill-parser.js) declares `data` as a
+          // JSON *string* payload, so it arrives stringified. Parse it and lift
+          // its fields to the body root — the API expects {body, userId}, not
+          // {data: "..."}.
+          if (typeof bodyArgs.data === 'string') {
+            let parsed;
+            try {
+              parsed = JSON.parse(bodyArgs.data);
+            } catch {
+              return `${preset.name} error: data field is not valid JSON`;
+            }
+            delete bodyArgs.data;
+            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+              Object.assign(bodyArgs, parsed);
+            } else {
+              // Array/scalar payloads are the request body verbatim
+              body = JSON.stringify(parsed);
+            }
+          }
+          if (body === undefined) body = JSON.stringify(bodyArgs);
           headers['Content-Type'] = 'application/json';
         }
 
         const res = await fetch(fetchUrl, { method, headers, body, signal: AbortSignal.timeout(15000) });
         const text = await res.text();
-        if (!res.ok) return `${preset.name} error ${res.status}: ${text.slice(0, 500)}`;
+        if (!res.ok) {
+          // Must escape the catch-all below (which returns strings) so the
+          // executor loop records error:true instead of a success-shaped result.
+          const httpErr = new Error(`${preset.name} HTTP ${res.status}: ${text.slice(0, 500)}`);
+          httpErr.rethrow = true;
+          throw httpErr;
+        }
+        log.info(`Skill tool ${toolName} → ${res.status}`);
         try {
           const json = JSON.parse(text);
           // Array-heavy responses (e.g. contacts, invoices): compact JSON to fit more records
@@ -1477,7 +1510,17 @@ export class ToolRegistry {
       }
       return `API tool ${toolName} not implemented for ${preset.name}`;
     } catch (err) {
-      return `API error (${preset.name}/${toolName}): ${err.message}`;
+      if (err.rethrow) throw err;
+      // Any exception reaching here (transport failure, AbortSignal timeout,
+      // secrets fetch error) means the call did not complete. Re-throw it
+      // marked so the executor loop records error:true instead of a
+      // success-shaped string — previously these were swallowed and left a
+      // "success" result_status in audit.db, the same gap the HTTP-status
+      // fix above closes. Wrap in a fresh Error so we never mutate an exotic
+      // error object (e.g. the timeout DOMException).
+      const wrapped = new Error(`API error (${preset.name}/${toolName}): ${err.message}`);
+      wrapped.rethrow = true;
+      throw wrapped;
     }
   }
 
