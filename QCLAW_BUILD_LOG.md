@@ -16640,13 +16640,19 @@ Two compounding bugs in the Generic Skill HTTP Executor (`_executeAPITool`, `src
 - `consumedArgs` excluded from non-GET bodies (mirrors GET branch).
 - `data` string parsed and lifted to the body root; unparseable JSON → validation string returned, **no HTTP
   call**; array/scalar payloads sent verbatim as the body.
-- Non-2xx now throws a `rethrow`-marked error that escapes the string-returning catch-all → executor loop records
-  `error: true`, logs `Error executing …`, audit.db `result_status` correct. Unmarked errors (network etc.) keep
-  the legacy `API error (…)` string path — blast radius limited to HTTP status handling.
+- Every failure now throws a `rethrow`-marked error that escapes the string-returning catch-all → executor loop
+  records `error: true`, logs `Error executing …`, audit.db `result_status` correct. Covers non-2xx HTTP status
+  **and** (as of `c97cdba`, added post-review) transport failures — AbortSignal timeout, network errors — which
+  previously kept the legacy `API error (…)` string path and left a success-shaped audit row on a timed-out write.
+  The `result_status` gap is now closed completely, not just for HTTP status.
+- **GET path is affected too, intentionally.** The `if (!res.ok)` check is shared (after the method branching), so
+  read tools (`search_contacts` / `get_contact` / `list_opportunities`) now throw on 4xx/5xx where they previously
+  returned a string. This is correct (a 404/401 read is a genuine failure → `error:true`) and is kept. An earlier
+  draft of this entry and the PR body called the GET path "unchanged" — inaccurate; corrected after adversarial review.
 - `log.info('Skill tool <name> → <status>')` on success — approval→execution now traceable in pm2 logs.
-- `tests/skill-executor.test.js` (18 checks: POST body shape/lift, invalid-data short-circuit, throw-on-422/401,
-  GET parity incl. secrets + query building, array payload, legacy string path) wired into the npm test chain
-  (package.json).
+- `tests/skill-executor.test.js` (21 checks: POST body shape/lift, invalid-data short-circuit, throw-on-422/401,
+  GET secrets + query building, array payload, and transport/AbortError throw-with-marker) wired into the npm test
+  chain (package.json).
 
 ### Also fixed — main CI was red since 2026-07-16
 `tests/ghl-tools.test.js` still asserted ghl-fsc is READ-ONLY with exactly 3 endpoints — stale since `977bc28`
@@ -16660,8 +16666,21 @@ New test standalone: `18 passed, 0 failed` (includes live `Skill tool ghl-fsc__c
 info line from the mocked 201 path). Full chain after rebase on a3120cb: reaches the final test file →
 `17 passed, 0 failed` (text-card), no failures anywhere in the chain.
 
+### Adversarial review reconciliation (2026-07-18)
+Adversarial review of the branch (audit-only) cleared the security surfaces — no injection privilege bypass (URL
+routing is fixed before body construction; the whole args blob incl. the `data` string is what the gate approves),
+no prototype pollution (`__proto__`/`constructor` payloads are dropped by `Object.assign` + own-enumerable
+`JSON.stringify`; global `Object.prototype` untouched), path-param traversal neutralised by `encodeURIComponent`,
+and the rethrow marker is not spoofable from tool args. Three reconciliation items applied (docs + one contained
+throw extension; no re-review needed):
+1. GET-path claim corrected (above) — GET now throws on non-2xx, kept as correct behaviour.
+2. Transport/timeout errors now throw too (`c97cdba`) — closes the `result_status` gap completely.
+3. **`data` field contents override sibling body args (last-writer-wins), and can add body fields named like path
+   params (`contact_id`, `contactId`, `assignedTo`).** Not a routing bypass, but reviewers approving a write should
+   read the `data` payload in the Telegram prompt, not just the top-level `contact_id`. Same note added to PR #68.
+
 ### Residual / follow-ups
-- Adversarial review session against the branch, then un-draft PR #68 (gated-write path rule).
+- Adversarial review DONE (2026-07-18); un-draft PR #68 once the above land (gated-write path rule).
 - Post-merge: `pm2 restart quantumclaw`, then live round-trip — Charlie adds a note to FSC contact
   `SbPJpeihuGK3RT6bspyq`, approve gate, confirm `Skill tool … → 201` in pm2 + note visible in GHL. Double
   identical tool_use blocks may still occur (model behaviour, no executor dedup) — each call now executes
