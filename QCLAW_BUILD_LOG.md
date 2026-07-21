@@ -16943,3 +16943,66 @@ LIVE (confirmed: `direction:MAYBE` probe reached `exec()`, returned err.message+
 
 npm test green. Both brakes stay ON (trading_enabled=false, workflow inactive). Merging #70 to main is what closes the
 live exposure.
+
+---
+
+## [2026-07-21] Phase 5 Session 7 continuation — Trade Executor pre-flight → PR #70 shipped (roll-up)
+
+Ties together today's Trade Executor work (detailed entries above). **Both brakes remained ON throughout and are ON
+now:** `trading_config.trading_enabled=false`, workflow `fq7spfyiNcpt8Mf7` `active=false` (verified post-merge).
+
+### 1. Trade Executor pre-flight audit (read-only)
+Audited the only path that places real Polymarket trades with real USDC (balance $31.73). **3 blockers:**
+- **Command injection** in `/api/trading/execute` — `exec()` with string-interpolated `market_id`/`direction`/`amount`,
+  running as root (RCE for any authToken holder).
+- **Execute Trade n8n node unreachable** — pointed at `http://<public-ip>:4000` (dashboard binds `127.0.0.1` only)
+  with no auth header → couldn't call the dashboard even if activated.
+- **No min_edge gate in the executor** — `min_edge_threshold` is never referenced in the workflow; edge discipline
+  lives entirely upstream (unverified).
+Plus findings: `TRADING_WEBHOOK_SECRET` hardcoded in the Validate Secret node (matched `.env` by value → drift),
+`errorWorkflow` unset, no `daily_loss_limit` enforcement, and the route + `execute_trade.py` consult **neither** brake.
+**Calibration caveat:** the `min_edge` unit question (stored `30` → is it 30 or 30%?) is moot for the executor — it
+ignores `min_edge` entirely; resolving the edge gate needs Market Scanner calibration → deferred to **Brief B**.
+
+### 2. PR #70 — Trade Executor infrastructure fixes (merged `7163ab2`)
+Fixed the blockers + adversarial-review follow-ups; both brakes untouched.
+- **exec injection:** `exec(string)` → `execFile(argv)` (no `/bin/sh`); validation `market_id` `/^(0x)?[0-9a-f]{64}$/i`,
+  `direction ∈ {YES,NO}`, `amount` finite `>0` and `<= max_position_usdc`.
+- **server-side brake:** fail-closed `trading_config` re-check → `403 trading_disabled`, independent of n8n; `SB_URL`
+  env-loaded const (no hardcoded project URL).
+- **workflow (n8n PUT):** Execute Trade → `agentboardroom.flowos.tech` tunnel + `Authorization: Bearer
+  {{ $env.QCLAW_API_TOKEN }}`; `settings.errorWorkflow=7kpNnMtnuDWXgWcX`; Validate Secret → `$env.TRADING_WEBHOOK_SECRET`
+  (provisioned into the n8n droplet env; `N8N_BLOCK_ENV_ACCESS_IN_NODE=false` already set).
+- **secret rotation:** the old value was committed in git history (`3601424`) → rotated `openssl rand -hex 32` across
+  qclaw + n8n `.env` (`b1c6f3e607dd5fc6` → `3eb4e1a71a2c6029`, verified identical on both hosts); the `$env`-sourced
+  node picks it up automatically; no caller held the old value so nothing broke.
+- **file consolidation:** deleted the duplicate `trading-trade-executor.json`; `trading-executor.json` is canonical.
+- **adversarial review (`55a9360`):** found the **CRITICAL** that PR #69's merge (`1c4dc2b`) auto-deployed `main` over
+  the branch checkout and restarted quantumclaw on the OLD vulnerable handler — command injection + no gate + stderr
+  leak were **LIVE**. Closed by merging #70 to `main`. Branch fixes: generic `execution_failed` 500 (`err.message`
+  leaked execFile stderr), `max_position_usdc` 0/null-coercion, config-route gate-flip WARNING comment,
+  `daily_loss_limit` TODO. **Post-merge live verification:** injection→`400`, trading-off→`403 trading_disabled`,
+  no-auth→`401`, workflow `active=false`. CRITICAL closed on production.
+
+### Roadmap note
+**Trade Executor rewrite as a standalone Python/FastAPI module** — future, after we have real live-trading experience
+to inform the design. The current n8n-workflow + dashboard-route split is the interim; a dedicated service would
+consolidate validation, the brakes, the edge gate, slippage protection, and PnL/loss limits in one testable place
+(vs. spread across a Code node, the dashboard route, and execute_trade.py).
+
+### Still owed before enabling live trading (Brief B / pre-enable)
+- **daily_loss_limit enforcement** — sum open+closed PnL, reject if exceeded (needs an unscoped Supabase query).
+  Currently only a per-trade `max_position_usdc` cap + 5/min rate limit; no cumulative cap → drain risk when enabled.
+- **min_edge gate in the executor** — add it, or verify the Market Scanner enforces the edge filter before it POSTs
+  the webhook. Edge discipline is unverified today.
+- **config write route second factor** — `POST /api/trading/config` flips `trading_enabled` from the body behind the
+  same authToken, bypassing the item-2 gate. authToken is the only control today; gate it behind a second factor.
+
+### Next session queue
+1. **Dispatches tab brief** — ready.
+2. **Scanner calibration (Brief B)** — after the dispatches tab; resolves the `min_edge`/edge-gate calibration caveat
+   and the executor edge gate above.
+
+References: PR #70 (`7163ab2`; branch commits `df57b19` + `55a9360`); secret origin `3601424`; deploy-revert trigger
+`1c4dc2b` (#69); memory `project_qclaw_auth_token`, `project_qclaw_token_rotates_on_restart` (no drift confirmed),
+`project_n8n_qclaw_topology`, `feedback_adversarial_review_before_pr_ready`. Both brakes ON.
