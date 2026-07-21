@@ -1,7 +1,7 @@
 /**
  * Crete Projects — Instagram Text Card Generator
  *
- * Generates branded 1080×1080 PNG images for Instagram.
+ * Generates branded 1080×1350 PNG images for Instagram.
  * Two styles:
  *   - quote:     Large italic quote text centred on cream background
  *   - editorial: Bold headline + body text, structured layout
@@ -178,57 +178,89 @@ function renderEditorialCard(ctx, headline, body) {
   ctx.fillStyle = OLIVE_DARK;
   ctx.fillRect(0, 0, WIDTH, 6);
 
-  // Brand header
-  ctx.fillStyle = OLIVE_MID;
-  ctx.font = '600 16px "Montserrat"';
+  const HEADER_FONT   = '600 22px "Montserrat"';
+  const HEADLINE_FONT = 'bold 92px "Cormorant Garamond"';
+  const BODY_FONT     = '40px "DM Sans"';
+
+  const headerH        = 22;  // block top -> header baseline
+  const headLineH      = 106;
+  const bodyLineH      = 58;
+  const gapHeaderDiv   = 20;  // header baseline -> full divider
+  const gapDivHeadline = 90;  // full divider -> headline first baseline
+  const gapHeadSmall   = 30;  // headline last baseline -> small divider
+  const gapSmallBody   = 60;  // small divider -> body first baseline
+  const bodyDescender  = 12;  // visual allowance below last body baseline
+
+  const minTop = 140;         // clear of the accent bar
+  const maxBottom = 1150;     // clear of the olive branches + footer
+
+  // Measure with the target fonts before positioning
   ctx.textAlign = 'left';
-  ctx.fillText('C R E T E   P R O J E C T S', PAD, PAD + 10);
+  ctx.font = HEADLINE_FONT;
+  const headLines = wrapText(ctx, headline, TEXT_W);
+  ctx.font = BODY_FONT;
+  let bodyLines = body ? wrapText(ctx, body, TEXT_W) : [];
+
+  // Block height from top through the small divider
+  const fixedH = headerH + gapHeaderDiv + gapDivHeadline
+    + (headLines.length - 1) * headLineH + gapHeadSmall;
+
+  // Truncate body BEFORE centring so a trimmed block still sits centred
+  if (bodyLines.length) {
+    const maxBodyLines = Math.max(1, Math.floor(
+      (maxBottom - minTop - fixedH - gapSmallBody - bodyDescender) / bodyLineH
+    ) + 1);
+    if (bodyLines.length > maxBodyLines) bodyLines = bodyLines.slice(0, maxBodyLines);
+  }
+
+  const blockH = fixedH + (bodyLines.length
+    ? gapSmallBody + (bodyLines.length - 1) * bodyLineH + bodyDescender
+    : 0);
+  const blockTop = Math.max(minTop, Math.min((HEIGHT - blockH) / 2, maxBottom - blockH));
+
+  // Brand header
+  const headerY = blockTop + headerH;
+  ctx.fillStyle = OLIVE_MID;
+  ctx.font = HEADER_FONT;
+  ctx.fillText('C R E T E   P R O J E C T S', PAD, headerY);
 
   // Olive branch next to header
-  drawOliveBranch(ctx, PAD + ctx.measureText('C R E T E   P R O J E C T S').width + 20, PAD + 5, 0.8, false);
+  drawOliveBranch(ctx, PAD + ctx.measureText('C R E T E   P R O J E C T S').width + 20, headerY - 5, 0.8, false);
 
   // Divider below header
+  const dividerY = headerY + gapHeaderDiv;
   ctx.strokeStyle = ACCENT_GOLD;
   ctx.lineWidth = 1;
   ctx.beginPath();
-  ctx.moveTo(PAD, PAD + 30);
-  ctx.lineTo(WIDTH - PAD, PAD + 30);
+  ctx.moveTo(PAD, dividerY);
+  ctx.lineTo(WIDTH - PAD, dividerY);
   ctx.stroke();
 
   // Headline
   ctx.fillStyle = CHARCOAL;
-  ctx.font = 'bold 48px "Cormorant Garamond"';
-  ctx.textAlign = 'left';
-
-  const headLines = wrapText(ctx, headline, TEXT_W);
-  const headLineH = 62;
-  let y = PAD + 80;
-  for (const line of headLines) {
-    ctx.fillText(line, PAD, y);
-    y += headLineH;
+  ctx.font = HEADLINE_FONT;
+  const headY = dividerY + gapDivHeadline;
+  for (let i = 0; i < headLines.length; i++) {
+    ctx.fillText(headLines[i], PAD, headY + i * headLineH);
   }
+  const lastHeadY = headY + (headLines.length - 1) * headLineH;
 
   // Small divider between headline and body
-  y += 15;
+  const smallDivY = lastHeadY + gapHeadSmall;
   ctx.strokeStyle = ACCENT_GOLD;
   ctx.lineWidth = 1.5;
   ctx.beginPath();
-  ctx.moveTo(PAD, y);
-  ctx.lineTo(PAD + 60, y);
+  ctx.moveTo(PAD, smallDivY);
+  ctx.lineTo(PAD + 80, smallDivY);
   ctx.stroke();
-  y += 35;
 
   // Body text
-  ctx.fillStyle = CHARCOAL;
-  ctx.font = '26px "DM Sans"';
-  ctx.textAlign = 'left';
-
-  const bodyLines = wrapText(ctx, body, TEXT_W);
-  const bodyLineH = 40;
-  for (const line of bodyLines) {
-    if (y + bodyLineH > HEIGHT - PAD - 70) break; // prevent overflow
-    ctx.fillText(line, PAD, y);
-    y += bodyLineH;
+  if (bodyLines.length) {
+    ctx.fillStyle = CHARCOAL;
+    ctx.font = BODY_FONT;
+    for (let i = 0; i < bodyLines.length; i++) {
+      ctx.fillText(bodyLines[i], PAD, smallDivY + gapSmallBody + i * bodyLineH);
+    }
   }
 
   // Bottom olive branches
@@ -236,10 +268,10 @@ function renderEditorialCard(ctx, headline, body) {
   drawOliveBranch(ctx, WIDTH - PAD + 10, HEIGHT - PAD + 10, 1.0, true);
 
   // Footer
-  ctx.fillStyle = WARM_GREY;
-  ctx.font = '14px "Montserrat"';
+  ctx.fillStyle = OLIVE_DARK;
+  ctx.font = '600 28px "Montserrat"';
   ctx.textAlign = 'center';
-  ctx.fillText('creteprojects.com', WIDTH / 2, HEIGHT - PAD + 35);
+  ctx.fillText('creteprojects.com', WIDTH / 2, HEIGHT - PAD + 40);
 }
 
 // ─── Public API ──────────────────────────────────────────────
