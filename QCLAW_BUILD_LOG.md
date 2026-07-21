@@ -16842,3 +16842,84 @@ deliberate cross-brand note pointing at ghl-fsc.md).
 References: commit `b6133a2`; template `src/agents/skills/ghl-fsc.md`; PRs #58 (write gate), #68 (executor fix);
 memory [[project_ghl_locations]] (Flow OS vs FSC split), [[project_ghl_skill_architecture]] (skill-parsed tools,
 name-length note), [[project_skill_http_writes_ungated]] (RESOLVED).
+
+---
+
+## [2026-07-21] Trade Executor pre-flight infrastructure fixes (5 items) — branch cc/trading-executor-preflight-20260721
+
+**Mode:** implement, off the 2026-07-21 pre-flight audit. **Both brakes untouched throughout:**
+`trading_config.trading_enabled=false` and workflow fq7spfyiNcpt8Mf7 `active=false` (verified after every step).
+Branch not yet PR'd (paused for diff review). Security/financial slice → **PR opens as DRAFT, adversarial review
+owed before un-draft**.
+
+### Item 1 — exec() command injection fixed (`src/dashboard/server.js`)
+`/api/trading/execute` (route 1361) built a shell string `python3 …/execute_trade.py --market ${market_id} …`
+and ran it via `exec()` as root — authenticated RCE. Replaced with `execFile('python3', [args…])` (arg array, no
+`/bin/sh`). Added input validation before the call: `market_id` must match `/^(0x)?[0-9a-f]{64}$/i` (Tyson-approved;
+brief's `/^[a-f0-9]{64}$/` would reject 0x-prefixed condition ids), `direction ∈ {YES,NO}`, `amount` finite `>0`
+and `<= max_position_usdc`. 500 handler no longer leaks `err.stderr`.
+
+### Item 2 — server-side trading_enabled re-check (`src/dashboard/server.js`)
+The route + execute_trade.py previously consulted neither brake (both lived only in the n8n workflow). Added a
+fail-closed `trading_config` fetch (one round-trip feeding both the amount ceiling and the gate): `trading_enabled
+!== true` → **403 trading_disabled**; config fetch failure → 503. Now the dashboard enforces the brake
+independently of n8n. Per Tyson's correction, the Supabase base URL is **not** hardcoded — added a module-level
+`SB_URL` const mirroring the `SB_SERVICE_ROLE_KEY` IIFE (reads `SUPABASE_URL` from `.env`, strips trailing slash);
+the handler uses `${SB_URL}/rest/v1/trading_config?…`.
+
+### Item 3 — slippage marker (`src/trading/execute_trade.py`, comment only)
+TODO block above `create_and_post_order` noting no slippage bound (acceptable at $25 max on liquid markets; revisit
+if max_position_usdc > 50). No logic change.
+
+### Item 4 — Execute Trade node fixed (workflow PUT, one PUT with item 5)
+Node targeted `http://138.68.138.214:4000` (dashboard binds 127.0.0.1 only) with no auth → unreachable. Changed URL
+to `https://agentboardroom.flowos.tech/api/trading/execute` and added `Authorization: =Bearer {{ $env.QCLAW_API_TOKEN }}`
+(n8n-side `$env`, per Tyson — `QCLAW_API_TOKEN` is NOT in qclaw `.env`, it's in the n8n container; matches the
+flowos/crete precedent). Set `settings.errorWorkflow='7kpNnMtnuDWXgWcX'` (preserved executionOrder/callerPolicy/
+availableInMCP). **No drift:** dashboard authToken and n8n QCLAW_API_TOKEN both sha256 `8bd25dcda796067c` → the
+Bearer auth will resolve when enabled.
+
+### Item 5 — Validate Secret reads $env (provisioned n8n env first)
+Node hardcoded a 64-char literal (matched `.env` by value, sha256 `b1c6f3e607dd5fc6` — duplication/drift). Provisioned
+`TRADING_WEBHOOK_SECRET` into the n8n droplet (`/home/n8nadmin/n8n-project/.env`, value piped host-to-host, never
+printed; backup `.env.bak.pre-trading-secret-20260721`) then `docker compose up -d` to recreate the container.
+`N8N_BLOCK_ENV_ACCESS_IN_NODE=false` was **already** in the compose (line 34). Verified in-container: `$env` set,
+sha256 `b1c6f3e607dd5fc6` == qclaw's (same value). Then changed the node to `const validSecret =
+$env.TRADING_WEBHOOK_SECRET;` in the same PUT.
+
+### Verification (verbatim)
+`npm test` green. quantumclaw restarted (`--update-env`), dashboard healthy on 127.0.0.1:4000. Route smoke test:
+```
+1) invalid market_id  -> HTTP=400  {"error":"invalid market_id"}
+2) valid id, trading_enabled=false -> HTTP=403  {"error":"trading_disabled"}
+3) bad direction -> HTTP=400  {"error":"invalid direction (expected 'YES' or 'NO')"}
+4) amount over max_position -> HTTP=400  {"error":"invalid amount (must be > 0 and <= 10)"}
+5) no auth -> HTTP=401
+```
+(#2 proves SB_URL config-fetch + the gate work and execFile is never reached; #4 shows the ceiling reads the live
+`max_position_usdc=10`.) Workflow re-fetch after PUT: `active=False`, Execute Trade url=agentboardroom…, Authorization
+header present (`=Bearer {{ $env.QCLAW_API_TOKEN }}`), settings.errorWorkflow=7kpNnMtnuDWXgWcX, Validate Secret reads
+`$env` (no literal).
+
+### Secret rotation (git-history leak) + file consolidation
+`n8n-workflows/trading-trade-executor.json` (prior export of the same workflow, committed in `3601424 feat: add n8n
+workflow backups`) had the hardcoded `TRADING_WEBHOOK_SECRET` in its Validate Secret node — the value was in git
+history (compromised). **Rotated in this PR:** `openssl rand -hex 32`, updated qclaw `.env` + n8n droplet `.env`
+(values piped host-to-host, never printed; backups `.env.bak.pre-twh-rotate-20260721` on both hosts), `docker compose
+up -d` on n8n. Verified: old sha256 `b1c6f3e607dd5fc6` → new `3eb4e1a71a2c6029`, identical across qclaw `.env` and the
+n8n container. The Validate Secret node reads `$env.TRADING_WEBHOOK_SECRET` (item 5) so it picks up the new value with
+no code change; no qclaw process reads the var (no restart). **Rotation broke nothing:** the executor webhook
+(`path: trading-execute`) has no caller — the live Market Scanner has zero references to it and `trading_positions`
+is empty, so nothing held the old value. When the executor is eventually wired to a trigger, that caller must source
+the secret from n8n `$env.TRADING_WEBHOOK_SECRET` to stay in sync. **Consolidation:** deleted the duplicate
+`trading-trade-executor.json`; `n8n-workflows/trading-executor.json` is canonical going forward. The old value
+remains in git history (deletion can't scrub it) but is now dead everywhere it is consumed.
+
+### Artifacts
+`n8n-workflows/backups/trading-executor.PRE-PREFLIGHT-20260721.json` (pre-PUT, secret redacted),
+`n8n-workflows/trading-executor.json` (post-PUT canonical, `$env`, no literal). Backups: server.js.bak.trading-preflight
+(gitignored), n8n .env.bak.pre-trading-secret-20260721.
+
+References: pre-flight audit 2026-07-21; commit `3601424` (secret origin); memory `project_qclaw_auth_token`,
+`project_qclaw_token_rotates_on_restart` (no-drift confirmed), `project_n8n_qclaw_topology` (env_file + compose up -d),
+`feedback_adversarial_review_before_pr_ready` (draft PR). Both brakes remain ON.

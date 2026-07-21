@@ -33,6 +33,19 @@ const SB_SERVICE_ROLE_KEY = (() => {
   return process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 })();
 
+// Same source/precedence as SB_SERVICE_ROLE_KEY — Supabase base URL from .env,
+// no trailing slash (callers append `/rest/v1/...`). Avoids hardcoded project URLs.
+const SB_URL = (() => {
+  try {
+    const envFile = readFileSync('/root/.quantumclaw/.env', 'utf-8');
+    for (const line of envFile.split('\n')) {
+      const m = line.match(/^SUPABASE_URL=(.*)$/);
+      if (m) return m[1].trim().replace(/^["']|["']$/g, '').replace(/\/$/, '');
+    }
+  } catch { /* not on the server host (local/CI) — fall through to process.env */ }
+  return (process.env.SUPABASE_URL || '').replace(/\/$/, '');
+})();
+
 // Slice 6b: agent spawning is disabled. The /api/agents/spawn backend route was
 // already removed; this defensive handler returns a clear 403 (not a 404) so any
 // stale dashboard client gets an explicit signal. Specialists are registered via
@@ -1358,21 +1371,56 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
     });
 
     // ─── Trading: Execute Trade (called by n8n) ──────────────
+    // Polymarket condition id: 64-hex, optional 0x prefix. Injection-safe (hex only,
+    // no shell metacharacters possible). Accepts both bare-64 and 0x-prefixed forms.
+    const POLY_MARKET_ID_RE = /^(0x)?[0-9a-f]{64}$/i;
+    const TRADE_DIRECTIONS = new Set(['YES', 'NO']);
     this.app.post('/api/trading/execute', async (req, res) => {
       try {
         const { market_id, direction, amount } = req.body;
-        if (!market_id || !direction || !amount) {
+        if (!market_id || !direction || amount === undefined || amount === null) {
           return res.status(400).json({ error: 'market_id, direction, and amount required' });
         }
-        const { exec } = await import('child_process');
+        // Item 1: validate inputs before any subprocess (no shell interpolation)
+        if (typeof market_id !== 'string' || !POLY_MARKET_ID_RE.test(market_id)) {
+          return res.status(400).json({ error: 'invalid market_id' });
+        }
+        if (typeof direction !== 'string' || !TRADE_DIRECTIONS.has(direction)) {
+          return res.status(400).json({ error: "invalid direction (expected 'YES' or 'NO')" });
+        }
+        // Item 2: server-side trading_config gate (fail closed) — one fetch feeds the
+        // amount ceiling and the trading_enabled brake, independently of the n8n workflow.
+        let cfg;
+        try {
+          const sbKey = SB_SERVICE_ROLE_KEY;
+          const cfgRes = await fetch(`${SB_URL}/rest/v1/trading_config?id=eq.1&select=trading_enabled,max_position_usdc`, {
+            headers: { apikey: sbKey, Authorization: `Bearer ${sbKey}` }
+          });
+          cfg = (await cfgRes.json())[0] || {};
+        } catch {
+          return res.status(503).json({ error: 'trading_config_unavailable' });
+        }
+        const maxPos = Number(cfg.max_position_usdc) || 25;
+        const amt = Number(amount);
+        if (!Number.isFinite(amt) || amt <= 0 || amt > maxPos) {
+          return res.status(400).json({ error: `invalid amount (must be > 0 and <= ${maxPos})` });
+        }
+        if (cfg.trading_enabled !== true && cfg.trading_enabled !== 'true') {
+          return res.status(403).json({ error: 'trading_disabled' });
+        }
+        // execFile — args as array, no /bin/sh, no string interpolation
+        const { execFile } = await import('child_process');
         const { promisify } = await import('util');
-        const execAsync = promisify(exec);
-        const cmd = `python3 /root/QClaw/src/trading/execute_trade.py --market ${market_id} --direction ${direction} --amount ${amount}`;
-        const { stdout, stderr } = await execAsync(cmd, { timeout: 30000 });
-        const result = JSON.parse(stdout);
-        res.json(result);
+        const execFileAsync = promisify(execFile);
+        const { stdout } = await execFileAsync(
+          'python3',
+          ['/root/QClaw/src/trading/execute_trade.py',
+           '--market', market_id, '--direction', direction, '--amount', String(amt)],
+          { timeout: 30000 }
+        );
+        res.json(JSON.parse(stdout));
       } catch (err) {
-        res.status(500).json({ error: err.message, stderr: err.stderr || '' });
+        res.status(500).json({ error: err.message });
       }
     });
 
