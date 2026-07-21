@@ -100,6 +100,64 @@ if (fsc) {
     registered.map(n => `${n}(${n.length})`).join(' '));
 }
 
+// ── ghl-flowos skill (Flow OS sub-account CRM — reads + gated writes) ────
+const flowosRaw = readFileSync(join(SKILLS_DIR, 'ghl-flowos.md'), 'utf-8');
+const flowos = parseSkill('ghl-flowos', flowosRaw, stubSecrets);
+
+check('ghl-flowos.md parses into an HTTP skill', flowos !== null,
+  'parseSkill returned null — missing Base URL or Endpoints');
+
+if (flowos) {
+  check('ghl-flowos base URL is the LeadConnector host',
+    flowos.baseUrl === 'https://services.leadconnectorhq.com', `got ${flowos.baseUrl}`);
+
+  const auth = flowos.headers['Authorization'] || '';
+  check('ghl-flowos auth uses {{secrets.ghl_flowos_api_key}}',
+    auth.includes('{{secrets.ghl_flowos_api_key}}'), `got "${auth}"`);
+  check('ghl-flowos does NOT use the FSC or base ghl key',
+    !auth.includes('ghl_fsc_api_key') && !/\{\{secrets\.ghl_api_key\}\}/.test(auth), `got "${auth}"`);
+
+  const locHeader = flowos.headers['Location-Id'] || '';
+  check('ghl-flowos Location-Id header uses {{secrets.ghl_flowos_location_id}}',
+    locHeader.includes('{{secrets.ghl_flowos_location_id}}'), `got "${locHeader}"`);
+
+  // Endpoint surface: 3 reads + 5 gated writes, nothing destructive (mirrors ghl-fsc).
+  const methods = flowos.endpoints.map(e => e.method);
+  check('ghl-flowos has exactly 8 endpoints', flowos.endpoints.length === 8,
+    `got ${flowos.endpoints.length}: ${methods.join(',')}`);
+  check('ghl-flowos has 4 POST + 1 PUT write endpoints',
+    methods.filter(m => m === 'POST').length === 4 && methods.filter(m => m === 'PUT').length === 1,
+    `methods: ${methods.join(',')}`);
+  check('ghl-flowos has NO destructive endpoints (DELETE/PATCH)',
+    !methods.some(m => m === 'DELETE' || m === 'PATCH'), `methods: ${methods.join(',')}`);
+
+  const flowosTools = skillToTools(flowos);
+  const fnames = flowosTools.map(t => t.name);
+  check('ghl-flowos generates 8 tools', flowosTools.length === 8, fnames.join(','));
+  check('ghl-flowos registers no delete_ tools',
+    !fnames.some(n => n.includes('__delete')), fnames.join(','));
+  // Each read + write surface present by name.
+  check('ghl-flowos has a contact search tool',
+    fnames.some(n => n.includes('contacts') && n.includes('query')), fnames.join(','));
+  check('ghl-flowos has a create-contact tool',
+    fnames.some(n => n.startsWith('ghl-flowos__create_contacts_locationid')), fnames.join(','));
+  check('ghl-flowos has an add-note tool',
+    fnames.some(n => n === 'ghl-flowos__create_contacts_id_notes'), fnames.join(','));
+  check('ghl-flowos has an email-draft tool',
+    fnames.some(n => n === 'ghl-flowos__create_conversations_messages'), fnames.join(','));
+
+  // Registered names: the longer "ghl-flowos" skill name pushes the opportunities
+  // tool to 72 chars (charlie__ghl-flowos__ghl-flowos__get_opportunities_search_location_id_id).
+  // The classic 64-char tool-name limit is NOT enforced by the Anthropic API — verified
+  // 2026-07-21 via count_tokens: names up to 128+ chars return HTTP 200, and production
+  // already runs a live 67-char n8n-router name. Bound set to 120 as a runaway-name guard
+  // with margin under the observed-accepted ceiling, not the stale documented 64.
+  const flowosRegistered = fnames.map(n => `charlie__ghl-flowos__${n}`);
+  check('registered ghl-flowos tool names are within the tool-name bound (≤120)',
+    flowosRegistered.every(n => n.length <= 120),
+    flowosRegistered.map(n => `${n}(${n.length})`).join(' '));
+}
+
 // ── Flow OS ghl.md unchanged (this slice left it on ghl_api_key) ────────
 const ghlRaw = readFileSync(join(SKILLS_DIR, 'ghl.md'), 'utf-8');
 const ghl = parseSkill('ghl', ghlRaw, stubSecrets);
