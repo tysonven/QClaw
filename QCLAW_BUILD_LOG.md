@@ -16923,3 +16923,23 @@ remains in git history (deletion can't scrub it) but is now dead everywhere it i
 References: pre-flight audit 2026-07-21; commit `3601424` (secret origin); memory `project_qclaw_auth_token`,
 `project_qclaw_token_rotates_on_restart` (no-drift confirmed), `project_n8n_qclaw_topology` (env_file + compose up -d),
 `feedback_adversarial_review_before_pr_ready` (draft PR). Both brakes remain ON.
+
+---
+
+## [2026-07-21] PR #70 adversarial-review fixes (pre-merge)
+
+Hostile review of PR #70 surfaced a CRITICAL: PR #69's merge auto-deployed `main` over the branch checkout and
+restarted quantumclaw on the OLD vulnerable handler — command injection + no trading_enabled gate + stderr leak were
+LIVE (confirmed: `direction:MAYBE` probe reached `exec()`, returned err.message+stderr). Closes on merging #70 to
+`main` (CI deploys the fixed main). Four branch fixes applied before un-draft:
+- **stderr leak (MEDIUM):** Node `execFile` concatenates subprocess stderr into `err.message`; the 500 path returned
+  it. Now returns `{error:'execution_failed'}` and logs details server-side via `log.error`.
+- **max_position=0 coercion (LOW):** `Number(x) || 25` turned a configured 0/null into 25; now
+  `Number.isFinite(Number(x)) && Number(x) > 0 ? Number(x) : 25`.
+- **config-route gate-flip (MEDIUM, doc):** WARNING comment on `POST /api/trading/config` — `trading_enabled` writes
+  there bypass the item-2 gate; the dashboard authToken is the real control boundary. Follow-up: second factor.
+- **daily_loss_limit (HIGH, doc):** TODO on the execute route — pre-enable requirement (Brief B), alongside the
+  executor min_edge gate. Not implemented (needs an unscoped Supabase PnL query).
+
+npm test green. Both brakes stay ON (trading_enabled=false, workflow inactive). Merging #70 to main is what closes the
+live exposure.

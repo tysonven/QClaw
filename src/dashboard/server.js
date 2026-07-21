@@ -1375,6 +1375,8 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
     // no shell metacharacters possible). Accepts both bare-64 and 0x-prefixed forms.
     const POLY_MARKET_ID_RE = /^(0x)?[0-9a-f]{64}$/i;
     const TRADE_DIRECTIONS = new Set(['YES', 'NO']);
+    // TODO: enforce daily_loss_limit before enabling — sum open+closed PnL, reject if exceeded.
+    // Pre-enable requirement (Brief B scope), alongside the executor min_edge gate. Not implemented here.
     this.app.post('/api/trading/execute', async (req, res) => {
       try {
         const { market_id, direction, amount } = req.body;
@@ -1400,7 +1402,7 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
         } catch {
           return res.status(503).json({ error: 'trading_config_unavailable' });
         }
-        const maxPos = Number(cfg.max_position_usdc) || 25;
+        const maxPos = Number.isFinite(Number(cfg.max_position_usdc)) && Number(cfg.max_position_usdc) > 0 ? Number(cfg.max_position_usdc) : 25;
         const amt = Number(amount);
         if (!Number.isFinite(amt) || amt <= 0 || amt > maxPos) {
           return res.status(400).json({ error: `invalid amount (must be > 0 and <= ${maxPos})` });
@@ -1420,7 +1422,10 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
         );
         res.json(JSON.parse(stdout));
       } catch (err) {
-        res.status(500).json({ error: err.message });
+        // Fix (adversarial review): err.message from execFile includes subprocess stderr —
+        // don't return it to the client. Log details server-side only.
+        log.error(`[trading/execute] execution failed: ${err && err.message}`);
+        res.status(500).json({ error: 'execution_failed' });
       }
     });
 
@@ -1458,6 +1463,9 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
       } catch (err) { res.status(500).json({ error: err.message }); }
     });
 
+    // WARNING: trading_enabled writes here bypass the item-2 gate in /api/trading/execute —
+    // the dashboard authToken is the real control boundary. Follow-up: gate this route behind a
+    // second factor before enabling live trading.
     this.app.post('/api/trading/config', async (req, res) => {
       try {
         const sbKey = SB_SERVICE_ROLE_KEY; // service_role (server-side only) — was a hardcoded anon literal
