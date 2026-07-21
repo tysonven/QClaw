@@ -69,6 +69,10 @@ def execute_trade(market_id, direction, amount_usdc):
             amount=float(amount_usdc),
         )
 
+        # TODO: add max_price/slippage bound before live trading at scale
+        # Current: market order, no slippage protection
+        # Acceptable for $25 USDC max position on liquid Polymarket markets
+        # Revisit if max_position_usdc > 50 or markets become thin
         resp = client.create_and_post_order(order_args)
 
         return {
