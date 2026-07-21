@@ -16771,3 +16771,74 @@ throw extension, no re-review needed):**
 References: commits `f203229`, `977bc28`, `aef64bb`, `8776e95`, `060c74d`, `a3120cb`, `4538b49` (PR #68 merge);
 build log commits `6a97367`, `735ceba`; memory `project_skill_http_writes_ungated` (RESOLVED),
 `project_ghl_skill_architecture`, `project_crete_content_generator` (Monte Carlo scanner context).
+
+---
+
+## [2026-07-21] GHL Flow OS write tools — ghl-flowos.md skill (replica of ghl-fsc)
+
+**Branch:** direct to `main`, commit `b6133a2` (skill file + test only; no registry/executor/gate code).
+**Status:** ✅ live — all 8 ghl-flowos tools registered on quantumclaw restart (boot 2026-07-21T08:57:19Z),
+`npm test` green.
+
+### Shipped
+- `src/agents/skills/ghl-flowos.md` — replica of the ghl-fsc.md template scoped to the Flow OS sub-account
+  (`secrets.ghl_flowos_api_key` / `secrets.ghl_flowos_location_id`). 3 read endpoints (contact search, get
+  contact, list opportunities) + 5 gated write endpoints (create/update contact, add note, create task,
+  conversations/messages email DRAFT). All writes behind ApprovalGate (PR #58) and serialise correctly via the
+  P5S6 executor fix (PR #68). Literal Flow OS IDs in Usage Notes: user `2EnsHWRejLF6ZaQF5r3O`, notify contact
+  `nHrkb5YPMzB1Ew3jmVH6` (same "literal value, not env ref" pattern as ghl-fsc, since `{{secrets.X}}` only
+  resolves in headers/URLs, not argument values Charlie constructs).
+- Symlink `/root/.quantumclaw/workspace/agents/charlie/skills/ghl-flowos.md` → repo file (created this session).
+- `tests/ghl-tools.test.js` — 8 new ghl-flowos assertions (base URL, Flow OS auth keys, 8 endpoints = 3 GET / 4
+  POST / 1 PUT, no DELETE/PATCH, each read+write tool by name, length bound). 23 → 38 checks.
+
+### Deviation from brief #1 — keywords (user-decided)
+Brief specified `keywords: [..., ghl, agency]`. But ghl-fsc — the template — deliberately uses only
+brand-specific keywords (no bare `ghl`). A generic `ghl` keyword on ghl-flowos **collides with the existing
+ghl.md skill**: every "ghl" mention would load BOTH Flow OS GHL skills, consuming 2 of the 4 on-demand skill-cap
+slots and reordering the alphabetical tie-break — this broke 4 `tests/skill-loader.test.js` cap-boundary
+assertions (fixtures use messages like `stripe ghl qa qclaw` engineered to match exactly 4 skills). Surfaced to
+Tyson; **decision: drop the generic `ghl`/`agency` keywords** (option 1). Replaced with two more brand-specific
+keywords (`flow os opportunity`, `flow os crm`) so the opportunity/CRM surfaces still route. Skill-loader tests
+pass unchanged (52/52). "ghl" alone still routes to ghl.md; Flow OS write tools load on "flow os" mentions.
+
+### Deviation from brief #2 — tool-name length (resolved empirically)
+The longer `ghl-flowos` skill name (vs `ghl-fsc`) doubles into the tool prefix, pushing the opportunities tool to
+**72 chars** (`charlie__ghl-flowos__ghl-flowos__get_opportunities_search_location_id_id`) — over the
+`tests/ghl-tools.test.js` ≤70 bound and past the classic Anthropic 64-char tool-name limit. Rather than shorten
+the specced name or endpoints, verified the real ceiling: **count_tokens probe against the live Anthropic API
+(2026-07-21) returned HTTP 200 for names of 66, 72, 128, and 129 chars** — the 64-char limit is not enforced
+here, consistent with production already running a live 67-char `charlie__n8n-router__…` name (memory
+[[project_ghl_skill_architecture]]). So the 72-char name is safe at runtime; confirmed by it registering cleanly
+this boot. Raised the ghl-flowos length assertion to ≤120 (runaway-name guard with margin under the
+observed-accepted ceiling) with an explanatory comment; left the ghl-fsc ≤70 assertion untouched (its max is 66).
+
+### Verification (verbatim)
+Symlink intact:
+```
+lrwxrwxrwx 1 root root 43 Jul 21 08:50 /root/.quantumclaw/workspace/agents/charlie/skills/ghl-flowos.md -> /root/QClaw/src/agents/skills/ghl-flowos.md
+```
+`sudo pm2 restart quantumclaw && sudo pm2 save` → boot 08:57:19Z, exactly 8 ghl-flowos registrations:
+```
+charlie__ghl-flowos__ghl-flowos__get_contacts_locationid_id_query_id
+charlie__ghl-flowos__ghl-flowos__get_contacts_id
+charlie__ghl-flowos__ghl-flowos__get_opportunities_search_location_id_id
+charlie__ghl-flowos__ghl-flowos__create_contacts_locationid_id
+charlie__ghl-flowos__ghl-flowos__update_contacts_id
+charlie__ghl-flowos__ghl-flowos__create_contacts_id_notes
+charlie__ghl-flowos__ghl-flowos__create_contacts_id_tasks
+charlie__ghl-flowos__ghl-flowos__create_conversations_messages
+```
+Full `npm test` green (the only `N failed` grep hit is a passing test whose description reads "3 failed + 1
+success"). Pre-deploy parse simulation confirmed 8 endpoints and no stray `fsc`/`ghl_api_key` references (only the
+deliberate cross-brand note pointing at ghl-fsc.md).
+
+### Residual / follow-ups
+- Live round-trip against the Flow OS location still owed (first real write = live gate test) — same as the FSC
+  first-write verification. Needs Tyson's Telegram approval; not runnable from here.
+- Brand replicas remaining per the ghl-fsc template comment: Crete, SproutCode (each with its own
+  `ghl_<brand>_*` secret keys and literal IDs).
+
+References: commit `b6133a2`; template `src/agents/skills/ghl-fsc.md`; PRs #58 (write gate), #68 (executor fix);
+memory [[project_ghl_locations]] (Flow OS vs FSC split), [[project_ghl_skill_architecture]] (skill-parsed tools,
+name-length note), [[project_skill_http_writes_ungated]] (RESOLVED).
