@@ -17006,3 +17006,61 @@ consolidate validation, the brakes, the edge gate, slippage protection, and PnL/
 References: PR #70 (`7163ab2`; branch commits `df57b19` + `55a9360`); secret origin `3601424`; deploy-revert trigger
 `1c4dc2b` (#69); memory `project_qclaw_auth_token`, `project_qclaw_token_rotates_on_restart` (no drift confirmed),
 `project_n8n_qclaw_topology`, `feedback_adversarial_review_before_pr_ready`. Both brakes ON.
+
+## [2026-07-22] Phase 5 Session 8 — CC Dispatches dashboard tab (PR #71)
+
+Read-only 🛰️ **Dispatches tab** added to the dashboard at `agentboardroom.flowos.tech` — dispatch state in
+`claude_code_dispatches` visible at a glance without opening Supabase. Audit-then-implement; merged to `main` as
+`482df63` (squash of branch `feat/dispatches-tab`, commit `2cf425e`). No adversarial review — waived in the brief
+(read-only, no financial path, no auth changes).
+
+### 1. Audit — schema deltas caught before writing code
+The brief's assumed columns diverged from the live table (shared Supabase project `fdabygmromuqtysitodp`;
+migrations `2026_06_11_claude_code_dispatches.sql` + `2026_07_01_ccd_add_cancelled_status.sql`):
+- `dispatched_at` does not exist → **`created_at`** used as dispatch time (`started_at` is claim time).
+- `pr_url` is not a column → lives in the **`metadata` JSONB** (`metadata.pr_url`).
+- `result_artifacts` / `followup_recommendations` do not exist → the expandable card section shows
+  **`result_summary` + `error_message`** instead (error rendered in muted red so failed dispatches scan instantly).
+- `cost` → **`cost_usd`** (numeric); kept on the cards.
+- Status enum is the full **8 values** — `queued, awaiting_authorisation, authorised, in_progress, complete,
+  failed, timeout, cancelled` — the brief's pill list missed `authorised` + `cancelled`; all 8 shipped.
+- Scope CHECK allows **5 values** — `audit, read_only, write, infra, critical` (brief assumed 3); badges:
+  audit blue, read_only cyan, write purple, infra orange, critical red.
+
+### 2. Backend (server.js)
+- `GET /api/dispatches` — status validated against the 8-value allowlist, limit clamped 1–50 (default 20),
+  offset ≥0, unknown query params rejected (`token` permitted for the `?token=` auth path), `Prefer: count=exact`
+  → `total` in the response for pagination.
+- `GET /api/dispatches/:id` — reuses the crete UUID regex, 404 on miss.
+- Both **read-only**, registered behind the **global auth middleware**, Supabase REST via the module-scoped
+  `SB_URL`/`SB_SERVICE_ROLE_KEY` (table is RLS **service_role-only**; anon/authenticated revoked at migration).
+- **`claim_token` excluded from all routes** — dispatcher gate provenance, never selected into any response;
+  the list select also omits the large `result` body (detail route carries it).
+
+### 3. UI (ui.html)
+🛰️ nav item after GHL Marketing; 9 filter pills (All + 8 statuses); dark-theme card grid — status badge, scope
+badge, brief one-liner (skips the bare `# Task` heading every live brief opens with), dispatched/completed
+relative times, `cost_usd`, `metadata.pr_url` → "PR →" link restricted to `http(s)://` so a hostile value can't
+inject a `javascript:` URI; collapsible Result section (GHL-section pattern, open state preserved across
+refresh); 20/page pagination; 30s auto-refresh only while the tab is active (guarded `_dspRefreshTimer`,
+trading-tab pattern). All DB content through `dspEsc()`; no innerHTML with raw values.
+
+### 4. Verification (live on droplet)
+All curl checks passed after `pm2 restart quantumclaw`: 200 list (total 15, newest first), 401 no-auth, 400 bad
+status / unknown param / malformed UUID, 404 unknown id, status filter exact (13 complete), pagination
+`limit=5&offset=10` → 5 items, `limit=500` → clamped to 50, `claim_token` absent from both routes. UI verified
+visually. Post-merge: droplet back on `main`, deployed files md5-identical to the merge → no second restart.
+**Gotcha (raw):** the first verification run returned `HTTP 000` on every request (`curl: (7) Failed to connect`)
+— the dashboard binds `:4000` late in boot (AGEX hub-lite `:4891`, store, knowledge graph, models init first);
+5s post-restart is not enough. Poll `ss -tln | grep :4000` before curling.
+
+### Next session queue
+1. **Charlie context continuity** — design session.
+2. **Brief B** — Market Scanner calibration + the pre-enable items (daily_loss_limit enforcement, executor
+   min_edge gate, config write route second factor; see Session 7 entry).
+3. **Crete GHL replica.**
+4. **SproutCode GHL replica.**
+
+References: PR #71 (`482df63`); backups `src/dashboard/*.bak.dispatches-tab`; migrations
+`n8n-workflows/migrations/2026_06_11_claude_code_dispatches.sql`, `2026_07_01_ccd_add_cancelled_status.sql`;
+memory `project_slice5_build_state`, `project_flowos_sms_gateway_supabase` (same shared Supabase project).
