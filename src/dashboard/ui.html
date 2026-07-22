@@ -263,6 +263,49 @@
     .ghl-btn.danger:hover{background:#fef2f2}
     .ghl-btn:disabled{opacity:.5;cursor:not-allowed}
     .ghl-empty{text-align:center;color:var(--text-dim);padding:40px 20px;font-size:.9rem}
+
+    /* ── CC Dispatches ──────────────────────────────────── */
+    .dsp-filters{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px}
+    .dsp-pill{padding:6px 14px;border-radius:999px;background:var(--bg-2);color:var(--text-dim);border:1px solid var(--border-l);cursor:pointer;font-size:.82rem;transition:all .15s;font-family:inherit}
+    .dsp-pill:hover{color:var(--text);border-color:var(--accent-l)}
+    .dsp-pill.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+    .dsp-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:14px;margin-top:10px}
+    .dsp-card{background:var(--bg-2);border:1px solid var(--border-l);border-radius:10px;padding:16px;display:flex;flex-direction:column;gap:10px}
+    .dsp-card-head{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
+    .dsp-badge{padding:3px 10px;border-radius:999px;font-size:.7rem;font-weight:600;text-transform:uppercase;letter-spacing:.03em}
+    .dsp-badge.queued{background:#6b728022;color:#9ca3af}
+    .dsp-badge.in-progress{background:#F59E0B22;color:#F59E0B}
+    .dsp-badge.awaiting{background:#F9731622;color:#F97316}
+    .dsp-badge.authorised{background:var(--blue-bg);color:var(--blue)}
+    .dsp-badge.complete{background:#10B98122;color:#10B981}
+    .dsp-badge.failed,.dsp-badge.timeout{background:#EF444422;color:#EF4444}
+    .dsp-badge.cancelled{background:#4a4a6622;color:var(--text-dim)}
+    .dsp-scope{padding:2px 8px;border-radius:4px;font-size:.68rem;font-weight:600;text-transform:uppercase;letter-spacing:.04em}
+    .dsp-scope.audit{background:var(--blue-bg);color:var(--blue)}
+    .dsp-scope.read-only{background:#06b6d422;color:var(--cyan)}
+    .dsp-scope.write{background:var(--accent-bg);color:var(--accent-l)}
+    .dsp-scope.infra{background:#F9731622;color:#F97316}
+    .dsp-scope.critical{background:var(--red-bg);color:var(--red)}
+    .dsp-brief{font-size:.9rem;font-weight:500;color:var(--text);line-height:1.4;word-break:break-word}
+    .dsp-meta{display:flex;flex-wrap:wrap;gap:12px;align-items:center;font-size:.72rem;color:var(--text-dim)}
+    .dsp-pr{color:var(--accent-l);text-decoration:none;font-weight:600}
+    .dsp-pr:hover{text-decoration:underline}
+    .dsp-section{border:1px solid var(--border);border-radius:6px;background:var(--bg-1)}
+    .dsp-section-head{display:flex;align-items:center;justify-content:space-between;padding:8px 12px;cursor:pointer;font-size:.78rem;font-weight:600;color:var(--text-dim);user-select:none}
+    .dsp-section-head:hover{background:var(--bg-hover);color:var(--text)}
+    .dsp-section-chev{font-size:.7rem;transition:transform .15s}
+    .dsp-section.open .dsp-section-chev{transform:rotate(90deg)}
+    .dsp-section-body{display:none;padding:10px 12px;border-top:1px solid var(--border);font-size:.82rem;color:var(--text);line-height:1.5;white-space:pre-wrap;word-break:break-word}
+    .dsp-section.open .dsp-section-body{display:block}
+    .dsp-error{color:#f87171;white-space:pre-wrap}
+    .dsp-error + .dsp-result{margin-top:8px}
+    .dsp-result{white-space:pre-wrap}
+    .dsp-empty{text-align:center;color:var(--text-dim);padding:40px 20px;font-size:.9rem}
+    .dsp-pager{display:none;align-items:center;justify-content:center;gap:14px;margin-top:16px}
+    .dsp-page-btn{padding:6px 14px;border-radius:6px;border:1px solid var(--border-l);background:var(--bg-2);color:var(--text);cursor:pointer;font-size:.8rem;font-family:inherit;transition:all .15s}
+    .dsp-page-btn:hover:not(:disabled){border-color:var(--accent-l)}
+    .dsp-page-btn:disabled{opacity:.4;cursor:not-allowed}
+    .dsp-page-info{font-size:.78rem;color:var(--text-dim)}
   </style>
 </head>
 <body>
@@ -285,6 +328,7 @@
     <div class="nav-item" data-page="trading">🎰<span class="tip">Trading Room</span></div>
     <div class="nav-item" data-page="crete">🌿<span class="tip">Crete Marketing</span></div>
     <div class="nav-item" data-page="ghl">📣<span class="tip">GHL Marketing</span></div>
+    <div class="nav-item" data-page="dispatches">🛰️<span class="tip">Dispatches</span></div>
     <div class="nav-sep"></div>
     <div class="nav-item" data-page="secrets">🔑<span class="tip">API Keys</span></div>
     <div class="nav-sep"></div>
@@ -925,6 +969,31 @@
       </div>
     </div>
 
+    <div class="page" id="page-dispatches">
+      <div class="page-scroll">
+        <div class="section-title" style="font-size:1.1rem">CC Dispatches</div>
+        <div class="dsp-filters" id="dsp-filters">
+          <button class="dsp-pill active" data-status="">All</button>
+          <button class="dsp-pill" data-status="queued">Queued</button>
+          <button class="dsp-pill" data-status="awaiting_authorisation">Awaiting Auth</button>
+          <button class="dsp-pill" data-status="authorised">Authorised</button>
+          <button class="dsp-pill" data-status="in_progress">In Progress</button>
+          <button class="dsp-pill" data-status="complete">Complete</button>
+          <button class="dsp-pill" data-status="failed">Failed</button>
+          <button class="dsp-pill" data-status="timeout">Timeout</button>
+          <button class="dsp-pill" data-status="cancelled">Cancelled</button>
+        </div>
+        <div class="dsp-grid" id="dsp-grid">
+          <div class="dsp-empty">Loading…</div>
+        </div>
+        <div class="dsp-pager" id="dsp-pager">
+          <button class="dsp-page-btn" id="dsp-prev" onclick="dspPage(-1)">← Prev</button>
+          <span class="dsp-page-info" id="dsp-page-info"></span>
+          <button class="dsp-page-btn" id="dsp-next" onclick="dspPage(1)">Next →</button>
+        </div>
+      </div>
+    </div>
+
     <!-- CANVAS PANE (in Chat) handled via JS -->
   </div>
 
@@ -1021,8 +1090,8 @@ async function api(path, opts) {
 }
 
 /* ─── Navigation ──────────────────────────────────────── */
-const TITLES = { chat:'Chat', overview:'Overview', channels:'Channels', usage:'Usage & Costs', agents:'Agents', skills:'Skills', tools:'Tools', scheduled:'Scheduled Tasks', memory:'Memory', agency:'Ad Agency', 'content-studio':'Content Studio', trading:'Trading Room', crete:'Crete Marketing', ghl:'GHL Marketing', secrets:'API Keys', config:'Config', logs:'Logs' };
-const PAGE_LOADERS = { overview:loadOverview, channels:loadChannels, usage:loadUsage, agents:loadAgents, skills:loadSkills, tools:()=>{loadTools();loadVoiceStatus()}, scheduled:loadScheduled, memory:loadMem, 'content-studio':initContentStudio, trading:initTrading, crete:initCrete, ghl:initGhl, secrets:loadSec, config:loadConfig, logs:loadLogs };
+const TITLES = { chat:'Chat', overview:'Overview', channels:'Channels', usage:'Usage & Costs', agents:'Agents', skills:'Skills', tools:'Tools', scheduled:'Scheduled Tasks', memory:'Memory', agency:'Ad Agency', 'content-studio':'Content Studio', trading:'Trading Room', crete:'Crete Marketing', ghl:'GHL Marketing', dispatches:'CC Dispatches', secrets:'API Keys', config:'Config', logs:'Logs' };
+const PAGE_LOADERS = { overview:loadOverview, channels:loadChannels, usage:loadUsage, agents:loadAgents, skills:loadSkills, tools:()=>{loadTools();loadVoiceStatus()}, scheduled:loadScheduled, memory:loadMem, 'content-studio':initContentStudio, trading:initTrading, crete:initCrete, ghl:initGhl, dispatches:initDispatches, secrets:loadSec, config:loadConfig, logs:loadLogs };
 document.querySelectorAll('.nav-item[data-page]').forEach(el => {
   el.addEventListener('click', () => {
     document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
@@ -2572,6 +2641,138 @@ function initGhl() {
     };
   });
   ghlLoad();
+}
+
+/* ─── CC Dispatches ───────────────────────────────────── */
+const DSP_STATUS_META = {
+  queued:                 { label: 'Queued',        cls: 'queued' },
+  awaiting_authorisation: { label: 'Awaiting Auth', cls: 'awaiting' },
+  authorised:             { label: 'Authorised',    cls: 'authorised' },
+  in_progress:            { label: 'In Progress',   cls: 'in-progress' },
+  complete:               { label: 'Complete',      cls: 'complete' },
+  failed:                 { label: 'Failed',        cls: 'failed' },
+  timeout:                { label: 'Timeout',       cls: 'timeout' },
+  cancelled:              { label: 'Cancelled',     cls: 'cancelled' }
+};
+const DSP_SCOPE_CLS = { audit: 'audit', read_only: 'read-only', write: 'write', infra: 'infra', critical: 'critical' };
+const DSP_LIMIT = 20;
+let dspStatus = '';
+let dspOffset = 0;
+let dspTotal = 0;
+let _dspRefreshTimer = null;
+const dspEsc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+async function dspFetch(path) {
+  const r = await fetch(API(path));
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+  return data;
+}
+
+// First meaningful line of the brief — skips a bare "# Task"-style heading.
+function dspBriefLine(brief) {
+  const lines = String(brief || '').split('\n').map(l => l.trim()).filter(Boolean);
+  let line = (lines[0] || '').replace(/^#+\s*/, '');
+  if (/^task:?$/i.test(line) && lines[1]) line = lines[1].replace(/^#+\s*/, '');
+  return line || '(no brief)';
+}
+
+function dspWhen(ts) {
+  if (!ts) return '—';
+  const d = new Date(ts);
+  if (isNaN(d)) return '—';
+  const mins = Math.floor((Date.now() - d.getTime()) / 60000);
+  if (mins >= 0 && mins < 60) return mins <= 1 ? 'just now' : `${mins}m ago`;
+  if (mins >= 0 && mins < 1440) return `${Math.floor(mins / 60)}h ago`;
+  return d.toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+}
+
+function dspRenderCard(item) {
+  const st = DSP_STATUS_META[item.status] || { label: item.status, cls: 'queued' };
+  const scopeCls = DSP_SCOPE_CLS[item.scope] || 'audit';
+  const prUrl = (item.metadata && typeof item.metadata.pr_url === 'string' && /^https?:\/\//i.test(item.metadata.pr_url)) ? item.metadata.pr_url : '';
+  const cost = (item.cost_usd !== null && item.cost_usd !== undefined) ? `$${Number(item.cost_usd).toFixed(2)}` : '';
+  const hasDetail = Boolean(item.result_summary || item.error_message);
+  return `
+    <div class="dsp-card" data-id="${dspEsc(item.id)}">
+      <div class="dsp-card-head">
+        <span class="dsp-badge ${st.cls}">${dspEsc(st.label)}</span>
+        <span class="dsp-scope ${scopeCls}">${dspEsc(String(item.scope || '').replace(/_/g, ' '))}</span>
+      </div>
+      <div class="dsp-brief">${dspEsc(dspBriefLine(item.brief))}</div>
+      <div class="dsp-meta">
+        <span title="Dispatched ${dspEsc(item.created_at || '')}">🚀 ${dspEsc(dspWhen(item.created_at))}</span>
+        <span title="Completed ${dspEsc(item.completed_at || '—')}">🏁 ${dspEsc(item.completed_at ? dspWhen(item.completed_at) : '—')}</span>
+        ${cost ? `<span title="Cost">💰 ${dspEsc(cost)}</span>` : ''}
+        ${prUrl ? `<a class="dsp-pr" href="${dspEsc(prUrl)}" target="_blank" rel="noopener">PR →</a>` : ''}
+      </div>
+      ${hasDetail ? `
+      <div class="dsp-section">
+        <div class="dsp-section-head" onclick="this.parentElement.classList.toggle('open')">
+          <span>Result</span><span class="dsp-section-chev">▶</span>
+        </div>
+        <div class="dsp-section-body">${item.error_message ? `<div class="dsp-error">${dspEsc(item.error_message)}</div>` : ''}${item.result_summary ? `<div class="dsp-result">${dspEsc(item.result_summary)}</div>` : ''}</div>
+      </div>` : ''}
+    </div>`;
+}
+
+async function dspLoad(silent = false) {
+  const grid = $('dsp-grid');
+  const openIds = new Set([...grid.querySelectorAll('.dsp-card')].filter(c => c.querySelector('.dsp-section.open')).map(c => c.dataset.id));
+  if (!silent) grid.innerHTML = '<div class="dsp-empty">Loading…</div>';
+  try {
+    let path = `/api/dispatches?limit=${DSP_LIMIT}&offset=${dspOffset}`;
+    if (dspStatus) path += `&status=${encodeURIComponent(dspStatus)}`;
+    const data = await dspFetch(path);
+    dspTotal = data.total || 0;
+    const items = data.items || [];
+    if (!items.length) {
+      grid.innerHTML = `<div class="dsp-empty">${dspStatus ? 'No ' + dspEsc(dspStatus.replace(/_/g, ' ')) + ' dispatches.' : 'No dispatches yet.'}</div>`;
+    } else {
+      grid.innerHTML = items.map(dspRenderCard).join('');
+      openIds.forEach(id => {
+        const section = grid.querySelector(`.dsp-card[data-id="${CSS.escape(id)}"] .dsp-section`);
+        if (section) section.classList.add('open');
+      });
+    }
+    dspRenderPager();
+  } catch (err) {
+    grid.innerHTML = `<div class="dsp-empty">Failed to load: ${dspEsc(err.message)}</div>`;
+  }
+}
+
+function dspRenderPager() {
+  const pager = $('dsp-pager');
+  if (dspTotal <= DSP_LIMIT) { pager.style.display = 'none'; return; }
+  pager.style.display = 'flex';
+  const to = Math.min(dspOffset + DSP_LIMIT, dspTotal);
+  $('dsp-page-info').textContent = `${dspOffset + 1}–${to} of ${dspTotal}`;
+  $('dsp-prev').disabled = dspOffset === 0;
+  $('dsp-next').disabled = dspOffset + DSP_LIMIT >= dspTotal;
+}
+
+function dspPage(dir) {
+  const next = dspOffset + dir * DSP_LIMIT;
+  if (next < 0 || next >= dspTotal) return;
+  dspOffset = next;
+  dspLoad();
+}
+
+function initDispatches() {
+  document.querySelectorAll('#dsp-filters .dsp-pill').forEach(pill => {
+    pill.onclick = () => {
+      document.querySelectorAll('#dsp-filters .dsp-pill').forEach(p => p.classList.remove('active'));
+      pill.classList.add('active');
+      dspStatus = pill.dataset.status;
+      dspOffset = 0;
+      dspLoad();
+    };
+  });
+  dspLoad();
+  if (_dspRefreshTimer) clearInterval(_dspRefreshTimer);
+  _dspRefreshTimer = setInterval(() => {
+    if ($('page-dispatches').classList.contains('active')) dspLoad(true);
+  }, 30000);
 }
 
 /* ─── Init ────────────────────────────────────────────── */

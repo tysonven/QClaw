@@ -1952,6 +1952,65 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
       } catch (err) { res.status(500).json({ error: err.message }); }
     });
 
+    // ── CC Dispatches (read-only) ─────────────────────────
+    // Dashboard visibility into claude_code_dispatches (Slice 5 dispatch table,
+    // RLS service_role-only). claim_token is dispatcher gate provenance and is
+    // never selected; the list select also omits the large brief/result bodies.
+    const DISPATCH_TABLE = `${SB_URL}/rest/v1/claude_code_dispatches`;
+    const DISPATCH_VALID_STATUSES = ['queued', 'awaiting_authorisation', 'authorised', 'in_progress', 'complete', 'failed', 'timeout', 'cancelled'];
+    const DISPATCH_LIST_COLS = 'id,status,scope,mode,priority,repo,brief,business_unit,created_by,authorisation_required,claimed_by,started_at,completed_at,exit_code,cost_usd,result_summary,error_message,attempts,timeout_seconds,metadata,created_at,updated_at';
+    const DISPATCH_DETAIL_COLS = `${DISPATCH_LIST_COLS},pinned_commit,session_id,authorisation_note,authorised_by,authorised_at,cc_session_id,result,surfaced_at`;
+    const dispatchHeaders = () => ({
+      apikey: SB_SERVICE_ROLE_KEY,
+      Authorization: `Bearer ${SB_SERVICE_ROLE_KEY}`,
+      'Content-Type': 'application/json'
+    });
+    const dispatchConfigured = () => Boolean(SB_URL && SB_SERVICE_ROLE_KEY);
+    const dispatchAllowedParams = (query, allowed) => Object.keys(query).every(k => allowed.includes(k));
+
+    // GET /api/dispatches — list (optional status filter, paginated, newest first)
+    this.app.get('/api/dispatches', async (req, res) => {
+      try {
+        if (!dispatchConfigured()) return res.status(500).json({ error: 'Supabase not configured' });
+        if (!dispatchAllowedParams(req.query, ['status', 'limit', 'offset', 'token'])) {
+          return res.status(400).json({ error: 'Unknown query parameter' });
+        }
+        if (req.query.status && !DISPATCH_VALID_STATUSES.includes(req.query.status)) {
+          return res.status(400).json({ error: 'Invalid status', valid: DISPATCH_VALID_STATUSES });
+        }
+        const limit = Math.min(Math.max(parseInt(req.query.limit) || 20, 1), 50);
+        const offset = Math.max(parseInt(req.query.offset) || 0, 0);
+        const params = new URLSearchParams({
+          select: DISPATCH_LIST_COLS,
+          order: 'created_at.desc',
+          limit: String(limit),
+          offset: String(offset)
+        });
+        if (req.query.status) params.set('status', `eq.${req.query.status}`);
+        const r = await fetch(`${DISPATCH_TABLE}?${params}`, {
+          headers: { ...dispatchHeaders(), Prefer: 'count=exact' }
+        });
+        const data = await r.json();
+        if (!r.ok) return res.status(r.status).json({ error: data.message || 'Supabase error' });
+        // Content-Range: "0-19/34" — total row count after the slash
+        const total = parseInt((r.headers.get('content-range') || '').split('/')[1]);
+        res.json({ items: data, total: Number.isNaN(total) ? data.length : total, limit, offset });
+      } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+
+    // GET /api/dispatches/:id — single row, all fields except claim_token
+    this.app.get('/api/dispatches/:id', async (req, res) => {
+      try {
+        if (!dispatchConfigured()) return res.status(500).json({ error: 'Supabase not configured' });
+        if (!creteValidUuid(req.params.id)) return res.status(400).json({ error: 'Invalid id' });
+        const r = await fetch(`${DISPATCH_TABLE}?id=eq.${req.params.id}&select=${DISPATCH_DETAIL_COLS}`, { headers: dispatchHeaders() });
+        const rows = await r.json();
+        if (!r.ok) return res.status(r.status).json({ error: rows.message || 'Supabase error' });
+        if (!Array.isArray(rows) || !rows.length) return res.status(404).json({ error: 'Not found' });
+        res.json(rows[0]);
+      } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+
     // POST /api/crete/generate-image
     // Body: { style: "quote"|"editorial", text: "...", headline: "...", body: "..." }
     // Returns: { success: true, url: "https://media.creteprojects.com/images/..." }
