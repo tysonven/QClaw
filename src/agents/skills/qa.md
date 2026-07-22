@@ -1,6 +1,7 @@
 ---
+# ARCHIVED — qa-runner.sh removed PR #72; automatic QA pipeline decommissioned
 name: qa
-category: on-demand
+category: archive
 surface: prompt
 keywords: [qa, test, audit, verify]
 description: QA review of completed tasks — completeness, security, correctness, commit, testing checks

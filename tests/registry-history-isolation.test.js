@@ -114,8 +114,15 @@ check('numeric and string userId return identical rows (JSON path)',
 // The original H1 suite only exercised the JSON-store fallback; production
 // runs better-sqlite3, where the bug actually lived. Skip (with a notice)
 // only where the native module is unavailable (e.g. Termux fallback).
+// The guard covers ONLY the import — the assertions run outside it, so a
+// real thrown regression fails the suite instead of masquerading as a skip.
+let Database = null;
 try {
-  const { default: Database } = await import('better-sqlite3');
+  ({ default: Database } = await import('better-sqlite3'));
+} catch (err) {
+  console.log(`  - SQLite-path checks skipped (better-sqlite3 unavailable: ${err.message})`);
+}
+if (Database) {
   const sqlMemory = new MemoryManager({ _dir: tmp }, {});
   sqlMemory.db = new Database(join(tmp, 'history-iso.db'));
   sqlMemory.db.exec(`CREATE TABLE conversations (
@@ -137,8 +144,6 @@ try {
     asNumber.every((m, i) => m.content === asString[i].content),
     `number=${asNumber.length} string=${asString.length}`);
   sqlMemory.db.close();
-} catch (err) {
-  console.log(`  - SQLite-path checks skipped (better-sqlite3 unavailable: ${err.message})`);
 }
 
 // ─── Cleanup ───────────────────────────────────────────────────────────
