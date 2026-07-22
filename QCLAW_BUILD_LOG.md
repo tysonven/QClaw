@@ -17064,3 +17064,116 @@ visually. Post-merge: droplet back on `main`, deployed files md5-identical to th
 References: PR #71 (`482df63`); backups `src/dashboard/*.bak.dispatches-tab`; migrations
 `n8n-workflows/migrations/2026_06_11_claude_code_dispatches.sql`, `2026_07_01_ccd_add_cancelled_status.sql`;
 memory `project_slice5_build_state`, `project_flowos_sms_gateway_supabase` (same shared Supabase project).
+
+## [2026-07-22] Phase 5 Session 8 continuation — Charlie context continuity restored (PR #72) + day roll-up
+
+Session arc: three PRs shipped to `main` across the 21st–22nd. #70 and #71 are logged in full in the two entries
+above; recapped here for the day's shape, then full detail on #72 (the unlogged piece).
+
+- **PR #70** (`7163ab2`, merged 2026-07-21 19:47) — **Trade Executor pre-flight**: `exec` injection → `execFile`,
+  server-side `trading_enabled` brake, workflow URL/auth/`errorWorkflow` fixes, `TRADING_WEBHOOK_SECRET` rotation.
+  Adversarial review produced 4 fixes including the **CRITICAL**: PR #69's merge (`1c4dc2b`) had auto-deployed
+  `main` over the branch checkout and restarted quantumclaw on the OLD vulnerable handler — injection + no gate
+  were LIVE in production until #70 merged. Full detail: Session 7 continuation entry.
+- **PR #71** (`482df63`, merged 2026-07-22 13:07) — read-only 🛰️ **CC Dispatches tab**; pre-code audit caught the
+  schema deltas (brief's assumed columns vs live `claude_code_dispatches`); `claim_token` excluded from every
+  response. Full detail: Session 8 entry. The added tab pushed the icon rail past short-viewport heights — the
+  sidebar scrolling fix that closes that out shipped with #72 (below).
+- **PR #72** (`76c9c49`, merged 2026-07-22 20:11) — **Charlie context continuity**. This entry.
+
+### 1. PR #72 — getHistory userId number→string coercion (Telegram history restored)
+Root cause (diagnosed in the 2026-07-22 audit, memory `charlie-telegram-history-root-cause`): the PR #15 H1 fix
+(2026-05-14) scoped history to `{channel, userId}`, but `registry.js:438` passes `context?.userId` raw — grammY's
+`ctx.from.id` is a JS **number** — into `getHistory`'s `AND user_id = ?`, while `addMessage` stores
+`String(context.userId)` as TEXT. The numeric bind matches zero TEXT rows, so **every Telegram turn since the day
+H1 shipped ran with empty conversation history**. Not a regression — never worked. Dashboard unaffected (no userId
+→ clause dropped).
+
+Fix (`5957fbf`): coerce once at the top of `getHistory` — `const userIdStr = userId != null ? String(userId) :
+null` — applied to BOTH the SQLite bind and the JSON-store strict-equality filter. Write side already coerced
+(`String(context.userId)` at registry.js:614), so storage and reads now agree. Falsy-weird inputs fail closed
+(`0`/`false`/`NaN` → literal-string filter → 0 rows) instead of the pre-fix fail-open (unfiltered cross-user
+history); an object bind previously crashed better-sqlite3, now returns 0 rows.
+
+Empirical verification against a snapshot of the live store (`/root/.quantumclaw/memory.db`, 5.2MB): 2,190
+charlie/telegram rows, every `user_id` stored TEXT `'1375806243'` — string bind returns **2,190**, numeric bind
+returns **0**. Isolated better-sqlite3 probe on the droplet (raw output):
+
+```
+TEXT col, numeric bind : 0
+TEXT col, string bind  : 1
+```
+
+**Gotcha (two data dirs):** `/home/flowos/.quantumclaw/memory.db` is a stale 4KB stub (mtime Apr 17) with an
+EMPTY conversations table — probing it first suggested no data existed at all. Production quantumclaw runs under
+root's PM2; the real store is root's `/root/.quantumclaw/memory.db`. Always confirm which side you're reading.
+
+### 2. Tests — proven meaningful on both store paths
+4 new checks in `tests/registry-history-isolation.test.js`: numeric-userId cases on the JSON fallback AND a real
+better-sqlite3 table (the original H1 suite only exercised the JSON path; production runs SQLite where the bug
+lived). Verified the checks fail on pre-fix `manager.js` (exit 1) and pass post-fix (exit 0). Pre-fix run (raw):
+
+```
+✗ numeric userId is coerced to string for store compatibility (JSON path) — got 0 rows
+✗ numeric and string userId return identical rows (JSON path)
+✗ numeric userId is coerced to string for SQLite bind compatibility — got 0 rows
+✗ numeric and string userId return identical rows (SQLite path) — number=0 string=2
+```
+
+### 3. Adversarial review (clean) + follow-ups (`bbd59d1`)
+Review verdict: no CRITICAL/HIGH. Two findings fixed pre-undraft:
+- **M1 — qa.md skill misinformed Charlie:** `src/agents/skills/qa.md` (surface: prompt) still told Charlie QA
+  "runs automatically via qa-runner.sh" while this PR deletes that script. Archived: `category: archive` (loader
+  excludes archive from Charlie's prompt entirely, skill-loader.js:180) + frontmatter comment
+  `# ARCHIVED — qa-runner.sh removed PR #72; automatic QA pipeline decommissioned`. File kept for git history.
+  Parser note: the comment must sit INSIDE the frontmatter block — `parseFrontmatter` requires `---` as the file's
+  first bytes and skips `#` lines within the block.
+- **L1 — test skip-guard overbreadth:** the SQLite block's try/catch reported ANY thrown error as
+  "better-sqlite3 unavailable" and exited 0. Now guards only the import; assertions run outside it.
+- **Collateral (found by the full suite):** `tests/skill-loader.test.js` hard-cap-4 fixtures use the REAL skills
+  dir and counted `qa` among 5 single-keyword on-demand skills — archiving qa broke 4 checks. Replaced the `qa`
+  token with `mrr` → business-intelligence (sorts alpha-first, so `stripe` remains the tie-break drop; test
+  semantics unchanged). **Standing gotcha: adding or archiving ANY on-demand skill can break these cap tests.**
+
+Dead scripts removed clean: `qa-runner.sh`, `run-task.sh`, `task-watcher.sh` — no JS callers, no cron, and
+charlie-watcher already absent from root PM2 (Slice 5 decommission). Security win: the scripts grepped
+`.quantumclaw/.env` secrets and invoked `claude --dangerously-skip-permissions`.
+
+**Gotcha (npm test chain):** the test script is 46 `&&`-chained suites. `probes.test.js`
+(`pm2_processes: failure carries error string`) fails when run as non-root/without pm2 — environmental,
+pre-existing (identical on `main`) — and the chain then aborts at suite 7, silently skipping the remaining 39
+(including the history suite). As root: all 46 green, `NPM_EXIT=0`.
+
+### 4. Dashboard sidebar fix (shipped in #72)
+`.sidebar` → `max-height:100vh; overflow-y:auto` so all 18 nav tabs are reachable on short viewports; nav tips
+switched to `position:fixed`, JS-anchored on `mouseenter` (`getBoundingClientRect` → `tip.style.top`) so the
+overflow clip can't hide them. XSS surface checked: every nav tip is a static hardcoded label; the only dynamic
+tip (`#status-tip`) is written via `textContent`. No transformed ancestor breaks the fixed positioning.
+
+### 5. Ship + live verification
+No draft PR existed (droplet pushes but can't `gh pr create`) — opened ready-for-review from local gh after
+confirming the next number would be **72** (so the qa.md comment reference holds). Merged `76c9c49` 20:11 UTC,
+deployed (`pm2 restart quantumclaw --update-env`). **Live-verified: the $6,072 recall test passed** — Charlie
+recalled the figure from prior Telegram conversation history. Context-blind since 2026-05-14; closed 2026-07-22.
+
+### Roadmap note (carried from Session 7 continuation)
+**Trade Executor rewrite as a standalone Python/FastAPI module** — future, after real live-trading experience
+informs the design; consolidates validation, brakes, edge gate, slippage protection, and PnL/loss limits in one
+testable place.
+
+### Still owed before enabling live trading (Brief B / pre-enable)
+- **daily_loss_limit enforcement** — cumulative PnL cap; currently only per-trade `max_position_usdc` + rate limit.
+- **min_edge gate in the executor** — add it or verify the Market Scanner enforces the edge filter pre-webhook.
+- **config write route second factor** — `POST /api/trading/config` flips `trading_enabled` behind authToken alone.
+- **Scanner calibration (Brief B).**
+
+### Next session queue
+1. **Brief B** — scanner calibration + the pre-enable items above.
+2. **QCLAW_API_TOKEN 401 on trading config** — known drift (memory `project_qclaw_token_rotates_on_restart`).
+3. **Crete GHL replica.**
+4. **SproutCode GHL replica.**
+
+References: PR #72 (`76c9c49`; branch commits `5957fbf` + `bbd59d1`), PR #71 (`482df63`), PR #70 (`7163ab2`);
+root-cause + review trail in memory `charlie-telegram-history-root-cause`; H1 origin PR #15 (2026-05-14);
+memory `feedback_adversarial_review_before_pr_ready`, `project_charlie_watcher_insecure_predecessor` (scripts now
+deleted), `project_qclaw_auth_token`.
