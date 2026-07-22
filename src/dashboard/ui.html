@@ -13,13 +13,16 @@
     ::-webkit-scrollbar{width:4px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
 
     /* Sidebar */
-    .sidebar{width:var(--sidebar-w);background:var(--bg-1);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;z-index:20}
+    .sidebar{width:var(--sidebar-w);background:var(--bg-1);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;z-index:20;max-height:100vh;overflow-y:auto;overflow-x:hidden}
     .sidebar-logo{padding:14px 0;text-align:center;border-bottom:1px solid var(--border);font-size:1.3rem;cursor:default}
     .nav-item{display:flex;align-items:center;justify-content:center;padding:12px 0;cursor:pointer;color:var(--text-dim);transition:all .15s;position:relative;font-size:1.1rem}
     .nav-item:hover{color:var(--text);background:var(--bg-hover)}
     .nav-item.active{color:var(--accent-l);background:var(--accent-bg)}
     .nav-item.active::before{content:'';position:absolute;left:0;top:8px;bottom:8px;width:2px;background:var(--accent);border-radius:0 2px 2px 0}
-    .nav-item .tip{display:none;position:absolute;left:calc(var(--sidebar-w) + 8px);top:50%;transform:translateY(-50%);background:var(--bg-3);border:1px solid var(--border-l);padding:4px 10px;border-radius:6px;font-size:.75rem;white-space:nowrap;z-index:30;font-family:Outfit}
+    /* .tip is position:fixed (top set by JS on hover) so the sidebar's
+       overflow-y:auto cannot clip it — absolute tips render outside the
+       56px rail and an overflow ancestor would hide every nav label. */
+    .nav-item .tip{display:none;position:fixed;left:calc(var(--sidebar-w) + 8px);transform:translateY(-50%);background:var(--bg-3);border:1px solid var(--border-l);padding:4px 10px;border-radius:6px;font-size:.75rem;white-space:nowrap;z-index:30;font-family:Outfit}
     .nav-item:hover .tip{display:block}
     .nav-sep{height:1px;background:var(--border);margin:4px 12px}
     .nav-bottom{margin-top:auto}
@@ -1101,6 +1104,16 @@ document.querySelectorAll('.nav-item[data-page]').forEach(el => {
     $('page-' + page).classList.add('active');
     $('topbar-title').textContent = TITLES[page] || page;
     if (PAGE_LOADERS[page]) PAGE_LOADERS[page]();
+  });
+});
+// Tips are position:fixed (see .nav-item .tip) — anchor each to its item's
+// live viewport position on hover, so they track the sidebar's scroll offset.
+document.querySelectorAll('.nav-item').forEach(el => {
+  el.addEventListener('mouseenter', () => {
+    const tip = el.querySelector('.tip');
+    if (!tip) return;
+    const r = el.getBoundingClientRect();
+    tip.style.top = (r.top + r.height / 2) + 'px';
   });
 });
 
