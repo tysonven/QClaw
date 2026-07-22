@@ -150,9 +150,11 @@ check('log entry has total_chars', typeof firstEntry.total_chars === 'number' &&
 
 // (1) Exactly 4 matches — no drops, all 4 surface.
 // Use 4 narrow distinct keywords that match 4 distinct skills.
+// ('mrr' → business-intelligence replaced 'qa' when the qa skill was
+// archived alongside the qa-runner.sh removal, PR #72.)
 const r_cap_4 = await loadSkills({
   agent: 'charlie',
-  message: 'stripe ghl qa qclaw',
+  message: 'stripe ghl mrr qclaw',
 });
 check('exactly 4 matches: all 4 surface',
   r_cap_4.on_demand.length === 4, `got ${r_cap_4.on_demand.length}`);
@@ -161,10 +163,10 @@ check('exactly 4 matches: 0 drops',
   `got ${r_cap_4.considered_but_dropped.length} drops`);
 
 // (2) Exactly 5 matches — top 4 surface, 1 drops.
-// stripe + ghl + qa + qclaw + clipper = 5 distinct on-demand skills.
+// stripe + ghl + mrr + qclaw + clipper = 5 distinct on-demand skills.
 const r_cap_5 = await loadSkills({
   agent: 'charlie',
-  message: 'stripe ghl qa qclaw clipper',
+  message: 'stripe ghl mrr qclaw clipper',
 });
 check('exactly 5 matches: 4 surface',
   r_cap_5.on_demand.length === 4, `got ${r_cap_5.on_demand.length}`);
@@ -179,15 +181,15 @@ check('exactly 5 matches: drop reason is hard-cap-4',
 // keyword in a 5-token message). Then loadSkills should surface the
 // alphabetically-first 4 names and drop the 5th.
 //
-// stripe + ghl + qa + qclaw + clipper all match with equal density
+// stripe + ghl + mrr + qclaw + clipper all match with equal density
 // (each contributing 1 of 5 tokens). Names sort:
-//   clipper < ghl < qa < qclaw < stripe
+//   business-intelligence < clipper < ghl < qclaw-dev < stripe
 // So stripe (last alpha) should be the one dropped.
-const tieMessage = 'clipper ghl qa qclaw stripe';
+const tieMessage = 'clipper ghl mrr qclaw stripe';
 const r_tie = await loadSkills({ agent: 'charlie', message: tieMessage });
 const surfacedNames = r_tie.on_demand.map(s => s.name).sort();
 check('tied at cap boundary: 4 alphabetically-first surface',
-  JSON.stringify(surfacedNames) === JSON.stringify(['clipper', 'ghl', 'qa', 'qclaw-dev']),
+  JSON.stringify(surfacedNames) === JSON.stringify(['business-intelligence', 'clipper', 'ghl', 'qclaw-dev']),
   `got: ${surfacedNames.join(', ')}`);
 check('tied at cap boundary: alpha-last skill is the one dropped',
   r_tie.considered_but_dropped.length === 1

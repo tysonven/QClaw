@@ -94,6 +94,58 @@ check('limit honoured alongside filter',
   tgLimited.length === 2 && tgLimited.every(m => m.channel === 'telegram'),
   `got ${tgLimited.length}`);
 
+// ─── Numeric userId coercion (2026-07-22 fix) ──────────────────────────
+// grammY ctx.from.id is a NUMBER; addMessage stores user_id as TEXT
+// (String(context.userId) at the registry.js call site). Pre-fix, a
+// numeric userId returned 0 rows on the SQL path (numeric bind vs TEXT
+// storage) and failed strict === on this JSON path — zero Telegram
+// history on every turn since the H1 fix shipped (2026-05-14).
+memory.addMessage('charlie', 'user', 'tg-numeric-1', { channel: 'telegram', userId: '1375806243' });
+const numericJson = memory.getHistory('charlie', 20, { channel: 'telegram', userId: 1375806243 });
+check('numeric userId is coerced to string for store compatibility (JSON path)',
+  numericJson.length === 1 && numericJson[0].content === 'tg-numeric-1',
+  `got ${numericJson.length} rows`);
+const stringJson = memory.getHistory('charlie', 20, { channel: 'telegram', userId: '1375806243' });
+check('numeric and string userId return identical rows (JSON path)',
+  numericJson.length === stringJson.length &&
+  numericJson.every((m, i) => m.content === stringJson[i].content));
+
+// ─── Same contract on the SQLite path (the production path) ────────────
+// The original H1 suite only exercised the JSON-store fallback; production
+// runs better-sqlite3, where the bug actually lived. Skip (with a notice)
+// only where the native module is unavailable (e.g. Termux fallback).
+// The guard covers ONLY the import — the assertions run outside it, so a
+// real thrown regression fails the suite instead of masquerading as a skip.
+let Database = null;
+try {
+  ({ default: Database } = await import('better-sqlite3'));
+} catch (err) {
+  console.log(`  - SQLite-path checks skipped (better-sqlite3 unavailable: ${err.message})`);
+}
+if (Database) {
+  const sqlMemory = new MemoryManager({ _dir: tmp }, {});
+  sqlMemory.db = new Database(join(tmp, 'history-iso.db'));
+  sqlMemory.db.exec(`CREATE TABLE conversations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL,
+    timestamp TEXT DEFAULT (datetime('now')),
+    model TEXT, tier TEXT, tokens INTEGER,
+    channel TEXT, user_id TEXT, username TEXT)`);
+  sqlMemory.addMessage('charlie', 'user',      'sql-tg-1',    { channel: 'telegram', userId: '1375806243' });
+  sqlMemory.addMessage('charlie', 'assistant', 'sql-tg-r1',   { channel: 'telegram', userId: '1375806243' });
+  sqlMemory.addMessage('charlie', 'user',      'sql-dash-1',  { channel: 'dashboard', userId: null });
+  const asNumber = sqlMemory.getHistory('charlie', 20, { channel: 'telegram', userId: 1375806243 });
+  const asString = sqlMemory.getHistory('charlie', 20, { channel: 'telegram', userId: '1375806243' });
+  check('numeric userId is coerced to string for SQLite bind compatibility',
+    asNumber.length === 2 && asNumber[0].content === 'sql-tg-1',
+    `got ${asNumber.length} rows`);
+  check('numeric and string userId return identical rows (SQLite path)',
+    asNumber.length === asString.length &&
+    asNumber.every((m, i) => m.content === asString[i].content),
+    `number=${asNumber.length} string=${asString.length}`);
+  sqlMemory.db.close();
+}
+
 // ─── Cleanup ───────────────────────────────────────────────────────────
 rmSync(tmp, { recursive: true, force: true });
 

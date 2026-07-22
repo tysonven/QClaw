@@ -186,6 +186,11 @@ export class MemoryManager {
    */
   getHistory(agent, limit = 20, options = {}) {
     const { channel, userId } = options;
+    // Coerce to string — grammY ctx.from.id is a number; addMessage stores
+    // user_id as TEXT (String(context.userId), registry.js). A numeric
+    // SQLite bind does not match TEXT storage → 0 rows on every Telegram
+    // turn. Fixes Telegram context loss since 2026-05-14 (PR #15 H1).
+    const userIdStr = userId != null ? String(userId) : null;
 
     if (this.db) {
       let sql = `SELECT role, content, timestamp, model, tier, channel, user_id, username
@@ -193,7 +198,7 @@ export class MemoryManager {
       const params = [agent];
 
       if (channel) { sql += ' AND channel = ?'; params.push(channel); }
-      if (userId) { sql += ' AND user_id = ?'; params.push(userId); }
+      if (userIdStr) { sql += ' AND user_id = ?'; params.push(userIdStr); }
 
       sql += ' ORDER BY id DESC LIMIT ?';
       params.push(limit);
@@ -204,7 +209,7 @@ export class MemoryManager {
     if (this._jsonStore) {
       let msgs = this._jsonStore.conversations.filter(m => m.agent === agent);
       if (channel) msgs = msgs.filter(m => m.channel === channel);
-      if (userId) msgs = msgs.filter(m => m.userId === userId);
+      if (userIdStr) msgs = msgs.filter(m => m.userId === userIdStr);
       return msgs.slice(-limit);
     }
 
