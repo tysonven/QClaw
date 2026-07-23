@@ -15,6 +15,7 @@ import { fileURLToPath } from 'url';
 import { setupManusWebhook } from './webhook-manus.js';
 import jwt from 'jsonwebtoken';
 import cookieParser from 'cookie-parser';
+import { createHmac, timingSafeEqual } from 'crypto';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -45,6 +46,80 @@ const SB_URL = (() => {
   } catch { /* not on the server host (local/CI) — fall through to process.env */ }
   return (process.env.SUPABASE_URL || '').replace(/\/$/, '');
 })();
+
+// Item 8: second factor for trading_enabled=true writes. Same module-init pattern
+// as SB_* above — read TRADING_WEBHOOK_SECRET from the dashboard .env once at boot
+// (process.env fallback for local/CI). Never re-read from disk at runtime. If it's
+// absent, the derived checks fail closed: enable-writes 403, generate endpoint 503.
+const TRADING_WEBHOOK_SECRET = (() => {
+  try {
+    const envFile = readFileSync('/root/.quantumclaw/.env', 'utf-8');
+    for (const line of envFile.split('\n')) {
+      const m = line.match(/^TRADING_WEBHOOK_SECRET=(.*)$/);
+      if (m) return m[1].trim().replace(/^["']|["']$/g, '');
+    }
+  } catch { /* not on the server host (local/CI) — fall through to process.env */ }
+  return process.env.TRADING_WEBHOOK_SECRET || '';
+})();
+
+const CONFIRM_TOKEN_WINDOW_S = 60; // token valid ±60s of its embedded timestamp
+
+// Item 8 helper: mint a single-use-in-intent confirm token for enabling trading.
+// Shape: "<unix-ts>.<hmac-hex>" where hmac = HMAC-SHA256("enable-trading:<ts>", secret).
+// The timestamp travels with the token so the server can recompute the HMAC; the
+// ±60s window is what enforces single-use. Returns null if no secret is configured.
+export function generateConfirmToken(secret = TRADING_WEBHOOK_SECRET, nowMs = Date.now()) {
+  if (!secret) return null;
+  const ts = Math.floor(nowMs / 1000);
+  const hmac = createHmac('sha256', secret).update(`enable-trading:${ts}`).digest('hex');
+  return { token: `${ts}.${hmac}`, ts, expires_at: ts + CONFIRM_TOKEN_WINDOW_S };
+}
+
+// Item 8 helper: validate a confirm token. Recomputes the HMAC over the token's own
+// timestamp (timing-safe compare) and checks |now - ts| <= window. Fails closed on a
+// missing secret, malformed token, bad signature, or stale timestamp.
+export function validateConfirmToken(token, secret = TRADING_WEBHOOK_SECRET, nowMs = Date.now()) {
+  if (!secret || typeof token !== 'string') return false;
+  const dot = token.indexOf('.');
+  if (dot <= 0) return false;
+  const tsStr = token.slice(0, dot);
+  const sig = token.slice(dot + 1);
+  if (!/^\d+$/.test(tsStr) || !/^[0-9a-f]{64}$/i.test(sig)) return false;
+  const ts = Number(tsStr);
+  if (Math.abs(Math.floor(nowMs / 1000) - ts) > CONFIRM_TOKEN_WINDOW_S) return false;
+  const expected = createHmac('sha256', secret).update(`enable-trading:${ts}`).digest('hex');
+  const a = Buffer.from(sig.toLowerCase(), 'hex');
+  const b = Buffer.from(expected, 'hex');
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+// Item 6: daily_loss_limit defence. Sums today's realised PnL from closed positions
+// (PostgREST aggregates are disabled on this project, so sum in JS). Returns
+// { ok: true, daily_loss } on success, or { ok: false } if the query is unavailable
+// or malformed — the caller MUST fail closed (503) on { ok: false }, never proceed.
+// `daily_loss` is signed: negative = net loss on the day. Uses closed_at (realised
+// PnL belongs to the day a position closed), windowed from UTC midnight.
+export async function fetchDailyRealisedLoss(sbUrl, sbKey, fetchImpl = fetch, nowMs = Date.now()) {
+  try {
+    const midnight = new Date(nowMs);
+    midnight.setUTCHours(0, 0, 0, 0);
+    const since = midnight.toISOString();
+    const url = `${sbUrl}/rest/v1/trading_positions`
+      + `?select=pnl&status=eq.closed&closed_at=gte.${encodeURIComponent(since)}&limit=1000`;
+    const r = await fetchImpl(url, { headers: { apikey: sbKey, Authorization: `Bearer ${sbKey}` } });
+    if (!r.ok) return { ok: false };
+    const rows = await r.json();
+    if (!Array.isArray(rows)) return { ok: false };
+    let daily_loss = 0;
+    for (const row of rows) {
+      const p = Number(row.pnl);
+      if (Number.isFinite(p)) daily_loss += p;
+    }
+    return { ok: true, daily_loss };
+  } catch {
+    return { ok: false };
+  }
+}
 
 // Slice 6b: agent spawning is disabled. The /api/agents/spawn backend route was
 // already removed; this defensive handler returns a clear 403 (not a 404) so any
@@ -131,6 +206,8 @@ export class DashboardServer {
     this.app.use("/api/crete/generate-image", rateLimit({ windowMs: 60000, max: 10, message: { error: "Too many image generation requests" } }));
     this.app.use("/api/flowos/generate-image", rateLimit({ windowMs: 60000, max: 20, message: { error: "Too many image generation requests" } }));
     this.app.use('/api/trading/execute', rateLimit({ windowMs: 60000, max: 5, message: { error: 'Too many trade requests' } }));
+    // Item 8: confirm-token minting is sensitive — 3/hour (tighter than the trade route itself).
+    this.app.use('/api/trading/generate-confirm-token', rateLimit({ windowMs: 3600000, max: 3, message: { error: 'Too many confirm-token requests' } }));
 
     // Serve agency character assets
     this.app.use('/agency-assets', express.static(join(__dirname, 'agency-assets')));
@@ -1375,8 +1452,6 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
     // no shell metacharacters possible). Accepts both bare-64 and 0x-prefixed forms.
     const POLY_MARKET_ID_RE = /^(0x)?[0-9a-f]{64}$/i;
     const TRADE_DIRECTIONS = new Set(['YES', 'NO']);
-    // TODO: enforce daily_loss_limit before enabling — sum open+closed PnL, reject if exceeded.
-    // Pre-enable requirement (Brief B scope), alongside the executor min_edge gate. Not implemented here.
     this.app.post('/api/trading/execute', async (req, res) => {
       try {
         const { market_id, direction, amount } = req.body;
@@ -1391,11 +1466,12 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
           return res.status(400).json({ error: "invalid direction (expected 'YES' or 'NO')" });
         }
         // Item 2: server-side trading_config gate (fail closed) — one fetch feeds the
-        // amount ceiling and the trading_enabled brake, independently of the n8n workflow.
+        // amount ceiling, the trading_enabled brake, and the daily_loss_limit (item 6),
+        // independently of the n8n workflow.
         let cfg;
         try {
           const sbKey = SB_SERVICE_ROLE_KEY;
-          const cfgRes = await fetch(`${SB_URL}/rest/v1/trading_config?id=eq.1&select=trading_enabled,max_position_usdc`, {
+          const cfgRes = await fetch(`${SB_URL}/rest/v1/trading_config?id=eq.1&select=trading_enabled,max_position_usdc,daily_loss_limit`, {
             headers: { apikey: sbKey, Authorization: `Bearer ${sbKey}` }
           });
           cfg = (await cfgRes.json())[0] || {};
@@ -1409,6 +1485,21 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
         }
         if (cfg.trading_enabled !== true && cfg.trading_enabled !== 'true') {
           return res.status(403).json({ error: 'trading_disabled' });
+        }
+        // Item 6: daily_loss_limit defence — fail closed if PnL query unavailable.
+        // Limit from trading_config (currently $20). daily_loss is signed (negative =
+        // net loss); reject once the day's realised loss meets or exceeds the limit.
+        // A configured limit of 0 is a valid kill-switch (blocks every trade,
+        // 0 <= -0); only a missing/non-numeric limit disables the check.
+        const lossLimit = Number(cfg.daily_loss_limit);
+        if (Number.isFinite(lossLimit) && lossLimit >= 0) {
+          const pnl = await fetchDailyRealisedLoss(SB_URL, SB_SERVICE_ROLE_KEY);
+          if (!pnl.ok) {
+            return res.status(503).json({ error: 'pnl_check_unavailable' });
+          }
+          if (pnl.daily_loss <= -lossLimit) {
+            return res.status(403).json({ error: 'daily_loss_limit_reached', daily_loss: pnl.daily_loss, limit: lossLimit });
+          }
         }
         // execFile — args as array, no /bin/sh, no string interpolation
         const { execFile } = await import('child_process');
@@ -1463,13 +1554,31 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
       } catch (err) { res.status(500).json({ error: err.message }); }
     });
 
-    // WARNING: trading_enabled writes here bypass the item-2 gate in /api/trading/execute —
-    // the dashboard authToken is the real control boundary. Follow-up: gate this route behind a
-    // second factor before enabling live trading.
+    // Item 8: second factor for trading_enabled=true writes.
+    // Prevents casual authToken holders from flipping the brake. Token is
+    // HMAC-SHA256 of "enable-trading:<timestamp>" with TRADING_WEBHOOK_SECRET,
+    // valid ±60s. Disabling (false) and all other config fields need no token.
+    this.app.post('/api/trading/generate-confirm-token', async (req, res) => {
+      const minted = generateConfirmToken();
+      if (!minted) {
+        // Secret not configured on this host — cannot mint; fail closed.
+        return res.status(503).json({ error: 'confirm_token_unavailable' });
+      }
+      res.json({ token: minted.token, expires_at: minted.expires_at });
+    });
+
     this.app.post('/api/trading/config', async (req, res) => {
       try {
         const sbKey = SB_SERVICE_ROLE_KEY; // service_role (server-side only) — was a hardcoded anon literal
-        const { trading_enabled, max_position_usdc, min_edge_threshold, daily_loss_limit } = req.body;
+        const { trading_enabled, max_position_usdc, min_edge_threshold, daily_loss_limit, confirm_token } = req.body;
+        // Item 8: enabling trading requires a valid, time-limited confirm token.
+        const enabling = trading_enabled === true || trading_enabled === 'true';
+        if (enabling && !validateConfirmToken(confirm_token)) {
+          return res.status(403).json({
+            error: 'trading_enable_requires_confirm_token',
+            hint: 'Generate via: POST /api/trading/generate-confirm-token'
+          });
+        }
         // Upsert config (single row)
         const sbRes = await fetch('https://fdabygmromuqtysitodp.supabase.co/rest/v1/trading_config?id=eq.1', {
           method: 'PATCH',
