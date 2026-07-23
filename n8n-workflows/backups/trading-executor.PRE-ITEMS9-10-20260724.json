@@ -57,11 +57,6 @@
             "parameters": {
                 "options": {},
                 "conditions": {
-                    "options": {
-                        "version": 2,
-                        "caseSensitive": false,
-                        "typeValidation": "loose"
-                    },
                     "combinator": "and",
                     "conditions": [
                         {
@@ -70,7 +65,7 @@
                                 "type": "boolean",
                                 "operation": "true"
                             },
-                            "leftValue": "={{ $json?.trading_enabled === true || $json?.trading_enabled === 'true' }}",
+                            "leftValue": "={{ $json[0]?.trading_enabled === true || $json[0]?.trading_enabled === 'true' }}",
                             "rightValue": true
                         }
                     ]
@@ -167,7 +162,7 @@
                 "url": "https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendMessage",
                 "method": "POST",
                 "options": {},
-                "jsonBody": "={{ JSON.stringify({ chat_id: 1375806243, text: \"\ud83c\udfaf Trade Executed\\n\\nMarket: \" + $(\"Prepare Trade\").first().json.marketId + \"\\nDirection: \" + $(\"Prepare Trade\").first().json.direction + \"\\nAmount: $\" + $(\"Prepare Trade\").first().json.amount }) }}",
+                "jsonBody": "={{ JSON.stringify({ chat_id: 1375806243, text: \"🎯 Trade Executed\\n\\nMarket: \" + $(\"Prepare Trade\").first().json.marketId + \"\\nDirection: \" + $(\"Prepare Trade\").first().json.direction + \"\\nAmount: $\" + $(\"Prepare Trade\").first().json.amount }) }}",
                 "sendBody": true,
                 "specifyBody": "json"
             },
@@ -242,7 +237,7 @@
                                 "operation": "gte"
                             },
                             "leftValue": "={{ parseFloat($json.body.edge || 0) }}",
-                            "rightValue": "={{ ($('Fetch Config').first().json[0]?.min_edge_threshold > 0 ? $('Fetch Config').first().json[0].min_edge_threshold : 7) / 100 }}"
+                            "rightValue": "={{ $('Fetch Config').first().json[0].min_edge_threshold / 100 }}"
                         }
                     ]
                 }
