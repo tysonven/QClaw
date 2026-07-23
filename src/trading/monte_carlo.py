@@ -98,6 +98,16 @@ def run_simulation(asset, target, horizon_days=30, question=''):
         return None, f"Insufficient data for {asset}"
 
     prices = data["Close"].values.flatten()
+
+    # Short-horizon markets (<35d): 21d lookback matches the vol regime more
+    # closely than 90d; avoids systematic conservatism on OTM short-dated
+    # crypto rungs. Sliced from the tail of the single 90d download so the
+    # window is 21 TRADING days (yfinance `period` counts calendar days);
+    # horizon >35d keeps the full window — long-dated path is unchanged.
+    lookback_days = 21 if horizon_days <= 35 else 90
+    if lookback_days == 21:
+        prices = prices[-(lookback_days + 1):]
+
     current_price = float(prices[-1])
 
     # Calculate daily returns

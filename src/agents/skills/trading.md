@@ -24,7 +24,7 @@ Live execution requires BOTH `trading_config.trading_enabled = true` AND the
 Trade Executor workflow active. Never enable either without explicit
 confirmation from Tyson in the current conversation.
 
-Status snapshot (2026-07-05, verify via the n8n API before acting):
+Status snapshot (2026-07-23, verify via the n8n API before acting):
 - Position Monitor, Market Scanner, Weekly Analyst — ACTIVE (monitoring /
   analysis / notification only; none of these place trades).
 - Trade Executor — INACTIVE by design. Live execution is OFF.
@@ -59,8 +59,32 @@ Supabase table `trading_config` — a single-row table (id=1) with columns
 - trading_enabled (boolean): false — the live execution gate. ALWAYS confirm
   with Tyson before setting true.
 - max_position_usdc: 10
-- min_edge_threshold: 30 — stored as a whole-number percent (30 = 30%)
+- min_edge_threshold: 7 — whole-number percent (7 = 7%). Mirrors the
+  scanner's high-edge threshold for reference ONLY; nothing enforces it
+  (the executor reads only trading_enabled + max_position_usdc). The
+  operational thresholds live in the scanner workflow — see Scanner
+  Calibration below. (Updated 2026-07-23 from the stale pre-April value 30.)
 - daily_loss_limit: 20 (USDC)
+
+## Scanner Calibration (live values, verified 2026-07-23)
+
+Thresholds live in the **Build Run Summary** node of the Market Scanner
+workflow (3YahxqOguET3pifj) — NOT in trading_config:
+- Edge = simulated probability − market YES price (fraction).
+- High-edge: **+0.07** — sim probability ≥7 points above the market.
+- No-edge: **−0.20** — sim probability ≥20 points below the market.
+  (Raised from −0.10 on 2026-07-23: the fixed 90d GBM lookback was
+  systematically pessimistic on short-dated OTM crypto rungs and the
+  −0.10 band was mostly calibration noise, not alpha.)
+- Volume floors (two, both live): **20,000 USDC** pre-simulation filter in
+  the Analyse Edge node; **5,000 USDC** alert floor in Build Run Summary.
+- The scanner only considers markets resolving within **35 days**
+  (Analyse Edge horizon gate).
+- Monte Carlo lookback is horizon-adaptive (since 2026-07-23): the last
+  **21 trading days** of returns when horizon ≤35d (i.e. every scanner
+  market), the full 90-calendar-day window otherwise.
+- trading_config.min_edge_threshold mirrors the high-edge value (7) for
+  reference only.
 
 ## Key API Endpoints
 
@@ -96,7 +120,8 @@ Credentials: POLYMARKET_PRIVATE_KEY + POLYMARKET_FUNDER_ADDRESS
 4. Max position is $10 USDC. Never suggest or execute trades above this
    without config change approval.
 5. Daily loss limit is $20 USDC. If this is hit, trading must stop for the day.
-6. Min edge threshold is 30%. Do not recommend markets below this.
+6. The high-edge bar is +7% edge (scanner Build Run Summary node — see
+   Scanner Calibration). Do not recommend markets below this edge.
 7. All trade executions require the TRADING_WEBHOOK_SECRET header — never
    expose this value in responses.
 8. The Monte Carlo worker must be running (PM2: trading-worker) before any
