@@ -1,0 +1,385 @@
+{
+  "updatedAt": "2026-07-21T18:52:00.429Z",
+  "createdAt": "2026-04-03T11:49:20.217Z",
+  "id": "fq7spfyiNcpt8Mf7",
+  "name": "Trading - Trade Executor",
+  "description": null,
+  "active": false,
+  "isArchived": false,
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "trading-execute",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "exec-webhook",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        192,
+        304
+      ],
+      "webhookId": "trading-execute"
+    },
+    {
+      "parameters": {
+        "url": "https://fdabygmromuqtysitodp.supabase.co/rest/v1/trading_config?id=eq.1",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "options": {}
+      },
+      "id": "fetch-config",
+      "name": "Fetch Config",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        528,
+        304
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "q309m8yfLKGxywMb",
+          "name": "Supabase Service Role (main)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "id": "trading-on",
+              "leftValue": "={{ $json[0]?.trading_enabled === true || $json[0]?.trading_enabled === 'true' }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-enabled",
+      "name": "Trading Enabled?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        704,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $('Webhook Trigger').first().json.body;\nconst config = $('Fetch Config').first().json;\nconst configRow = Array.isArray(config) ? config[0] : config;\n\nconst marketId = body.market_id;\nconst direction = body.direction || 'YES';\nconst amount = Math.min(parseFloat(body.amount_usdc || 10), parseFloat(configRow.max_position_usdc || 25));\n\nreturn [{ json: { marketId, direction, amount, simulationId: body.simulation_id || null } }];"
+      },
+      "id": "prepare-trade",
+      "name": "Prepare Trade",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        912,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://agentboardroom.flowos.tech/api/trading/execute",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ market_id: $json.marketId, direction: $json.direction, amount: $json.amount }) }}",
+        "options": {
+          "timeout": 30000
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.QCLAW_API_TOKEN }}"
+            }
+          ]
+        }
+      },
+      "id": "execute-trade",
+      "name": "Execute Trade",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1136,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://fdabygmromuqtysitodp.supabase.co/rest/v1/trading_positions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ market_id: $(\"Prepare Trade\").first().json.marketId, direction: $(\"Prepare Trade\").first().json.direction, amount_usdc: $(\"Prepare Trade\").first().json.amount, entry_price: 0, status: \"open\", simulation_id: $(\"Prepare Trade\").first().json.simulationId, trade_response: $json }) }}",
+        "options": {}
+      },
+      "id": "save-position",
+      "name": "Save Position",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1360,
+        208
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "q309m8yfLKGxywMb",
+          "name": "Supabase Service Role (main)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendMessage",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ chat_id: 1375806243, text: \"\ud83c\udfaf Trade Executed\\n\\nMarket: \" + $(\"Prepare Trade\").first().json.marketId + \"\\nDirection: \" + $(\"Prepare Trade\").first().json.direction + \"\\nAmount: $\" + $(\"Prepare Trade\").first().json.amount }) }}",
+        "options": {}
+      },
+      "id": "notify-trade",
+      "name": "Notify Trade",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1584,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ JSON.stringify({ success: true }) }}",
+        "options": {}
+      },
+      "id": "respond-ok",
+      "name": "Respond OK",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1792,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "{{ JSON.stringify({ error: \"Trading disabled\" }) }}",
+        "options": {}
+      },
+      "id": "respond-disabled",
+      "name": "Respond Disabled",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        912,
+        464
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const secret = $input.first().json.headers?.['x-trading-secret'];\nconst validSecret = $env.TRADING_WEBHOOK_SECRET;\nif (secret !== validSecret) {\n  throw new Error('Unauthorized');\n}\nreturn $input.all();"
+      },
+      "id": "validate-secret",
+      "name": "Validate Secret",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        384,
+        304
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Validate Secret",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Config": {
+      "main": [
+        [
+          {
+            "node": "Trading Enabled?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Trading Enabled?": {
+      "main": [
+        [
+          {
+            "node": "Prepare Trade",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Disabled",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Trade": {
+      "main": [
+        [
+          {
+            "node": "Execute Trade",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute Trade": {
+      "main": [
+        [
+          {
+            "node": "Save Position",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Position": {
+      "main": [
+        [
+          {
+            "node": "Notify Trade",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notify Trade": {
+      "main": [
+        [
+          {
+            "node": "Respond OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Secret": {
+      "main": [
+        [
+          {
+            "node": "Fetch Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false,
+    "errorWorkflow": "7kpNnMtnuDWXgWcX"
+  },
+  "staticData": null,
+  "meta": null,
+  "pinData": {},
+  "versionId": "599f5bc9-f9c9-48a7-a21c-d2e5c3f23243",
+  "activeVersionId": null,
+  "versionCounter": 61,
+  "triggerCount": 1,
+  "shared": [
+    {
+      "updatedAt": "2026-04-03T11:49:20.217Z",
+      "createdAt": "2026-04-03T11:49:20.217Z",
+      "role": "workflow:owner",
+      "workflowId": "fq7spfyiNcpt8Mf7",
+      "projectId": "KwpTDWcFWL3DfyW3",
+      "project": {
+        "updatedAt": "2026-04-08T20:28:08.726Z",
+        "createdAt": "2025-06-06T11:27:14.830Z",
+        "id": "KwpTDWcFWL3DfyW3",
+        "name": "Tyson Venables <tysonvenables@protonmail.com>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "b1512bca-25b8-4b8b-add0-b86540e5144d",
+        "projectRelations": [
+          {
+            "updatedAt": "2025-06-06T11:27:14.830Z",
+            "createdAt": "2025-06-06T11:27:14.830Z",
+            "userId": "b1512bca-25b8-4b8b-add0-b86540e5144d",
+            "projectId": "KwpTDWcFWL3DfyW3",
+            "user": {
+              "updatedAt": "2026-07-23T10:11:37.909Z",
+              "createdAt": "2025-06-06T11:27:13.858Z",
+              "id": "b1512bca-25b8-4b8b-add0-b86540e5144d",
+              "email": "tysonvenables@protonmail.com",
+              "firstName": "Tyson",
+              "lastName": "Venables",
+              "personalizationAnswers": {
+                "version": "v4",
+                "personalization_survey_submitted_at": "2025-06-06T11:42:52.454Z",
+                "personalization_survey_n8n_version": "1.95.3",
+                "companySize": "<20",
+                "companyType": "saas",
+                "role": "business-owner",
+                "reportedSource": "friend"
+              },
+              "settings": {
+                "userActivated": true,
+                "easyAIWorkflowOnboarded": true,
+                "firstSuccessfulWorkflowId": "WVXrFCjb8wO7RWRX",
+                "userActivatedAt": 1751062185356,
+                "npsSurvey": {
+                  "responded": true,
+                  "lastShownAt": 1769430963515
+                }
+              },
+              "disabled": false,
+              "mfaEnabled": false,
+              "lastActiveAt": "2026-07-23",
+              "isPending": false
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "tags": [],
+  "activeVersion": null
+}

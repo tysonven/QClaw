@@ -861,12 +861,6 @@
             <span style="font-size:.75rem;color:var(--text-dim)">Daily Loss Limit $</span>
             <input class="input" id="tr-loss-limit" style="width:80px;font-size:.78rem" value="50" onchange="trSaveConfig()">
           </div>
-          <!-- Item 8 (redesigned): shown after enable request returns 202 otp_sent -->
-          <div id="tr-otp-row" style="display:none;align-items:center;gap:6px">
-            <span style="font-size:.75rem;color:var(--text-dim)">Telegram OTP</span>
-            <input class="input" id="tr-otp-input" style="width:90px;font-size:.78rem" maxlength="6" inputmode="numeric" placeholder="123456">
-            <button class="btn btn-sm" onclick="trConfirmEnable()">Confirm</button>
-          </div>
         </div>
 
         <!-- Run Simulation -->
@@ -2138,10 +2132,6 @@ async function csViewJob(id) {
 /* ─── Trading Room ───────────────────────────────────── */
 let _trConfig = { trading_enabled: false, max_position_usdc: 25, min_edge_threshold: 25, daily_loss_limit: 50 };
 let _trRefreshTimer = null;
-// True between a 202 otp_sent response and a successful confirm (or cancel): the
-// server keeps reporting trading_enabled=false during this window, so trLoadConfig
-// must NOT snap the toggle back to OFF while this is set.
-let _trPending = false;
 
 function initTrading() {
   trLoadConfig();
@@ -2164,19 +2154,6 @@ async function trLoadBalance() {
   } catch {}
 }
 
-// Toggle has three visual states: 'off' (default), 'pending' (purple accent —
-// enable requested, awaiting the Telegram OTP), 'on' (green — live).
-function trSetToggle(state) {
-  const btn = $('tr-trading-toggle');
-  if (state === 'on') {
-    btn.textContent = 'ON'; btn.style.background = 'var(--green)'; btn.style.color = '#000';
-  } else if (state === 'pending') {
-    btn.textContent = 'PENDING'; btn.style.background = 'var(--accent)'; btn.style.color = '#fff';
-  } else {
-    btn.textContent = 'OFF'; btn.style.background = ''; btn.style.color = '';
-  }
-}
-
 async function trLoadConfig() {
   try {
     const cfg = await (await fetch(API('/api/trading/config'))).json();
@@ -2185,89 +2162,32 @@ async function trLoadConfig() {
       $('tr-max-position').value = cfg.max_position_usdc || 25;
       $('tr-min-edge').value = cfg.min_edge_threshold || 25;
       $('tr-loss-limit').value = cfg.daily_loss_limit || 50;
-      // While an enable is pending OTP confirmation the server still reports
-      // trading_enabled=false — leave the purple pending toggle as-is.
-      if (!_trPending) trSetToggle(cfg.trading_enabled ? 'on' : 'off');
+      const btn = $('tr-trading-toggle');
+      if (cfg.trading_enabled) {
+        btn.textContent = 'ON'; btn.style.background = 'var(--green)'; btn.style.color = '#000';
+      } else {
+        btn.textContent = 'OFF'; btn.style.background = ''; btn.style.color = '';
+      }
     }
   } catch {}
 }
 
-// POST config. `extra` may carry trading_enabled — field-only saves omit it so
-// the server never touches the brake (and never re-arms the OTP) on a limit tweak.
-async function trPostConfig(extra) {
-  const cfg = {
-    max_position_usdc: parseFloat($('tr-max-position').value) || 25,
-    min_edge_threshold: parseFloat($('tr-min-edge').value) || 25,
-    daily_loss_limit: parseFloat($('tr-loss-limit').value) || 50,
-    ...extra,
-  };
-  return fetch(API('/api/trading/config'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cfg) });
-}
-
-// Item 8 (redesigned): enabling is two-step — the server replies 202 otp_sent
-// and delivers a 6-digit OTP over Telegram; trConfirmEnable() completes it.
-// Disabling stays one-step (always permitted, no OTP).
 async function trToggleTrading() {
-  try {
-    if (_trConfig.trading_enabled || _trPending) {
-      // Currently ON, or a pending enable awaiting OTP — turn OFF. Sending
-      // trading_enabled:false also cancels any pending OTP on the server.
-      const wasEnabled = _trConfig.trading_enabled;
-      await trPostConfig({ trading_enabled: false });
-      _trPending = false;
-      trShowOtpRow(false);
-      trSetToggle('off');
-      toast(wasEnabled ? 'Trading disabled' : 'Enable cancelled', 'ok');
-      trLoadConfig();
-    } else {
-      // Enable is two-step: 202 otp_sent → OTP over Telegram → trConfirmEnable().
-      const res = await trPostConfig({ trading_enabled: true });
-      if (res.status === 202) {
-        _trPending = true;
-        trSetToggle('pending');
-        trShowOtpRow(true);
-        toast('Check Telegram for your OTP', 'ok');
-        // Do NOT reload config here: the server reports disabled until confirm,
-        // which would snap the toggle back to OFF and hide the OTP input.
-      } else {
-        const data = await res.json().catch(() => ({}));
-        _trPending = false;
-        trShowOtpRow(false);
-        trSetToggle('off');
-        toast(data.error === 'telegram_unavailable' ? 'Telegram unavailable — trading not enabled' : (data.error || 'Enable failed'), 'err');
-      }
-    }
-  } catch (e) { toast('Failed to update trading', 'err'); }
-}
-
-async function trConfirmEnable() {
-  const otp = $('tr-otp-input').value.trim();
-  if (!/^\d{6}$/.test(otp)) { toast('Enter the 6-digit OTP from Telegram', 'err'); return; }
-  try {
-    const res = await fetch(API('/api/trading/confirm-enable'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ otp }) });
-    const data = await res.json().catch(() => ({}));
-    if (res.ok && data.status === 'trading_enabled') {
-      _trPending = false;
-      trShowOtpRow(false);
-      trSetToggle('on');
-      toast('Trading is now live', 'ok');
-      trLoadConfig();
-    } else {
-      // Wrong/expired OTP — stay pending, keep the OTP input up for another try.
-      toast(data.error === 'invalid_or_expired_otp' ? 'Invalid or expired OTP' : (data.error || 'Confirm failed'), 'err');
-    }
-  } catch (e) { toast('Confirm failed', 'err'); }
-}
-
-function trShowOtpRow(show) {
-  $('tr-otp-row').style.display = show ? 'flex' : 'none';
-  if (show) { $('tr-otp-input').focus(); }
-  else { $('tr-otp-input').value = ''; }
+  _trConfig.trading_enabled = !_trConfig.trading_enabled;
+  await trSaveConfig();
+  trLoadConfig();
 }
 
 async function trSaveConfig() {
   try {
-    await trPostConfig({});
+    const cfg = {
+      trading_enabled: _trConfig.trading_enabled,
+      max_position_usdc: parseFloat($('tr-max-position').value) || 25,
+      min_edge_threshold: parseFloat($('tr-min-edge').value) || 25,
+      daily_loss_limit: parseFloat($('tr-loss-limit').value) || 50,
+    };
+    await fetch(API('/api/trading/config'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cfg) });
+    _trConfig = cfg;
     toast('Config saved', 'ok');
   } catch (e) { toast('Failed to save config', 'err'); }
 }

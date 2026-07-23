@@ -15,6 +15,7 @@ import { fileURLToPath } from 'url';
 import { setupManusWebhook } from './webhook-manus.js';
 import jwt from 'jsonwebtoken';
 import cookieParser from 'cookie-parser';
+import { randomInt, timingSafeEqual } from 'crypto';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -46,6 +47,94 @@ const SB_URL = (() => {
   return (process.env.SUPABASE_URL || '').replace(/\/$/, '');
 })();
 
+// Item 8 (redesigned): Telegram OTP as second factor.
+// Enable requires: dashboard authToken (channel 1) +
+// physical Telegram access (channel 2, out-of-band).
+// Disable requires only authToken — always permitted.
+// Same module-init pattern as SB_* above — read once at boot, process.env
+// fallback for local/CI. If the bot token is missing, the enable path fails
+// closed: the OTP cannot be delivered → 503, trading stays disabled.
+function readDashboardEnv(name) {
+  try {
+    const envFile = readFileSync('/root/.quantumclaw/.env', 'utf-8');
+    for (const line of envFile.split('\n')) {
+      const m = line.match(new RegExp(`^${name}=(.*)$`));
+      if (m) return m[1].trim().replace(/^["']|["']$/g, '');
+    }
+  } catch { /* not on the server host (local/CI) — fall through to process.env */ }
+  return process.env[name] || '';
+}
+const TELEGRAM_BOT_TOKEN = readDashboardEnv('TELEGRAM_BOT_TOKEN');
+// Same owner chat as liveness/spend alerts (constant fallback matches
+// src/observability/liveness-watcher.js OWNER_TELEGRAM_CHAT_ID).
+const OWNER_TELEGRAM_CHAT_ID = readDashboardEnv('OWNER_TELEGRAM_CHAT_ID') || '1375806243';
+
+const OTP_TTL_MS = 5 * 60 * 1000; // pending enable OTP lives 5 minutes
+
+// Direct Telegram API send — same shape as src/observability/*.js sendTelegram,
+// deliberately NOT Charlie's channel object: the { ok } result is what lets the
+// enable path fail closed when delivery cannot be confirmed (the channel-based
+// creteNotifyTelegram helper swallows errors, which would fail open here).
+export async function sendTelegram({ token, chatId, text, fetchImpl = fetch }) {
+  if (!token || !chatId) return { ok: false, reason: 'not configured' };
+  try {
+    const res = await fetchImpl(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, text }),
+    });
+    return { ok: !!res.ok };
+  } catch { return { ok: false, reason: 'fetch threw' }; }
+}
+
+// Item 8 helper: constant-time check of a submitted OTP against the pending slot.
+// Fails closed on: no pending enable, expired slot, non-6-digit input, mismatch.
+export function checkOtp(pending, otp, nowMs = Date.now()) {
+  if (!pending || typeof pending.otp !== 'string') return false;
+  if (nowMs > pending.expires_at) return false;
+  const s = typeof otp === 'string' || typeof otp === 'number' ? String(otp) : '';
+  if (!/^\d{6}$/.test(s)) return false;
+  const a = Buffer.from(s);
+  const b = Buffer.from(pending.otp);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+// Item 6: daily_loss_limit defence. Sums today's realised PnL from closed positions
+// (PostgREST aggregates are disabled on this project, so sum in JS). Returns
+// { ok: true, daily_loss } on success, or { ok: false } if the query is unavailable
+// or malformed — the caller MUST fail closed (503) on { ok: false }, never proceed.
+// `daily_loss` is signed: negative = net loss on the day. Uses closed_at (realised
+// PnL belongs to the day a position closed), windowed from UTC midnight.
+// M2: fetches limit=1001 and THROWS if >=1001 rows come back — more closed
+// positions than one page holds means the sum would silently undercount, so the
+// caller must 503 rather than trade on a partial number. The throw deliberately
+// escapes this function's fail-soft contract; ordering makes the page deterministic.
+// Limit interpretation lives in the caller (execute route): NULL daily_loss_limit → 0
+// (kill-switch — blocks all trades). Only undefined/NaN disables the check.
+export async function fetchDailyRealisedLoss(sbUrl, sbKey, fetchImpl = fetch, nowMs = Date.now()) {
+  let rows;
+  try {
+    const midnight = new Date(nowMs);
+    midnight.setUTCHours(0, 0, 0, 0);
+    const since = midnight.toISOString();
+    const url = `${sbUrl}/rest/v1/trading_positions`
+      + `?select=pnl&status=eq.closed&closed_at=gte.${encodeURIComponent(since)}`
+      + `&order=opened_at.asc&limit=1001`;
+    const r = await fetchImpl(url, { headers: { apikey: sbKey, Authorization: `Bearer ${sbKey}` } });
+    if (!r.ok) return { ok: false };
+    rows = await r.json();
+    if (!Array.isArray(rows)) return { ok: false };
+  } catch {
+    return { ok: false };
+  }
+  if (rows.length >= 1001) throw new Error('daily_loss_position_count_exceeded');
+  let daily_loss = 0;
+  for (const row of rows) {
+    const p = Number(row.pnl);
+    if (Number.isFinite(p)) daily_loss += p;
+  }
+  return { ok: true, daily_loss };
+}
+
 // Slice 6b: agent spawning is disabled. The /api/agents/spawn backend route was
 // already removed; this defensive handler returns a clear 403 (not a 404) so any
 // stale dashboard client gets an explicit signal. Specialists are registered via
@@ -66,6 +155,12 @@ export class DashboardServer {
     this.wss = null;
     this.tunnel = null;
     this.tunnelUrl = null;
+    // Item 8 (redesigned): single pending-enable OTP slot — at most one enable
+    // can be in flight; a new enable request replaces (cancels) the previous one.
+    this.pendingTradeEnable = null;
+    // Injectable seams for route tests (stub Telegram / clock / randomness);
+    // production always uses the real implementations.
+    this._otpDeps = { send: sendTelegram, randomInt, now: () => Date.now() };
   }
 
   async start() {
@@ -131,6 +226,9 @@ export class DashboardServer {
     this.app.use("/api/crete/generate-image", rateLimit({ windowMs: 60000, max: 10, message: { error: "Too many image generation requests" } }));
     this.app.use("/api/flowos/generate-image", rateLimit({ windowMs: 60000, max: 20, message: { error: "Too many image generation requests" } }));
     this.app.use('/api/trading/execute', rateLimit({ windowMs: 60000, max: 5, message: { error: 'Too many trade requests' } }));
+    // Item 8 (redesigned): OTP confirm attempts — 5 per 15 minutes. A 6-digit OTP
+    // with a 5-minute TTL then allows at most 5 guesses per mint (brute-force guard).
+    this.app.use('/api/trading/confirm-enable', rateLimit({ windowMs: 900000, max: 5, message: { error: 'Too many OTP attempts' } }));
 
     // Serve agency character assets
     this.app.use('/agency-assets', express.static(join(__dirname, 'agency-assets')));
@@ -1375,8 +1473,6 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
     // no shell metacharacters possible). Accepts both bare-64 and 0x-prefixed forms.
     const POLY_MARKET_ID_RE = /^(0x)?[0-9a-f]{64}$/i;
     const TRADE_DIRECTIONS = new Set(['YES', 'NO']);
-    // TODO: enforce daily_loss_limit before enabling — sum open+closed PnL, reject if exceeded.
-    // Pre-enable requirement (Brief B scope), alongside the executor min_edge gate. Not implemented here.
     this.app.post('/api/trading/execute', async (req, res) => {
       try {
         const { market_id, direction, amount } = req.body;
@@ -1391,11 +1487,12 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
           return res.status(400).json({ error: "invalid direction (expected 'YES' or 'NO')" });
         }
         // Item 2: server-side trading_config gate (fail closed) — one fetch feeds the
-        // amount ceiling and the trading_enabled brake, independently of the n8n workflow.
+        // amount ceiling, the trading_enabled brake, and the daily_loss_limit (item 6),
+        // independently of the n8n workflow.
         let cfg;
         try {
           const sbKey = SB_SERVICE_ROLE_KEY;
-          const cfgRes = await fetch(`${SB_URL}/rest/v1/trading_config?id=eq.1&select=trading_enabled,max_position_usdc`, {
+          const cfgRes = await fetch(`${SB_URL}/rest/v1/trading_config?id=eq.1&select=trading_enabled,max_position_usdc,daily_loss_limit`, {
             headers: { apikey: sbKey, Authorization: `Bearer ${sbKey}` }
           });
           cfg = (await cfgRes.json())[0] || {};
@@ -1409,6 +1506,29 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
         }
         if (cfg.trading_enabled !== true && cfg.trading_enabled !== 'true') {
           return res.status(403).json({ error: 'trading_disabled' });
+        }
+        // Item 6: daily_loss_limit defence — fail closed if PnL query unavailable.
+        // Limit from trading_config (currently $20). daily_loss is signed (negative =
+        // net loss); reject once the day's realised loss meets or exceeds the limit.
+        // A configured limit of 0 is a valid kill-switch (blocks every trade, 0 <= -0).
+        // NULL daily_loss_limit → 0 (kill-switch — blocks all trades). Only undefined/NaN
+        // disables the check.
+        const lossLimit = Number(cfg.daily_loss_limit);
+        if (Number.isFinite(lossLimit) && lossLimit >= 0) {
+          let pnl;
+          try {
+            pnl = await fetchDailyRealisedLoss(SB_URL, SB_SERVICE_ROLE_KEY);
+          } catch {
+            // M2: >1000 closed positions today — the one-page sum would
+            // undercount, so refuse to trade on a partial number.
+            return res.status(503).json({ error: 'pnl_check_unavailable' });
+          }
+          if (!pnl.ok) {
+            return res.status(503).json({ error: 'pnl_check_unavailable' });
+          }
+          if (pnl.daily_loss <= -lossLimit) {
+            return res.status(403).json({ error: 'daily_loss_limit_reached', daily_loss: pnl.daily_loss, limit: lossLimit });
+          }
         }
         // execFile — args as array, no /bin/sh, no string interpolation
         const { execFile } = await import('child_process');
@@ -1463,29 +1583,128 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
       } catch (err) { res.status(500).json({ error: err.message }); }
     });
 
-    // WARNING: trading_enabled writes here bypass the item-2 gate in /api/trading/execute —
-    // the dashboard authToken is the real control boundary. Follow-up: gate this route behind a
-    // second factor before enabling live trading.
+    // Item 8 (redesigned): Telegram OTP as second factor.
+    // Enable requires: dashboard authToken (channel 1) +
+    // physical Telegram access (channel 2, out-of-band).
+    // Disable requires only authToken — always permitted.
+    // The OTP is never logged and never appears in any HTTP response —
+    // Telegram is the only delivery channel. If the Telegram send cannot be
+    // confirmed, the request fails closed (503, trading stays disabled).
     this.app.post('/api/trading/config', async (req, res) => {
       try {
         const sbKey = SB_SERVICE_ROLE_KEY; // service_role (server-side only) — was a hardcoded anon literal
-        const { trading_enabled, max_position_usdc, min_edge_threshold, daily_loss_limit } = req.body;
-        // Upsert config (single row)
+        const { max_position_usdc, min_edge_threshold, daily_loss_limit } = req.body;
+        // C1: normalise to a real boolean BEFORE the guard and the write. Only
+        // explicit true / 'true' count as enabling — every other Postgres-truthy
+        // spelling ('t', 'TRUE', 'yes', 'on', '1', ...) normalises to false, so
+        // a parser differential with Postgres can never flip the brake. The
+        // persisted value is always the boolean result, never the raw string.
+        const rawEnabled = req.body.trading_enabled;
+        const enabling = rawEnabled === true || rawEnabled === 'true';
+
+        // Validation: limit fields are writable with the authToken alone (no OTP),
+        // so reject out-of-range values before any write — each would silently
+        // neuter a downstream gate (min_edge_threshold < 1 weakens the executor
+        // edge gate; max_position_usdc <= 0 is meaningless; daily_loss_limit < 0
+        // disables the item-6 loss gate). Absent keys are left untouched.
+        if (min_edge_threshold !== undefined && (isNaN(Number(min_edge_threshold)) || Number(min_edge_threshold) < 1)) {
+          return res.status(400).json({ error: 'invalid_min_edge_threshold' });
+        }
+        if (max_position_usdc !== undefined && (isNaN(Number(max_position_usdc)) || Number(max_position_usdc) <= 0)) {
+          return res.status(400).json({ error: 'invalid_max_position_usdc' });
+        }
+        if (daily_loss_limit !== undefined && (isNaN(Number(daily_loss_limit)) || Number(daily_loss_limit) < 0)) {
+          return res.status(400).json({ error: 'invalid_daily_loss_limit' });
+        }
+
+        // Limit fields (max_position_usdc, min_edge_threshold, daily_loss_limit) are protected
+        // by authToken only — no OTP required. Accepted design trade-off: the OTP gates the
+        // enable switch, not routine limit adjustments.
+        // Upsert helper (single row, id=1) — body decides which fields change.
+        // Undefined keys are pruned (a PATCH with an empty body upsets
+        // PostgREST, and an INSERT must not null-out unspecified columns).
+        const writeConfig = async (fields) => {
+          const body = Object.fromEntries(Object.entries(fields).filter(([, v]) => v !== undefined));
+          if (!Object.keys(body).length) return;
+          const sbRes = await fetch('https://fdabygmromuqtysitodp.supabase.co/rest/v1/trading_config?id=eq.1', {
+            method: 'PATCH',
+            headers: { apikey: sbKey, Authorization: `Bearer ${sbKey}`, 'Content-Type': 'application/json', 'Prefer': 'return=representation' },
+            body: JSON.stringify(body)
+          });
+          const result = await sbRes.json();
+          if (!Array.isArray(result) || !result.length) {
+            // Insert if no row exists
+            await fetch('https://fdabygmromuqtysitodp.supabase.co/rest/v1/trading_config', {
+              method: 'POST',
+              headers: { apikey: sbKey, Authorization: `Bearer ${sbKey}`, 'Content-Type': 'application/json' },
+              body: JSON.stringify({ id: 1, ...body })
+            });
+          }
+        };
+
+        if (enabling) {
+          // Persist the limit fields now, but NOT trading_enabled — the flip is
+          // deferred to /api/trading/confirm-enable. Omitting the key (rather
+          // than writing false) means re-submitting "enabled" while already
+          // enabled can't briefly disable trading.
+          await writeConfig({ max_position_usdc, min_edge_threshold, daily_loss_limit });
+          const { send, randomInt: rnd, now } = this._otpDeps;
+          // 6-digit OTP; upper bound exclusive, so 1000000 includes 999999.
+          const otp = String(rnd(100000, 1000000));
+          const sent = await send({
+            token: TELEGRAM_BOT_TOKEN,
+            chatId: OWNER_TELEGRAM_CHAT_ID,
+            text: `⚠️ Trading enable requested from dashboard.\nOTP: ${otp}\nExpires in 5 minutes.\nIf this wasn't you, rotate your dashboard token immediately.`,
+          });
+          if (!sent.ok) {
+            this.pendingTradeEnable = null;
+            return res.status(503).json({ error: 'telegram_unavailable', message: 'Could not send OTP — trading not enabled' });
+          }
+          // Replaces (cancels) any previously pending OTP — single slot.
+          this.pendingTradeEnable = { otp, expires_at: now() + OTP_TTL_MS };
+          return res.status(202).json({ status: 'otp_sent', message: 'Check Telegram for your OTP', expires_in_seconds: 300 });
+        }
+
+        // Not enabling. If trading_enabled was present it normalises to false —
+        // write the boolean, never the raw value — and cancels any pending OTP
+        // (an explicit disable, or a rejected Postgres-truthy spelling). If the
+        // key was ABSENT this is a field-only save (UI onchange): leave the flag
+        // and any pending OTP untouched so limit tweaks can't flip or re-arm
+        // the brake.
+        const fields = { max_position_usdc, min_edge_threshold, daily_loss_limit };
+        if (rawEnabled !== undefined) {
+          fields.trading_enabled = false;
+          this.pendingTradeEnable = null;
+        }
+        await writeConfig(fields);
+        res.json({ ok: true });
+      } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+
+    // Item 8 (redesigned) step 2: consume the Telegram OTP and flip the brake.
+    // Behind the global auth middleware like every /api route; additionally
+    // rate-limited (5 attempts / 15 min, see start()). OTP is single-use: it is
+    // consumed before the write so a failed write can't be retried against a
+    // spent code — re-request the enable instead.
+    this.app.post('/api/trading/confirm-enable', async (req, res) => {
+      try {
+        const { now } = this._otpDeps;
+        if (!checkOtp(this.pendingTradeEnable, req.body?.otp, now())) {
+          return res.status(403).json({ error: 'invalid_or_expired_otp' });
+        }
+        this.pendingTradeEnable = null;
+        const sbKey = SB_SERVICE_ROLE_KEY;
         const sbRes = await fetch('https://fdabygmromuqtysitodp.supabase.co/rest/v1/trading_config?id=eq.1', {
           method: 'PATCH',
           headers: { apikey: sbKey, Authorization: `Bearer ${sbKey}`, 'Content-Type': 'application/json', 'Prefer': 'return=representation' },
-          body: JSON.stringify({ trading_enabled, max_position_usdc, min_edge_threshold, daily_loss_limit })
+          body: JSON.stringify({ trading_enabled: true })
         });
-        const result = await sbRes.json();
+        const result = sbRes.ok ? await sbRes.json() : null;
         if (!Array.isArray(result) || !result.length) {
-          // Insert if no row exists
-          await fetch('https://fdabygmromuqtysitodp.supabase.co/rest/v1/trading_config', {
-            method: 'POST',
-            headers: { apikey: sbKey, Authorization: `Bearer ${sbKey}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ id: 1, trading_enabled, max_position_usdc, min_edge_threshold, daily_loss_limit })
-          });
+          // No row / write failure — do NOT claim enabled.
+          return res.status(500).json({ error: 'config_write_failed' });
         }
-        res.json({ ok: true });
+        res.json({ status: 'trading_enabled', message: 'Trading is now live' });
       } catch (err) { res.status(500).json({ error: err.message }); }
     });
 
