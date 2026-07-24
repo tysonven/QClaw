@@ -861,12 +861,6 @@
             <span style="font-size:.75rem;color:var(--text-dim)">Daily Loss Limit $</span>
             <input class="input" id="tr-loss-limit" style="width:80px;font-size:.78rem" value="50" onchange="trSaveConfig()">
           </div>
-          <!-- Item 8 (redesigned): shown after enable request returns 202 otp_sent -->
-          <div id="tr-otp-row" style="display:none;align-items:center;gap:6px">
-            <span style="font-size:.75rem;color:var(--text-dim)">Telegram OTP</span>
-            <input class="input" id="tr-otp-input" style="width:90px;font-size:.78rem" maxlength="6" inputmode="numeric" placeholder="123456">
-            <button class="btn btn-sm" onclick="trConfirmEnable()">Confirm</button>
-          </div>
         </div>
 
         <!-- Run Simulation -->
@@ -2178,65 +2172,22 @@ async function trLoadConfig() {
   } catch {}
 }
 
-// POST config. `extra` may carry trading_enabled — field-only saves omit it so
-// the server never touches the brake (and never re-arms the OTP) on a limit tweak.
-async function trPostConfig(extra) {
-  const cfg = {
-    max_position_usdc: parseFloat($('tr-max-position').value) || 25,
-    min_edge_threshold: parseFloat($('tr-min-edge').value) || 25,
-    daily_loss_limit: parseFloat($('tr-loss-limit').value) || 50,
-    ...extra,
-  };
-  return fetch(API('/api/trading/config'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cfg) });
-}
-
-// Item 8 (redesigned): enabling is two-step — the server replies 202 otp_sent
-// and delivers a 6-digit OTP over Telegram; trConfirmEnable() completes it.
-// Disabling stays one-step (always permitted, no OTP).
 async function trToggleTrading() {
-  try {
-    if (_trConfig.trading_enabled) {
-      await trPostConfig({ trading_enabled: false });
-      trShowOtpRow(false);
-      toast('Trading disabled', 'ok');
-    } else {
-      const res = await trPostConfig({ trading_enabled: true });
-      if (res.status === 202) {
-        trShowOtpRow(true);
-        toast('Check Telegram for your OTP', 'ok');
-      } else {
-        const data = await res.json().catch(() => ({}));
-        toast(data.error === 'telegram_unavailable' ? 'Telegram unavailable — trading not enabled' : (data.error || 'Enable failed'), 'err');
-      }
-    }
-  } catch (e) { toast('Failed to update trading', 'err'); }
+  _trConfig.trading_enabled = !_trConfig.trading_enabled;
+  await trSaveConfig();
   trLoadConfig();
-}
-
-async function trConfirmEnable() {
-  const otp = $('tr-otp-input').value.trim();
-  if (!/^\d{6}$/.test(otp)) { toast('Enter the 6-digit OTP from Telegram', 'err'); return; }
-  try {
-    const res = await fetch(API('/api/trading/confirm-enable'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ otp }) });
-    const data = await res.json().catch(() => ({}));
-    if (res.ok && data.status === 'trading_enabled') {
-      trShowOtpRow(false);
-      toast('Trading is now live', 'ok');
-    } else {
-      toast(data.error === 'invalid_or_expired_otp' ? 'Invalid or expired OTP' : (data.error || 'Confirm failed'), 'err');
-    }
-  } catch (e) { toast('Confirm failed', 'err'); }
-  trLoadConfig();
-}
-
-function trShowOtpRow(show) {
-  $('tr-otp-row').style.display = show ? 'flex' : 'none';
-  if (!show) $('tr-otp-input').value = '';
 }
 
 async function trSaveConfig() {
   try {
-    await trPostConfig({});
+    const cfg = {
+      trading_enabled: _trConfig.trading_enabled,
+      max_position_usdc: parseFloat($('tr-max-position').value) || 25,
+      min_edge_threshold: parseFloat($('tr-min-edge').value) || 25,
+      daily_loss_limit: parseFloat($('tr-loss-limit').value) || 50,
+    };
+    await fetch(API('/api/trading/config'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cfg) });
+    _trConfig = cfg;
     toast('Config saved', 'ok');
   } catch (e) { toast('Failed to save config', 'err'); }
 }
