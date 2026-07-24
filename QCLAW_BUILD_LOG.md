@@ -17252,3 +17252,48 @@ all sharp edges of expressing financial gates in n8n rather than code.
 References: PR #74 (squash `1365e46`; review commits `906cd3b`, `8f237b0`, `750f7db`), PR #75
 (squash `c2630ba`); memory `project_trading_scanner_calibration`; n8n Trade Executor
 `fq7spfyiNcpt8Mf7`; backup `n8n-workflows/backups/trading-executor.PRE-ITEMS9-10-20260724.json`.
+
+## [2026-07-23] flowos-sms-gateway CrmAdapter refactor complete — PR #4 merged (968ef58)
+
+Extracted all GHL-specific code behind a `CrmAdapter` interface (app/adapters/: base.py ABC + OutboundPayload
+protocol, ghl.py, webhook.py) to prep the open-source SMS Gateway launch. New generic **WebhookAdapter** for
+CRMs with custom webhook formats (Seedly v1 path): dot-path outbound parser (`WEBHOOK_OUTBOUND_PARSER`),
+inbound JSON POST to `WEBHOOK_INBOUND_URL` (+ optional static auth header), optional `X-Webhook-Secret`
+outbound shared secret (constant-time compare; unset = open endpoint, flagged at boot). Adapter selection via
+**`CRM_ADAPTER` env var, default `"ghl"`** — existing deployments need no env change.
+
+**No breaking changes to GHL deployments:** AST audit proved all 27 relocated GHL functions/constants
+source-identical to pre-refactor; all 75 original tests pass with assertions untouched (import/monkeypatch
+retargets only); GHL_* vars still hard-required at boot when CRM_ADAPTER=ghl (now optional for webhook-only
+deploys, which boot with zero GHL creds). Tests **75 → 127**. Follow-up PR #5 open (docstring noting
+GHLOutboundPayload stays in app.models for test back-compat). Twilio-compatible surface deferred to v1.5.
+
+References: flowos-sms-gateway PR #4 (squash 968ef58; branch commits 568e370, c35c39f, c479280, cc612ed,
+a8c53a6), PR #5; memory `crm-adapter-refactor`.
+
+## [2026-07-24] flowos-sms-gateway v1.0 release polish — PR #6 merged (8d94d8a)
+
+Documentation/packaging pass to prep the v1.0 source ZIP that ships to $79 founding-tier buyers
+(sms.flowos.tech), who self-deploy on Railway/Fly.io/DigitalOcean. **No app/ logic changed; 127 tests still pass.**
+
+- **Buyer-facing README** restructured (intro / Features / Requirements / Quick Start / Configuration / CRM
+  Adapters / setup guides / Deployment / Testing / License / Support). Generalized Flow-OS internals to
+  placeholders (prod Railway URL, our GHL client/provider IDs, live numbers, sub-account IDs). Fixed stale refs:
+  dropped GATEWAY_INBOUND_TOKEN / X-Gateway-Token (no such token — inbound auth is per-device HMAC
+  X-Signature + X-Timestamp); migrations now "run every file in supabase/migrations/ in order".
+- **.env.example** regrouped by concern (all 15 config.py aliases; comment per var); blanked the baked-in Flow OS
+  GHL_CLIENT_ID / GHL_CONVERSATION_PROVIDER_ID (each buyer creates their own app).
+- **LICENSE** (new): FlowOs LLC commercial license — ToS Sections 2/3/5 verbatim from sms.flowos.tech/terms.
+- **Release packaging:** added .releaseignore (excludes docs/BUILD_LOG.md, docs/SOP.md, docs/internal/,
+  QCLAW_BUILD_LOG.md, LOCATIONS.md — files stay in repo, only the ZIP build skips them). Genericized supabase
+  migrations 007/008/seed_phase1 (real numbers -> +1555000000x / +61491570156, sub-account IDs ->
+  YOUR_SUB_ACCOUNT_ID, owner "Flow OS" -> YOUR_BUSINESS_NAME); real seed values preserved in the
+  release-ignored docs/internal/production-seed.sql.
+- **De-leaked tests/:** swapped the four real production numbers for placeholders (AU number kept non-+1 to
+  preserve NANP-vs-international routing in select_outbound_device); scrubbed client name "Emma" from test fn
+  names/comments; renamed 008_emma_au_to_telnyx.sql -> 008_port_number_to_telnyx.sql.
+- Held for review; merged after two review rounds resolving residuals (test numbers, migration filename, Emma).
+  Final leak scan across all shipped files: clean.
+
+References: flowos-sms-gateway PR #6 (merge 8d94d8a; branch commits 8be781d, 169c4a9, 8069a29, c3f8cbe);
+memory project_flowos_sms_gateway_v1_release.
