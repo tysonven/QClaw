@@ -17177,3 +17177,78 @@ References: PR #72 (`76c9c49`; branch commits `5957fbf` + `bbd59d1`), PR #71 (`4
 root-cause + review trail in memory `charlie-telegram-history-root-cause`; H1 origin PR #15 (2026-05-14);
 memory `feedback_adversarial_review_before_pr_ready`, `project_charlie_watcher_insecure_predecessor` (scripts now
 deleted), `project_qclaw_auth_token`.
+
+## [2026-07-24] Phase 5 Session 9 — Trade Executor pre-enable → LIVE (PR #74 items 6-10 + PR #75 UI + activation)
+
+Two PRs shipped and live trading turned on. Trade Executor `fq7spfyiNcpt8Mf7` moved from
+brakes-on to live after two adversarial review rounds on the financial path.
+
+**PR #74 (squash `1365e46`) — pre-enable brakes, items 6-10 + review fixes.**
+- **Item 6 — daily_loss_limit** enforcement in `POST /api/trading/execute`: after the
+  trading_enabled brake and before execFile, sum today's realised PnL (closed positions since
+  UTC midnight) via exported `fetchDailyRealisedLoss` (PostgREST aggregates disabled on this
+  project → sum in JS); 403 `daily_loss_limit_reached` once the day's loss meets the limit;
+  fail-closed 503 `pnl_check_unavailable` on any query trouble.
+- **Item 7 — executor min-edge gate**: front-line `Edge OK?` IF node ahead of
+  `Trading Enabled?`, edge >= `min_edge_threshold/100` read from Fetch Config (not a hardcoded
+  0.07); `Respond Rejected` on fail.
+- **Item 8 — second factor REDESIGNED mid-PR** from an HMAC confirm-token (mintable via the
+  same authToken that consumed it — one factor used twice) to an out-of-band **Telegram OTP**
+  flow: `POST /api/trading/config {trading_enabled:true}` → 202 `otp_sent` → 6-digit
+  `crypto.randomInt` OTP to `OWNER_TELEGRAM_CHAT_ID` (5-min TTL, single pending slot,
+  `timingSafeEqual`, never logged, never in any HTTP response); `POST /api/trading/confirm-enable
+  {otp}` flips the brake, single-use (consumed before the write); Telegram send failure → 503
+  fail-closed. Disable never needs an OTP and cancels any pending one.
+- **Review round 1 (`906cd3b`)** → C1 CRITICAL + H1/H2/M1/M2/M3. Fixes: **C1** boolean
+  normalisation (only `true`/`'true'` enable; `'t'`/`'TRUE'`/`'yes'`/`'on'`/`'1'` can no longer
+  slip past the JS guard into Postgres boolean coercion; the persisted value is always the
+  boolean, never the raw string); **H1** committed the live 12-node executor JSON (was a stale
+  10-node copy) so the gate is reviewable and survives redeploy; **M1** `Trading Enabled?`
+  expression; **M2** 1001-row fail-closed throw; **M3/M4** comment corrections.
+- **Review round 2 (`8f237b0`)** → items 9-10. **Item 9 — `Trading Enabled?` v2 IF node** was
+  missing its `conditions.options` block, throwing `Cannot read properties of undefined
+  (reading 'caseSensitive')` on every execution that reached it (proven in n8n exec #1165528);
+  added `{version:2,caseSensitive:false,typeValidation:loose}` and fixed the expression
+  `$json[0]?.trading_enabled` → `$json?.trading_enabled` (the HTTP node splits the PostgREST
+  array into a single row object, so the old index left the gate permanently false). **Item 10 —
+  `Respond Disabled`** path confirmed. **`Edge OK?` NULL/0 guard**: `rightValue` now falls back
+  to 7 (0.07 after /100) when `min_edge_threshold` is NULL, 0 or missing (was `null/100=0`
+  fail-open); consistent with new server-side validation rejecting `min_edge_threshold < 1`
+  (and `max_position_usdc <= 0`, `daily_loss_limit < 0` → 400). Both n8n changes applied via API
+  PUT with active=false + errorWorkflow `7kpNnMtnuDWXgWcX` preserved; pre-change export in
+  `n8n-workflows/backups/trading-executor.PRE-ITEMS9-10-20260724.json`.
+- **Accepted, not fixed:** L-1 — the `confirm-enable` rate limiter sits before auth on a
+  collapsed `127.0.0.1` IP (no `trust proxy`), so the shared bucket is actually a stronger
+  global brute-force cap on the 6-digit OTP.
+
+**PR #75 (squash `c2630ba`) — trading toggle UI fix.**
+`trToggleTrading()` ended with an unconditional `trLoadConfig()`; the server keeps reporting
+`trading_enabled=false` until the OTP is confirmed, so the reload snapped the toggle back to OFF
+on the 202 and the OTP input never appeared. Fixed with a `_trPending` flag + three-state toggle
+(**OFF / PENDING = purple accent / ON = green**): 202 → pending + OTP input shown; confirm 200 →
+on; confirm 403 → stays pending with the OTP input up for retry; disable (or clicking a pending
+toggle) → off immediately and cancels the pending OTP. Config-panel JS only, no server.js.
+Opened off `main` AFTER #74 had already squash-merged without it (a merged PR is frozen at its
+merged SHA — the fix needed a fresh branch off current main, not the already-merged feature
+branch).
+
+**LIVE TRADING ACTIVATED (2026-07-24).** `trading_config.trading_enabled=true`, Trade Executor
+`fq7spfyiNcpt8Mf7` `active=true`. Guards live: max_position = **$10**, min_edge = **7% (0.07)**,
+daily_loss_limit = **$20**. Wallet balance **$31.73 USDC**. First live trade to be monitored next
+session.
+
+**Roadmap:** rewrite the Trade Executor as a standalone **Python/FastAPI** module once we have
+live-trading experience. Motivation is the n8n IF-node / expression fragility surfaced this
+session (the `caseSensitive` crash, the array-split `$json` indexing, the `null/100` fail-open) —
+all sharp edges of expressing financial gates in n8n rather than code.
+
+**Next session queue:**
+1. **Charlie QCLAW_API_TOKEN 401 on trading config** — Charlie hits 401 reading/writing trading
+   config; likely the authToken drift path (see memory `project_qclaw_token_rotates_on_restart`).
+2. **Crete GHL replica.**
+3. **SproutCode GHL replica.**
+4. **Monitor the first live trade.**
+
+References: PR #74 (squash `1365e46`; review commits `906cd3b`, `8f237b0`, `750f7db`), PR #75
+(squash `c2630ba`); memory `project_trading_scanner_calibration`; n8n Trade Executor
+`fq7spfyiNcpt8Mf7`; backup `n8n-workflows/backups/trading-executor.PRE-ITEMS9-10-20260724.json`.
