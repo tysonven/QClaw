@@ -17354,3 +17354,74 @@ References: commit `5457c87` (main) / cherry-pick `fc0729e` (deployed branch
 Simulations" (batchSize=1); failed execs `1177418` / `1177555` / `1177688`; memory
 `project_trading_scanner_calibration`. This build-log entry committed direct to main via an
 isolated git worktree (keeps it off the pinned deploy branch and out of the live checkout).
+
+## [2026-07-27] Phase 5 Session 10 continuation — Scanner `continueOnFail` + Charlie trading-api 401 resolved
+
+Follows the Session 10 base entry (`b85f50b`, NaN `jsonify` guard). Two items closed here: the
+Market Scanner's last remaining fail-hard path, and the Charlie→trading-api `401` that was the
+reason "read the live trading config" round-trips kept coming back empty.
+
+### 1. Scanner `continueOnFail` — one bad asset no longer aborts the whole run
+The NaN guard (`5457c87` / cherry-pick `fc0729e`) stopped the *worker* returning invalid JSON, but
+the n8n side still failed the **entire** hourly run if any single "Run Market Simulations" item
+errored — including the clean **400** the new stats guard now returns on a sparse-data asset. Set
+**`continueOnFail: true`** on the **Run Market Simulations** node (scanner `3YahxqOguET3pifj`) so a
+per-asset error surfaces as an error item instead of aborting the batch. The downstream **Build Run
+Summary** node already handles this gracefully — it counts error items (`simErrors++`) and
+continues — so no summary-side change was needed. Backup taken before the edit:
+`trading-market-scanner.PRE-CONTINUEFAIL-20260727.json`.
+Committed **`3bf81a3` on main**; cherry-picked as **`368c830`** onto the deployed branch
+`cc/trading-pre-enable-678-20260723` (same pinned-checkout reason as the worker fix — the live
+scanner artifact tracks the branch, not main).
+
+### 2. Charlie trading-api `401` resolved — stale secret vs live authToken
+**Symptom.** Charlie's `trading-api` skill (`Authorization: Bearer {{secrets.dashboard_auth_token}}`,
+base `http://localhost:4000/api/trading`) returned `401` on every call, so "read live trading
+config" produced nothing.
+**Root cause (read-only audit first).** The encrypted secrets store
+(`/root/.quantumclaw/.secrets.enc`) held a **stale** `dashboard_auth_token` = `18586775…`, while the
+live dashboard token `config.json` → `dashboard.authToken` = `e609f28b…`. The live token was minted
+**2026-07-06** (`dashboard.tokenCreatedAt=1783340477444` → 2026-07-06T12:21:17Z) and has **never been
+re-minted since** — it survived all **119** PM2 restarts (plain restarts don't re-mint; only the
+`qclaw dashboard` 24h-expiry path does). So the secret simply predated the July-6 token and was never
+updated when it changed. The skill HTTP executor resolves the header via `this.secrets.get()` and
+substitutes `(val || '').trim()` on a miss (`src/tools/registry.js:1436-1437`) — so a stale value is
+sent silently and fails as a bare `401` rather than a clear error.
+**Fix.** Updated the secret in place on the droplet via
+`SecretStore.set('dashboard_auth_token', <config authToken>)` — AES-256-GCM re-encrypt + atomic
+`tmp→rename` (`_save()`); 20/20 secrets preserved. Backup:
+`.secrets.enc.bak.pre-dashboard-token-sync-20260727`.
+**PM2 restart was required.** The earlier assumption ("secrets are read at tool-call time, no restart
+needed") was **wrong**: `SecretStore.load()` decrypts into an in-memory object at boot and
+`SecretStore.get()` reads *that* object — writing `.secrets.enc` on disk does not touch the running
+process. Only after `sudo pm2 restart quantumclaw --update-env` reloaded the in-memory store did
+Charlie resolve the Bearer token correctly.
+**Live-verified.** Post-restart, Charlie returned the correct live trading config:
+**`trading_enabled: true`**, max **$10**, min edge **7%**, daily loss **$20**.
+
+### 3. Root cause to fix next session — secret reads are boot-cached
+`SecretStore.get()` serves from the in-memory object loaded at boot, so **any** secret update needs a
+PM2 restart to take effect — brittle and easy to forget (it just cost us a wrong "no restart needed"
+call). **Proper fix:** have Charlie's trading-api path read `dashboard_auth_token` **directly from
+`config.json` at tool-call time** rather than from the secrets store, since `config.json` →
+`dashboard.authToken` is the source of truth and is what actually gets re-minted. Secondary
+hardening: make the skill HTTP executor fail loudly on a missing/empty secret instead of sending
+`Bearer ` with an empty value.
+
+### Next session queue
+1. **Fix `dashboard_auth_token` drift** — Charlie reads it from `config.json` at tool-call time (not
+   the boot-cached secrets store).
+2. **Crete GHL replica.**
+3. **SproutCode GHL replica.**
+4. **Monitor first live trade** — the scanner path is now unblocked end-to-end (worker NaN guard +
+   `continueOnFail`); watch for the first qualifying edge → execution.
+
+References: commit `3bf81a3` (main) / cherry-pick `368c830` (deployed branch
+`cc/trading-pre-enable-678-20260723`); n8n scanner `3YahxqOguET3pifj`, node "Run Market Simulations";
+backups `trading-market-scanner.PRE-CONTINUEFAIL-20260727.json` +
+`.secrets.enc.bak.pre-dashboard-token-sync-20260727`; `config.json dashboard.tokenCreatedAt=1783340477444`
+(2026-07-06T12:21:17Z); auth path `src/dashboard/server.js:138` (in-memory `this.config`) +
+`src/tools/registry.js:1436-1437` (secret substitution); memory `project_qclaw_auth_token`,
+`project_qclaw_token_rotates_on_restart`, `project_trading_scanner_calibration`. This build-log entry
+committed direct to main via an isolated git worktree (keeps it off the pinned deploy branch and out
+of the live checkout).
