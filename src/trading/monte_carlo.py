@@ -115,6 +115,9 @@ def run_simulation(asset, target, horizon_days=30, question=''):
     mu = float(np.mean(log_returns))
     sigma = float(np.std(log_returns))
 
+    if not np.isfinite(mu) or not np.isfinite(sigma) or sigma <= 0:
+        return None, f"Invalid statistics for {asset}: mu={mu}, sigma={sigma} (possible NaN/sparse data)"
+
     dt = 1.0  # mu and sigma are daily, so dt=1 day per step
     steps = horizon_days
 
@@ -199,6 +202,12 @@ def simulate():
         result, error = run_simulation(asset, target, horizon, question)
         if error:
             return jsonify({"error": error}), 400
+
+        def _sanitize(v):
+            if isinstance(v, float) and not np.isfinite(v):
+                return None
+            return v
+        result = {k: _sanitize(v) for k, v in result.items()}
 
         return jsonify(result)
     except Exception as e:
