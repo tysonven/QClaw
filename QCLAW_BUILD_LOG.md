@@ -17297,3 +17297,60 @@ Documentation/packaging pass to prep the v1.0 source ZIP that ships to $79 found
 
 References: flowos-sms-gateway PR #6 (merge 8d94d8a; branch commits 8be781d, 169c4a9, 8069a29, c3f8cbe);
 memory project_flowos_sms_gateway_v1_release.
+
+## [2026-07-27] Phase 5 Session 10 — Scanner NaN crash fixed (monte_carlo jsonify guard)
+
+Returned from a 3-day break. Live trading has been on since 2026-07-24
+(`trading_config.trading_enabled=true`, Trade Executor `fq7spfyiNcpt8Mf7` `active=true`;
+max_position **$10** / min_edge **7% (0.07)** / daily_loss_limit **$20**; wallet **$31.73 USDC**)
+— but **no trade has executed yet**. The reason surfaced this session: the Market Scanner has
+been failing on every hourly run.
+
+**Crash diagnosis (read-only first).** Scanner `3YahxqOguET3pifj` erroring hourly — n8n
+executions `1177418` (13:00Z), `1177555` (14:00Z), `1177688` (15:00Z) all `status: error`,
+`lastNodeExecuted: Run Market Simulations`, `error.message: Invalid JSON in response body`. Root
+cause is **NaN propagation** in the monte_carlo worker, not n8n: when yfinance returns
+sparse/gappy data, `np.diff(np.log(prices))` carries NaN and `np.mean`/`np.std` (which are **not**
+nan-aware) yield `mu=NaN`/`sigma=NaN`; Flask's `jsonify()` then serialises a bare `NaN` literal,
+which is invalid JSON, so the n8n HTTP node rejects the otherwise-200 body. Confirmed `batchSize=1`
+on Run Market Simulations (ruling out a repeat of the July 6 batching regression). The **21d
+lookback** (Brief B, horizon <=35d) is *more* exposed than the old 90d window — over ~22 samples a
+single bad tail bar poisons the entire statistic, and the only prior guard (`len(data) < 10`)
+counts rows on the full frame *before* the slice, so it cannot see it.
+
+**Fix — `fix(trading): guard NaN mu/sigma in monte_carlo before jsonify`.** Two guards in
+`src/trading/monte_carlo.py`:
+1. **Primary** — right after `mu`/`sigma` are computed: `if not np.isfinite(mu) or not
+   np.isfinite(sigma) or sigma <= 0:` returns a clean **400** (`Invalid statistics for {asset}:
+   mu=... sigma=... (possible NaN/sparse data)`) instead of a NaN-bearing 200.
+2. **Backstop** — in `/simulate` before `jsonify(result)`, a `_sanitize()` maps any non-finite
+   top-level float to `None`.
+Committed `5457c87` on **main**; cherry-picked as `fc0729e` onto the deployed branch
+`cc/trading-pre-enable-678-20260723` — the live trading-worker checkout (qclaw, root PM2 id 1,
+`/root/QClaw/src/trading/monte_carlo.py`, port 4001) is pinned to **that branch, not main**, so a
+main-only commit would not have deployed (a `pm2 restart` reloads the branch file). Both
+compile-checked. No PR — two-line safety fix, no financial-execution path touched, brakes
+unchanged.
+
+**Deploy + smoke test.** `sudo -i pm2 restart trading-worker --update-env` → online, `/health`
+200. `POST /simulate {asset:btc, horizon_days:1}` → **HTTP 200** with finite `daily_mu` (0.000381)
+/ `daily_sigma` (0.01553), no NaN.
+
+**Residual (noted, not fixed).** Fix 2 sanitizes only top-level floats; nested `macro_factors`
+floats are not covered. Low risk — `fetch_macro` already null-guards its fields (returns
+`current: None`, `change_pct: 0`).
+
+**Watching next.** The next hourly scanner run is the first end-to-end test with the NaN fix live
+— watching for a clean completion and, if any edge qualifies, the **first live trade execution**.
+
+**Next session queue:**
+1. **Charlie QCLAW_API_TOKEN 401 on trading config** — likely the authToken drift path (memory
+   `project_qclaw_token_rotates_on_restart`).
+2. **Crete GHL replica.**
+3. **SproutCode GHL replica.**
+
+References: commit `5457c87` (main) / cherry-pick `fc0729e` (deployed branch
+`cc/trading-pre-enable-678-20260723`); n8n scanner `3YahxqOguET3pifj`, node "Run Market
+Simulations" (batchSize=1); failed execs `1177418` / `1177555` / `1177688`; memory
+`project_trading_scanner_calibration`. This build-log entry committed direct to main via an
+isolated git worktree (keeps it off the pinned deploy branch and out of the live checkout).
