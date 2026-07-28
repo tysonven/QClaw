@@ -10,7 +10,10 @@ description: Trading room HTTP surface — simulations, positions, config, Monte
 
 ## Auth
 Base URL: http://localhost:4000/api/trading
-Header: Authorization: Bearer {{secrets.dashboard_auth_token}}
+Header: Authorization: Bearer {{config.dashboard.authToken}}
+# Note: resolves from live config at call time — no drift on restart.
+# Supersedes the dashboard_auth_token secret, which is left in the store
+# (unreferenced) rather than deleted.
 
 ## Endpoints
 GET /simulations - Returns last 10 trading simulations

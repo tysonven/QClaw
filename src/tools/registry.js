@@ -590,6 +590,16 @@ export const PRESET_SERVERS = {
 };
 
 
+/**
+ * Config paths a skill's {{config.X}} template may resolve.
+ *
+ * The config object also holds dashboard.pin and dashboard.tunnelToken,
+ * neither of which any skill has business interpolating into an outbound
+ * request — so this is an allowlist, not a denylist. Anything not listed
+ * resolves to an empty string.
+ */
+const CONFIG_TEMPLATE_ALLOWLIST = new Set(['dashboard.authToken']);
+
 export class ToolRegistry {
   constructor(config, secrets) {
     this.config = config;
@@ -1115,6 +1125,32 @@ export class ToolRegistry {
     }
   }
 
+  /**
+   * {{config.X}} resolves a dot-path into the live in-memory config object
+   * at tool-call time — always current, no restart required. Use for values
+   * that change at runtime (e.g. dashboard.authToken), which the boot-time
+   * secret store cannot track without a restart.
+   *
+   * this.config is the same object the dashboard auth middleware reads
+   * (DashboardServer takes qclaw.config by reference), so a token resolved
+   * here cannot drift from the one that validates it.
+   *
+   * Non-allowlisted paths and missing keys both resolve to an empty string —
+   * the request then fails at the remote auth check, the same way a missing
+   * secret does, rather than leaking an unrelated config value.
+   */
+  _resolveConfigTemplates(value) {
+    if (typeof value !== 'string' || !value.includes('{{config.')) return value;
+    return value.replace(/\{\{config\.([^}]+)\}\}/g, (_match, path) => {
+      if (!CONFIG_TEMPLATE_ALLOWLIST.has(path)) {
+        log.warn(`[ToolRegistry] {{config.${path}}} is not an allowlisted config template — resolved to empty`);
+        return '';
+      }
+      const val = path.split('.').reduce((obj, key) => obj?.[key], this.config) ?? '';
+      return String(val).trim();
+    });
+  }
+
   async _executeAPITool(preset, toolDef, args) {
     let apiKey = null;
     if (preset.secretKey) {
@@ -1413,6 +1449,7 @@ export class ToolRegistry {
           const val = await this.secrets.get(match[1]);
           url = url.replace(match[0], (val || '').trim());
         }
+        url = this._resolveConfigTemplates(url);
 
         // Resolve {{param}} placeholders from args (path- or query-string position).
         // Consumed args are tracked so they aren't re-appended as a query string below.
@@ -1430,17 +1467,15 @@ export class ToolRegistry {
         // Resolve all headers — replace {{secrets.key}} with actual secret values
         // .trim() prevents stray newlines/whitespace from breaking auth headers
         for (const [k, v] of Object.entries(preset.headers || {})) {
-          if (v && v.includes('{{secrets.')) {
-            const secretKey = v.match(/\{\{secrets\.([^}]+)\}\}/)?.[1];
+          let resolved = v;
+          if (resolved && resolved.includes('{{secrets.')) {
+            const secretKey = resolved.match(/\{\{secrets\.([^}]+)\}\}/)?.[1];
             if (secretKey) {
               const val = await this.secrets.get(secretKey);
-              headers[k] = v.replace(`{{secrets.${secretKey}}}`, (val || '').trim());
-            } else {
-              headers[k] = v;
+              resolved = resolved.replace(`{{secrets.${secretKey}}}`, (val || '').trim());
             }
-          } else {
-            headers[k] = v;
           }
+          headers[k] = this._resolveConfigTemplates(resolved);
         }
 
         // Build query params or body
