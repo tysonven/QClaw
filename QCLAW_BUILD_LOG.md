@@ -17732,3 +17732,276 @@ With item 10 now fixed, execution is armed and the refusal path returns a correc
 References: PR #78 (`1d7f31c`), commit `33c5ad8`. `src/trade_engine/{config,models,database,scheduler,main}.py`,
 `ecosystem.config.cjs`, `src/agents/skills/trading.md`. Memory: `project_trade_engine`,
 `project_qclaw_pm2_host_gotchas`, `project_trading_scanner_calibration`.
+
+## [2026-07-28] Phase 5 Session 11 final — Trade Engine Sessions 1–3 shipped (PR #78/#79/#80) + item 10
+
+Full-day record. Four PRs merged and one live n8n fix. Two entries above already
+cover parts of this day in depth — `{{config.X}}` (PR #77) at the Session 11
+heading, and Trade Engine Session 1 + the `Respond Disabled` fix at the Session 11
+continuation heading. This entry is the consolidated arc and gives Sessions 2 and
+3 their full treatment, which the earlier entries predate.
+
+### The day in order
+
+| # | Work | Commit |
+|---|---|---|
+| 1 | PR #77 — `{{config.X}}` skill-template resolver | `0ba906d` |
+| 2 | Item 10 — `Respond Disabled` node, live n8n PUT | `33c5ad8` |
+| 3 | PR #78 — Trade Engine Session 1 (foundation) | `1d7f31c` |
+| 4 | PR #79 — Trade Engine Session 2 (Scanner port) | `ad332df` |
+| 5 | PR #80 — Trade Engine Session 3 (Analyst) | `649ff14` |
+
+### 1. PR #77 (`0ba906d`) — `{{config.X}}` resolver ends `dashboard_auth_token` drift
+
+Skill templates can now read live config at call time via `{{config.X}}`, resolved
+against paths in `CONFIG_TEMPLATE_ALLOWLIST`. `{{secrets.X}}` remains boot-cached
+and still needs a restart; `{{config.X}}` does not, which is the structural end of
+the token-drift problem — a rotated `dashboard.authToken` is picked up on the next
+tool call with no re-registration. Full detail at the Session 11 heading above.
+
+### 2. Item 10 (`33c5ad8`) — `Respond Disabled` returned 200 on a refused trade
+
+Trade Executor `fq7spfyiNcpt8Mf7`. The disabled-trading branch had no leading `=`
+on `responseBody` (so n8n emitted the literal template text) and no `responseCode`
+(so it answered **HTTP 200**). A caller checking status codes read a refused trade
+as success. Fixed live to `{ "options": { "responseCode": 403 }, "responseBody":
+"={{ … }}" }`.
+
+The first PUT failed, verbatim:
+
+```
+HTTP ERROR 400
+{"message":"request/body/settings must NOT have additional properties"}
+```
+
+`settings` carried `availableInMCP` and `timeSavedMode`. **Only `timeSavedMode` is
+actually rejected** — the full `workflowSettings` property list from
+`/api/v1/openapi.yml` is `saveExecutionProgress`, `saveManualExecutions`,
+`saveDataErrorExecution`, `saveDataSuccessExecution`, `executionTimeout`,
+`errorWorkflow`, `timezone`, `executionOrder`, `callerPolicy`, `callerIds`,
+`timeSavedPerExecution`, `availableInMCP`. A truncated read of that schema led to
+dropping `availableInMCP` too, flipping it `true` → `false` on a live financial
+workflow; a follow-up PUT restored it and live `settings` ended byte-identical to
+the pre-session state. `availableInMCP` was **then set to `false` deliberately** at
+the start of Session 2, as its own decision — it had been exposing the Trade
+Executor as an agent-callable MCP tool.
+
+Verified after: `=` prefix present, `responseCode: 403`, `active: true` preserved,
+`errorWorkflow` preserved, all 12 nodes present, `Respond Disabled` the only node
+changed, connections byte-identical. `activeVersionId` advanced in lockstep with
+`versionId`, so the change is **published**, not left as a draft.
+
+### 3. PR #78 (`1d7f31c`) — Trade Engine Session 1: foundation
+
+`src/trade_engine/` — FastAPI, APScheduler wired with no jobs, Supabase access
+layer, `trading_positions`/`trading_config` helpers, PM2 process. Four corrections
+against the brief, each caught in audit and confirmed empirically:
+
+**Port 4003, not 4002.** `clipper-worker` has owned `0.0.0.0:4002` for 55 days and
+serves its own `/health` returning 200 — binding 4002 would have produced a health
+check that passed while hitting the wrong service. Bound to `127.0.0.1`.
+
+**`src/trade_engine/`, not `src/trade-engine/`.** A hyphen is not a valid Python
+module path, so the briefed `__init__.py` and the briefed verification command
+could not both have worked.
+
+**Secrets via `python-dotenv`, not PM2 `env_file`.** PM2 6.0.14 does not inject
+`/root/.quantumclaw/.env` into child processes on this host. Probe output, verbatim:
+
+```
+SUPABASE_URL_PRESENT=false
+ANTHROPIC_PRESENT=false
+TOTAL_ENV_KEYS=57
+```
+
+Corroborated against the live `trading-worker` `/proc/<pid>/environ`, which carries
+no QClaw secrets. As briefed — fail-fast validation plus `env_file` — this was a
+guaranteed crash loop into `max_restarts: 10`.
+
+**`ecosystem.config.cjs`, not `.js`.** `package.json` sets `"type": "module"`:
+
+```
+[PM2][ERROR] File /root/QClaw/ecosystem.config.js malformated
+ReferenceError: module is not defined in ES module scope
+This file is being treated as an ES module because it has a '.js' file extension and
+'/root/QClaw/package.json' contains "type": "module". To treat it as a CommonJS script,
+rename it to use the '.cjs' file extension.
+```
+
+There was no ecosystem file on the host at all before this session — all five
+existing processes were started ad-hoc via the PM2 CLI and live only in
+`/root/.pm2/dump.pm2`.
+
+### 4. PR #79 (`ad332df`) — Trade Engine Session 2: Scanner port
+
+`scanner.py` ports the n8n Market Scanner (`3YahxqOguET3pifj`) into Python. The n8n
+workflow keeps running untouched; the Python scanner runs alongside it, triggered
+manually via `POST /scan`. `Analyse Edge` and `Build Run Summary` are line-by-line
+ports: **9 assets, not the 6 in the brief** — `silver`, `wti` and `brent` are in the
+live node too — per-asset `minPrice` sanity floors, sports exclusion, weekend
+commodity skip, YES bounds 0.01–0.99, pre-sim volume floor 20,000, horizon
+`0 < d <= 35`, target parsing over `$`-matches and the trigger regex with k/m/b
+expansion, ≤3 rungs per event ladder nearest `yes~0.5`, global top-30 by volume.
+
+Six deliberate divergences from n8n, all confirmed before build:
+
+1. **Paginates to 200 markets.** The Gamma API caps `limit` at 100, so the n8n
+   `Fetch Polymarket` node has been asking for 200 and silently receiving 100 since
+   it was written. Mirroring that would bake in a defect. n8n is still wrong — see
+   Follow-ups.
+2. **`edge` is a raw fraction throughout.** n8n buckets on the fraction but writes
+   `edge * 100` into its summary rows. Position sizing is fraction-based, so a
+   percent leak would misprice by 100×.
+3. Dedup on `conditionId` at fetch **and** n8n's original `id || conditionId`
+   seen-set inside `analyse_edge`.
+4. `market_url` constructed from `slug`; n8n never produced one.
+5. **`_js_parse_float` mimics JavaScript `parseFloat`.** Python's `float()` raises
+   on trailing junk where JS returns the leading numeric prefix — that difference
+   changes which markets survive the filter, and the two scanners must agree while
+   running side by side.
+6. **60s timeout** to match the live n8n node (the brief said 30s); a 30s cut would
+   drop commodity sims that n8n keeps.
+
+**`trading_simulations.market_id` stays NULL.** The column is `uuid` with an FK to
+`trading_markets.id`; Polymarket `id` is a numeric string and `conditionId` is
+66-char hex, and `trading_markets` is empty. Decisive:
+
+```
+total 5649 | with_market_id 0 | with_raw_pm_id 4719
+```
+
+All 5,649 pre-existing rows are NULL with the id at
+`raw_output.polymarket_market_id`. `write_simulation` now **raises** if a caller
+sets `market_id`, so the convention cannot drift silently.
+
+Live verification: `POST /scan` 200 in 19.6s — **1,395 markets → 18 candidates → 18
+simulations, 0 errors**, 2 high-edge, 3 no-edge, 13 neutral; 18 rows written, all
+with `market_id` NULL. A later run from merged `main` returned **1,437 markets → 18
+candidates**, and the first Session 3 run **1,408 → 19 candidates → 2 high-edge**.
+`best_trade` is the max-abs-edge market and all sizing lands in [$3, $10].
+
+### 5. PR #80 (`649ff14`) — Trade Engine Session 3: Analyst
+
+`analyst.py` — Claude reviews the scanner's `best_trade` against historical
+performance and returns `proceed` / `pass` / `reduce`. Advisory only: `reduce`
+halves the **proposed** size (floored at $3); nothing executes. New `POST /analyse`,
+`analyst_available` on `/health`, `analyst_recommendation` + `analyst_skip` on the
+run summary.
+
+**The live smoke test caught a bug that would otherwise have shipped silently.**
+Asked for "JSON only", `claude-sonnet-4-6` wraps its answer in a markdown fence:
+
+```
+'```json\n{"ok": true}\n```'
+```
+
+A naive `json.loads()` fails on **every single call**, so the Analyst would have
+returned `'pass'` 100% of the time with clean logs and a healthy-looking endpoint.
+Fixed with `output_config.format` (structured outputs), which makes schema-valid
+JSON a server-side guarantee. **Structured outputs work on Sonnet 4.6** despite the
+published supported-model list omitting it — confirmed by live call before relying
+on it. A test pins the exact fenced shape so the regression cannot return.
+
+`temperature: 0.2` is accepted on Sonnet 4.6 and **400s on Sonnet 5**:
+
+```
+BadRequestError: Error code: 400 - {'type': 'error', 'error': {'type':
+'invalid_request_error', 'message': '`temperature` is deprecated for this model.'}}
+```
+
+Numeric bounds are not supported in output schemas, so `confidence` is clamped
+client-side. On Sonnet 4.6 omitting `thinking` means no thinking, so `max_tokens:
+300` is safe — on Opus 5 / Sonnet 5 thinking is on by default and would consume it.
+
+The Analyst never raises: API errors, timeouts, malformed JSON and unexpected SDK
+shapes all return `pass` with `analyst_api_error` / `analyst_parse_error`. One
+deliberate exception — **`BaseException` still propagates**. A test originally
+asserted `KeyboardInterrupt` was swallowed; that test was wrong, not the code, since
+catching it would make the process unkillable.
+
+`TradePosition` carries neither `asset` nor `question`, only `simulation_id`, so
+both resolve from the linked `trading_simulations` row in one batched read
+(`get_simulations_by_ids`) and degrade to `None` when there is no link. A trade with
+no resolvable asset is **excluded** from the per-asset tallies rather than bucketed
+under a guess. `raw_response` is retained for debugging but stripped from every API
+response — verified absent from a live `/scan` payload.
+
+`src/trading/polymarket_scanner.py` **deleted**: unreferenced, not in PM2 or cron,
+and its `save_to_supabase` wrote six columns that do not exist on `trading_markets`
+(`market_id`, `end_date`, `volume`, `condition_id`, `slug`, `last_scanned_at` vs the
+real `polymarket_id`, `close_date`, `volume_usd`, `last_checked_at`) — which is why
+that table has never held a row.
+
+**CI fix (`4475b71`).** `tests/test_analyst.py` (20 stdlib-unittest tests) was
+appended to the `npm test` chain, but the workflow installed Node dependencies only
+and both matrix legs failed at import:
+
+```
+ERROR: test_analyst (unittest.loader._FailedTest.test_analyst)
+ImportError: Failed to import test module: test_analyst
+Traceback (most recent call last):
+  File "/usr/lib/python3.12/unittest/loader.py", line 137, in loadTestsFromName
+    module = __import__(module_name)
+  File "/home/runner/work/QClaw/QClaw/tests/test_analyst.py", line 29, in <module>
+    from src.trade_engine import analyst as analyst_mod  # noqa: E402
+  File "/home/runner/work/QClaw/QClaw/src/trade_engine/analyst.py", line 36, in <module>
+    import anthropic
+ModuleNotFoundError: No module named 'anthropic'
+```
+
+All 49 node suites passed in the same run; only the Python module failed to load.
+Added `actions/setup-python@v5` + `pip install -r src/trade_engine/requirements.txt`
+ahead of the npm steps. Note the repo's *other* Python test
+(`tests/clipper/test_smart_crop_filter.py`) solves this by stubbing its runtime deps
+instead — installing them was chosen so a genuine dependency break in
+`src/trade_engine/` fails CI rather than passing against stubs. Post-fix: `lint`
+pass, `test (20)` pass, `test (22)` pass, with `Ran 20 tests … OK` confirmed in the
+job log rather than inferred from the check mark.
+
+### Infrastructure findings
+
+1. **`trading-worker` is internet-reachable and unauthenticated.**
+   `http://138.68.138.214:4001/health` returns 200 from the open internet; `/simulate`
+   is reachable too. No `ufw` on the host (a cloud firewall allows 4001 but not 4002).
+   Needs its own brief: rebind `0.0.0.0:4001` → `127.0.0.1:4001`.
+2. **Position Monitor writes columns that do not exist.**
+   `UYA0JppH7eqyI7fQ` PATCHes `current_price` and `close_reason`; the real columns are
+   `exit_price` and `exit_reason`. Every close would 400. Latent only because
+   `trading_positions` is empty — it triggers on the first position close. Scheduled
+   for Session 6.
+3. **n8n scanner under-fetches.** `Fetch Polymarket` asks `limit=200`; Gamma caps at
+   100. The Python port paginates properly, so the two scanners now see different
+   market universes while running in parallel. Separate one-node fix.
+4. **PM2 `env_file` is broken host-wide**, and ecosystem configs must be `.cjs` —
+   relevant to any future process registration on this host.
+
+### Brake state — both OFF
+
+Live-verified: `trading_config.trading_enabled` = **`true`**, Trade Executor
+`fq7spfyiNcpt8Mf7` = **`active: true`**. Both the 2026-07-27 and 2026-07-28 briefs
+asserted "both brakes remain ON"; they are not, and `src/agents/skills/trading.md`
+was corrected in PR #78 (it had been documenting both as off with a stale 2026-07-23
+snapshot). Do not take the brake state from a brief — re-read config and n8n
+active-state.
+
+`trading_positions` remains **0 rows** — no trade has ever been placed. Consequently
+the Analyst returns `insufficient_history` on **every** call and will keep doing so
+until 10 trades resolve. With item 10 fixed, the refusal path now returns a correct
+403 instead of a 200.
+
+### Next session queue
+
+1. **Session 4 — Telegram approval gate.**
+2. **Session 5 — Executor.** Adversarial review required: first component on the
+   live financial path.
+3. **Session 6 — Position monitor + learning loop**, including the
+   `current_price`/`close_reason` column fix above.
+4. **`trading-worker` port binding fix** (own brief).
+5. **n8n scanner pagination fix** (own brief).
+
+References: PR #77 `0ba906d`, item 10 `33c5ad8`, PR #78 `1d7f31c`, PR #79 `ad332df`,
+PR #80 `649ff14`, CI fix `4475b71`. `src/trade_engine/{config,models,database,scanner,analyst,scheduler,main}.py`,
+`ecosystem.config.cjs`, `tests/test_analyst.py`, `.github/workflows/ci.yml`.
+Memory: `project_trade_engine`, `project_qclaw_pm2_host_gotchas`,
+`project_trading_scanner_calibration`. Build-log entry committed direct to main via
+an isolated git worktree at `origin/main`, keeping the live checkout untouched.
