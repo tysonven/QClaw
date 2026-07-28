@@ -1,5 +1,5 @@
 {
-    "updatedAt": "2026-07-28T12:00:01.192Z",
+    "updatedAt": "2026-07-28T12:18:28.315Z",
     "createdAt": "2026-04-03T11:49:20.217Z",
     "id": "fq7spfyiNcpt8Mf7",
     "name": "Trading - Trade Executor",
@@ -387,7 +387,7 @@
     "settings": {
         "executionOrder": "v1",
         "callerPolicy": "workflowsFromSameOwner",
-        "availableInMCP": false,
+        "availableInMCP": true,
         "errorWorkflow": "7kpNnMtnuDWXgWcX",
         "timeSavedMode": "fixed"
     },
@@ -396,7 +396,7 @@
     "pinData": {},
     "versionId": "0e6e5856-a7a8-49f0-b4fb-d2f797f347af",
     "activeVersionId": "0e6e5856-a7a8-49f0-b4fb-d2f797f347af",
-    "versionCounter": 85,
+    "versionCounter": 88,
     "triggerCount": 1,
     "shared": [
         {

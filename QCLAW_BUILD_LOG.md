@@ -17674,10 +17674,20 @@ Diffed pre/post: `Respond Disabled` is the **only** node changed, connections by
 82 → 85), so the change is **published**, not stranded as a draft — the failure mode logged under
 `project_n8n_edit_workflow_no_api_key` does not apply to the API PUT path.
 
-**Side effect, accepted:** `settings.availableInMCP` flipped `true` → `false`, because the API cannot
-round-trip a key its own schema rejects. The Market Scanner took the same hit on its calibration PUT
-(its live value is `false` while the repo mirror still shows `true`). For a live financial execution
-path, dropping the MCP surface is the safe direction. `timeSavedMode: "fixed"` survived server-side.
+**Settings: no net change, after a self-inflicted detour.** The first PUT filtered `settings` using a
+truncated read of the schema and dropped `availableInMCP` along with `timeSavedMode`, flipping
+`availableInMCP` `true` → `false`. That was wrong. Only `timeSavedMode` is rejected — the full
+`workflowSettings` property list, read back from `/api/v1/openapi.yml`, is `saveExecutionProgress`,
+`saveManualExecutions`, `saveDataErrorExecution`, `saveDataSuccessExecution`, `executionTimeout`,
+`errorWorkflow`, `timezone`, `executionOrder`, `callerPolicy`, `callerIds`, `timeSavedPerExecution`,
+`availableInMCP`. A follow-up PUT restored `availableInMCP: true`. Live `settings` is now
+byte-identical to the pre-session state and `Respond Disabled` is the only node changed.
+`timeSavedMode: "fixed"` survives server-side whether or not it is in the PUT body.
+
+Worth deciding separately: `availableInMCP: true` exposes the Trade Executor as an MCP tool, i.e.
+callable by an agent. On a live financial execution path that may be worth turning off deliberately
+— as a decision, not as PUT collateral. The Market Scanner is already `false`, having taken exactly
+this accidental hit during its calibration PUT.
 
 Backup at `n8n-workflows/backups/trading-executor.PRE-RESPOND-DISABLED-FIX-20260728.json`. The
 canonical mirror `n8n-workflows/trading-executor.json` was patched targeted rather than refreshed
