@@ -1,0 +1,13 @@
+# trade-engine dependencies.
+# Only apscheduler was absent from the host at Session 1; the rest are already
+# installed system-wide and pinned here as lower bounds so a fresh host works.
+# Install: pip3 install -r src/trade_engine/requirements.txt --break-system-packages
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+apscheduler>=3.10.0
+httpx>=0.27.0
+pydantic>=2.0.0
+anthropic>=0.25.0
+# Required because PM2 env_file does not inject /root/.quantumclaw/.env on this
+# host — config.py loads it with python-dotenv instead. See config.py docstring.
+python-dotenv>=1.0.0

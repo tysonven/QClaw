@@ -24,11 +24,16 @@ Live execution requires BOTH `trading_config.trading_enabled = true` AND the
 Trade Executor workflow active. Never enable either without explicit
 confirmation from Tyson in the current conversation.
 
-Status snapshot (2026-07-23, verify via the n8n API before acting):
+Status snapshot (2026-07-28, verify via the n8n API before acting):
 - Position Monitor, Market Scanner, Weekly Analyst — ACTIVE (monitoring /
   analysis / notification only; none of these place trades).
-- Trade Executor — INACTIVE by design. Live execution is OFF.
-- `trading_config.trading_enabled` = false.
+- Trade Executor — **ACTIVE**. Both execution brakes are currently OFF.
+- `trading_config.trading_enabled` = **true**.
+
+  Live execution is ARMED as of this snapshot. `trading_positions` is still
+  empty (no trade has ever been placed), so nothing has fired yet — but the
+  gate described above is open, not closed. Both brakes were previously
+  documented as off on 2026-07-23; that snapshot was stale.
 
 ## System Architecture
 
@@ -56,8 +61,9 @@ convenience — always verify active-state via the API before acting.
 
 Supabase table `trading_config` — a single-row table (id=1) with columns
 (NOT a key/value store):
-- trading_enabled (boolean): false — the live execution gate. ALWAYS confirm
-  with Tyson before setting true.
+- trading_enabled (boolean): **true** as of 2026-07-28 — the live execution
+  gate, currently OPEN. ALWAYS confirm with Tyson before changing it in
+  either direction.
 - max_position_usdc: 10
 - min_edge_threshold: 7 — whole-number percent (7 = 7%). Mirrors the
   scanner's high-edge threshold for reference ONLY; nothing enforces it
