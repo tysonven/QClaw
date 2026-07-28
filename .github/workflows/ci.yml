@@ -21,6 +21,14 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies
+        run: pip install -r src/trade_engine/requirements.txt
+
       - name: Install dependencies
         run: npm install
 
