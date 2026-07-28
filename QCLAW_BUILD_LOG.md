@@ -17559,3 +17559,166 @@ References: commit `2404496` (`fix/config-template-resolver`), cherry-pick `7549
 Memory: `project_qclaw_auth_token`, `project_qclaw_token_rotates_on_restart`,
 `project_trading_scanner_calibration`. Build-log entry committed via an isolated git worktree to keep
 it off the live checkout.
+
+## [2026-07-28] Phase 5 Session 11 continuation — Trade engine Session 1 foundation (PR #78) + Trade Executor `Respond Disabled` fix
+
+Two pieces of work: the scaffold for the standalone Python trade engine that will replace the n8n
+trading cluster, and the item-10 go-live blocker on the Trade Executor. Session 11 proper (the
+`{{config.X}}` skill-template resolver, PR #77) is the entry above; this is same-day follow-on.
+
+### 1. Trade engine Session 1 — foundation shipped, PR #78 merged (`1d7f31c`)
+
+`src/trade_engine/` — FastAPI app, APScheduler wired with no jobs registered, Supabase access layer,
+`trading_positions`/`trading_config` helpers, PM2 process. Scanner, Analyst and Executor land in
+Sessions 2-6. No execution path in this session; no n8n workflow touched; `trading_config` not
+modified.
+
+Live on the host: PM2 `trade-engine`, online, 0 unstable restarts, `pm2 save` written.
+
+```
+curl http://localhost:4003/health
+{"status":"ok","version":"0.1.0","trading_enabled":true,"open_positions":0,"scheduler_running":true,"error":null}
+curl http://localhost:4003/config
+{"id":1,"trading_enabled":true,"max_position_usdc":10.0,"min_edge_threshold":7.0,"daily_loss_limit":20.0}
+```
+
+Four corrections against the brief, each caught in audit and confirmed empirically before building:
+
+**Port 4003, not 4002.** `clipper-worker` has owned `0.0.0.0:4002` for 55 days and serves its own
+`/health` returning **200**. Binding 4002 as briefed would have produced a verification step that
+passed while hitting the wrong service. Bound to `127.0.0.1` — external probe of
+`138.68.138.214:4003` returns nothing, so `/health` and `/config` stay loopback-only.
+
+**`src/trade_engine/`, not `src/trade-engine/`.** A hyphen is not valid in a Python module path;
+`from src.trade-engine.database import …` is a `SyntaxError`, so the briefed `__init__.py` and the
+briefed verification command could not both have worked.
+
+**Secrets via `python-dotenv`, not PM2 `env_file`.** PM2 6.0.14 does not inject
+`/root/.quantumclaw/.env` into child processes on this host. Probe process output, verbatim:
+
+```
+SUPABASE_URL_PRESENT=false
+ANTHROPIC_PRESENT=false
+TOTAL_ENV_KEYS=57
+```
+
+Corroborated against the live `trading-worker` `/proc/<pid>/environ`, which contains none of the
+QClaw secrets. The `.env` is standard `KEY=value` (56 lines, no `export` prefix), so this is a PM2
+limitation, not a parse failure. As briefed — fail-fast validation plus `env_file` — this was a
+guaranteed crash loop into `max_restarts: 10`. `config.py` now uses
+`load_dotenv(ENV_PATH, override=False)`, matching `src/trading/execute_trade.py`.
+
+**`ecosystem.config.cjs`, not `.js`.** `package.json` sets `"type": "module"`. Verbatim:
+
+```
+[PM2][ERROR] File /root/QClaw/ecosystem.config.js malformated
+ReferenceError: module is not defined in ES module scope
+This file is being treated as an ES module because it has a '.js' file extension and
+'/root/QClaw/package.json' contains "type": "module". To treat it as a CommonJS script,
+rename it to use the '.cjs' file extension.
+    at file:///root/QClaw/ecosystem.config.js:17:1
+```
+
+There was no `ecosystem.config.js` on the host at all before this session — all five existing
+processes were started ad-hoc via the PM2 CLI and live only in `/root/.pm2/dump.pm2`. The new file
+covers `trade-engine` only; reconstructing the other five risks changing their behaviour on next
+restart.
+
+Schema note: `trading_positions` and `trading_markets` are both **0 rows**, so the models were built
+from the PostgREST OpenAPI document (`Accept: application/openapi+json` on `/rest/v1/`) rather than a
+sample row. `status` has no CHECK constraint — `'open'`/`'closed'` is convention only. All four
+`trading_*` tables are RLS-locked to a single `service_role_all` policy.
+
+### 2. Item 10 — `Respond Disabled` returning 200 on a refused trade (`33c5ad8`)
+
+Trade Executor `fq7spfyiNcpt8Mf7`. The disabled-trading branch had:
+
+```json
+{ "options": {}, "respondWith": "text",
+  "responseBody": "{{ JSON.stringify({ error: \"Trading disabled\" }) }}" }
+```
+
+No leading `=`, so n8n treated the expression as a literal string; no `responseCode`, so it answered
+**HTTP 200**. A caller checking status codes read a refused trade as success, with an unevaluated
+template as the body. Its two siblings had the correct shape all along — `Respond OK` carries the
+`=`, `Respond Rejected` carries the `=` and `responseCode: 400`.
+
+Fixed live via n8n API PUT to `{ "options": { "responseCode": 403 }, …, "responseBody": "={{ … }}" }`.
+
+First PUT attempt failed, verbatim:
+
+```
+HTTP ERROR 400
+{"message":"request/body/settings must NOT have additional properties"}
+```
+
+The live `settings` carried `availableInMCP` and `timeSavedMode`, neither of which is in the public
+API's `workflowSettings` schema (`additionalProperties: false`; allowed keys are
+`saveExecutionProgress`, `saveManualExecutions`, `saveDataErrorExecution`,
+`saveDataSuccessExecution`, `executionTimeout`, `errorWorkflow`, `timezone`, `executionOrder`,
+`callerPolicy` — fetched from `/api/v1/openapi.yml`). Filtering `settings` to the allowed set let the
+PUT through with `errorWorkflow` and `callerPolicy` both preserved.
+
+Re-fetch verification, all five checks:
+
+```
+responseBody starts with '=' : PASS  "={{ JSON.stringify({ error: \"Trading disabled\" }) }}"
+options.responseCode == 403  : PASS  {"responseCode": 403}
+active preserved             : PASS  True
+errorWorkflow preserved      : PASS  7kpNnMtnuDWXgWcX
+all 12 nodes present         : PASS  12
+```
+
+Diffed pre/post: `Respond Disabled` is the **only** node changed, connections byte-identical.
+`activeVersionId` advanced in lockstep with `versionId` (`21cf5034…` → `0e6e5856…`, versionCounter
+82 → 85), so the change is **published**, not stranded as a draft — the failure mode logged under
+`project_n8n_edit_workflow_no_api_key` does not apply to the API PUT path.
+
+**Side effect, accepted:** `settings.availableInMCP` flipped `true` → `false`, because the API cannot
+round-trip a key its own schema rejects. The Market Scanner took the same hit on its calibration PUT
+(its live value is `false` while the repo mirror still shows `true`). For a live financial execution
+path, dropping the MCP surface is the safe direction. `timeSavedMode: "fixed"` survived server-side.
+
+Backup at `n8n-workflows/backups/trading-executor.PRE-RESPOND-DISABLED-FIX-20260728.json`. The
+canonical mirror `n8n-workflows/trading-executor.json` was patched targeted rather than refreshed
+wholesale from live — a full refresh populates `activeVersion` with a second complete copy of all 12
+nodes, which is the dual-structure footgun already logged against the scanner mirror. The mirror's
+`active: false` was corrected to `true`; it had been claiming the executor was inactive while it is
+live and armed.
+
+Item 9 was already fixed and needed no work — `Trading Enabled?` carries the full
+`conditions.options` block `{version: 2, caseSensitive: false, typeValidation: "loose"}` and reads
+`$json?.trading_enabled`, not `$json[0]?.trading_enabled`.
+
+### 3. Brake state — both brakes are OFF, contrary to two briefs
+
+Live-verified 2026-07-28: `trading_config.trading_enabled` = **`true`**, Trade Executor
+`fq7spfyiNcpt8Mf7` = **`active: true`**. Both the 2026-07-27 and 2026-07-28 briefs asserted "both
+brakes remain ON". They are not. `src/agents/skills/trading.md` had also gone stale — it documented
+both as off with a 2026-07-23 snapshot — and was corrected in PR #78.
+
+`trading_positions` is still 0 rows, consistent with items 9/10 having made the executor fail closed.
+With item 10 now fixed, execution is armed and the refusal path returns a correct 403.
+
+### Follow-ups — flagged, not done
+
+1. **`trading-worker` is publicly exposed.** `http://138.68.138.214:4001/health` returns 200 from the
+   open internet, unauthenticated; `/simulate` is reachable too. No `ufw` on the host (a cloud
+   firewall allows 4001 but not 4002). Needs its own brief: rebind `0.0.0.0:4001` → `127.0.0.1:4001`.
+2. **Position Monitor writes columns that do not exist.** `trading-position-monitor.json`
+   (`UYA0JppH7eqyI7fQ`) PATCHes `current_price` and `close_reason`; the real columns are `exit_price`
+   and `exit_reason`. Every close would 400. Latent only because `trading_positions` is empty — it
+   triggers on the first position close.
+3. **PM2 `env_file` is broken host-wide** — relevant to any future process registration.
+4. **`ecosystem.config.cjs` covers `trade-engine` only** — the other five processes remain CLI-managed
+   in `dump.pm2`.
+
+### Next session
+
+**Trade engine Session 2 — Scanner port.** Move the Market Scanner (`3YahxqOguET3pifj`) off n8n into
+`src/trade_engine/`, registering the asymmetric cron already defined as constants in `scheduler.py`
+(`SCANNER_CRON_MONDAY`, `SCANNER_CRON_WEEKDAY`, `SCANNER_CRON_WEEKEND`, `MONITOR_INTERVAL_MINUTES`).
+
+References: PR #78 (`1d7f31c`), commit `33c5ad8`. `src/trade_engine/{config,models,database,scheduler,main}.py`,
+`ecosystem.config.cjs`, `src/agents/skills/trading.md`. Memory: `project_trade_engine`,
+`project_qclaw_pm2_host_gotchas`, `project_trading_scanner_calibration`.
