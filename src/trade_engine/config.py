@@ -42,6 +42,14 @@ DEFAULT_TRADE_ENGINE_PORT = 4003
 DEFAULT_MONTE_CARLO_HOST = "http://localhost:4001"
 DEFAULT_LOG_LEVEL = "INFO"
 
+# Scanner thresholds. Defaults mirror the live n8n Build Run Summary node
+# (3YahxqOguET3pifj) as calibrated in Brief B on 2026-07-23 — NO_EDGE was
+# widened from -0.10 to -0.20 there. Overridable by env so the Python scanner
+# can be retuned without a deploy while it runs alongside n8n.
+DEFAULT_HIGH_EDGE_THRESHOLD = 0.07
+DEFAULT_NO_EDGE_THRESHOLD = -0.20
+DEFAULT_MIN_ALERT_VOLUME = 5000.0
+
 VERSION = "0.1.0"
 
 
@@ -82,7 +90,27 @@ class Config:
         ).rstrip("/")
         self.log_level: str = os.environ.get("LOG_LEVEL", DEFAULT_LOG_LEVEL).upper()
 
+        self.high_edge_threshold: float = self._float_env(
+            "HIGH_EDGE_THRESHOLD", DEFAULT_HIGH_EDGE_THRESHOLD
+        )
+        self.no_edge_threshold: float = self._float_env(
+            "NO_EDGE_THRESHOLD", DEFAULT_NO_EDGE_THRESHOLD
+        )
+        self.min_alert_volume: float = self._float_env(
+            "MIN_ALERT_VOLUME", DEFAULT_MIN_ALERT_VOLUME
+        )
+
         self.version: str = VERSION
+
+    @staticmethod
+    def _float_env(key: str, default: float) -> float:
+        raw = os.environ.get(key)
+        if raw is None or not raw.strip():
+            return default
+        try:
+            return float(raw)
+        except ValueError as exc:
+            raise ConfigError(f"{key} must be a number, got {raw!r}") from exc
 
     @staticmethod
     def _int_env(key: str, default: int) -> int:

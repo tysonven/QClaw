@@ -169,6 +169,28 @@ async def update_position(
     return rows[0]
 
 
+async def write_simulation(sim: dict[str, Any]) -> dict[str, Any]:
+    """Insert one trading_simulations row and return it.
+
+    Callers must NOT set `market_id`: the column is uuid with an FK to
+    trading_markets.id, while Polymarket ids are numeric strings and
+    conditionIds are 66-char hex. The Polymarket identifier belongs in
+    raw_output.polymarket_market_id, which is what every existing row does.
+    """
+    if "market_id" in sim:
+        raise ValueError(
+            "market_id must not be set on trading_simulations — it is a uuid FK "
+            "to trading_markets.id; put the Polymarket id in "
+            "raw_output.polymarket_market_id instead"
+        )
+    rows = await _request("POST", "/trading_simulations", json_body=sim, write=True)
+    if not rows:
+        raise SupabaseError(
+            "POST", "/trading_simulations", 200, "insert returned no representation"
+        )
+    return rows[0]
+
+
 async def get_daily_pnl() -> float:
     """Sum pnl over positions closed since UTC midnight.
 

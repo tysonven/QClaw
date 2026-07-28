@@ -110,10 +110,52 @@ class MonteCarloResponse(BaseModel):
     macro_factors: Optional[dict[str, Any]] = None
 
 
+class ScannerCandidate(BaseModel):
+    """One market that survived filtering and simulation.
+
+    `edge` is a raw fraction (0.07 == 7 percentage points), NOT the *100 form
+    the n8n Build Run Summary node writes into its summary rows. Position
+    sizing depends on this unit.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    market_id: str
+    question: str
+    asset: str
+    direction: str  # 'YES' or 'NO'
+    edge: float
+    sim_probability: float
+    market_probability: float
+    volume: float
+    horizon_days: int
+    market_url: str
+    amount_usdc: float
+
+
+class ScannerRunSummary(BaseModel):
+    """Result of one scanner pass."""
+
+    model_config = ConfigDict(extra="allow")
+
+    run_at: datetime
+    markets_fetched: int
+    candidates_analysed: int
+    simulations_run: int
+    sim_errors: int
+    high_edge: list[ScannerCandidate] = []
+    no_edge: list[ScannerCandidate] = []
+    neutral_count: int = 0
+    best_trade: Optional[ScannerCandidate] = None
+    open_positions: int = 0
+
+
 class HealthResponse(BaseModel):
     status: str
     version: str
     trading_enabled: Optional[bool] = None
     open_positions: Optional[int] = None
     scheduler_running: bool
+    last_scan_at: Optional[datetime] = None
+    last_scan_high_edge_count: Optional[int] = None
     error: Optional[str] = None
