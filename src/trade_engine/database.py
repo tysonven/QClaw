@@ -169,6 +169,25 @@ async def update_position(
     return rows[0]
 
 
+async def get_simulations_by_ids(sim_ids: list[str]) -> list[dict[str, Any]]:
+    """Fetch trading_simulations rows by id.
+
+    Read-only. Used by the Analyst to resolve a resolved position's asset and
+    market question: trading_positions carries neither, only a simulation_id
+    FK. Returns raw dicts rather than SimulationResult because the caller only
+    needs `asset` and `raw_output`.
+    """
+    if not sim_ids:
+        return []
+    quoted = ",".join(f'"{s}"' for s in sim_ids)
+    rows = await _request(
+        "GET",
+        "/trading_simulations",
+        params={"id": f"in.({quoted})", "select": "id,asset,raw_output"},
+    )
+    return rows or []
+
+
 async def write_simulation(sim: dict[str, Any]) -> dict[str, Any]:
     """Insert one trading_simulations row and return it.
 

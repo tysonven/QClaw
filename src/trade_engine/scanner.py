@@ -28,12 +28,15 @@ import logging
 import math
 import re
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 import httpx
 
 from src.trade_engine.config import config
 from src.trade_engine.models import ScannerCandidate, ScannerRunSummary
+
+if TYPE_CHECKING:  # avoids a circular import at runtime
+    from src.trade_engine.analyst import TradeAnalyst
 
 log = logging.getLogger("trade_engine.scanner")
 
@@ -196,9 +199,15 @@ def _amount_usdc(edge: float) -> float:
 class PolymarketScanner:
     """Fetch → filter → simulate → bucket → pick, matching the n8n pipeline."""
 
-    def __init__(self, client: Optional[httpx.AsyncClient] = None) -> None:
+    def __init__(
+        self,
+        client: Optional[httpx.AsyncClient] = None,
+        analyst: Optional["TradeAnalyst"] = None,
+    ) -> None:
         self._client = client
         self._owns_client = client is None
+        # Injectable so tests can drive the pipeline without hitting Claude.
+        self.analyst = analyst
 
     async def __aenter__(self) -> "PolymarketScanner":
         if self._client is None:
@@ -584,6 +593,39 @@ class PolymarketScanner:
             return None
         return max(summary.high_edge, key=lambda c: abs(c.edge))
 
+    # --- analyst ----------------------------------------------------------
+
+    async def apply_analyst(self, summary: ScannerRunSummary) -> None:
+        """Run the Analyst over best_trade and apply its verdict to the summary.
+
+        Advisory only. 'reduce' halves the *proposed* position size (floored at
+        $3) on the candidate object; no live position is touched, and nothing
+        here executes. With no best_trade there is nothing to review, so the
+        Analyst is skipped entirely rather than called on an empty candidate.
+        """
+        if summary.best_trade is None or self.analyst is None:
+            summary.analyst_recommendation = None
+            summary.analyst_skip = False
+            return
+
+        recommendation = await self.analyst.analyse(summary.best_trade)
+        summary.analyst_recommendation = recommendation
+
+        if recommendation.recommendation == "pass":
+            summary.analyst_skip = True
+            log.info("Analyst PASS: %s", recommendation.reasoning)
+        elif recommendation.recommendation == "reduce":
+            before = summary.best_trade.amount_usdc
+            summary.best_trade.amount_usdc = round(
+                max(AMOUNT_MIN_USDC, before / 2), 2
+            )
+            log.info(
+                "Analyst REDUCE: %s, new size $%.2f (was $%.2f)",
+                recommendation.reasoning, summary.best_trade.amount_usdc, before,
+            )
+        else:
+            log.info("Analyst PROCEED: %s", recommendation.reasoning)
+
     # --- orchestration ----------------------------------------------------
 
     async def run(self, *, open_positions: int = 0) -> ScannerRunSummary:
@@ -599,6 +641,7 @@ class PolymarketScanner:
             open_positions=open_positions,
         )
         summary.best_trade = self.select_best_trade(summary)
+        await self.apply_analyst(summary)
         record_run(summary)
 
         if summary.best_trade:

@@ -12,7 +12,7 @@ model is updated, we surface the new field rather than silently dropping it.
 """
 
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict
 
@@ -133,6 +133,24 @@ class ScannerCandidate(BaseModel):
     amount_usdc: float
 
 
+class AnalystRecommendation(BaseModel):
+    """Structured verdict on one proposed trade.
+
+    `raw_response` is retained for debugging but is stripped before the object
+    reaches an API response — see main.py, which serialises with
+    exclude={"raw_response"}.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    recommendation: Literal["proceed", "pass", "reduce"]
+    confidence: float  # 0.0-1.0, clamped on parse
+    reasoning: str  # 2-3 sentences
+    flags: list[str] = []
+    insufficient_history: bool = False  # true when < 10 resolved trades
+    raw_response: str = ""
+
+
 class ScannerRunSummary(BaseModel):
     """Result of one scanner pass."""
 
@@ -148,6 +166,8 @@ class ScannerRunSummary(BaseModel):
     neutral_count: int = 0
     best_trade: Optional[ScannerCandidate] = None
     open_positions: int = 0
+    analyst_recommendation: Optional[AnalystRecommendation] = None
+    analyst_skip: bool = False  # true when the Analyst returned 'pass'
 
 
 class HealthResponse(BaseModel):
@@ -158,4 +178,5 @@ class HealthResponse(BaseModel):
     scheduler_running: bool
     last_scan_at: Optional[datetime] = None
     last_scan_high_edge_count: Optional[int] = None
+    analyst_available: bool = False
     error: Optional[str] = None

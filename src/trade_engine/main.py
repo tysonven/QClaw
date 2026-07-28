@@ -35,8 +35,11 @@ from src.trade_engine.database import (  # noqa: E402
     get_trading_config,
     write_simulation,
 )
+from src.trade_engine.analyst import TradeAnalyst  # noqa: E402
 from src.trade_engine.models import (  # noqa: E402
+    AnalystRecommendation,
     HealthResponse,
+    ScannerCandidate,
     ScannerRunSummary,
     TradingConfig,
 )
@@ -94,6 +97,7 @@ async def health() -> JSONResponse:
                 scheduler_running=is_running(),
                 last_scan_at=scan_state["at"],
                 last_scan_high_edge_count=scan_state["high_edge_count"],
+                analyst_available=bool(config.anthropic_api_key),
                 error=str(exc),
             )),
         )
@@ -107,6 +111,7 @@ async def health() -> JSONResponse:
             scheduler_running=is_running(),
             last_scan_at=scan_state["at"],
             last_scan_high_edge_count=scan_state["high_edge_count"],
+            analyst_available=bool(config.anthropic_api_key),
         ))
     )
 
@@ -138,7 +143,7 @@ async def scan() -> JSONResponse:
         )
 
     try:
-        async with PolymarketScanner() as scanner:
+        async with PolymarketScanner(analyst=TradeAnalyst()) as scanner:
             markets = await scanner.fetch_markets()
             candidates = await scanner.analyse_edge(markets)
             simulated, sim_errors = await scanner.run_simulations(candidates)
@@ -150,6 +155,7 @@ async def scan() -> JSONResponse:
                 open_positions=open_count,
             )
             summary.best_trade = scanner.select_best_trade(summary)
+            await scanner.apply_analyst(summary)
             record_run(summary)
     except Exception as exc:  # noqa: BLE001 - surface a clean message, not a stack
         log.exception("scan failed")
@@ -171,7 +177,31 @@ async def scan() -> JSONResponse:
     log.info("persisted %d/%d simulations (%d failed)",
              written, len(simulated), write_errors)
 
-    return JSONResponse(content=jsonable_encoder(summary))
+    # raw_response is debugging material, not an API surface — strip it.
+    return JSONResponse(
+        content=jsonable_encoder(
+            summary, exclude={"analyst_recommendation": {"raw_response"}}
+        )
+    )
+
+
+@app.post("/analyse", response_model=AnalystRecommendation)
+async def analyse(candidate: ScannerCandidate) -> JSONResponse:
+    """Run the Analyst against one candidate, without a full scan.
+
+    No auth — loopback-bound, internal only. Advisory: the verdict is returned
+    to the caller and nothing is written or executed. Useful for exercising the
+    Analyst against a hand-built candidate or a best_trade from a prior /scan.
+    """
+    recommendation = await TradeAnalyst().analyse(candidate)
+    log.info(
+        "/analyse %s %s -> %s (confidence %.2f, flags %s)",
+        candidate.asset, candidate.direction,
+        recommendation.recommendation, recommendation.confidence, recommendation.flags,
+    )
+    return JSONResponse(
+        content=jsonable_encoder(recommendation, exclude={"raw_response"})
+    )
 
 
 if __name__ == "__main__":
