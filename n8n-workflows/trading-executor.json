@@ -1,10 +1,10 @@
 {
-    "updatedAt": "2026-07-24T08:41:28.398Z",
+    "updatedAt": "2026-07-28T12:00:01.192Z",
     "createdAt": "2026-04-03T11:49:20.217Z",
     "id": "fq7spfyiNcpt8Mf7",
     "name": "Trading - Trade Executor",
     "description": null,
-    "active": false,
+    "active": true,
     "isArchived": false,
     "nodes": [
         {
@@ -197,9 +197,11 @@
                 464
             ],
             "parameters": {
-                "options": {},
+                "options": {
+                    "responseCode": 403
+                },
                 "respondWith": "text",
-                "responseBody": "{{ JSON.stringify({ error: \"Trading disabled\" }) }}"
+                "responseBody": "={{ JSON.stringify({ error: \"Trading disabled\" }) }}"
             },
             "typeVersion": 1.1
         },
@@ -386,14 +388,15 @@
         "executionOrder": "v1",
         "callerPolicy": "workflowsFromSameOwner",
         "availableInMCP": false,
-        "errorWorkflow": "7kpNnMtnuDWXgWcX"
+        "errorWorkflow": "7kpNnMtnuDWXgWcX",
+        "timeSavedMode": "fixed"
     },
     "staticData": null,
     "meta": null,
     "pinData": {},
-    "versionId": "906b803b-f9a6-488c-9e94-75ab38422872",
-    "activeVersionId": null,
-    "versionCounter": 75,
+    "versionId": "0e6e5856-a7a8-49f0-b4fb-d2f797f347af",
+    "activeVersionId": "0e6e5856-a7a8-49f0-b4fb-d2f797f347af",
+    "versionCounter": 85,
     "triggerCount": 1,
     "shared": [
         {
