@@ -17425,3 +17425,137 @@ backups `trading-market-scanner.PRE-CONTINUEFAIL-20260727.json` +
 `project_qclaw_token_rotates_on_restart`, `project_trading_scanner_calibration`. This build-log entry
 committed direct to main via an isolated git worktree (keeps it off the pinned deploy branch and out
 of the live checkout).
+
+## [2026-07-28] Phase 5 Session 11 — `dashboard_auth_token` drift fixed structurally (`{{config.X}}` skill templates)
+
+Closes item 1 of last session's next-session queue. Session 10 resolved Charlie's `trading-api` 401
+by hand-syncing the secret store to the live token; that fixed the instance, not the class. This
+session removes the drift surface itself.
+
+### 1. Audit — the two values were never wired to the same source
+
+`trading-api.md` authenticated with `{{secrets.dashboard_auth_token}}`. The skill HTTP executor
+resolves that via `this.secrets.get()` (`src/tools/registry.js:1433-1437`), and `SecretStore.get()`
+serves from an in-memory object decrypted once by `load()` at boot — so a rotated token only reaches
+the skill after a PM2 restart. The dashboard auth middleware validates against
+`this.config.dashboard?.authToken` (`src/dashboard/server.js:504`), read live per request. Two
+sources, one comparison — drift was structural, not accidental.
+
+Confirmed the two objects are literally the same reference:
+
+- `src/index.js:205` — `this.tools = new ToolRegistry(this.config, this.credentials)`
+- `src/tools/registry.js:594-595` — `constructor(config, secrets) { this.config = config; ... }`
+- `src/dashboard/server.js:150-152` — `constructor(qclaw) { this.config = qclaw.config; }`
+
+So a token resolved out of `ToolRegistry.config` and the token that validates it in the middleware
+are the same object property. No copy, nothing to desync.
+
+Reference sweep: `{{secrets.dashboard_auth_token}}` appeared exactly once repo-wide
+(`src/agents/skills/trading-api.md:13`). No JS referenced it. No `{{config.X}}` resolver existed
+anywhere before this change.
+
+State at audit time: secret and config had **matched** since the Session 10 hand-sync
+(both `e609f28b…`, 32 chars) — this fix is preventative, not an outage repair.
+
+### 2. Security finding that changed the design — allowlist, not open dot-path
+
+The brief specified an unrestricted dot-path into `this.config`. Enumerating the live `config.json`
+showed it holds three sensitive values: `dashboard.authToken`, `dashboard.pin` (4-digit), and
+`dashboard.tunnelToken` (184-char Cloudflare token). Neither the PIN nor the tunnel token is in the
+secret store, so an open resolver would grant every skill file *new* reach to them — and several
+skills (`ghl.md`, `stripe.md`, `n8n-api.md`) post to **external** hosts, which makes an interpolated
+header an exfiltration path, not just a read.
+
+Shipped with a one-entry allowlist instead:
+
+```js
+const CONFIG_TEMPLATE_ALLOWLIST = new Set(['dashboard.authToken']);
+```
+
+Non-allowlisted paths and missing keys both resolve to `''` and log a warn — the request then fails
+at the remote auth check exactly the way a missing secret does, rather than silently carrying an
+unrelated config value outbound. The allowlist also blocks `{{config.constructor.name}}`-style
+prototype walks, which a raw `reduce` dot-path would happily traverse. Adding a future key is a
+one-line diff.
+
+### 3. Changes (commit `2404496`, branch `fix/config-template-resolver` off `origin/main`)
+
+- **`src/tools/registry.js`** — `CONFIG_TEMPLATE_ALLOWLIST` + `_resolveConfigTemplates(value)`,
+  applied to **both** the endpoint-URL loop (`url = this._resolveConfigTemplates(url)`) and the
+  header loop. The header loop now resolves into a local `resolved` and passes it through the config
+  resolver, so `{{secrets.X}}` and `{{config.X}}` coexist across headers; the secrets branch keeps
+  its existing first-match-only behaviour untouched.
+- **`src/agents/skills/trading-api.md`** — `Header: Authorization: Bearer {{config.dashboard.authToken}}`
+  plus three `#` comment lines recording the supersession. Verified safe against `parseSkill`, which
+  only reacts to `## Auth` / `## Endpoints` / `## Permissions` / `## Usage Notes` section headers and
+  to `Base URL:` / `Header:` line prefixes — a `#` line in the auth block is ignored.
+- **`tests/skill-executor.test.js`** — 13 new assertions (17 → 30). `fakeThis` had to gain
+  `config` + `_resolveConfigTemplates` since it stubs `this` for
+  `ToolRegistry.prototype._executeAPITool.call(...)`.
+
+### 4. Slice 3 (secret cleanup) — not implementable as briefed, and deliberately not forced
+
+The brief asked for a supersession comment on the secret "via the appropriate SecretStore method".
+There is none: `SecretStore` is a flat `{key: string}` AES-256-GCM map — `get/set/delete/has/list/
+resolve` (`src/security/secrets.js:64-98`), no metadata field. Adding one would change the store
+structure, which the constraints forbid. `dashboard_auth_token` is therefore **left in the store,
+untouched and now unreferenced**, and the supersession is recorded in `trading-api.md` and here.
+
+### 5. Verification
+
+`npm test` — all 46 suites, exit 0, zero failures. `skill-executor.test.js` 30/30, including:
+allowlisted path resolves from live config; a token rotated on the config object mid-run is picked up
+on the next call with no re-registration; `dashboard.pin` and `dashboard.tunnelToken` resolve to
+empty; prototype walk resolves to empty; missing key yields `Bearer ` (empty, not `undefined`);
+config templates resolve in URL position; secrets and config templates coexist across headers.
+
+Live, post-`pm2 restart quantumclaw --update-env`:
+
+```
+direct GET /api/trading/config, Bearer <config authToken e609f28b…>   → HTTP 200
+  {"id":1,"trading_enabled":true,"max_position_usdc":10,"min_edge_threshold":7,"daily_loss_limit":20}
+direct GET /api/trading/config, Bearer deadbeef… (control)            → HTTP 401
+POST /api/chat  {"message":"use the trading-api skill to check trading config live","agent":"charlie"}
+  → Charlie returned trading_enabled TRUE, max $10, min edge 7%, daily loss $20
+  → 09:03:01 ▸ Skill tool trading-api__get_config → 200
+```
+
+`/api/chat` drives the real `agent.process()`, so this exercised the live `ToolRegistry` against the
+live config object — not a stub. The `→ 200` log line confirms the tool actually fired rather than
+Charlie answering from context.
+
+**Not proven live, on purpose:** the no-restart rotation claim is covered by unit test and by the
+shared-reference argument above, *not* by a live rotation. Re-minting the live token would break the
+active dashboard session, the `agentboardroom.flowos.tech` tunnel session, and any n8n workflow
+holding a baked copy — the exact failure mode logged under `project_qclaw_token_rotates_on_restart`.
+Note also that `/api/config` explicitly blocks `dashboard.authToken` from API mutation
+(`src/dashboard/server.js:861`), so there is no safe non-destructive live rotation path.
+
+### 6. Deploy-branch note — read before merging
+
+`d9cbb6a` (PR #74 trading pre-enable brakes: `daily_loss_limit`, executor min-edge gate, Telegram OTP
+second factor) is **not on main**, and the live process had been running it since the 2026-07-27
+19:50Z restart. Branching the fix off `origin/main` and restarting would therefore have silently
+removed live trading brakes with `trading_enabled: true`. The PR branch is clean off `origin/main` as
+briefed; the **live checkout is on `verify/cfg-tmpl-20260728`** = `cc/trading-pre-enable-678-20260723`
++ cherry-pick `7549434`, so the host runs the brakes *and* the fix. Once PR #74 and this PR both land,
+the host should go back to a single branch — until then that temporary branch is what is deployed.
+
+### Next session queue
+1. **Return the live checkout to a merged branch** once PR #74 + this PR land (retire
+   `verify/cfg-tmpl-20260728`).
+2. **`trading_enabled: true` with brakes unmerged** — Charlie flagged this unprompted during
+   verification. Confirm the intended state.
+3. **Crete GHL replica.**
+4. **SproutCode GHL replica.**
+5. **Monitor first live trade.**
+
+References: commit `2404496` (`fix/config-template-resolver`), cherry-pick `7549434`
+(`verify/cfg-tmpl-20260728`); `src/tools/registry.js` (`CONFIG_TEMPLATE_ALLOWLIST`,
+`_resolveConfigTemplates`, URL loop ~1449, header loop ~1467); `src/dashboard/server.js:504`
+(middleware read), `:150-152` (shared config reference), `:861` (authToken blocked from API writes);
+`src/security/secrets.js:64-98` (flat store, no metadata); `src/agents/skill-parser.js:44-146`
+(section parsing — `#` comment lines safe). Secret `dashboard_auth_token` retained, unreferenced.
+Memory: `project_qclaw_auth_token`, `project_qclaw_token_rotates_on_restart`,
+`project_trading_scanner_calibration`. Build-log entry committed via an isolated git worktree to keep
+it off the live checkout.
