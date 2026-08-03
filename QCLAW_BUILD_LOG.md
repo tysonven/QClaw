@@ -18005,3 +18005,115 @@ PR #80 `649ff14`, CI fix `4475b71`. `src/trade_engine/{config,models,database,sc
 Memory: `project_trade_engine`, `project_qclaw_pm2_host_gotchas`,
 `project_trading_scanner_calibration`. Build-log entry committed direct to main via
 an isolated git worktree at `origin/main`, keeping the live checkout untouched.
+
+---
+
+## 2026-08-03 — n8n `LinkedIn Engagement Automation` (VMqrrhecG2hrpn4C): OpenAI → Anthropic migration
+
+Workflow `VMqrrhecG2hrpn4C` on `webhook.flowos.tech` (n8n **2.4.8**). Two PUTs via the public REST API.
+Left **deactivated** throughout (Tyson deactivated it at 19:33:40Z; `active` never sent in any payload).
+
+### Why now
+Every scheduled run had been failing since **2026-08-01T00:00:00Z**. Last success `1191096` @ 2026-07-31T20:00:00Z.
+Verbatim from execution `1200096`:
+
+```
+lastNodeExecuted: AI Content Analyzer
+error.name: NodeApiError
+error.message: The service is receiving too many requests from you
+error.description: You have no credits remaining. Add credits to continue using the API at
+                   https://platform.openai.com/settings/organization/billing/.
+httpCode: 429
+```
+
+### PUT 1 — provider swap (versionId 83790237-4c68-4544-ac35-8c0dd7b217bd, counter 126→127)
+Both `@n8n/n8n-nodes-langchain.openAi` v1.8 nodes (resource `text` / operation `message`) →
+`n8n-nodes-base.httpRequest` v4.2 → `https://api.anthropic.com/v1/messages`, header `anthropic-version: 2023-06-01`,
+credential `anthropicApi` `1yrpJ3S4Gw6YSUSJ`, `retryOnFail` 3× / 5000ms. Model `claude-sonnet-4-5`,
+`max_tokens` 1024, temperature 0.2 (Analyzer) / 0.8 (Generator). Node names, ids, positions and the
+main-only connection graph preserved byte-identically; node count stayed 22; zero `ai_*` edges introduced.
+
+Chose the HTTP Request route over Basic LLM Chain + Anthropic Chat Model sub-node specifically to keep the
+connection graph identical (the sub-node route is 22→24 nodes plus two `ai_languageModel` edges).
+
+**Temperature asserted live, not assumed:**
+```
+claude-sonnet-4-5  temp=0.2   -> HTTP 200
+claude-sonnet-4-5  temp=0.8   -> HTTP 200
+claude-sonnet-4-5  temp=1.5   -> HTTP 400  temperature: range: 0..1
+claude-sonnet-4-5  temp=-0.1  -> HTTP 400  temperature: range: 0..1
+claude-sonnet-5    temp=0.2   -> HTTP 400  `temperature` is deprecated for this model.
+```
+Hence `claude-sonnet-4-5`, not `claude-sonnet-5`: sonnet-5 would force dropping both temperatures.
+
+**First PUT attempt rejected** — the instance stores a settings key the public-API schema rejects:
+```
+HTTP 400  {"message":"request/body/settings must NOT have additional properties"}
+```
+Allowed set read from the instance itself (`dist/public-api/v1/openapi.yml` → `workflowSettings`):
+`availableInMCP, callerIds, callerPolicy, errorWorkflow, executionOrder, executionTimeout,
+saveDataErrorExecution, saveDataSuccessExecution, saveExecutionProgress, saveManualExecutions,
+timeSavedPerExecution, timezone`. Only `timeSavedMode` is rejected. **n8n MERGES `settings` rather than
+replacing it — `timeSavedMode` survived a PUT that omitted it.** Nothing lost.
+
+**Model ignores the JSON-only instruction.** Live-fire of the generated body before writing returned valid
+scoring JSON *wrapped in ```json fences* despite an explicit "no markdown code fences" system instruction.
+The defensive fence-stripper in `Parse Content Analysis` is load-bearing, not belt-and-braces.
+
+Downstream `Parse Content Analysis` / `Response Quality Gate` moved from `message.content` /
+`choices[0].message.content` to `content[0].text`. Silent `{score:0, engagement_type:'skip'}` fallback replaced
+with a thrown error. Verified no node anywhere reads `usage` / `finish_reason` / token counts.
+
+### PUT 2 — hygiene + bugfix (versionId 417882f6-893e-4493-973f-a6c843a433d7, counter 135→136)
+1. Four `{{ }}` placeholders in the Analyzer system prompt now evaluate. Pre-migration they lacked the leading
+   `=` so n8n passed them to the model as literal mustache text; post-migration the equivalent is live JS
+   interpolation inside the `jsonBody` expression. All other braces (the JSON example block) are `{`/`}`
+   escaped so they can never be read as expression delimiters.
+2. `settings.errorWorkflow` → `7kpNnMtnuDWXgWcX` (`Shared Error Handler`, active, has an `errorTrigger`).
+3. `Parse Content Analysis` no longer leaks the provider envelope downstream (`model`/`id`/`type`/`role`/
+   `content`/`stop_reason`/`stop_sequence`/`stop_details`/`usage` filtered; legacy keys filtered defensively).
+4. **HELD** — `analysis_reason` on `Engagement Logger`. `public.engagement_activities` has no such column;
+   shipping it would return `400 PGRST204` the moment the engage path becomes reachable. One-line migration
+   pending Tyson's approval.
+5. **BUGFIX (not migration scope)** — `Merge Engagement Context` dropped its `Array.isArray(weightsRaw)` guard.
+   n8n's HTTP Request node already splits a Supabase array response into items, so `.first().json` is the row
+   *object* and the guard always failed, silently discarding the row and reporting `has_weight_data:false`.
+   **Masked**: the discarded row's values (`7, [], 0, 0`) coincide exactly with the hardcoded defaults, so the
+   bug was invisible until the row gains real data.
+
+### `errorWorkflow` and the publish model
+`workflow_history` columns are `versionId, workflowId, authors, createdAt, updatedAt, nodes, connections, name,
+autosaved, description` — **no `settings`**. Settings live only on `workflow_entity`, so `errorWorkflow` is not a
+versioned property and the draft/published distinction does not apply to it. Confirmed in Postgres:
+`active=f | activeVersionId='' | settings={... "errorWorkflow":"7kpNnMtnuDWXgWcX"}`. Node changes *are* versioned —
+history row `417882f6` @ 20:06:24Z is what publishes on reactivation.
+
+### Root cause of the empty-post analysis (pre-existing, NOT introduced by this migration)
+`LinkedIn Feed Monitor` is `n8n-nodes-base.linkedIn` with `operation: "getAll"`. Loading the compiled node class
+inside the container shows it declares **resources `[post]`, operations `[create]`** — `getAll` does not exist.
+n8n emits `{}` instead of erroring. Both providers independently reported an empty post and scored 1/skip:
+
+```
+1191096 (2026-07-31, gpt-4.1-mini): "The post contains no content, making it irrelevant and unengaging..."
+1200573 (2026-08-03, claude-sonnet-4-5): "Empty post with no content, author information, or engagement metrics."
+```
+
+`LinkedIn Comment Creator` (`resource: comment`) and `LinkedIn Like Action` (`resource: reaction`) reference
+resources that likewise do not exist. The workflow has never read a LinkedIn post. Scoped as a separate brief.
+
+### Instance-wide audit (script-driven, not a manual pass)
+`extract_nodedefs.js` loads every installed node class inside the container (core + community roots, every package
+declaring `n8n.nodes`) and reads `description.properties`; `audit_resources.py` cross-references every workflow.
+**1248/1248 nodes across 81 workflows, 544 node types, 0 unrecognised types, 0 load errors → 3 defects, all in
+`LinkedIn Engagement Automation`, all in `n8n-nodes-base.linkedIn`.** The defect class is not widespread.
+(Node-type lookup must be case-insensitive: workflows store `n8n-nodes-base.youtube`, the node declares `youTube`.)
+
+### Open
+- Credential `I9np0X3gCWfXpKEf` (OpenAI) is dead and still referenced by **22 nodes across 15 workflows,
+  8 of them active**. Not touched.
+- `N8N_API_KEY` in `n8n-project/n8n-dashboard-server/.env` returns 401 (JWT `iat` 2025-09-25, no `exp`).
+  Orphan — `server.js` never reads it. Working key stays in `/root/.quantumclaw/.env` on qclaw.
+
+Backups + payloads + audit data: `/root/n8n-artifacts/2026-08-03-linkedin-migration/` (root, 0600).
+Audit scripts (CI-destined): `/root/QClaw/tools/n8n-audit/`.
+Generated on the local Mac; copied here 2026-08-03.
