@@ -19,6 +19,7 @@ surfaces as an immediate PM2 crash rather than a service that runs and then
 
 import logging
 import os
+import re
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -196,11 +197,45 @@ class Config:
         )
 
 
+# Telegram puts the bot token in the URL PATH, and httpx logs every request
+# line at INFO ("HTTP Request: GET https://api.telegram.org/bot<TOKEN>/..."),
+# so simply making a Telegram call writes the token to the PM2 log — the
+# 2026-05-14 token-leak incident class. Supabase is unaffected (it authenticates
+# by header), so the httpx logger is filtered rather than silenced: request
+# logging stays useful and only the token is redacted.
+_BOT_TOKEN_IN_URL = re.compile(r"/bot\d+:[A-Za-z0-9_-]+")
+
+
+class _RedactBotToken(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            message = record.getMessage()
+        except Exception:  # noqa: BLE001 - never break logging
+            return True
+        if "/bot" in message:
+            record.msg = _BOT_TOKEN_IN_URL.sub("/bot***", message)
+            record.args = ()
+        return True
+
+
 def configure_logging(level: str) -> None:
     logging.basicConfig(
         level=getattr(logging, level, logging.INFO),
         format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
     )
+    install_bot_token_redaction()
+
+
+def install_bot_token_redaction() -> None:
+    """Attach the redaction filter to every logger that can carry a bot URL.
+
+    Idempotent — re-attaching on a second call is skipped, so importing this
+    from more than one entry point is safe.
+    """
+    for name in ("httpx", "httpcore", "urllib3"):
+        target = logging.getLogger(name)
+        if not any(isinstance(f, _RedactBotToken) for f in target.filters):
+            target.addFilter(_RedactBotToken())
 
 
 # Module-level singleton. Import failure here is intentional and fatal.

@@ -592,6 +592,40 @@ class LogHygieneTest(unittest.TestCase):
         self.assertNotIn(token, _scrub(leaked, token))
         self.assertIn("***", _scrub(leaked, token))
 
+    def test_httpx_request_log_redacts_the_bot_token(self):
+        """httpx logs every request URL at INFO, and Telegram puts the token in
+        the PATH — so an unfiltered httpx logger writes the bot token to PM2 on
+        every poll. Caught on the live 4013 run, not by the stubbed tests."""
+        import logging as logging_mod
+
+        from src.trade_engine.config import install_bot_token_redaction
+
+        install_bot_token_redaction()
+        token = "8895488594:AAHXKwF5CdEMNPtk0rLAdi-hudTtv-5NUOA"
+
+        with self.assertLogs("httpx", level="INFO") as captured:
+            logging_mod.getLogger("httpx").info(
+                "HTTP Request: GET https://api.telegram.org/bot%s/getUpdates"
+                "?timeout=30 \"HTTP/1.1 200 OK\"", token,
+            )
+
+        rendered = "\n".join(record.getMessage() for record in captured.records)
+        self.assertNotIn(token, rendered)
+        self.assertIn("/bot***/getUpdates", rendered)
+
+    def test_redaction_leaves_supabase_request_logs_intact(self):
+        import logging as logging_mod
+
+        from src.trade_engine.config import install_bot_token_redaction
+
+        install_bot_token_redaction()
+        url = "https://fdabygmromuqtysitodp.supabase.co/rest/v1/trading_positions"
+
+        with self.assertLogs("httpx", level="INFO") as captured:
+            logging_mod.getLogger("httpx").info("HTTP Request: GET %s", url)
+
+        self.assertIn(url, captured.records[0].getMessage())
+
     def test_approval_id_only_appears_at_debug_level(self):
         gate = StubGate()
 

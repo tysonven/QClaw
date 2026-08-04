@@ -30,7 +30,7 @@ from typing import Any, Optional
 
 import httpx
 
-from src.trade_engine.config import config
+from src.trade_engine.config import config, install_bot_token_redaction
 from src.trade_engine.models import (
     AnalystRecommendation,
     ApprovalResult,
@@ -40,6 +40,12 @@ from src.trade_engine.models import (
 )
 
 log = logging.getLogger("trade_engine.approval")
+
+# Installed on import, not just from configure_logging: this module is the only
+# reason a bot token ever reaches an httpx request URL, so it must close that
+# leak for every consumer — including scripts that import it directly and never
+# call configure_logging.
+install_bot_token_redaction()
 
 TELEGRAM_API_BASE = "https://api.telegram.org"
 
