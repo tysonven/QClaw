@@ -12,6 +12,7 @@ model is updated, we surface the new field rather than silently dropping it.
 """
 
 from datetime import datetime
+from enum import Enum
 from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict
@@ -151,6 +152,52 @@ class AnalystRecommendation(BaseModel):
     raw_response: str = ""
 
 
+class ApprovalStatus(str, Enum):
+    """Terminal state of one approval request.
+
+    `str` mixin so this serialises as a plain string in JSON responses and
+    compares equal to the literal, matching how `direction`/`status` strings
+    are treated elsewhere in this module.
+    """
+
+    pending = "pending"
+    approved = "approved"
+    skipped = "skipped"
+    timeout = "timeout"
+    analyst_skip = "analyst_skip"
+
+
+class PendingApproval(BaseModel):
+    """An approval request sent to Telegram and awaiting a button tap.
+
+    `approval_id` is a uuid4 and is the ONLY thing carried in callback_data —
+    it is an unguessable capability, so it must never be logged above DEBUG.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    approval_id: str
+    candidate: ScannerCandidate
+    recommendation: AnalystRecommendation
+    created_at: datetime
+    expires_at: datetime  # created_at + APPROVAL_TIMEOUT_SECONDS (default 30m)
+    message_id: Optional[int] = None  # Telegram message id, for editing in place
+
+
+class ApprovalResult(BaseModel):
+    """Outcome of one approval request. Advisory in Session 4 — nothing reads
+    this to place a trade until the executor lands in Session 5."""
+
+    model_config = ConfigDict(extra="allow")
+
+    approval_id: str
+    status: ApprovalStatus
+    candidate: ScannerCandidate
+    recommendation: AnalystRecommendation
+    decided_at: datetime
+    decision_source: str  # 'user', 'timeout', 'analyst_skip'
+
+
 class ScannerRunSummary(BaseModel):
     """Result of one scanner pass."""
 
@@ -168,6 +215,7 @@ class ScannerRunSummary(BaseModel):
     open_positions: int = 0
     analyst_recommendation: Optional[AnalystRecommendation] = None
     analyst_skip: bool = False  # true when the Analyst returned 'pass'
+    approval_result: Optional[ApprovalResult] = None
 
 
 class HealthResponse(BaseModel):
@@ -179,4 +227,6 @@ class HealthResponse(BaseModel):
     last_scan_at: Optional[datetime] = None
     last_scan_high_edge_count: Optional[int] = None
     analyst_available: bool = False
+    pending_approvals: int = 0
+    approval_gate_active: bool = False
     error: Optional[str] = None

@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Any, Optional
 import httpx
 
 from src.trade_engine.config import config
+from src.trade_engine.approval import ApprovalGate, ApprovalGateBusy
 from src.trade_engine.models import ScannerCandidate, ScannerRunSummary
 
 if TYPE_CHECKING:  # avoids a circular import at runtime
@@ -203,11 +204,16 @@ class PolymarketScanner:
         self,
         client: Optional[httpx.AsyncClient] = None,
         analyst: Optional["TradeAnalyst"] = None,
+        approval_gate: Optional["ApprovalGate"] = None,
     ) -> None:
         self._client = client
         self._owns_client = client is None
         # Injectable so tests can drive the pipeline without hitting Claude.
         self.analyst = analyst
+        # Optional: with no gate the pipeline still runs and best_trade is
+        # still selected, it just carries no approval_result. Nothing in
+        # Session 4 executes either way.
+        self.approval_gate = approval_gate
 
     async def __aenter__(self) -> "PolymarketScanner":
         if self._client is None:
@@ -626,10 +632,68 @@ class PolymarketScanner:
         else:
             log.info("Analyst PROCEED: %s", recommendation.reasoning)
 
+    # --- approval ---------------------------------------------------------
+
+    async def apply_approval(self, summary: ScannerRunSummary) -> None:
+        """Ask for human approval on best_trade and record the outcome.
+
+        Sets summary.approval_result and nothing else — no position is opened
+        here, and `approved` means only that the executor (Session 5) would be
+        permitted to act. A missing gate, a missing analyst verdict or no
+        best_trade all leave approval_result None.
+
+        NOTE: this blocks for up to APPROVAL_TIMEOUT_SECONDS (default 1800).
+        A caller serving an HTTP request will hold that request open for the
+        full window — see the /scan docstring in main.py.
+        """
+        summary.approval_result = None
+
+        if summary.best_trade is None:
+            return
+
+        recommendation = summary.analyst_recommendation
+        if recommendation is None:
+            # No verdict means no gate: PendingApproval requires a
+            # recommendation, and asking for approval without one would put an
+            # unreviewed trade in front of a one-tap Execute button.
+            log.info("no analyst recommendation, approval gate skipped")
+            return
+
+        if summary.analyst_skip:
+            # The Analyst already said pass. Record it as a decision rather
+            # than sending a Telegram message nobody needs to answer.
+            summary.approval_result = ApprovalGate.analyst_skip_result(
+                summary.best_trade, recommendation
+            )
+            log.info("Trade ANALYST_SKIP: %s", summary.best_trade.question)
+            return
+
+        if self.approval_gate is None:
+            log.info("no approval gate configured, best_trade left unapproved")
+            return
+
+        try:
+            pending = await self.approval_gate.send_approval_request(
+                summary.best_trade, recommendation
+            )
+        except ApprovalGateBusy as exc:
+            # Max one outstanding approval. A second opportunity is dropped
+            # rather than queued — by the time the first resolves this scan's
+            # prices are stale anyway.
+            log.info("approval gate busy, trade skipped: %s", exc)
+            return
+
+        result = await self.approval_gate.wait_for_decision(pending)
+        summary.approval_result = result
+        log.info(
+            "Trade %s: %s",
+            result.status.value.upper(), summary.best_trade.question,
+        )
+
     # --- orchestration ----------------------------------------------------
 
     async def run(self, *, open_positions: int = 0) -> ScannerRunSummary:
-        """fetch → analyse → simulate → summarise → select."""
+        """fetch → analyse → simulate → summarise → select → approve."""
         markets = await self.fetch_markets()
         candidates = await self.analyse_edge(markets)
         simulated, sim_errors = await self.run_simulations(candidates)
@@ -642,6 +706,7 @@ class PolymarketScanner:
         )
         summary.best_trade = self.select_best_trade(summary)
         await self.apply_analyst(summary)
+        await self.apply_approval(summary)
         record_run(summary)
 
         if summary.best_trade:

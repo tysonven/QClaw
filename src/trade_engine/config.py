@@ -19,6 +19,7 @@ surfaces as an immediate PM2 crash rather than a service that runs and then
 
 import logging
 import os
+import re
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -41,6 +42,11 @@ DEFAULT_TRADE_ENGINE_HOST = "127.0.0.1"
 DEFAULT_TRADE_ENGINE_PORT = 4003
 DEFAULT_MONTE_CARLO_HOST = "http://localhost:4001"
 DEFAULT_LOG_LEVEL = "INFO"
+
+# Approval gate. 30 minutes matches the briefed window; overridable by env so
+# the timeout path can be exercised in under a minute without a code change.
+DEFAULT_APPROVAL_TIMEOUT_SECONDS = 1800
+DEFAULT_APPROVAL_POLL_INTERVAL_SECONDS = 5.0
 
 # Scanner thresholds. Defaults mirror the live n8n Build Run Summary node
 # (3YahxqOguET3pifj) as calibrated in Brief B on 2026-07-23 — NO_EDGE was
@@ -76,6 +82,13 @@ class Config:
         self.anthropic_api_key: str = os.environ["ANTHROPIC_API_KEY"]
         self.telegram_bot_token: str = os.environ["TELEGRAM_BOT_TOKEN"]
         self.owner_telegram_chat_id: str = os.environ["OWNER_TELEGRAM_CHAT_ID"]
+
+        # Optional and deliberately NOT in REQUIRED_KEYS: the engine must start
+        # without it, just with no callback receiver. See telegram_poller_enabled
+        # for why sharing TELEGRAM_BOT_TOKEN is not an option.
+        self.trade_telegram_bot_token: str = os.environ.get(
+            "TRADE_TELEGRAM_BOT_TOKEN", ""
+        ).strip()
         self.polymarket_private_key: str = os.environ["POLYMARKET_PRIVATE_KEY"]
         self.polymarket_funder_address: str = os.environ["POLYMARKET_FUNDER_ADDRESS"]
 
@@ -100,6 +113,13 @@ class Config:
             "MIN_ALERT_VOLUME", DEFAULT_MIN_ALERT_VOLUME
         )
 
+        self.approval_timeout_seconds: int = self._int_env(
+            "APPROVAL_TIMEOUT_SECONDS", DEFAULT_APPROVAL_TIMEOUT_SECONDS
+        )
+        self.approval_poll_interval_seconds: float = self._float_env(
+            "APPROVAL_POLL_INTERVAL_SECONDS", DEFAULT_APPROVAL_POLL_INTERVAL_SECONDS
+        )
+
         self.version: str = VERSION
 
     @staticmethod
@@ -121,6 +141,35 @@ class Config:
             return int(raw)
         except ValueError as exc:
             raise ConfigError(f"{key} must be an integer, got {raw!r}") from exc
+
+    @property
+    def approval_bot_token(self) -> str:
+        """Token used to SEND approval requests.
+
+        Falls back to the quantumclaw bot so a missing dedicated token still
+        delivers the message (sendMessage has no single-consumer constraint).
+        The buttons will render but nothing can answer the tap — the approval
+        then times out, which is the safe direction to fail.
+        """
+        return self.trade_telegram_bot_token or self.telegram_bot_token
+
+    @property
+    def telegram_poller_enabled(self) -> bool:
+        """Whether it is safe to run a getUpdates loop.
+
+        Telegram allows exactly ONE getUpdates consumer per bot. The
+        quantumclaw process long-polls TELEGRAM_BOT_TOKEN continuously
+        (grammy runner, allowed_updates message+callback_query), so a second
+        poller on that same token does not merely miss callbacks — it steals
+        Charlie's message updates and 409s his poll. Verified live on
+        2026-08-04: a single getUpdates from a second consumer returned
+        {"ok":true,"result":[]} and terminated Charlie's in-flight poll.
+
+        So polling requires a DEDICATED token that is present and different.
+        Absent or identical -> no poller, approvals time out, nothing crashes.
+        """
+        token = self.trade_telegram_bot_token
+        return bool(token) and token != self.telegram_bot_token
 
     @property
     def supabase_rest_url(self) -> str:
@@ -148,11 +197,45 @@ class Config:
         )
 
 
+# Telegram puts the bot token in the URL PATH, and httpx logs every request
+# line at INFO ("HTTP Request: GET https://api.telegram.org/bot<TOKEN>/..."),
+# so simply making a Telegram call writes the token to the PM2 log — the
+# 2026-05-14 token-leak incident class. Supabase is unaffected (it authenticates
+# by header), so the httpx logger is filtered rather than silenced: request
+# logging stays useful and only the token is redacted.
+_BOT_TOKEN_IN_URL = re.compile(r"/bot\d+:[A-Za-z0-9_-]+")
+
+
+class _RedactBotToken(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            message = record.getMessage()
+        except Exception:  # noqa: BLE001 - never break logging
+            return True
+        if "/bot" in message:
+            record.msg = _BOT_TOKEN_IN_URL.sub("/bot***", message)
+            record.args = ()
+        return True
+
+
 def configure_logging(level: str) -> None:
     logging.basicConfig(
         level=getattr(logging, level, logging.INFO),
         format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
     )
+    install_bot_token_redaction()
+
+
+def install_bot_token_redaction() -> None:
+    """Attach the redaction filter to every logger that can carry a bot URL.
+
+    Idempotent — re-attaching on a second call is skipped, so importing this
+    from more than one entry point is safe.
+    """
+    for name in ("httpx", "httpcore", "urllib3"):
+        target = logging.getLogger(name)
+        if not any(isinstance(f, _RedactBotToken) for f in target.filters):
+            target.addFilter(_RedactBotToken())
 
 
 # Module-level singleton. Import failure here is intentional and fatal.
