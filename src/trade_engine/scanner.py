@@ -38,7 +38,6 @@ from src.trade_engine.models import ScannerCandidate, ScannerRunSummary
 
 if TYPE_CHECKING:  # avoids a circular import at runtime
     from src.trade_engine.analyst import TradeAnalyst
-    from src.trade_engine.approval import ApprovalGate
 
 log = logging.getLogger("trade_engine.scanner")
 
