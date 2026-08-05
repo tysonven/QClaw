@@ -78,6 +78,21 @@ def job_count() -> int:
     return len(scheduler.get_jobs())
 
 
+def next_scan_time():
+    """Earliest next fire time across the three scanner cron jobs, or None.
+
+    The three jobs partition the week, so "when does the scanner run next"
+    is the minimum of their next_run_time values, not any single job's.
+    None before the scheduler starts (next_run_time is unset until then).
+    """
+    times = [
+        job.next_run_time
+        for job in scheduler.get_jobs()
+        if job.id.startswith("scanner_") and job.next_run_time is not None
+    ]
+    return min(times) if times else None
+
+
 def start_scheduler() -> None:
     if scheduler.running:
         log.info("scheduler already running")

@@ -44,6 +44,7 @@ from src.trade_engine.analyst import TradeAnalyst  # noqa: E402
 from src.trade_engine.models import (  # noqa: E402
     AnalystRecommendation,
     ApprovalResult,
+    ApprovalStatus,
     HealthResponse,
     MonitorRunResult,
     ScannerCandidate,
@@ -62,6 +63,7 @@ from src.trade_engine.scanner import (  # noqa: E402
 from src.trade_engine.scheduler import (  # noqa: E402
     is_running,
     job_count,
+    next_scan_time,
     register_jobs,
     shutdown_scheduler,
     start_scheduler,
@@ -79,6 +81,50 @@ approval_gate = ApprovalGate()
 trade_executor = TradeExecutor()
 
 _poller_task: Optional[asyncio.Task] = None
+
+
+def _scan_summary_message(summary: ScannerRunSummary) -> str:
+    """Telegram heartbeat text for one completed scheduled scan.
+
+    Outcome lines report what actually HAPPENED, not what might be pending:
+    scanner.run() blocks through the approval gate, so by the time this is
+    built every approval is already decided — a literal "awaiting approval"
+    line could only ever be stale.
+    """
+    lines = [
+        "🔍 Scan complete",
+        f"Markets: {summary.markets_fetched} fetched → "
+        f"{summary.simulations_run} simulated",
+        f"High-edge: {len(summary.high_edge)} | No-edge: {len(summary.no_edge)} "
+        f"| Neutral: {summary.neutral_count}",
+    ]
+    next_run = next_scan_time()
+    if next_run is not None:
+        lines.append(f"Next scan: {next_run:%Y-%m-%d %H:%M} UTC")
+
+    if summary.best_trade is None:
+        lines.append("No trade opportunity found")
+    elif summary.analyst_skip:
+        reasoning = (
+            summary.analyst_recommendation.reasoning
+            if summary.analyst_recommendation is not None else ""
+        )
+        lines.append(f"⏭ Analyst skipped: {reasoning}")
+    elif summary.execution_result is not None:
+        lines.append(
+            "✅ Trade placed" if summary.execution_result.success
+            else "❌ Trade failed"
+        )
+    elif summary.approval_result is None:
+        lines.append("⚠️ No approval requested (gate busy or unavailable)")
+    elif summary.approval_result.status is ApprovalStatus.timeout:
+        lines.append("⏳ Approval request sent — timed out without a response")
+    elif summary.approval_result.status is ApprovalStatus.skipped:
+        lines.append("🚫 Trade skipped via Telegram")
+    else:
+        lines.append(f"Approval: {summary.approval_result.status.value}")
+
+    return "\n".join(lines)
 
 
 async def scheduled_scan() -> None:
@@ -101,9 +147,18 @@ async def scheduled_scan() -> None:
             executor=trade_executor,
         )
         async with scanner_ctx as scanner:
-            await scanner.run(open_positions=open_count)
+            summary = await scanner.run(open_positions=open_count)
     except Exception:  # noqa: BLE001 - a failed scan must not break the schedule
         log.exception("scheduled scan failed")
+        return
+
+    # Heartbeat so a quiet market is distinguishable from a dead engine on
+    # Telegram. Reuses the executor's notifier: same dedicated-token-first
+    # send path and best-effort semantics as trade notifications.
+    try:
+        await trade_executor._notify(_scan_summary_message(summary))
+    except Exception:  # noqa: BLE001 - a heartbeat must never fail the scan job
+        log.exception("scan heartbeat notification failed")
 
 
 async def scheduled_monitor() -> None:
