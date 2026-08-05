@@ -18749,3 +18749,89 @@ proven by probe, not yet by a real fill.
   ever reactivated.
 - Crete GHL replica.
 - SproutCode GHL replica.
+
+## 2026-08-05 — flowos-web Slice 1 (Astro shell) — built to product-copy gate
+
+**Brief:** `BRIEF_flowos-web_slice1.md` — flowos.tech GHL→Astro migration,
+Slice 1 of 4. Step 0 audit reported and approved before any code.
+
+**Step 0 audit outcomes (approved):** new private repo `tysonven/flowos-web`;
+Astro 5 + `@astrojs/vercel` 8 (kairos-wines precedent, built-in image
+pipeline) rather than the sms project's Astro 4.16; Node 22 pinned via
+`.nvmrc` + `engines` (sms project has an unpinned local-22/Vercel-24
+mismatch — tracked as follow-up, not fixed); npm; single stylesheet copy
+(sms project double-loads its identical 823-line stylesheet via `<link>` +
+`@import` — tracked as follow-up, not fixed). No reusable R2 upload path to
+`media.flowos.tech` exists: the only writer is QClaw's
+`/api/flowos/generate-image` (creds on qclaw host, hardcoded to
+`marketing/images/<uuid>.png`), and the local rclone `cloudflare-r2:` remote
+is scoped to `emma-content-studio` only (`flowos-content` ListObjectsV2 →
+403 AccessDenied). Tyson is minting a `flowos-content`-scoped Object
+Read & Write token; rclone config to be chmod 600 outside any git tree;
+token never enters repo or Vercel.
+
+**Built (commit `10226d8`, pushed to github.com/tysonven/flowos-web main):**
+
+- Scaffold: Astro 5.x static + Vercel adapter, `site: https://flowos.tech`,
+  Node 22, npm.
+- `src/config/site.ts`: `CHECKOUT_URL` placeholder
+  (`https://go.flowos.tech/activate`, resolved Slice 4), `BLOG_URL`
+  (external GHL blog, repointed Slice 2), portfolio/product/community URLs,
+  contact block, GTM ID.
+- Design system inherited from flowos-sms-landing: tokens/components copied
+  once into `src/styles/global.css` + a sectioned flowos-web component layer
+  (trust line, split sections, check lists, pricing, guarantee card, proof
+  strip, `<details>` FAQ accordion, footer columns, product cards on
+  `auto-fit` grid so a third card slots in without restructuring).
+- BaseLayout: consent-gated GTM `GTM-TD4XCBK7` + cookie banner ported
+  verbatim from the sms project (no Clarity — brief says one container
+  script, nothing else). Cookie banner links `/terms-conditions` (the sms
+  banner links `/privacy`, which does not exist on flowos.tech). Header nav
+  Products · Portfolio · Blog · Activate; footer replicates the live GHL
+  footer (contact info@flowos.tech, policies, resources, socials as inline
+  SVG). Site-wide `<title>`/description/OG/canonical per page.
+- Home `/`: section-for-section replica of live `flowos.tech/home`,
+  transcribed from the served HTML (GHL renders it server-side; copy
+  verbatim, Cloudflare email obfuscation decoded to info@flowos.tech). New
+  proof strip (section 12) inserted after guarantee, before FAQ, exactly as
+  briefed. All 4 CTAs resolve through `CHECKOUT_URL`.
+- Policy pages: terms-conditions / refund-policy / eula ported verbatim via
+  scripted HTML extraction; GHL page-footer junk truncated; obfuscated
+  emails decoded (marker contains a non-breaking space:
+  `[email\xa0protected]`).
+- `/products` index: copy exactly as specified in the brief; link block to
+  work.flowos.tech + blog.
+- Images: 8 filesafe.space assets downloaded (5 content + 3 mobile-only GHL
+  background decorations, kept in scratchpad); 5 content images build from
+  gitignored `src/assets/media/` via `<Picture>` with
+  `fallbackFormat="webp"` (initial build emitted 245–358kB PNG fallbacks —
+  removed). Not committed per instruction; swap to media.flowos.tech URLs
+  when the R2 token arrives.
+
+**Verification:** `npm run build` clean, 7/7 routes render. `grep -ri
+filesafe dist/` → 0. `grep -riE "call.intel" dist/` → 0. Checkout URL
+appears only in `config/site.ts`; every CTA anchors through the constant.
+Distinct meta title/description per product page.
+
+**Security gate:**
+- [x] No hardcoded credentials in new code (GTM container ID is public)
+- [x] No new webhooks
+- [x] No new endpoints
+- [x] No new Supabase tables
+- [x] Financial features absent by design — CTAs are plain anchors to a
+      config constant; no payment code exists in the repo
+
+**HELD at product-copy gate (brief pause point):** product pages
+`/products/sms-gateway` and `/products/support-bot` are drafted in the
+working tree but **uncommitted** — copy beyond the brief's specification
+requires Tyson review. Also pending: R2 token → image rehost + URL swap →
+Vercel staging deploy (deploying from GitHub before the swap would fail:
+images are gitignored) → Lighthouse ≥95 check. No DNS, no Vercel domain
+assignment, no GHL changes — flowos.tech still resolves to GHL, verified
+functional at fetch time.
+
+**Slice 2/3/4 open items:** GHL blogs API availability for the 69-post
+export; checkout URL resolution (`go.flowos.tech/activate` real order form);
+multi-product delivery pipeline question (depends on Call Intel delivery
+model, deferred); redirect map + sitemap (Slice 3); DNS cutover after
+checkout relocation (Slice 4).
