@@ -18884,3 +18884,48 @@ or the consent mechanism. Needs rewrite before Slice 4 cutover.
 
 **Still held:** R2 token (flowos-content scoped) → image rehost →
 media.flowos.tech URL swap → Vercel staging deploy → Lighthouse ≥95.
+
+## 2026-08-05 — flowos-web Slice 1 CLOSED — R2 images, staging deploy, Lighthouse 100/100
+
+R2 token (bucket-scoped to `flowos-content`, Object R/W; rclone remote
+`flowos-content`, config chmod 600 outside git trees, raw creds never
+held by the session) arrived; slice completed.
+
+**Images:** five content images uploaded to
+`flowos-content:flowos-content/site/flowos-web/` (separate prefix from
+QClaw's `marketing/images/`; bucket-scoped token means ListBuckets always
+403s — address the bucket explicitly). All five verified 200 on
+`https://media.flowos.tech/site/flowos-web/<name>`. References swapped to
+a `MEDIA` map in `src/config/site.ts` + `image.remotePatterns` for
+media.flowos.tech; Astro fetches at build and emits optimized responsive
+WebP. Local gitignored image workspace removed — repo now builds with no
+local image files, unblocking Vercel GitHub builds. Commit `3c4fb37`.
+
+**Staging deploy:** Vercel project `flowos-web`
+(prj_B1Tlb3D2z9z6Dk940kFg11RVQj8D) created via `vercel link`, GitHub repo
+auto-connected (deploys from main). Domains: default *.vercel.app only —
+staging at https://flowos-web.vercel.app. NO custom/production domain
+assigned; flowos.tech untouched (re-verified: live /home byte-identical
+to pre-work snapshot, 496843 bytes). Project nodeVersion corrected
+24.x → 22.x via API to match the .nvmrc/engines pin.
+
+**Lighthouse gate:** first run 85–87 perf / 100 SEO — FCP=LCP ~3.3s,
+paint blocked on render-blocking Google Fonts CSS (2 extra origins) +
+external stylesheet. Fix (commit `d1ca266`): self-hosted variable woff2
+fonts (latin subset; Google serves identical variable files per weight —
+one file per family: Montserrat 400-800, Raleway 400-700, JetBrains Mono
+400-600), `font-display: swap`, preloads, `inlineStylesheets: 'always'`.
+Result: **perf 100 / SEO 100 on `/`, `/products/sms-gateway`,
+`/products/support-bot`** (FCP 0.9–1.0s, LCP 1.4–1.5s).
+
+**Acceptance criteria: 11/11** (8 routes; images sourced from
+media.flowos.tech at build — served as same-origin optimized derivatives,
+zero filesafe.space references; CTAs via CHECKOUT_URL only; no Call Intel
+in dist; distinct product meta; staging URL live; production domain
+untouched; live GHL site verified functional).
+
+**Slice 1 state:** COMPLETE. flowos-web main @ `d1ca266`. Open for
+Slice 2: GHL blogs API availability, BLOG_URL repoint. Slice 3:
+redirects + sitemap. Slice 4: checkout URL resolution, DNS cutover —
+blocked on privacy-policy rewrite (unadapted Shopify template, logged
+2026-08-05).
