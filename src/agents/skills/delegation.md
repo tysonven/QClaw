@@ -43,9 +43,10 @@ When dispatching to Claude Code:
 
 1. **Audit first.** No write/infra brief without a Claude Code audit landing first. The audit is a separate dispatch with `task_type: audit`. Wait for the report. Read it. Then write the implementation brief.
 2. **Include full context.** Claude Code has no memory between sessions. Every dispatch carries: target paths, objective, constraints (security, credential locations, patterns to follow), verification step, commit + push instructions.
-3. **Authorisation scopes.** Audit + read-only dispatches: autonomous. Write / infra / merge dispatches: Tyson authorisation in the same conversation, then proceed.
-4. **Track via Supabase** (Slice 5 onwards). Dispatch row in `claude_code_dispatches`, result written back, gate integration verifies completion before close.
-5. **Never sit on a result.** When CC reports back, surface to Tyson immediately — not on the next morning brief.
+3. **Repo snapshots are not canonical.** `n8n-workflows/*.json` in this repo is a snapshot, not the source of truth — live n8n can be edited out-of-band, and has been. Any brief that applies a workflow from repo to live MUST diff repo against the live **published** version first (`workflow_history` row at `workflow_entity.activeVersionId`, not the draft) and report the delta before applying. Never apply-from-repo blind: on 2026-08-04 the dormancy alerter snapshot was 5 entries ahead of live, and a blind apply would have re-armed a churned client's workflow into a live alert.
+4. **Authorisation scopes.** Audit + read-only dispatches: autonomous. Write / infra / merge dispatches: Tyson authorisation in the same conversation, then proceed.
+5. **Track via Supabase** (Slice 5 onwards). Dispatch row in `claude_code_dispatches`, result written back, gate integration verifies completion before close.
+6. **Never sit on a result.** When CC reports back, surface to Tyson immediately — not on the next morning brief.
 
 ## Sub-agent coordination
 
