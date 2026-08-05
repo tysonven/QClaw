@@ -771,6 +771,19 @@ class PolymarketScanner:
         )
         summary.best_trade = self.select_best_trade(summary)
         await self.apply_analyst(summary)
+
+        # run() does not persist simulations — the /scan route does, and that is
+        # where simulation_id gets attached. Anything opened from run() therefore
+        # carries no simulation_id, and a position without one cannot be resolved
+        # back to a market by the Position Monitor: it never prices, never takes
+        # profit and never stops out. Warn loudly rather than block, since the
+        # trade itself is still valid and a human approved it.
+        if summary.best_trade is not None and summary.best_trade.simulation_id is None:
+            log.warning(
+                "Trade will be unpriceable — simulation_id not attached. "
+                "Session 6 must wire persist into run() before cron activation."
+            )
+
         await self.apply_approval(summary)
         await self.apply_execution(summary)
         record_run(summary)

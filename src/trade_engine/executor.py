@@ -73,8 +73,21 @@ ABSOLUTE_MAX_POSITION_USDC = 25.0
 
 MAX_CONCURRENT_POSITIONS = 2
 
-# Polymarket conditionId: 0x + 64 lowercase-or-mixed hex.
-CONDITION_ID_RE = re.compile(r"^0x[0-9a-fA-F]{64}$")
+# An approval is consent to trade AT A PRICE. The approval gate allows 30
+# minutes to answer, but a verdict that old is about a market that has moved,
+# so execution requires a FRESH decision. Anything older is refused rather than
+# filled at a price the human never saw.
+APPROVAL_MAX_AGE_SECONDS = 300
+
+# Tolerance for a decided_at slightly ahead of our clock (NTP skew between the
+# approving process and this one). Beyond it the timestamp is not trusted —
+# without this a far-future decided_at would never expire.
+APPROVAL_MAX_SKEW_SECONDS = 60
+
+# Polymarket conditionId: 0x + 64 hex. Matched with fullmatch, not match:
+# Python's `$` also matches before a trailing newline, so re.match would accept
+# "0x<64 hex>\n" and pass it to the CLI as a market identifier.
+CONDITION_ID_RE = re.compile(r"0x[0-9a-fA-F]{64}")
 
 TELEGRAM_API_BASE = "https://api.telegram.org"
 
@@ -130,6 +143,18 @@ class TradeExecutor:
             )
             return self._blocked(candidate, "not_approved")
 
+        stale_reason = self._staleness_reason(result.decided_at)
+        if stale_reason is not None:
+            log.warning(
+                "refusing stale approval (%s): %s %s decided_at=%s",
+                stale_reason, candidate.asset, candidate.direction,
+                result.decided_at.isoformat() if result.decided_at else None,
+            )
+            await self._notify(
+                f"⛔ Trade blocked: stale_approval — {candidate.question}"
+            )
+            return self._blocked(candidate, "stale_approval")
+
         try:
             await self._run_gates(candidate)
         except ExecutionGateError as exc:
@@ -149,6 +174,31 @@ class TradeExecutor:
             return self._blocked(candidate, "gate_error")
 
         return await self._place_order(candidate)
+
+    @staticmethod
+    def _staleness_reason(decided_at: Optional[datetime]) -> Optional[str]:
+        """Why this approval is not fresh enough to act on, or None if it is.
+
+        A naive datetime is read as UTC rather than rejected: /execute accepts a
+        caller-supplied body and json bodies routinely drop the offset, and
+        comparing naive to aware would raise TypeError — which would surface as
+        the generic gate_error and hide the real reason.
+        """
+        if decided_at is None:
+            return "missing_decided_at"
+
+        moment = decided_at
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone.utc)
+
+        age = (datetime.now(timezone.utc) - moment).total_seconds()
+        if age > APPROVAL_MAX_AGE_SECONDS:
+            return f"age {age:.0f}s > {APPROVAL_MAX_AGE_SECONDS}s"
+        if age < -APPROVAL_MAX_SKEW_SECONDS:
+            # Dated in the future beyond plausible clock skew. Trusting it would
+            # make the approval effectively immortal.
+            return f"decided_at is {abs(age):.0f}s in the future"
+        return None
 
     # --- gates ------------------------------------------------------------
 
@@ -215,7 +265,7 @@ class TradeExecutor:
         # Without this the order goes out against a numeric Gamma id and the
         # child exits 1 with "market not found" (audit F1).
         condition_id = candidate.condition_id or ""
-        if not CONDITION_ID_RE.match(condition_id):
+        if not CONDITION_ID_RE.fullmatch(condition_id):
             log.error(
                 "gate 6: candidate has no valid conditionId (market_id=%s)",
                 candidate.market_id,
@@ -412,7 +462,7 @@ class TradeExecutor:
     @staticmethod
     def _derive_fill(
         candidate: ScannerCandidate, payload: dict[str, Any]
-    ) -> tuple[float, Optional[float]]:
+    ) -> tuple[Optional[float], Optional[float]]:
         """Best-effort real fill price, falling back to the scan-time price.
 
         Without entry_price and shares the Position Monitor cannot compute pnl
@@ -446,8 +496,13 @@ class TradeExecutor:
                 )
 
         if not price or price <= 0:
+            # NULL, never 0.0. A zero entry_price reads as a real price
+            # downstream: it disables the stop-loss rule (which requires
+            # entry_price > 0.20) and makes any pnl computed from it wrong,
+            # which would then feed Gate 3's daily-loss sum. NULL is the honest
+            # signal that the fill price is unknown.
             log.error("no usable entry price — recording NULL entry_price/shares")
-            return 0.0, None
+            return None, None
 
         try:
             amount = float(candidate.amount_usdc)

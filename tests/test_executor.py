@@ -291,6 +291,124 @@ class GateTest(unittest.TestCase):
             self.assertEqual(ex.argv_calls, [])
 
 
+class StalenessTest(unittest.TestCase):
+    """M1: an approval is consent at a price. A stale verdict must not fill."""
+
+    def _run(self, decided_at):
+        ex = StubExecutor()
+        approval = make_approval()
+        approval.decided_at = decided_at
+        with DBStub() as db:
+            result = run(ex.execute(approval))
+        return ex, db, result
+
+    def test_approval_older_than_five_minutes_is_refused(self):
+        ex, db, result = self._run(
+            datetime.now(timezone.utc) - timedelta(seconds=301)
+        )
+        self.assertFalse(result.success)
+        self.assertEqual(result.gate_blocked, "stale_approval")
+        self.assertEqual(ex.argv_calls, [], "a stale approval must place no order")
+        self.assertEqual(db.written, [])
+        self.assertTrue(any("stale_approval" in n for n in ex.notifications))
+
+    def test_thirty_minute_old_approval_refused(self):
+        """The gate allows 30 min to answer; the executor does not honour that."""
+        _, _, result = self._run(datetime.now(timezone.utc) - timedelta(minutes=30))
+        self.assertEqual(result.gate_blocked, "stale_approval")
+
+    def test_fresh_approval_passes(self):
+        _, _, result = self._run(datetime.now(timezone.utc) - timedelta(seconds=10))
+        self.assertTrue(result.success)
+
+    def test_just_inside_the_window_passes(self):
+        _, _, result = self._run(datetime.now(timezone.utc) - timedelta(seconds=290))
+        self.assertTrue(result.success)
+
+    def test_naive_datetime_is_read_as_utc_not_an_error(self):
+        """A JSON body without an offset must not surface as gate_error."""
+        naive_fresh = datetime.now(timezone.utc).replace(tzinfo=None)
+        _, _, result = self._run(naive_fresh)
+        self.assertTrue(result.success)
+
+        naive_stale = (
+            datetime.now(timezone.utc) - timedelta(minutes=10)
+        ).replace(tzinfo=None)
+        _, _, result = self._run(naive_stale)
+        self.assertEqual(result.gate_blocked, "stale_approval")
+
+    def test_far_future_decided_at_is_refused(self):
+        """Otherwise a skewed or forged timestamp never expires."""
+        ex, _, result = self._run(datetime.now(timezone.utc) + timedelta(hours=1))
+        self.assertEqual(result.gate_blocked, "stale_approval")
+        self.assertEqual(ex.argv_calls, [])
+
+    def test_small_clock_skew_is_tolerated(self):
+        _, _, result = self._run(datetime.now(timezone.utc) + timedelta(seconds=5))
+        self.assertTrue(result.success)
+
+    def test_staleness_checked_before_any_supabase_read(self):
+        """Cheap and decisive: a stale approval must not cost three round trips."""
+        ex = StubExecutor()
+        approval = make_approval()
+        approval.decided_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+        with DBStub(config_raises=AssertionError("gates must not run")):
+            result = run(ex.execute(approval))
+        self.assertEqual(result.gate_blocked, "stale_approval")
+
+
+class ConditionIdMatchingTest(unittest.TestCase):
+    """L2: `$` matches before a trailing newline; fullmatch does not."""
+
+    def test_trailing_newline_condition_id_refused(self):
+        ex = StubExecutor()
+        with DBStub():
+            result = run(ex.execute(make_approval(
+                condition_id=VALID_CONDITION_ID + "\n"
+            )))
+        self.assertEqual(result.gate_blocked, "invalid_market_identifier")
+        self.assertEqual(ex.argv_calls, [])
+
+    def test_trailing_junk_refused(self):
+        for suffix in ("\n\n", " ", "\r\n", "extra", "\t"):
+            ex = StubExecutor()
+            with DBStub():
+                result = run(ex.execute(make_approval(
+                    condition_id=VALID_CONDITION_ID + suffix
+                )))
+            self.assertEqual(result.gate_blocked, "invalid_market_identifier")
+
+    def test_leading_junk_refused(self):
+        ex = StubExecutor()
+        with DBStub():
+            result = run(ex.execute(make_approval(
+                condition_id="  " + VALID_CONDITION_ID
+            )))
+        self.assertEqual(result.gate_blocked, "invalid_market_identifier")
+
+
+class EntryPriceNullTest(unittest.TestCase):
+    """M2: an unknown fill price is NULL, never 0.0."""
+
+    def test_no_price_anywhere_records_null_not_zero(self):
+        stdout = json.dumps({"success": True, "response": {"orderID": "0xo"}})
+        ex = StubExecutor(stdout=stdout)
+        with DBStub() as db:
+            # market_probability=0 removes the fallback too.
+            result = run(ex.execute(make_approval(market_probability=0)))
+        self.assertTrue(result.success)
+        row = db.written[0]
+        self.assertIsNone(row["entry_price"], "0.0 would disable the stop-loss rule")
+        self.assertIsNone(row["shares"])
+
+    def test_derive_fill_returns_none_pair_when_unusable(self):
+        price, shares = TradeExecutor._derive_fill(
+            make_candidate(market_probability=0), {"response": {}}
+        )
+        self.assertIsNone(price)
+        self.assertIsNone(shares)
+
+
 class HappyPathTest(unittest.TestCase):
     def test_all_gates_pass_order_placed_position_written_telegram_sent(self):
         ex = StubExecutor()
