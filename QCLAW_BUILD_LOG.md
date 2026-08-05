@@ -18929,3 +18929,117 @@ Slice 2: GHL blogs API availability, BLOG_URL repoint. Slice 3:
 redirects + sitemap. Slice 4: checkout URL resolution, DNS cutover —
 blocked on privacy-policy rewrite (unadapted Shopify template, logged
 2026-08-05).
+
+## 2026-08-06 — flowos-web Slice 2 CLOSED — 69 blog posts statically rendered, body in HTML
+
+**Step 0 spike (mandatory pause, reported and approved before any
+conversion code):** three export paths tried. GHL API v2
+`GET /blogs/posts/all` (pulled the actual OpenAPI spec from
+`GoHighLevel/highlevel-api-docs`) has no body/content field in
+`BlogPostResponseDTO` at all — ruled out on schema, independent of
+credentials or plan tier. No PIT was ever created for this location;
+Pillar 4 ended up out of scope entirely. Nuxt `__NUXT__` payload is app
+config only (CDN whitelist, base URLs), no post data. Playwright render
+of the live page works cleanly: `#blogPostContent` is a precise,
+uncluttered body selector (no script/iframe/form/video in either
+sampled post at spike time), all required fields present via DOM
+selectors. Path 3 chosen.
+
+**Crawl:** all 69 slugs harvested by paginating the live listing page
+(18 pages), matching the brief's count exactly. Full render crawl paced
+1.5s between requests (live production tenant, no deadline) — 69/69 ok,
+0 failures, 0 iframe/form/video in any post body (only a benign
+per-post `application/ld+json` schema.org script, stripped during
+conversion).
+
+**Images:** the brief assumed images are uniformly on
+`cdn.filesafe.space` — false. Sampled posts showed two different
+origins (`assets.cdn.filesafe.space` and `storage.googleapis.com`),
+both wrapped in an `images.leadconnectorhq.com` resize proxy
+(`/image/f_webp/q_80/r_<width>/u_<origin-url>`). Rehost script unwraps
+the `u_` param to the true origin and fetches unresized wherever
+possible (0 fallbacks to the r_1200 proxy variant needed across all 71
+images fetched) — max-resolution source so Astro's own responsive
+derivatives aren't capped by a pre-shrunk input. 68 hero images + 3
+in-body images (all three on one post — the corpus is overwhelmingly
+hero-only), 359.8MB fetched, uploaded to
+`flowos-content:flowos-content/site/flowos-web/blog/<slug>/`, served
+via media.flowos.tech. 0 image failures.
+
+**Conversion bug found and fixed at the mandatory 3-post checkpoint:**
+the post template renders its own `<h1>` from frontmatter; GHL's body
+content routinely repeats it as the body's own `<h1>` (exact duplicate
+on some posts, reworded restatement on others). First fix stripped
+only a leading run of h1s — insufficient for `ai-revolution-business-
+success`, which stacks an empty h1, then an `<img>`, then the real-
+headline h1 sharing the same `data-toc-id` as the first — a genuine
+GHL content-duplication bug, reproduced on a fresh re-crawl, not a
+timing flake. Final rule strips every h1 anywhere in the body,
+regardless of position. Verified with a similarity audit against each
+post's frontmatter title across all 48 strip events on 47 posts: 1
+empty (no content lost), 0 scored below 0.30 word-overlap similarity —
+every strip was a headline restatement, never distinct content.
+Confirmed: all 69 built pages carry exactly one `<h1>`.
+
+**Build performance:** local cold build (no image cache, 425 image
+variants generated from 71 source images) 29.6s Astro-reported, ~30s
+wall. Warm rebuild ~8–10s. `vercel build` run locally against the
+linked project (no deploy) to sanity-check the real build pipeline —
+~10s warm, no resource or time concern surfaced at either tier. `dist/`
+33MB from 359.8MB of source images.
+
+**Listing page:** `/follow-up-system-blog` built as a statically
+paginated index (6 pages, 12/page, 69 links total, verified no
+overlap/gap across pages). `BLOG_URL` repointed from the GHL URL to the
+internal route in `src/config/site.ts`.
+
+**Inventory audit (report-only, `docs/blog-inventory.md` — no
+consolidation, rewriting, deletion, or noindex applied this slice):**
+word count is 320–614 across all 69 (median 451, mean 456) — **68 of
+69 posts fall under the 600-word thin-content bar**, not a minority.
+Two-tier duplicate detection: **Tier 1 confirmed** — 6 pairs (12 posts)
+with byte-identical page titles pulled straight from GHL (source-side
+fact, not a pipeline defect — acceptance criterion 8 on distinct
+titles is accepted as a known condition rather than a failure, per
+Tyson). **Tier 2 suspected** — 7 heuristic clusters (26 posts) via
+weighted slug-token overlap (common filler words like ai/powered/
+automation/workflow/crm downweighted by document frequency across all
+69 slugs), threshold 0.55, scores shown for auditability. **38 of 69
+posts (55%) carry duplicate signal at some tier.** Single author
+(Tyson Venables) and single category ("Ai & Automations", 68/69 —
+1 post has no category assigned on the live site) across the entire
+corpus; category/author archive pages were explicitly not built —
+with only one of each, they'd be near-duplicates of the main listing.
+
+**Slice 3 planning note (not acted on, Tyson decides after reviewing
+the inventory):** indexing all 69 as-is is off the table given the
+word-count distribution and 55% duplicate signal. Slice 3 will either
+index a curated subset or noindex the corpus while keeping all 69 URLs
+live.
+
+**Verification:** 69/69 posts built at `/post/<slug>`, slugs byte-
+identical to live URLs; body-in-HTML confirmed by curling a built page
+and grepping a mid-body sentence (the defect this migration exists to
+fix); amended acceptance criterion 7 — grepped all of `dist/` for
+`filesafe.space`, `storage.googleapis.com`, AND
+`images.leadconnectorhq.com` — **0/0/0**, every image resolves same-
+origin; meta descriptions 69/69 unique (titles 63/69, see Tier 1
+above); Lighthouse 100/100 performance+SEO on the listing page and all
+3 sampled posts; 0 Call Intel references in `dist/`; site builds clean
+with zero GHL/leadconnector references in root `package.json`, Vercel
+env, or build-time code — no PIT was ever created.
+
+**Security gate:** no hardcoded credentials (none needed — Path 3
+requires none); GHL token confirmed absent from repo, `.env.example`,
+and Vercel env (pulled preview env vars, inspected names only —
+standard Vercel/Turbo vars, nothing GHL-shaped); site builds with zero
+GHL credentials present; export tooling
+(`scripts/blog-export/`) has its own isolated `package.json` —
+root `package.json`/lockfile untouched, Vercel's install unaffected; no
+new webhooks, endpoints, or Supabase tables.
+
+**Slice 2 state:** COMPLETE. flowos-web main @ `3df1dcd`. Open for
+Slice 3: redirect map + sitemap (`/soulledbusinessblog` 301, graveyard
+pages), indexability decision on the 69 posts informed by the inventory
+audit above. Slice 4: checkout URL resolution, DNS cutover — still
+blocked on the privacy-policy rewrite logged 2026-08-05.
