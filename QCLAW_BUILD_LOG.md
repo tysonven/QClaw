@@ -18117,3 +18117,175 @@ declaring `n8n.nodes`) and reads `description.properties`; `audit_resources.py` 
 Backups + payloads + audit data: `/root/n8n-artifacts/2026-08-03-linkedin-migration/` (root, 0600).
 Audit scripts (CI-destined): `/root/QClaw/tools/n8n-audit/`.
 Generated on the local Mac; copied here 2026-08-03.
+
+## 2026-08-05 — Financial-path heartbeat instrumentation (P1-b/c/d) + charlie-liveness backstop applied
+
+Follow-on from the 2026-08-04 dormancy-alerter session. Scope: Position Monitor
+(`UYA0JppH7eqyI7fQ`) and Market Scanner (`3YahxqOguET3pifj`) instrumentation only,
+plus the long-pending Slice 3h HIGH#2 backstop. **P1-a (trading_positions close
+path) deliberately NOT built** — handed to the trading session, see blocking
+pre-condition below.
+
+### Repo-vs-live diff first (new standing rule) — two snapshots were stale
+
+Per the rule landed on `cc/brief-template-live-diff-rule`, all three workflows were
+diffed against the live **published** row (`workflow_history` at
+`workflow_entity.activeVersionId`) before any change. Two were materially stale:
+
+- **`UYA0JppH7eqyI7fQ`** — repo had `SUPABASE_ANON_KEY` + `genericAuthType:
+  httpHeaderAuth`; live has `SUPABASE_SERVICE_ROLE_KEY` + `httpCustomAuth`.
+  Applying from repo would have **regressed the credential to anon against a
+  service_role-locked table** (the 2026-07-15 anon-RLS lockdown).
+- **`3YahxqOguET3pifj`** — repo had a 4-way page fetch (`Fetch Page 2/3/4` →
+  `Merge Pages`); live has `Fetch Events p1/p2` → `Flatten Events` → `Merge Pages`.
+  15 nodes both sides, 3 added / 3 removed, connections differ, 5 param diffs.
+
+All changes were therefore built from the LIVE published version, and the repo
+snapshots reconciled to live in the same commit. `O5ir2Mp0e2AXkUXZ` was clean
+(repo == live).
+
+### Changes applied live
+
+**P1-b — `UYA0JppH7eqyI7fQ` `Fetch Open Positions`: `alwaysOutputData: true`.**
+`trading_positions` is empty (0 rows, ever), the node returned `[]`, and n8n skips
+all downstream nodes on empty input — so runs died 3 nodes in at `Fetch Open
+Positions`. The zero-length guard already present in `Evaluate Positions` was dead
+code because the node never ran to reach it. Now emits one empty item so the guard
+executes.
+
+**P1-c — `UYA0JppH7eqyI7fQ` `Has Alerts?` [false] → `Heartbeat: Success`.**
+Previously the false branch was a dead end and `Heartbeat: Success` sat only on the
+true branch, so a healthy no-alert run wrote no success heartbeat. Both branches now
+terminate at the success heartbeat.
+
+**P1-c.1 — `UYA0JppH7eqyI7fQ` `Has Alerts?` v2 IF node repaired (NOT in the original
+scope; surfaced by P1-b).** With the node finally reachable it threw immediately:
+
+```
+Cannot read properties of undefined (reading 'caseSensitive')
+description: Try changing the type of comparison. Alternatively you can enable
+'Convert types where required'.
+context: {"itemIndex": 0}
+```
+
+`parameters.conditions.options` was **absent entirely** (`null`) on a
+`typeVersion: 2` IF node, and `rightValue` was the string `"0"` against
+`operator.type: number`. Fixed to match the known-good pattern used by
+`O5ir2Mp0e2AXkUXZ > Any Silent?` and `3YahxqOguET3pifj > Has Edge?`:
+`options: {caseSensitive:true, leftValue:"", typeValidation:"strict", version:2}`
+and `rightValue: 0` (number).
+
+**This was a latent production defect, not a regression.** It was invisible only
+because the node had never executed — 0 of 3,620 runs reached it. The first position
+the Trade Executor opens would have thrown here. Executions 1205632 and 1205671
+(09:45, 10:00 UTC) are the two `error` runs between P1-b landing and this fix; every
+prior run reported `success` while doing nothing.
+
+`Has Edge?` on Market Scanner was checked for the same defect — it is correctly
+formed (`typeValidation: loose`, numeric rightValues). Defect was isolated.
+
+**P1-d — `3YahxqOguET3pifj` success heartbeat moved behind persistence.**
+Was `Build Run Summary → [Has Edge?, Save Simulations, Heartbeat: Success]` — a
+sibling fan-out, so a run could write a green heartbeat and then fail to persist.
+Now `Build Run Summary → [Has Edge?, Save Simulations]` and `Save Simulations →
+Heartbeat: Success`. "Success" now means persisted, not computed.
+
+**Dormancy alerter `O5ir2Mp0e2AXkUXZ` — two map entries added (12 → 14, 13 monitored).**
+
+- `charlie-liveness` — `expected_seconds: 60, slack: 5` → 300s threshold. This is the
+  Slice 3h HIGH#2 backstop specified in `LOCATIONS.md:76`, added to the repo JSON by
+  `75dd137` (2026-06-10, PR #45) but **never applied live** — the n8n API returned 401
+  at the time and the UI apply was never picked back up. Live `updatedAt` sat at
+  2026-05-13 15:04:44 until 2026-08-04, confirming no June write. The 401 was resolved
+  2026-07-14. Until now the off-host watcher cron was the **only** detector for Charlie
+  being dead; a watcher-script crash was undetectable, which is precisely what HIGH#2
+  was specified to cover.
+- `3YahxqOguET3pifj` Trading - Market Scanner — `expected_seconds: 14400, slack: 2`.
+  Reactivated live 2026-07-05, unmapped for 31 days.
+
+Field-level note: the brief specified `expected_seconds: 300` described as
+"60s × slack 5". 300 × 5 would give a 25-minute threshold. Implemented as
+`60 × 5 = 300s`, which is the 5-minute threshold `LOCATIONS.md:76` and commit
+`75dd137` both specify and which matches the brief's stated intent.
+
+**Position Monitor deliberately NOT re-added to the cadence map** — a map entry
+would go green off `started` rows alone until P1-a lands.
+
+### Cadence caveat recorded in-code (Market Scanner)
+
+`Smart Schedule` is not a flat 4h: `0 */1 * * 1` (hourly Mon), `0 */2 * * 2-5`
+(2h Tue–Fri), `0 */4 * * 0,6` (4h weekends). `14400 × 2 = 8h` covers the worst case
+safely but tolerates ~7 consecutive missed runs on a Monday. Per-day cadence needs
+the multi-trigger work (Part 3). Noted in the `Compute Silent` header comment.
+
+### BLOCKING PRE-CONDITION for Trade Engine Session 5 — trading session please read
+
+`UYA0JppH7eqyI7fQ > Update Positions` writes columns that **do not exist** on
+`public.trading_positions`, and discards the failures. Verified against
+`information_schema.columns`. Actual schema: `entry_price, exit_price, exit_usdc,
+pnl, exit_reason, closed_at, status, opened_at, tx_hash, …` — there is **no
+`current_price` and no `close_reason` column**.
+
+Both PATCHes are bare `await fetch(...)` with **no `resp.ok` check and no throw**, so
+PostgREST 400s are silently swallowed and the node returns `{...data, updated: true}`.
+The close path therefore reports success while leaving the position open. It does
+**not** throw. With P1-c now landed it will also write a green success heartbeat while
+doing so.
+
+Exact field list to fix:
+
+| Current (broken) | Required |
+|---|---|
+| `close_reason` | `exit_reason` |
+| `current_price` (exit PATCH) | drop — no such column |
+| `current_price` (price-update PATCH) | drop entire PATCH — no such column; price is re-fetched from Polymarket each run anyway |
+| *(missing)* | `closed_at` |
+| *(missing)* | `exit_price` |
+| *(missing)* | `exit_usdc` |
+| *(missing)* | `pnl` |
+
+Plus: add `if (!resp.ok) throw new Error(...)` to both loops so a rejected write
+becomes an errored run instead of a silent no-op.
+
+**Unverified secondary risk on the same untested path:** `Evaluate Positions` does
+`const positions = $input.first().json; if (!Array.isArray(positions) …)`. This
+assumes the whole JSON array arrives as a single item. n8n's HTTP Request node v4.2
+may split a JSON array response into one item per element, in which case
+`$input.first().json` is the first position object, `Array.isArray()` is false, and
+the guard would silently return "no positions" even when positions exist. Cannot be
+verified while `trading_positions` is empty — flagging for the trading session to
+confirm with the first real position.
+
+### Verification — live runtime, not just PUT receipts
+
+All PUTs HTTP 200; `activeVersionId` advanced on each and the **published**
+`workflow_history` rows confirmed to carry the changes (not just the drafts). New
+alerter map was simulated against live heartbeat data before apply
+(`total_expected` 11 → 13, `silent_count` 0).
+
+Confirmed against real scheduled executions afterwards:
+
+- **`UYA0JppH7eqyI7fQ` exec 1205705** (2026-08-05 10:15:32 UTC) — status `success`,
+  `lastNodeExecuted: Heartbeat: Success`, nodes run: `Every 15 Minutes, Heartbeat:
+  Start, Fetch Open Positions, Evaluate Positions, Update Positions, Has Alerts?,
+  Heartbeat: Success`. `Notify Monitor` correctly skipped (no alerts). This is the
+  **first `success` heartbeat this workflow has ever written** — the prior record is
+  3,620 consecutive `started` rows and zero successes.
+- **`3YahxqOguET3pifj` exec 1205666** (10:00:01 UTC) — status `success`, both
+  `Save Simulations` and `Heartbeat: Success` ran, in that order.
+- **`O5ir2Mp0e2AXkUXZ` exec 1205669** (10:00:01 UTC) — `total_expected=13`,
+  `suppressed_count=1`, `silent_count=0`, `silent: []`. `charlie-liveness` confirmed
+  present in the `Get Latest Heartbeats` input and evaluated healthy; `Any Silent?`
+  took the false branch, no Telegram alert. **HIGH#2 backstop is live and exercised.**
+
+Note `record_heartbeat` upserts on `(workflow_id, execution_id)` and overwrites
+`status`, so one row per execution and the final status wins — a row still reading
+`started` is a run that never reached its success heartbeat. That is what makes the
+started→success flip above meaningful rather than additive.
+
+### Deferred / queued (untouched)
+
+Parts 2 and 3 of the alerter fix; credential migrations; the 5 unmonitored
+dead-credential workflows; `yPt090tPv4FJtwAZ` weekly-branch paired-item bug;
+`watcher.log` 8.5MB unrotated (infrastructure debt list, alongside JWT rotation and
+`.env.bak*` cleanup).
