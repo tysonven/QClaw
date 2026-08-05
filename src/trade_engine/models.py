@@ -266,14 +266,35 @@ class ScannerRunSummary(BaseModel):
     execution_result: Optional[TradeExecutionResult] = None
 
 
+class MonitorRunResult(BaseModel):
+    """Result of one Position Monitor sweep.
+
+    `positions_resolved` counts market-settlement closes (resolved_win /
+    resolved_loss) only; `positions_tp_sl` counts take_profit / stop_loss
+    closes, kept separate because settlement is ground truth for the learning
+    loop while a TP/SL exit is a rule firing on a live price.
+    """
+
+    run_at: datetime
+    positions_checked: int
+    positions_resolved: int = 0
+    positions_tp_sl: int = 0
+    positions_unpriceable: int = 0
+    alerts_sent: int = 0
+    errors: int = 0
+
+
 class HealthResponse(BaseModel):
     status: str
     version: str
     trading_enabled: Optional[bool] = None
     open_positions: Optional[int] = None
     scheduler_running: bool
+    scheduler_jobs: int = 0
     last_scan_at: Optional[datetime] = None
     last_scan_high_edge_count: Optional[int] = None
+    last_monitor_at: Optional[datetime] = None
+    monitor_positions_resolved: int = 0
     analyst_available: bool = False
     pending_approvals: int = 0
     approval_gate_active: bool = False

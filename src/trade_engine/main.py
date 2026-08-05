@@ -39,26 +39,30 @@ from src.trade_engine.database import (  # noqa: E402
     count_open_positions,
     get_daily_pnl,
     get_trading_config,
-    write_simulation,
 )
 from src.trade_engine.analyst import TradeAnalyst  # noqa: E402
 from src.trade_engine.models import (  # noqa: E402
     AnalystRecommendation,
     ApprovalResult,
     HealthResponse,
+    MonitorRunResult,
     ScannerCandidate,
     ScannerRunSummary,
     TradeExecutionResult,
     TradingConfig,
 )
+from src.trade_engine.monitor import (  # noqa: E402
+    PositionMonitor,
+    last_monitor_state,
+)
 from src.trade_engine.scanner import (  # noqa: E402
     PolymarketScanner,
     last_run_state,
-    record_run,
-    simulation_rows,
 )
 from src.trade_engine.scheduler import (  # noqa: E402
     is_running,
+    job_count,
+    register_jobs,
     shutdown_scheduler,
     start_scheduler,
 )
@@ -77,12 +81,47 @@ trade_executor = TradeExecutor()
 _poller_task: Optional[asyncio.Task] = None
 
 
+async def scheduled_scan() -> None:
+    """Cron entry point: one full scanner pass with the wired pipeline.
+
+    Same pipeline /scan drives — scanner + analyst + approval gate + executor,
+    sharing the process-wide gate and executor singletons. Never raises: an
+    unhandled exception here would land in APScheduler's error listener and
+    silently kill the cadence's usefulness, so failures are logged instead.
+    """
+    try:
+        open_count = await count_open_positions()
+    except SupabaseError as exc:
+        log.error("scheduled scan aborted, could not read open positions: %s", exc)
+        return
+    try:
+        scanner_ctx = PolymarketScanner(
+            analyst=TradeAnalyst(),
+            approval_gate=approval_gate,
+            executor=trade_executor,
+        )
+        async with scanner_ctx as scanner:
+            await scanner.run(open_positions=open_count)
+    except Exception:  # noqa: BLE001 - a failed scan must not break the schedule
+        log.exception("scheduled scan failed")
+
+
+async def scheduled_monitor() -> None:
+    """Cron entry point: one Position Monitor sweep every 15 minutes."""
+    try:
+        async with PositionMonitor() as monitor:
+            await monitor.check_positions()
+    except Exception:  # noqa: BLE001 - check_positions should never raise; belt+braces
+        log.exception("scheduled monitor sweep failed")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _poller_task
 
     log.info("trade-engine %s starting on %s:%s", config.version,
              config.trade_engine_host, config.trade_engine_port)
+    register_jobs(scheduled_scan, scheduled_monitor)
     start_scheduler()
 
     # The poller runs ONLY against a dedicated bot token. TELEGRAM_BOT_TOKEN is
@@ -132,6 +171,7 @@ async def health() -> JSONResponse:
     'degraded' to a health check instead of an unhandled exception.
     """
     scan_state = last_run_state()
+    monitor_state = last_monitor_state()
     try:
         cfg = await get_trading_config()
         open_count = await count_open_positions()
@@ -145,8 +185,11 @@ async def health() -> JSONResponse:
                 status="degraded",
                 version=config.version,
                 scheduler_running=is_running(),
+                scheduler_jobs=job_count(),
                 last_scan_at=scan_state["at"],
                 last_scan_high_edge_count=scan_state["high_edge_count"],
+                last_monitor_at=monitor_state["at"],
+                monitor_positions_resolved=monitor_state["resolved_total"],
                 analyst_available=bool(config.anthropic_api_key),
                 pending_approvals=approval_gate.pending_count,
                 approval_gate_active=config.telegram_poller_enabled,
@@ -161,8 +204,11 @@ async def health() -> JSONResponse:
             trading_enabled=cfg.trading_enabled,
             open_positions=open_count,
             scheduler_running=is_running(),
+            scheduler_jobs=job_count(),
             last_scan_at=scan_state["at"],
             last_scan_high_edge_count=scan_state["high_edge_count"],
+            last_monitor_at=monitor_state["at"],
+            monitor_positions_resolved=monitor_state["resolved_total"],
             analyst_available=bool(config.anthropic_api_key),
             pending_approvals=approval_gate.pending_count,
             approval_gate_active=config.telegram_poller_enabled,
@@ -178,61 +224,15 @@ async def read_config() -> TradingConfig:
     return await get_trading_config()
 
 
-async def _persist_simulations(simulated: list) -> tuple[int, int]:
-    """Write every simulation row and stash the created id back on the source.
-
-    Persists all buckets, not just high-edge — the neutral and no-edge rows are
-    what make calibration analysis possible later. The created id is written
-    back onto the in-memory row so _attach_simulation_id can find it without a
-    second round trip.
-    """
-    written, errors = 0, 0
-    rows = simulation_rows(simulated)
-    for source, row in zip(simulated, rows):
-        try:
-            created = await write_simulation(row)
-            written += 1
-            if isinstance(created, dict) and created.get("id"):
-                source["simulation_id"] = str(created["id"])
-        except (SupabaseError, ValueError) as exc:
-            errors += 1
-            log.error("failed to persist simulation for %s: %s", row.get("asset"), exc)
-    log.info("persisted %d/%d simulations (%d failed)", written, len(rows), errors)
-    return written, errors
-
-
-def _attach_simulation_id(summary: ScannerRunSummary, simulated: list) -> None:
-    """Point best_trade at its persisted simulation row.
-
-    Matches on market_id, which is unique within a run (analyse_edge dedupes on
-    it). If the simulation write failed there is nothing to attach — the trade
-    can still execute, it just produces a position the monitor cannot price, so
-    that case is logged loudly rather than passed over.
-    """
-    best = summary.best_trade
-    if best is None:
-        return
-    for source in simulated:
-        if str(source.get("market_id")) == best.market_id:
-            simulation_id = source.get("simulation_id")
-            if simulation_id:
-                best.simulation_id = str(simulation_id)
-                return
-            break
-    log.error(
-        "best_trade has no persisted simulation_id (market_id=%s) — a position "
-        "opened from it will not be priceable by the Position Monitor",
-        best.market_id,
-    )
-
-
 @app.post("/scan", response_model=ScannerRunSummary)
 async def scan() -> JSONResponse:
     """Run the scanner once, on demand.
 
-    No cron is registered yet (Session 4 wires the schedule), so this is the
-    only trigger. No auth — loopback-bound, internal only. Nothing here places
-    a trade: best_trade is a suggestion, and execution lands in Session 5.
+    Drives the SAME scanner.run() pipeline the cron jobs call — Session 6
+    collapsed the stage-by-stage duplication this route used to carry, so
+    simulation persistence and simulation_id attachment cannot diverge between
+    the manual and scheduled paths again. No auth — loopback-bound, internal
+    only.
 
     A full pass makes up to 30 sequential /simulate calls at ~0.5s apart plus
     yfinance latency, so this can take a couple of minutes.
@@ -258,31 +258,7 @@ async def scan() -> JSONResponse:
             executor=trade_executor,
         )
         async with scanner_ctx as scanner:
-            markets = await scanner.fetch_markets()
-            candidates = await scanner.analyse_edge(markets)
-            simulated, sim_errors = await scanner.run_simulations(candidates)
-            summary = await scanner.build_run_summary(
-                simulated,
-                markets_fetched=len(markets),
-                candidates_analysed=len(candidates),
-                sim_errors=sim_errors,
-                open_positions=open_count,
-            )
-            summary.best_trade = scanner.select_best_trade(summary)
-            await scanner.apply_analyst(summary)
-
-            # Simulations are persisted BEFORE the approval gate, not after,
-            # so best_trade can carry its simulation_id into the position row.
-            # A position with no simulation_id is unresolvable by the Position
-            # Monitor — it would never price, never take profit and never stop
-            # out. Ordering this after execution would silently reintroduce
-            # that (Session 5 audit, F4).
-            written, write_errors = await _persist_simulations(simulated)
-            _attach_simulation_id(summary, simulated)
-
-            await scanner.apply_approval(summary)
-            await scanner.apply_execution(summary)
-            record_run(summary)
+            summary = await scanner.run(open_positions=open_count)
     except Exception as exc:  # noqa: BLE001 - surface a clean message, not a stack
         log.exception("scan failed")
         return JSONResponse(
@@ -299,6 +275,20 @@ async def scan() -> JSONResponse:
             "approval_result": {"recommendation": {"raw_response"}},
         })
     )
+
+
+@app.api_route("/monitor/run", methods=["GET", "POST"], response_model=MonitorRunResult)
+async def monitor_run() -> JSONResponse:
+    """Run the Position Monitor once, on demand.
+
+    Same sweep the 15-minute cron performs. No auth — loopback-bound, internal
+    only. GET and POST both accepted: the sweep is idempotent-ish (closing an
+    already-closed position is a no-op because the fetch only returns
+    status=open rows), so a curl without -X POST should not 405.
+    """
+    async with PositionMonitor() as monitor:
+        result = await monitor.check_positions()
+    return JSONResponse(content=jsonable_encoder(result))
 
 
 @app.post("/analyse", response_model=AnalystRecommendation)

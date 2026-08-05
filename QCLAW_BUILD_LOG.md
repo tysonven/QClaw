@@ -18594,3 +18594,129 @@ request. Approval suite runtime dropped 5.353s → 0.131s.
   scanner and position monitor; learning-loop verification.
 - `trading-worker` port binding fix (bind `0.0.0.0:4001` — currently internet-exposed).
 - n8n scanner pagination fix (`/markets?limit=200` silently returns 100).
+
+---
+
+## 2026-08-05 — Phase 5 Session 13 — Trade Engine Session 6: Position Monitor + cron + n8n retirement
+
+The trade engine is now fully standalone. No n8n workflow remains in the
+execution or monitoring path.
+
+### Slice 1 — simulation persist wired into `run()` (closes M4/known-gap 3)
+
+`_persist_simulations` and `_attach_simulation_id` moved from `main.py`
+module scope into `PolymarketScanner` as methods; `run()` calls them between
+`apply_analyst` and `apply_approval` (same ordering as the old `/scan` body —
+persist BEFORE the approval gate, per Session 5 audit F4). `/scan` now
+delegates to `scanner.run()` wholesale, so the manual and cron paths are one
+implementation and cannot diverge again. The M4 "Trade will be unpriceable"
+warning is deleted.
+
+Live verification: real scan on the branch produced `trade_engine.scanner:
+persisted 0/0 simulations` (0 candidates passed filters at 14:50 UTC — market
+conditions, not code; 562 fetched). Deterministic probe through the real
+`run()` + real Supabase write then confirmed the join end-to-end:
+`best_trade.simulation_id = 129c16ea-1995-4118-b032-87e2c52d3a6f` attached,
+row present in `trading_simulations`, probe row deleted after. **Known gap 1
+from Session 12 (simulation_id → position → monitor join unexercised) is now
+exercised on the persist side;** the position-write side was already covered
+by executor tests.
+
+### Slices 2–3 — `src/trade_engine/monitor.py` (PositionMonitor) + `MonitorRunResult`
+
+Ported from the published n8n `Evaluate Positions`/`Update Positions` nodes
+(workflow_history `4211a924`, read via Postgres — repo snapshots not trusted),
+PLUS resolution detection the n8n workflow never had. Rule order per position,
+first match wins:
+
+1. **Resolution** (new): `active=false AND closed=true`, or direction-side
+   price exactly 1.0/0.0 → close as `resolved_win`/`resolved_loss`. Fixes the
+   n8n hole where a position entered ≤ 0.20 that resolves against us fails the
+   stop-loss `entryPrice > 0.20` guard and stays open forever. Flags-resolved
+   with non-final prices (voided) → skipped with WARNING, no guessable pnl.
+2. **TP/SL** (verbatim port): `currentPrice > 0.85` → `take_profit`;
+   `entry_price > 0.20 && currentPrice < 0.08` → `stop_loss`.
+3. **Weakening alert** (verbatim port): `entry_price > 0.50 && currentPrice
+   < 0.30` → Telegram warning, no DB write.
+
+Prices are direction-side throughout (`outcomePrices[0]`=YES, `[1]`=NO, JSON
+string parsed), matching n8n's `priceFor`; a NO win closes at `exit_price`
+1.0 so `exit_usdc = shares * exit_price` stays self-consistent. Gamma lookup
+is `GET /markets?condition_ids=<id>` (query param — the path form resolves
+numeric Gamma ids and 404s on conditionIds). condition_id resolution:
+`trading_simulations.raw_output.polymarket_condition_id || condition_id`.
+`check_positions()` never raises; each position isolated in its own
+try/except; DB close write happens BEFORE the Telegram send; `exit_usdc`/`pnl`
+NULL (never guessed) when `shares`/`usdc_amount` are absent — they feed
+Gate 3's daily-loss sum.
+
+### Slice 4 — cron + endpoints
+
+`scheduler.register_jobs()` registers 3 scanner crons + 1 monitor interval,
+all `max_instances=1, coalesce=True`. **Cron constants converted from crontab
+strings to named-day CronTrigger kwargs**: APScheduler numbers `day_of_week`
+0=Monday while standard cron uses 0=Sunday, and `CronTrigger.from_crontab`
+does NOT translate (verified against APScheduler 3.11.3: `"0 */4 * * 0,6"`
+parses as Monday+Sunday). The old string constants were one silent day-shift
+away from scanning the wrong days. Schedule: Mon hourly, Tue–Fri 2-hourly,
+Sat/Sun 4-hourly, monitor every 15 min. Job functions live in `main.py`
+(they need the process-wide approval-gate/executor singletons). New
+`GET|POST /monitor/run` manual trigger; `/health` gains `scheduler_jobs`,
+`last_monitor_at`, `monitor_positions_resolved` (process-lifetime).
+
+### Slice 5 — n8n token switch
+
+`TRADE_TELEGRAM_BOT_TOKEN` piped qclaw→n8n host-to-host (never printed;
+sha256-prefix match `eb0031e6fb67` both sides), `.env` backed up first.
+`docker compose up -d` recreated the n8n container (env_file only reloads on
+recreate); healthz ok, token resolves in-container (47 bytes). Notify Monitor
+node switched to `$env.TRADE_TELEGRAM_BOT_TOKEN` via API PUT — **PUT
+republishes on n8n 2.4.8** (new `activeVersionId 3acdecef…` verified carrying
+the change in `workflow_history`). Backup:
+`n8n-workflows/backups/position-monitor.PRE-TOKEN-SWITCH-20260805.json`.
+
+### Slice 6 — n8n trading workflows retired
+
+After Python monitor + scanner verification: `UYA0JppH7eqyI7fQ` (Position
+Monitor) and `3YahxqOguET3pifj` (Market Scanner) deactivated via API,
+confirmed `active=f` in DB. Backups
+`*.PRE-DEACTIVATION-20260805.json`; canonical JSONs refreshed with
+`active: false`. **Dormancy alerter updated in passing**: the Market Scanner
+entry in `O5ir2Mp0e2AXkUXZ` Compute Silent got `suppressed: true` (reason:
+retired, replaced by Python cron) — without it the alerter would have paged
+false dormancy tonight (14400s × 2 threshold). Backup:
+`dormancy-alerter.PRE-SCANNER-SUPPRESS-20260805.json`.
+
+### Slice 7 — tests
+
+`tests/test_monitor.py`: 29 cases over MockTransport (real `_fetch_market`/
+`_notify` request paths) — model validation, empty sweep, lookups, resolution
+win/loss/direction-NO, resolution-beats-TP labelling, low-entry resolution
+close (the n8n gap), flags-without-final-price skip, exact close-row fields,
+NULL-shares NULL-pnl, TP/SL/weakening parity, notify-failure isolation,
+per-position failure isolation (Gamma error, PATCH error, sim-lookup error),
+never-raises, lifetime counter. Wired into `npm test` (now 4 Python suites).
+
+### Slice 8 — learning loop
+
+`POST /analyse` on the branch: Analyst fetched
+`trading_positions?status=eq.closed` live (log 14:49:56), returned
+`insufficient_history: true` with reasoning citing "zero resolved trades in
+history". The ≥ 10-resolved → `insufficient_history=False` branch is
+**pending real data** — verification completes on the first resolved trades.
+
+### Verification
+
+132 Python tests green (analyst 20, approval 32, executor 51, monitor 29);
+full `npm test` chain exit 0; `pm2 restart trade-engine` clean, `/health` ok
+with `scheduler_jobs: 4`; `/monitor/run` → `positions_checked: 0`; n8n
+container healthy post-recreate; both trading workflows `active=f`.
+
+### Carried-forward gaps
+
+- First live trade still needs watching through a full monitor cycle
+  (Session 12 gap 1 — persist side now proven, position side awaits a real
+  fill).
+- `execute_trade.py` slippage TODO unchanged.
+- `trading-worker` 0.0.0.0:4001 exposure unchanged.
+- Weekly Analyst (n8n) untouched — out of Session 6 scope.
