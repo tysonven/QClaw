@@ -18720,3 +18720,32 @@ container healthy post-recreate; both trading workflows `active=f`.
 - `execute_trade.py` slippage TODO unchanged.
 - `trading-worker` 0.0.0.0:4001 exposure unchanged.
 - Weekly Analyst (n8n) untouched — out of Session 6 scope.
+
+### Post-merge addendum (2026-08-05 15:12Z)
+
+Shipped as **PR #87**, squash-merged to main as `166f458` (2026-08-05
+15:10Z, merged by tysonven). Post-merge cleanup complete: live checkout
+returned to `main @ 166f458` (tree diff vs branch empty before checkout),
+trade-engine restarted on it — online, `/health` 200 with
+`scheduler_jobs: 4`, `trading_enabled: true` — and the session branch
+deleted local + remote.
+
+**The trade engine is fully standalone: no n8n workflows remain in the
+execution or monitoring path.** Learning loop: Analyst confirmed fetching
+resolved positions live; `insufficient_history: true` stands until the
+first real closes.
+
+**Watch item**: the first live trade must be observed through one full
+15-minute monitor cycle — the simulation_id → position → monitor join is
+proven by probe, not yet by a real fill.
+
+### Next session queue
+
+- **First live trade** — watch through a full monitor cycle (above).
+- `trading-worker` port binding fix (`0.0.0.0:4001` → `127.0.0.1:4001` —
+  currently internet-exposed).
+- n8n scanner pagination fix (`/markets?limit=200` silently returns 100) —
+  moot for the trading path now the workflow is retired; fix only if it is
+  ever reactivated.
+- Crete GHL replica.
+- SproutCode GHL replica.
