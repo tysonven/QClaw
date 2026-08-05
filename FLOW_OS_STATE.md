@@ -45,18 +45,124 @@ This file is the fourth canonical doc Charlie reads at session start, after `CEO
 
 **Owner:** Tyson for all Flow OS engagements.
 
-### GHL Support Bot (Flow OS product, separate pricing tier)
+### Flow OS product line
 
-**1 paid + 1 free + 4 trial:**
+Flow OS ships products alongside the subscription. **None currently generates
+revenue.** As of 2026-08-05 their function is credibility for the Flow OS
+offer, not a revenue line — surfaced on `flowos.tech/products` as evidence of
+engineering capability. Treat scope and investment accordingly.
+
+Delivery models differ per product and determine how each is sold and
+supported:
+
+**Source-available (pay once, buyer self-hosts):** buyer receives source code
+and self-deploys. No hosting obligation, no per-seat pricing, support scoped to
+documentation and delivery issues only.
+
+**Hosted (recurring):** Flow OS runs the infrastructure, buyer subscribes.
+
+**Done-for-you (service):** Flow OS installs and configures on the buyer's
+infrastructure for a setup fee. No delivery pipeline required.
+
+#### GHL Support Bot — hosted
+
+Support AI trained on GoHighLevel documentation. $29/month.
+
+- `support.flowos.tech` — Flow OS sub-account users
+- `support.flowos.tech/ghl` — non-Flow OS GHL accounts (broader market entry point)
 
 | Person | Status | Started | Notes |
 |---|---|---|---|
-| Bruce S. | $29 paid | Apr 2026 | Converted from trial 26 Apr |
+| Bruce S. | Failing payment | Apr 2026 | Converted from trial 26 Apr. Payment bouncing; cancellation expected. |
 | Georgia F. | Free | bundled | Free with Flow OS sub |
-| Helena K. | Trial | — | Completed payment details, hasn't used the platform yet |
-| Joemarie O. | Trial | — | Completed payment details, hasn't used the platform yet |
-| Murray M. | Trial | — | Completed payment details, hasn't used the platform yet |
-| Nexus Admin | Trial | — | Completed payment details, hasn't used the platform yet |
+| Helena K. | Trial | — | Payment details completed, never used the platform |
+| Joemarie O. | Trial | — | Payment details completed, never used the platform |
+| Murray M. | Trial | — | Payment details completed, never used the platform |
+| Nexus Admin | Trial | — | Payment details completed, never used the platform |
+
+**Effective paid subscribers: 0.** The single paid account is in payment
+failure and expected to cancel. Four trials converted payment details but
+never activated — a zero-activation rate across every trial taken. Treat this
+as a product with no revenue and no demonstrated engagement, not as a $29/mth
+line item.
+
+**Owner:** Tyson.
+
+#### SMS Gateway — source-available
+
+Self-hosted SMS routing. GoHighLevel, Twilio-compatible CRMs, or any webhook
+system via the generic `WebhookAdapter`. Buyer runs it on their own
+infrastructure and pays wholesale carrier rates.
+
+- **Status:** live, launched publicly 2026-07-27
+- **Price:** $79 founding tier
+- **Storefront:** `sms.flowos.tech`
+- **Sales to date:** 0
+- **Delivery pipeline:** Cloudflare Worker (`api.sms.flowos.tech`) → Supabase →
+  R2 bucket `flowos-sms-releases` → buyer repo `tysonven/flowos-sms-gateway-buyers`
+- **Repo:** `tysonven/flowos-sms-gateway`
+
+**Positioning decision (2026-08-05):** repositioned from active product launch
+to portfolio asset. Zero sales across 265 emails, LinkedIn, and three Facebook
+group posts — diagnosed as top-of-funnel message/market fit, not product or
+pipeline failure. Product stays live and supported; no further outbound push.
+Surfaced on `flowos.tech/products` for credibility and SEO, not as a revenue
+line. Positioned broadly rather than GHL-agency-specific.
+
+**Owner:** Tyson.
+
+#### Call Intel — work in progress
+
+**Not a product. Not on any public surface.** Deliberately excluded from
+`flowos.tech/products` as of 2026-08-05 and stays excluded until the blockers
+below clear. No page, no card, no mention on the site.
+
+Call transcription and summarisation. Zoom → transcript → Claude summary →
+GoHighLevel task + email to the agent who ran the call. Self-hosted; the buyer
+knows where the data sits.
+
+- **Repo:** `tysonven/call-intel` — private. Confirmed not publicly reachable
+  (unauthenticated fetch returns 404) as of 2026-08-05. No live exposure.
+- **Price:** not decided. Three models scoped 2026-08-03 (DFY setup;
+  source-available with paid support; hosted SaaS) and explicitly left open.
+  No figure is canonical.
+- **Delivery model:** undecided, and deferred with the rest. It determines
+  whether a multi-product purchase-to-delivery pipeline is needed at all — DFY
+  setup requires none.
+
+**Soak data (as of 2026-08-03):** 5 calls logged — 3 successful (Jul 22 test,
+Jul 31 Ashley's call, Aug 3 Tyson's call; all contact-matched, tasks created),
+2 failed. Both failures are `claude_parse_error`: Claude returns good-quality
+JSON that gets truncated by `max_tokens: 1500`. One failing call ran 169
+minutes. A fixed output ceiling cannot hold summaries from calls of arbitrary
+length — the fix is length-aware output budgeting or transcript chunking, not
+a larger constant.
+
+**Blockers to release:**
+
+1. Insufficient real-call volume. 2–4 weeks of production calls needed before
+   output quality, contact matching, and edge-case handling can be trusted.
+2. `claude_parse_error` truncation bug — open as of 2026-08-03.
+3. GoHighLevel is hardwired. No CRM abstraction layer; non-GHL users cannot
+   run it.
+4. Setup complexity — Zoom Marketplace app creation, Vercel deploy, Supabase
+   migration, env vars, manual `users.js` edits. Too many steps for
+   non-technical buyers.
+5. Repo not leak-audited. Template is `flowos-sms-gateway` PR #6: buyer-facing
+   README with internals replaced by placeholders, `.env.example` regrouped
+   with Flow OS client IDs blanked, commercial `LICENSE`, `.releaseignore`,
+   genericised migrations with real values moved to a release-ignored internal
+   file, full de-leak of `tests/`. That pass took two review rounds; residuals
+   found on the second were test phone numbers, a migration filename, and a
+   client name.
+
+**Recommended next step (from 2026-08-03, unactioned):** private beta with 2–3
+trusted people rather than public release. Repo access only, feedback on setup
+experience and output quality, no public promises.
+
+**On completion:** revisit delivery model → pricing → leak audit → then add to
+`flowos.tech/products`. The Astro `/products` layout is built to take a third
+card without restructuring.
 
 **Owner:** Tyson.
 
@@ -436,6 +542,38 @@ Things this v1 doc doesn't capture that should be filled in over time.
 ## Maintenance log
 
 This section captures changes to the state doc over time. New entries appended at top.
+
+- **2026-08-05 — Flow OS product line section added.** New `### Flow OS
+  product line` grouping under Section 1 covering GHL Support Bot, SMS Gateway,
+  and Call Intel. **No product currently generates revenue** — the line is
+  positioned as credibility for the Flow OS subscription, not as a revenue
+  stream.
+
+  GHL Support Bot demoted to a subsection; entry corrected from the stale
+  2026-05-03 table. Effective paid subscribers now 0 — the single paid account
+  (Bruce S.) is in payment failure and expected to cancel. All four trials
+  completed payment details and never activated: zero activation rate.
+  Signup-to-first-use failure flagged for investigation.
+
+  SMS Gateway added — live since 2026-05-12, public launch 2026-07-27, $79
+  founding tier, 0 sales. Repositioned 2026-08-05 from active launch to
+  portfolio asset after zero conversion across 265 emails + LinkedIn + 3 FB
+  group posts; diagnosed as top-of-funnel message/market fit, not product or
+  pipeline failure.
+
+  Call Intel logged as **work in progress, not a product** — deliberately
+  excluded from `flowos.tech/products` until complete. 5 calls logged, 3
+  successful, 2 failed on `claude_parse_error` (max_tokens truncation, open
+  defect). Repo private and confirmed not publicly reachable. Pricing and
+  delivery model deferred, not decided. Blockers to release recorded in full.
+
+  Authored by Tyson + Claude (chat).
+
+  **Doc staleness flagged:** prior substantive update was 2026-05-03. Sections
+  1–7 have not been reconciled against the build log through Phase 5, the SMS
+  Gateway launch, or current FSC engagement state. The Support Bot correction
+  in this patch is evidence the stale data was materially wrong, not merely
+  old. Full reconciliation pass recommended as a standalone task.
 
 - **2026-05-13 — Slice 2c Task 8 rate-claim audit (Section 7 — Known issues).** Reviewed every bullet under Memory layer, Tool surface, Skill files, Content pipelines, Ad Agency, and Infrastructure / process. No rate-claim language found that lacks a time series. Closest pattern is `Filesystem MCP fails to start every restart` — conditional ("on every restart"), not a rate-over-time claim, and left as-is. Canonical bad-pattern reference from Slice 2b hotfix ("PM2 process heavy churn (53+ restarts / 13m)") is absent from the current section. No rewrites. **Tyson review required** before merging the PR carrying this audit (per CHARLIE_OVERHAUL.md maintenance rule that state-doc edits touching known-issues need human sign-off).
 - **2026-05-03 — v1 created.** Initial population covering 9 paid Flow OS subs, 4 internal users, 1 paid + 1 free + 4 trial GHL Support Bot users, 10 active FSC engagements, 3 cross-dimensional clients (Lucy H. VIP, Eliza J. + Gutful, Kylie F.), SproutCode pre-revenue beta + seed-stage, Crete EOI-phase, Trading Operator only on Personal. Authored by Tyson + Claude (chat) per Phase 3 Component 2.
