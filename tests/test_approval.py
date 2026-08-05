@@ -486,8 +486,21 @@ class TokenSeparationTest(unittest.TestCase):
     """The poller must never run against the shared quantumclaw bot token."""
 
     def test_poller_refuses_to_start_without_a_token(self):
+        """An explicit empty token must mean "do not poll", not "use config".
+
+        A client that would raise on any request is injected: if the poller
+        ever falls back to the configured token this test fails loudly instead
+        of silently issuing a live getUpdates against the real bot.
+        """
+        class ExplodingClient:
+            async def get(self, url, params=None):
+                raise AssertionError("poller made a request with no token")
+
+            async def aclose(self):
+                pass
+
         gate = StubGate()
-        run(run_update_poller(gate, token="", stop_after=1))
+        run(run_update_poller(gate, token="", client=ExplodingClient(), stop_after=1))
         self.assertEqual(gate.calls, [])
 
     def test_config_gate_rejects_shared_and_absent_tokens(self):
