@@ -18835,3 +18835,52 @@ export; checkout URL resolution (`go.flowos.tech/activate` real order form);
 multi-product delivery pipeline question (depends on Call Intel delivery
 model, deferred); redirect map + sitemap (Slice 3); DNS cutover after
 checkout relocation (Slice 4).
+
+## 2026-08-05 — flowos-web Slice 1 — product copy corrections + /privacy-policy route committed
+
+Product pages approved with corrections; committed `4d2b195` to
+github.com/tysonven/flowos-web main. **Acceptance criteria now 8 routes**
+(was 7): `/privacy-policy` added.
+
+**Corrections applied before commit:**
+
+1. **Twilio claims removed** (product page + /products card). Shipped
+   adapters are GHL + generic WebhookAdapter only — Twilio-compatible
+   surface deferred to v1.5 per flowos-sms-gateway PR #4 (2026-07-14).
+   Claim is now "GoHighLevel, or any CRM you can point a webhook at."
+2. **Requirements rewritten to shipped architecture** (not softened):
+   FastAPI host (Railway/Fly.io/DigitalOcean); Supabase project
+   (migrations run at setup); ONE SMS transport — Android device with SIM
+   running sms-gate.app under Termux, or Telnyx with A2P 10DLC brand +
+   campaign registration (carrier review queue); GHL-or-webhook CRM;
+   deployment comfort.
+3. **Licence framing vs shipped LICENSE** (FlowOs LLC commercial licence,
+   PR #6 — §2 perpetual/non-exclusive/non-transferable grant, §3 forbids
+   claiming ownership of original source). Draft said: pricing strapline
+   "pay once, own it" → **"one-time purchase, perpetual licence"**; FAQ
+   "you own the stack" → **"you control the stack"**; perks "All CRM
+   adapters included" → "GoHighLevel + webhook adapters included".
+   Kept (infrastructure-scoped, licence-consistent): H1 "Own your SMS
+   infrastructure.", "yours to run, on your infrastructure" (reworded to
+   "perpetual licence, run it on your infrastructure"), "Full source code".
+
+Support Bot FAQ "Does it make changes to my account?" confirmed accurate
+by Tyson — kept.
+
+**/privacy-policy (8th route):** ported verbatim from live
+flowos.tech/privacy-policy. Cookie banner repointed to /privacy-policy
+(was /terms-conditions interim); footer lists it with the other three
+policies — deliberate deviation from faithful-replica: live /home footer
+omitting it is a bug on the live site.
+
+**Verification:** 8/8 routes build; filesafe in dist → 0; call-intel in
+dist → 0; checkout URL only via config constant; Twilio in src → 0.
+
+**FOLLOW-UP (tracked, not fixed this slice):** privacy policy content is
+an unadapted Shopify template — references Shopify, two conflicting
+business addresses, self-contradictory on third-party sharing, four
+malformed URLs + broken home link, and no mention of GTM/GA4/Meta Pixel
+or the consent mechanism. Needs rewrite before Slice 4 cutover.
+
+**Still held:** R2 token (flowos-content scoped) → image rehost →
+media.flowos.tech URL swap → Vercel staging deploy → Lighthouse ≥95.
