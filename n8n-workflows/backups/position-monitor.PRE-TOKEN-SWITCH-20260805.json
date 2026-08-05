@@ -1,10 +1,10 @@
 {
-  "updatedAt": "2026-08-05T14:56:13.842Z",
+  "updatedAt": "2026-08-05T12:48:53.190Z",
   "createdAt": "2026-04-03T11:49:22.003Z",
   "id": "UYA0JppH7eqyI7fQ",
   "name": "Trading - Position Monitor",
   "description": null,
-  "active": false,
+  "active": true,
   "isArchived": false,
   "nodes": [
     {
@@ -112,7 +112,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "=https://api.telegram.org/bot{{ $env.TRADE_TELEGRAM_BOT_TOKEN }}/sendMessage",
+        "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendMessage",
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify({ chat_id: 1375806243, text: '\\ud83d\\udcca Position Monitor\\n\\n' + ($json.actions.filter(a => a.action === 'exit').map(a => (a.reason === 'take_profit' ? '\\ud83d\\udcb0 Take Profit' : '\\ud83d\\uded1 Stop Loss') + ': ' + (a.conditionId ? a.conditionId.slice(0, 10) + '\\u2026' : a.id) + ' @ ' + a.currentPrice).join('\\n') || '') + ($json.alerts.length ? '\\n\\n\\u26a0\\ufe0f Weakening:\\n' + $json.alerts.map(a => (a.conditionId ? a.conditionId.slice(0, 10) + '\\u2026' : a.id) + ' now ' + (a.currentPrice*100).toFixed(0) + '%' + (a.entryPrice != null ? ' (entered ' + (a.entryPrice*100).toFixed(0) + '%)' : '')).join('\\n') : '') + ($json.unpriceable && $json.unpriceable.length ? '\\n\\n\\u2049\\ufe0f Unpriceable: ' + $json.unpriceable.length : '') }) }}",
@@ -266,7 +266,7 @@
   "settings": {
     "executionOrder": "v1",
     "callerPolicy": "workflowsFromSameOwner",
-    "availableInMCP": false,
+    "availableInMCP": true,
     "errorWorkflow": "7kpNnMtnuDWXgWcX"
   },
   "staticData": {
@@ -276,9 +276,9 @@
   },
   "meta": null,
   "pinData": {},
-  "versionId": "3acdecef-6e11-427c-949d-8df68e03bccf",
-  "activeVersionId": null,
-  "versionCounter": 105,
+  "versionId": "4211a924-8104-4e8a-b5a2-30d848baadbf",
+  "activeVersionId": "4211a924-8104-4e8a-b5a2-30d848baadbf",
+  "versionCounter": 100,
   "triggerCount": 1,
   "shared": [
     {
@@ -340,5 +340,281 @@
     }
   ],
   "tags": [],
-  "activeVersion": null
+  "activeVersion": {
+    "updatedAt": "2026-08-05T12:48:53.191Z",
+    "createdAt": "2026-08-05T12:48:53.191Z",
+    "versionId": "4211a924-8104-4e8a-b5a2-30d848baadbf",
+    "workflowId": "UYA0JppH7eqyI7fQ",
+    "nodes": [
+      {
+        "parameters": {
+          "rule": {
+            "interval": [
+              {
+                "field": "minutes",
+                "minutesInterval": 15
+              }
+            ]
+          }
+        },
+        "id": "monitor-schedule",
+        "name": "Every 15 Minutes",
+        "type": "n8n-nodes-base.scheduleTrigger",
+        "typeVersion": 1.2,
+        "position": [
+          256,
+          304
+        ]
+      },
+      {
+        "parameters": {
+          "url": "https://fdabygmromuqtysitodp.supabase.co/rest/v1/trading_positions?status=eq.open&order=opened_at.desc",
+          "authentication": "genericCredentialType",
+          "genericAuthType": "httpCustomAuth",
+          "options": {}
+        },
+        "id": "fetch-positions",
+        "name": "Fetch Open Positions",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          480,
+          304
+        ],
+        "credentials": {
+          "httpCustomAuth": {
+            "id": "q309m8yfLKGxywMb",
+            "name": "Supabase Service Role (main)"
+          }
+        },
+        "alwaysOutputData": true
+      },
+      {
+        "parameters": {
+          "jsCode": "const positions = $input.first().json;\nif (!Array.isArray(positions) || positions.length === 0) {\n  return [{ json: { actions: [], alerts: [], unpriceable: [], positionCount: 0 } }];\n}\n\nconst SUPABASE = 'https://fdabygmromuqtysitodp.supabase.co';\nconst headers = {\n  'apikey': $env.SUPABASE_SERVICE_ROLE_KEY,\n  'Authorization': 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY\n};\n\n// simulation_id -> conditionId. trading_positions stores no Polymarket\n// identifier of its own (market_id is a uuid FK to trading_markets and stays\n// NULL), so the simulation row is the only route back to a priceable market.\nasync function conditionIdFor(pos) {\n  if (!pos.simulation_id) return null;\n  const url = SUPABASE + '/rest/v1/trading_simulations?id=eq.'\n    + encodeURIComponent(pos.simulation_id) + '&select=raw_output';\n  const resp = await fetch(url, { headers });\n  if (!resp.ok) {\n    throw new Error('simulation lookup failed ' + resp.status + ': ' + (await resp.text()));\n  }\n  const rows = await resp.json();\n  const raw = rows && rows[0] && rows[0].raw_output;\n  return (raw && (raw.polymarket_condition_id || raw.condition_id)) || null;\n}\n\nasync function priceFor(conditionId, direction) {\n  const url = 'https://gamma-api.polymarket.com/markets?condition_ids='\n    + encodeURIComponent(conditionId);\n  const resp = await fetch(url);\n  if (!resp.ok) return null;\n  const markets = await resp.json();\n  const market = Array.isArray(markets) ? markets[0] : markets;\n  if (!market) return null;\n  const prices = typeof market.outcomePrices === 'string'\n    ? JSON.parse(market.outcomePrices)\n    : market.outcomePrices;\n  if (!prices) return null;\n  if (direction === 'YES' && prices[0] != null) return parseFloat(prices[0]);\n  if (direction === 'NO' && prices[1] != null) return parseFloat(prices[1]);\n  return null;\n}\n\nconst actions = [];\nconst alerts = [];\nconst unpriceable = [];\n\nfor (const pos of positions) {\n  // One bad position must not abort the whole sweep and leave healthy\n  // positions unmonitored, so each is evaluated inside its own try.\n  let conditionId = null;\n  let currentPrice = null;\n  try {\n    conditionId = await conditionIdFor(pos);\n    if (conditionId) currentPrice = await priceFor(conditionId, pos.direction);\n  } catch (e) {\n    unpriceable.push({ id: pos.id, reason: String((e && e.message) || e) });\n    continue;\n  }\n\n  if (currentPrice == null) {\n    // No price means no exit decision. Do NOT fall back to entry_price \u2014\n    // that silently guarantees the position never exits.\n    unpriceable.push({\n      id: pos.id,\n      reason: conditionId ? 'no_price_available' : 'no_condition_id'\n    });\n    continue;\n  }\n\n  // entry_price is NULL when the fill price could not be determined. Rules\n  // that depend on it are SKIPPED rather than evaluated against 0, which\n  // would silently disable the stop loss.\n  const entryPrice = pos.entry_price == null ? null : Number(pos.entry_price);\n  const shares = pos.shares != null ? Number(pos.shares) : null;\n  const usdc = pos.usdc_amount != null ? Number(pos.usdc_amount) : null;\n  const base = { id: pos.id, conditionId, currentPrice, entryPrice, shares, usdc };\n\n  if (currentPrice > 0.85) {\n    // Independent of entry price, so it still fires when entry_price is NULL.\n    actions.push({ ...base, action: 'exit', reason: 'take_profit' });\n  } else if (entryPrice != null && currentPrice < 0.08 && entryPrice > 0.20) {\n    actions.push({ ...base, action: 'exit', reason: 'stop_loss' });\n  } else if (entryPrice != null && currentPrice < 0.30 && entryPrice > 0.50) {\n    alerts.push({ ...base, question: pos.id });\n  } else if (entryPrice == null) {\n    unpriceable.push({ id: pos.id, reason: 'no_entry_price_stop_loss_disabled' });\n  }\n}\n\nreturn [{ json: { actions, alerts, unpriceable, positionCount: positions.length } }];"
+        },
+        "id": "evaluate-positions",
+        "name": "Evaluate Positions",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          704,
+          304
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "const data = $input.first().json;\n\nconst SUPABASE = 'https://fdabygmromuqtysitodp.supabase.co';\nconst headers = {\n  'apikey': $env.SUPABASE_SERVICE_ROLE_KEY,\n  'Authorization': 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY,\n  'Content-Type': 'application/json'\n};\n\nasync function patchPosition(id, body) {\n  const resp = await fetch(SUPABASE + '/rest/v1/trading_positions?id=eq.'\n    + encodeURIComponent(id), {\n    method: 'PATCH',\n    headers,\n    body: JSON.stringify(body)\n  });\n  // Without this the node reports success on a 400 and the position stays\n  // open in the DB while the operator is told it closed.\n  if (!resp.ok) {\n    const text = await resp.text();\n    throw new Error('PATCH failed ' + resp.status + ': ' + text);\n  }\n  return resp;\n}\n\nconst closed = [];\n\nfor (const a of data.actions.filter(a => a.action === 'exit')) {\n  // exit_usdc = shares * exit price; pnl = proceeds - cost. Both need shares\n  // and usdc_amount, which the Python executor writes at entry. Null when\n  // absent rather than guessed \u2014 a wrong pnl is worse than a missing one, and\n  // it would feed the executor's daily-loss gate.\n  const exitUsdc = (a.shares != null && a.currentPrice != null)\n    ? Number((a.shares * a.currentPrice).toFixed(6))\n    : null;\n  const pnl = (exitUsdc != null && a.usdc != null)\n    ? Number((exitUsdc - a.usdc).toFixed(6))\n    : null;\n\n  await patchPosition(a.id, {\n    status: 'closed',\n    exit_reason: a.reason,\n    exit_price: a.currentPrice,\n    exit_usdc: exitUsdc,\n    pnl: pnl,\n    closed_at: new Date().toISOString()\n  });\n  closed.push({ id: a.id, reason: a.reason, exit_price: a.currentPrice,\n                exit_usdc: exitUsdc, pnl });\n}\n\nreturn [{ json: { ...data, closed, updated: true } }];"
+        },
+        "id": "update-positions",
+        "name": "Update Positions",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          912,
+          304
+        ]
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "conditions": [
+              {
+                "id": "has-alerts",
+                "leftValue": "={{ $json.alerts.length + $json.actions.filter(a => a.action === 'exit').length }}",
+                "rightValue": 0,
+                "operator": {
+                  "type": "number",
+                  "operation": "gt"
+                }
+              }
+            ],
+            "combinator": "and",
+            "options": {
+              "caseSensitive": true,
+              "leftValue": "",
+              "typeValidation": "strict",
+              "version": 2
+            }
+          },
+          "options": {}
+        },
+        "id": "has-alerts",
+        "name": "Has Alerts?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2,
+        "position": [
+          1136,
+          304
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendMessage",
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify({ chat_id: 1375806243, text: '\\ud83d\\udcca Position Monitor\\n\\n' + ($json.actions.filter(a => a.action === 'exit').map(a => (a.reason === 'take_profit' ? '\\ud83d\\udcb0 Take Profit' : '\\ud83d\\uded1 Stop Loss') + ': ' + (a.conditionId ? a.conditionId.slice(0, 10) + '\\u2026' : a.id) + ' @ ' + a.currentPrice).join('\\n') || '') + ($json.alerts.length ? '\\n\\n\\u26a0\\ufe0f Weakening:\\n' + $json.alerts.map(a => (a.conditionId ? a.conditionId.slice(0, 10) + '\\u2026' : a.id) + ' now ' + (a.currentPrice*100).toFixed(0) + '%' + (a.entryPrice != null ? ' (entered ' + (a.entryPrice*100).toFixed(0) + '%)' : '')).join('\\n') : '') + ($json.unpriceable && $json.unpriceable.length ? '\\n\\n\\u2049\\ufe0f Unpriceable: ' + $json.unpriceable.length : '') }) }}",
+          "options": {}
+        },
+        "id": "notify-monitor",
+        "name": "Notify Monitor",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          1360,
+          208
+        ]
+      },
+      {
+        "parameters": {
+          "operation": "executeQuery",
+          "query": "select public.record_heartbeat('{{ $workflow.id }}'::text, 'started'::text, 'Trading - Position Monitor'::text, '{{ $execution.id }}'::text);",
+          "options": {}
+        },
+        "name": "Heartbeat: Start",
+        "type": "n8n-nodes-base.postgres",
+        "typeVersion": 2.6,
+        "position": [
+          496,
+          80
+        ],
+        "retryOnFail": true,
+        "maxTries": 2,
+        "waitBetweenTries": 2000,
+        "id": "4e2b2da3-8a17-4567-b8fa-631eaf7e01f1",
+        "credentials": {
+          "postgres": {
+            "id": "qGUxEHfEZkZGdAcZ",
+            "name": "Supabase Postgres DB"
+          }
+        },
+        "continueOnFail": true
+      },
+      {
+        "parameters": {
+          "operation": "executeQuery",
+          "query": "select public.record_heartbeat('{{ $workflow.id }}'::text, 'success'::text, 'Trading - Position Monitor'::text, '{{ $execution.id }}'::text);",
+          "options": {}
+        },
+        "name": "Heartbeat: Success",
+        "type": "n8n-nodes-base.postgres",
+        "typeVersion": 2.6,
+        "position": [
+          1616,
+          208
+        ],
+        "retryOnFail": true,
+        "maxTries": 2,
+        "waitBetweenTries": 2000,
+        "id": "7cba9a2f-16cd-4c1d-ab83-121880ce5b72",
+        "credentials": {
+          "postgres": {
+            "id": "qGUxEHfEZkZGdAcZ",
+            "name": "Supabase Postgres DB"
+          }
+        },
+        "continueOnFail": true
+      }
+    ],
+    "connections": {
+      "Every 15 Minutes": {
+        "main": [
+          [
+            {
+              "node": "Fetch Open Positions",
+              "type": "main",
+              "index": 0
+            },
+            {
+              "node": "Heartbeat: Start",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Fetch Open Positions": {
+        "main": [
+          [
+            {
+              "node": "Evaluate Positions",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Evaluate Positions": {
+        "main": [
+          [
+            {
+              "node": "Update Positions",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Update Positions": {
+        "main": [
+          [
+            {
+              "node": "Has Alerts?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Has Alerts?": {
+        "main": [
+          [
+            {
+              "node": "Notify Monitor",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Heartbeat: Success",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Heartbeat: Start": {
+        "main": [
+          []
+        ]
+      },
+      "Notify Monitor": {
+        "main": [
+          [
+            {
+              "node": "Heartbeat: Success",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "authors": "Tyson Venables",
+    "name": null,
+    "description": null,
+    "autosaved": false,
+    "workflowPublishHistory": [
+      {
+        "createdAt": "2026-08-05T12:48:53.329Z",
+        "id": 1086,
+        "workflowId": "UYA0JppH7eqyI7fQ",
+        "versionId": "4211a924-8104-4e8a-b5a2-30d848baadbf",
+        "event": "activated",
+        "userId": "b1512bca-25b8-4b8b-add0-b86540e5144d"
+      }
+    ]
+  }
 }

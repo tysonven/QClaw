@@ -34,6 +34,7 @@ import httpx
 
 from src.trade_engine.config import config
 from src.trade_engine.approval import ApprovalGate, ApprovalGateBusy
+from src.trade_engine.database import SupabaseError, write_simulation
 from src.trade_engine.executor import TradeExecutor
 from src.trade_engine.models import (
     ApprovalStatus,
@@ -648,6 +649,57 @@ class PolymarketScanner:
         else:
             log.info("Analyst PROCEED: %s", recommendation.reasoning)
 
+    # --- persistence ------------------------------------------------------
+
+    async def _persist_simulations(self, simulated: list[dict[str, Any]]) -> tuple[int, int]:
+        """Write every simulation row and stash the created id back on the source.
+
+        Persists all buckets, not just high-edge — the neutral and no-edge rows
+        are what make calibration analysis possible later. The created id is
+        written back onto the in-memory row so _attach_simulation_id can find
+        it without a second round trip.
+        """
+        written, errors = 0, 0
+        rows = simulation_rows(simulated)
+        for source, row in zip(simulated, rows):
+            try:
+                created = await write_simulation(row)
+                written += 1
+                if isinstance(created, dict) and created.get("id"):
+                    source["simulation_id"] = str(created["id"])
+            except (SupabaseError, ValueError) as exc:
+                errors += 1
+                log.error("failed to persist simulation for %s: %s", row.get("asset"), exc)
+        log.info("persisted %d/%d simulations (%d failed)", written, len(rows), errors)
+        return written, errors
+
+    def _attach_simulation_id(
+        self, summary: ScannerRunSummary, simulated: list[dict[str, Any]]
+    ) -> None:
+        """Point best_trade at its persisted simulation row.
+
+        Matches on market_id, which is unique within a run (analyse_edge
+        dedupes on it). If the simulation write failed there is nothing to
+        attach — the trade can still execute, it just produces a position the
+        monitor cannot price, so that case is logged loudly rather than passed
+        over.
+        """
+        best = summary.best_trade
+        if best is None:
+            return
+        for source in simulated:
+            if str(source.get("market_id")) == best.market_id:
+                simulation_id = source.get("simulation_id")
+                if simulation_id:
+                    best.simulation_id = str(simulation_id)
+                    return
+                break
+        log.error(
+            "best_trade has no persisted simulation_id (market_id=%s) — a position "
+            "opened from it will not be priceable by the Position Monitor",
+            best.market_id,
+        )
+
     # --- approval ---------------------------------------------------------
 
     async def apply_approval(self, summary: ScannerRunSummary) -> None:
@@ -772,17 +824,14 @@ class PolymarketScanner:
         summary.best_trade = self.select_best_trade(summary)
         await self.apply_analyst(summary)
 
-        # run() does not persist simulations — the /scan route does, and that is
-        # where simulation_id gets attached. Anything opened from run() therefore
-        # carries no simulation_id, and a position without one cannot be resolved
-        # back to a market by the Position Monitor: it never prices, never takes
-        # profit and never stops out. Warn loudly rather than block, since the
-        # trade itself is still valid and a human approved it.
-        if summary.best_trade is not None and summary.best_trade.simulation_id is None:
-            log.warning(
-                "Trade will be unpriceable — simulation_id not attached. "
-                "Session 6 must wire persist into run() before cron activation."
-            )
+        # Simulations are persisted BEFORE the approval gate, not after, so
+        # best_trade carries its simulation_id into the position row. A
+        # position with no simulation_id is unresolvable by the Position
+        # Monitor — it would never price, never take profit and never stop
+        # out. Ordering this after execution would silently reintroduce that
+        # (Session 5 audit, F4).
+        await self._persist_simulations(simulated)
+        self._attach_simulation_id(summary, simulated)
 
         await self.apply_approval(summary)
         await self.apply_execution(summary)
