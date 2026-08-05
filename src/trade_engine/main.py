@@ -30,20 +30,25 @@ from fastapi.encoders import jsonable_encoder  # noqa: E402
 from fastapi.responses import JSONResponse  # noqa: E402
 
 from src.trade_engine.approval import ApprovalGate, run_update_poller  # noqa: E402
+from src.trade_engine.executor import TradeExecutor  # noqa: E402
 from src.trade_engine.config import config, configure_logging  # noqa: E402
 from src.trade_engine.database import (  # noqa: E402
     SupabaseError,
     close_client,
+    count_all_positions,
     count_open_positions,
+    get_daily_pnl,
     get_trading_config,
     write_simulation,
 )
 from src.trade_engine.analyst import TradeAnalyst  # noqa: E402
 from src.trade_engine.models import (  # noqa: E402
     AnalystRecommendation,
+    ApprovalResult,
     HealthResponse,
     ScannerCandidate,
     ScannerRunSummary,
+    TradeExecutionResult,
     TradingConfig,
 )
 from src.trade_engine.scanner import (  # noqa: E402
@@ -64,6 +69,10 @@ log = logging.getLogger("trade_engine.main")
 # Process-wide singleton. /scan, /health and the update poller must all see the
 # same _pending dict, so the gate cannot be constructed per request.
 approval_gate = ApprovalGate()
+
+# The only object in this process that can spend money. Constructed once so the
+# /scan and /execute paths share one HTTP client; it holds no trade state.
+trade_executor = TradeExecutor()
 
 _poller_task: Optional[asyncio.Task] = None
 
@@ -105,6 +114,7 @@ async def lifespan(app: FastAPI):
                 pass
             _poller_task = None
         await approval_gate.aclose()
+        await trade_executor.aclose()
         shutdown_scheduler()
         await close_client()
         log.info("trade-engine stopped")
@@ -125,6 +135,8 @@ async def health() -> JSONResponse:
     try:
         cfg = await get_trading_config()
         open_count = await count_open_positions()
+        total_count = await count_all_positions()
+        daily_pnl = await get_daily_pnl()
     except SupabaseError as exc:
         log.error("health check failed: %s", exc)
         return JSONResponse(
@@ -154,6 +166,8 @@ async def health() -> JSONResponse:
             analyst_available=bool(config.anthropic_api_key),
             pending_approvals=approval_gate.pending_count,
             approval_gate_active=config.telegram_poller_enabled,
+            total_positions=total_count,
+            daily_pnl=daily_pnl,
         ))
     )
 
@@ -162,6 +176,54 @@ async def health() -> JSONResponse:
 async def read_config() -> TradingConfig:
     """Current trading_config. No auth — loopback-bound, internal only."""
     return await get_trading_config()
+
+
+async def _persist_simulations(simulated: list) -> tuple[int, int]:
+    """Write every simulation row and stash the created id back on the source.
+
+    Persists all buckets, not just high-edge — the neutral and no-edge rows are
+    what make calibration analysis possible later. The created id is written
+    back onto the in-memory row so _attach_simulation_id can find it without a
+    second round trip.
+    """
+    written, errors = 0, 0
+    rows = simulation_rows(simulated)
+    for source, row in zip(simulated, rows):
+        try:
+            created = await write_simulation(row)
+            written += 1
+            if isinstance(created, dict) and created.get("id"):
+                source["simulation_id"] = str(created["id"])
+        except (SupabaseError, ValueError) as exc:
+            errors += 1
+            log.error("failed to persist simulation for %s: %s", row.get("asset"), exc)
+    log.info("persisted %d/%d simulations (%d failed)", written, len(rows), errors)
+    return written, errors
+
+
+def _attach_simulation_id(summary: ScannerRunSummary, simulated: list) -> None:
+    """Point best_trade at its persisted simulation row.
+
+    Matches on market_id, which is unique within a run (analyse_edge dedupes on
+    it). If the simulation write failed there is nothing to attach — the trade
+    can still execute, it just produces a position the monitor cannot price, so
+    that case is logged loudly rather than passed over.
+    """
+    best = summary.best_trade
+    if best is None:
+        return
+    for source in simulated:
+        if str(source.get("market_id")) == best.market_id:
+            simulation_id = source.get("simulation_id")
+            if simulation_id:
+                best.simulation_id = str(simulation_id)
+                return
+            break
+    log.error(
+        "best_trade has no persisted simulation_id (market_id=%s) — a position "
+        "opened from it will not be priceable by the Position Monitor",
+        best.market_id,
+    )
 
 
 @app.post("/scan", response_model=ScannerRunSummary)
@@ -191,7 +253,9 @@ async def scan() -> JSONResponse:
 
     try:
         scanner_ctx = PolymarketScanner(
-            analyst=TradeAnalyst(), approval_gate=approval_gate
+            analyst=TradeAnalyst(),
+            approval_gate=approval_gate,
+            executor=trade_executor,
         )
         async with scanner_ctx as scanner:
             markets = await scanner.fetch_markets()
@@ -206,7 +270,18 @@ async def scan() -> JSONResponse:
             )
             summary.best_trade = scanner.select_best_trade(summary)
             await scanner.apply_analyst(summary)
+
+            # Simulations are persisted BEFORE the approval gate, not after,
+            # so best_trade can carry its simulation_id into the position row.
+            # A position with no simulation_id is unresolvable by the Position
+            # Monitor — it would never price, never take profit and never stop
+            # out. Ordering this after execution would silently reintroduce
+            # that (Session 5 audit, F4).
+            written, write_errors = await _persist_simulations(simulated)
+            _attach_simulation_id(summary, simulated)
+
             await scanner.apply_approval(summary)
+            await scanner.apply_execution(summary)
             record_run(summary)
     except Exception as exc:  # noqa: BLE001 - surface a clean message, not a stack
         log.exception("scan failed")
@@ -214,19 +289,6 @@ async def scan() -> JSONResponse:
             status_code=500,
             content={"error": "scan failed", "detail": f"{type(exc).__name__}: {exc}"},
         )
-
-    # Persist every simulation, not just the high-edge ones — the neutral and
-    # no-edge rows are what make calibration analysis possible later.
-    written, write_errors = 0, 0
-    for row in simulation_rows(simulated):
-        try:
-            await write_simulation(row)
-            written += 1
-        except (SupabaseError, ValueError) as exc:
-            write_errors += 1
-            log.error("failed to persist simulation for %s: %s", row.get("asset"), exc)
-    log.info("persisted %d/%d simulations (%d failed)",
-             written, len(simulated), write_errors)
 
     # raw_response is debugging material, not an API surface — strip it from
     # both copies of the recommendation, the top-level one and the one the
@@ -256,6 +318,28 @@ async def analyse(candidate: ScannerCandidate) -> JSONResponse:
     return JSONResponse(
         content=jsonable_encoder(recommendation, exclude={"raw_response"})
     )
+
+
+@app.post("/execute", response_model=TradeExecutionResult)
+async def execute(result: ApprovalResult) -> JSONResponse:
+    """Run the executor against one already-approved trade.
+
+    THIS SPENDS REAL MONEY. It bypasses the scanner, the Analyst and the
+    approval gate, so the ApprovalResult in the body is the only evidence of
+    consent — which is why the executor re-checks `status == approved` itself
+    rather than trusting the caller, and re-runs all six financial gates
+    against live Supabase state before anything is sent to Polymarket.
+
+    No auth, in the same sense as /scan and /config: the process binds
+    127.0.0.1 only. That is the whole access control story — do not expose this
+    port. Intended for replaying a stuck approval by hand, not for automation.
+    """
+    execution = await trade_executor.execute(result)
+    log.info(
+        "/execute -> success=%s gate_blocked=%s error=%s",
+        execution.success, execution.gate_blocked, execution.error,
+    )
+    return JSONResponse(content=jsonable_encoder(execution))
 
 
 @app.post("/approval/callback")

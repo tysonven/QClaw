@@ -1,5 +1,5 @@
 {
-  "updatedAt": "2026-04-06T09:52:46.895Z",
+  "updatedAt": "2026-08-05T11:32:14.248Z",
   "createdAt": "2026-04-03T11:49:22.003Z",
   "id": "UYA0JppH7eqyI7fQ",
   "name": "Trading - Position Monitor",
@@ -31,7 +31,7 @@
       "parameters": {
         "url": "https://fdabygmromuqtysitodp.supabase.co/rest/v1/trading_positions?status=eq.open&order=opened_at.desc",
         "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
+        "genericAuthType": "httpCustomAuth",
         "options": {}
       },
       "id": "fetch-positions",
@@ -43,15 +43,16 @@
         304
       ],
       "credentials": {
-        "httpHeaderAuth": {
-          "id": "Nd2uuX5t9KEwbQPv",
-          "name": "Supabase FSC"
+        "httpCustomAuth": {
+          "id": "q309m8yfLKGxywMb",
+          "name": "Supabase Service Role (main)"
         }
-      }
+      },
+      "alwaysOutputData": true
     },
     {
       "parameters": {
-        "jsCode": "const positions = $input.first().json;\nif (!Array.isArray(positions) || positions.length === 0) {\n  return [{ json: { actions: [], alerts: [] } }];\n}\n\nconst actions = [];\nconst alerts = [];\n\nfor (const pos of positions) {\n  // Fetch current market price from Polymarket\n  let currentPrice = pos.current_price || pos.entry_price || 0;\n  try {\n    const resp = await fetch('https://gamma-api.polymarket.com/markets/' + pos.market_id);\n    if (resp.ok) {\n      const market = await resp.json();\n      const prices = typeof market.outcomePrices === 'string' ? JSON.parse(market.outcomePrices) : market.outcomePrices;\n      if (pos.direction === 'YES' && prices?.[0]) currentPrice = parseFloat(prices[0]);\n      else if (pos.direction === 'NO' && prices?.[1]) currentPrice = parseFloat(prices[1]);\n    }\n  } catch {}\n\n  const entryPrice = pos.entry_price || 0;\n\n  // Take profit: price > 0.85\n  if (currentPrice > 0.85) {\n    actions.push({ id: pos.id, action: 'exit', reason: 'take_profit', currentPrice, entryPrice, market_id: pos.market_id });\n  }\n  // Stop loss: price < 0.08 and entered at > 0.20\n  else if (currentPrice < 0.08 && entryPrice > 0.20) {\n    actions.push({ id: pos.id, action: 'exit', reason: 'stop_loss', currentPrice, entryPrice, market_id: pos.market_id });\n  }\n  // Position weakening alert\n  else if (currentPrice < 0.30 && entryPrice > 0.50) {\n    alerts.push({ id: pos.id, question: pos.question || pos.market_id, currentPrice, entryPrice });\n  }\n\n  // Update current price in DB\n  actions.push({ id: pos.id, action: 'update_price', currentPrice });\n}\n\nreturn [{ json: { actions, alerts, positionCount: positions.length } }];"
+        "jsCode": "const positions = $input.first().json;\nif (!Array.isArray(positions) || positions.length === 0) {\n  return [{ json: { actions: [], alerts: [], positionCount: 0 } }];\n}\n\nconst SUPABASE = 'https://fdabygmromuqtysitodp.supabase.co';\nconst headers = {\n  'apikey': $env.SUPABASE_SERVICE_ROLE_KEY,\n  'Authorization': 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY\n};\n\n// simulation_id -> conditionId. trading_positions stores no Polymarket\n// identifier of its own (market_id is a uuid FK to trading_markets and stays\n// NULL), so the simulation row is the only route back to a priceable market.\nasync function conditionIdFor(pos) {\n  if (!pos.simulation_id) return null;\n  const url = SUPABASE + '/rest/v1/trading_simulations?id=eq.'\n    + encodeURIComponent(pos.simulation_id) + '&select=raw_output';\n  const resp = await fetch(url, { headers });\n  if (!resp.ok) {\n    throw new Error('simulation lookup failed ' + resp.status + ': ' + (await resp.text()));\n  }\n  const rows = await resp.json();\n  const raw = rows && rows[0] && rows[0].raw_output;\n  return (raw && (raw.polymarket_condition_id || raw.condition_id)) || null;\n}\n\nasync function priceFor(conditionId, direction) {\n  const url = 'https://gamma-api.polymarket.com/markets?condition_ids='\n    + encodeURIComponent(conditionId);\n  const resp = await fetch(url);\n  if (!resp.ok) return null;\n  const markets = await resp.json();\n  const market = Array.isArray(markets) ? markets[0] : markets;\n  if (!market) return null;\n  const prices = typeof market.outcomePrices === 'string'\n    ? JSON.parse(market.outcomePrices)\n    : market.outcomePrices;\n  if (!prices) return null;\n  if (direction === 'YES' && prices[0] != null) return parseFloat(prices[0]);\n  if (direction === 'NO' && prices[1] != null) return parseFloat(prices[1]);\n  return null;\n}\n\nconst actions = [];\nconst alerts = [];\nconst unpriceable = [];\n\nfor (const pos of positions) {\n  const entryPrice = pos.entry_price || 0;\n  let currentPrice = null;\n\n  try {\n    const conditionId = await conditionIdFor(pos);\n    if (conditionId) currentPrice = await priceFor(conditionId, pos.direction);\n  } catch (e) {\n    // Surface rather than swallow: a lookup failure must not read as\n    // \"price unchanged\", which is what the old bare catch produced.\n    unpriceable.push({ id: pos.id, reason: String(e && e.message || e) });\n    continue;\n  }\n\n  if (currentPrice == null) {\n    // No price means no exit decision. Do NOT fall back to entry_price \u2014\n    // that silently guarantees the position never takes profit or stops out.\n    unpriceable.push({ id: pos.id, reason: 'no_price_available' });\n    continue;\n  }\n\n  const shares = pos.shares != null ? Number(pos.shares) : null;\n  const usdc = pos.usdc_amount != null ? Number(pos.usdc_amount) : null;\n\n  if (currentPrice > 0.85) {\n    actions.push({ id: pos.id, action: 'exit', reason: 'take_profit',\n                   currentPrice, entryPrice, shares, usdc });\n  } else if (currentPrice < 0.08 && entryPrice > 0.20) {\n    actions.push({ id: pos.id, action: 'exit', reason: 'stop_loss',\n                   currentPrice, entryPrice, shares, usdc });\n  } else if (currentPrice < 0.30 && entryPrice > 0.50) {\n    alerts.push({ id: pos.id, question: pos.question || pos.id,\n                  currentPrice, entryPrice });\n  }\n}\n\nreturn [{ json: { actions, alerts, unpriceable, positionCount: positions.length } }];"
       },
       "id": "evaluate-positions",
       "name": "Evaluate Positions",
@@ -64,7 +65,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const data = $input.first().json;\n\n// Update prices in Supabase\nfor (const a of data.actions.filter(a => a.action === 'update_price')) {\n  await fetch('https://fdabygmromuqtysitodp.supabase.co/rest/v1/trading_positions?id=eq.' + a.id, {\n    method: 'PATCH',\n    headers: {\n      'apikey': $env.SUPABASE_ANON_KEY,\n      'Authorization': 'Bearer ' + $env.SUPABASE_ANON_KEY,\n      'Content-Type': 'application/json'\n    },\n    body: JSON.stringify({ current_price: a.currentPrice })\n  });\n}\n\n// Close positions that need exit\nfor (const a of data.actions.filter(a => a.action === 'exit')) {\n  await fetch('https://fdabygmromuqtysitodp.supabase.co/rest/v1/trading_positions?id=eq.' + a.id, {\n    method: 'PATCH',\n    headers: {\n      'apikey': $env.SUPABASE_ANON_KEY,\n      'Authorization': 'Bearer ' + $env.SUPABASE_ANON_KEY,\n      'Content-Type': 'application/json'\n    },\n    body: JSON.stringify({ status: 'closed', close_reason: a.reason, current_price: a.currentPrice })\n  });\n}\n\nreturn [{ json: { ...data, updated: true } }];"
+        "jsCode": "const data = $input.first().json;\n\nconst SUPABASE = 'https://fdabygmromuqtysitodp.supabase.co';\nconst headers = {\n  'apikey': $env.SUPABASE_SERVICE_ROLE_KEY,\n  'Authorization': 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY,\n  'Content-Type': 'application/json'\n};\n\nasync function patchPosition(id, body) {\n  const resp = await fetch(SUPABASE + '/rest/v1/trading_positions?id=eq.'\n    + encodeURIComponent(id), {\n    method: 'PATCH',\n    headers,\n    body: JSON.stringify(body)\n  });\n  // Without this the node reports success on a 400 and the position stays\n  // open in the DB while the operator is told it closed.\n  if (!resp.ok) {\n    const text = await resp.text();\n    throw new Error('PATCH failed ' + resp.status + ': ' + text);\n  }\n  return resp;\n}\n\nconst closed = [];\n\nfor (const a of data.actions.filter(a => a.action === 'exit')) {\n  // exit_usdc = shares * exit price; pnl = proceeds - cost. Both need shares\n  // and usdc_amount, which the Python executor writes at entry. Null when\n  // absent rather than guessed \u2014 a wrong pnl is worse than a missing one.\n  const exitUsdc = (a.shares != null && a.currentPrice != null)\n    ? Number((a.shares * a.currentPrice).toFixed(6))\n    : null;\n  const pnl = (exitUsdc != null && a.usdc != null)\n    ? Number((exitUsdc - a.usdc).toFixed(6))\n    : null;\n\n  await patchPosition(a.id, {\n    status: 'closed',\n    exit_reason: a.reason,\n    exit_price: a.currentPrice,\n    exit_usdc: exitUsdc,\n    pnl: pnl,\n    closed_at: new Date().toISOString()\n  });\n  closed.push({ id: a.id, reason: a.reason, exit_price: a.currentPrice,\n                exit_usdc: exitUsdc, pnl });\n}\n\nreturn [{ json: { ...data, closed, updated: true } }];"
       },
       "id": "update-positions",
       "name": "Update Positions",
@@ -82,14 +83,20 @@
             {
               "id": "has-alerts",
               "leftValue": "={{ $json.alerts.length + $json.actions.filter(a => a.action === 'exit').length }}",
-              "rightValue": "0",
+              "rightValue": 0,
               "operator": {
                 "type": "number",
                 "operation": "gt"
               }
             }
           ],
-          "combinator": "and"
+          "combinator": "and",
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          }
         },
         "options": {}
       },
@@ -119,6 +126,56 @@
         1360,
         208
       ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select public.record_heartbeat('{{ $workflow.id }}'::text, 'started'::text, 'Trading - Position Monitor'::text, '{{ $execution.id }}'::text);",
+        "options": {}
+      },
+      "name": "Heartbeat: Start",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        496,
+        80
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "id": "4e2b2da3-8a17-4567-b8fa-631eaf7e01f1",
+      "credentials": {
+        "postgres": {
+          "id": "qGUxEHfEZkZGdAcZ",
+          "name": "Supabase Postgres DB"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select public.record_heartbeat('{{ $workflow.id }}'::text, 'success'::text, 'Trading - Position Monitor'::text, '{{ $execution.id }}'::text);",
+        "options": {}
+      },
+      "name": "Heartbeat: Success",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1616,
+        208
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "id": "7cba9a2f-16cd-4c1d-ab83-121880ce5b72",
+      "credentials": {
+        "postgres": {
+          "id": "qGUxEHfEZkZGdAcZ",
+          "name": "Supabase Postgres DB"
+        }
+      },
+      "continueOnFail": true
     }
   ],
   "connections": {
@@ -127,6 +184,11 @@
         [
           {
             "node": "Fetch Open Positions",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Heartbeat: Start",
             "type": "main",
             "index": 0
           }
@@ -175,14 +237,37 @@
             "index": 0
           }
         ],
+        [
+          {
+            "node": "Heartbeat: Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Heartbeat: Start": {
+      "main": [
         []
+      ]
+    },
+    "Notify Monitor": {
+      "main": [
+        [
+          {
+            "node": "Heartbeat: Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     }
   },
   "settings": {
     "executionOrder": "v1",
     "callerPolicy": "workflowsFromSameOwner",
-    "availableInMCP": true
+    "availableInMCP": true,
+    "errorWorkflow": "7kpNnMtnuDWXgWcX"
   },
   "staticData": {
     "node:Every 15 Minutes": {
@@ -191,9 +276,9 @@
   },
   "meta": null,
   "pinData": {},
-  "versionId": "f6eb4d27-f9be-477f-accb-9d846f3af89c",
-  "activeVersionId": "f6eb4d27-f9be-477f-accb-9d846f3af89c",
-  "versionCounter": 36,
+  "versionId": "5c010519-e28f-4bee-8d84-06b3de27028e",
+  "activeVersionId": "5c010519-e28f-4bee-8d84-06b3de27028e",
+  "versionCounter": 96,
   "triggerCount": 1,
   "shared": [
     {
@@ -203,7 +288,7 @@
       "workflowId": "UYA0JppH7eqyI7fQ",
       "projectId": "KwpTDWcFWL3DfyW3",
       "project": {
-        "updatedAt": "2026-04-08T10:02:58.912Z",
+        "updatedAt": "2026-04-08T20:28:08.726Z",
         "createdAt": "2025-06-06T11:27:14.830Z",
         "id": "KwpTDWcFWL3DfyW3",
         "name": "Tyson Venables <tysonvenables@protonmail.com>",
@@ -218,7 +303,7 @@
             "userId": "b1512bca-25b8-4b8b-add0-b86540e5144d",
             "projectId": "KwpTDWcFWL3DfyW3",
             "user": {
-              "updatedAt": "2026-04-08T20:18:59.996Z",
+              "updatedAt": "2026-08-05T09:23:14.061Z",
               "createdAt": "2025-06-06T11:27:13.858Z",
               "id": "b1512bca-25b8-4b8b-add0-b86540e5144d",
               "email": "tysonvenables@protonmail.com",
@@ -239,13 +324,14 @@
                 "firstSuccessfulWorkflowId": "WVXrFCjb8wO7RWRX",
                 "userActivatedAt": 1751062185356,
                 "npsSurvey": {
-                  "responded": true,
-                  "lastShownAt": 1769430963515
+                  "waitingForResponse": true,
+                  "ignoredCount": 1,
+                  "lastShownAt": 1785482337882
                 }
               },
               "disabled": false,
               "mfaEnabled": false,
-              "lastActiveAt": "2026-04-08",
+              "lastActiveAt": "2026-08-05",
               "isPending": false
             }
           }
@@ -255,9 +341,9 @@
   ],
   "tags": [],
   "activeVersion": {
-    "updatedAt": "2026-04-06T09:52:46.902Z",
-    "createdAt": "2026-04-06T09:52:46.902Z",
-    "versionId": "f6eb4d27-f9be-477f-accb-9d846f3af89c",
+    "updatedAt": "2026-08-05T11:32:14.252Z",
+    "createdAt": "2026-08-05T11:32:14.252Z",
+    "versionId": "5c010519-e28f-4bee-8d84-06b3de27028e",
     "workflowId": "UYA0JppH7eqyI7fQ",
     "nodes": [
       {
@@ -284,7 +370,7 @@
         "parameters": {
           "url": "https://fdabygmromuqtysitodp.supabase.co/rest/v1/trading_positions?status=eq.open&order=opened_at.desc",
           "authentication": "genericCredentialType",
-          "genericAuthType": "httpHeaderAuth",
+          "genericAuthType": "httpCustomAuth",
           "options": {}
         },
         "id": "fetch-positions",
@@ -296,15 +382,16 @@
           304
         ],
         "credentials": {
-          "httpHeaderAuth": {
-            "id": "Nd2uuX5t9KEwbQPv",
-            "name": "Supabase FSC"
+          "httpCustomAuth": {
+            "id": "q309m8yfLKGxywMb",
+            "name": "Supabase Service Role (main)"
           }
-        }
+        },
+        "alwaysOutputData": true
       },
       {
         "parameters": {
-          "jsCode": "const positions = $input.first().json;\nif (!Array.isArray(positions) || positions.length === 0) {\n  return [{ json: { actions: [], alerts: [] } }];\n}\n\nconst actions = [];\nconst alerts = [];\n\nfor (const pos of positions) {\n  // Fetch current market price from Polymarket\n  let currentPrice = pos.current_price || pos.entry_price || 0;\n  try {\n    const resp = await fetch('https://gamma-api.polymarket.com/markets/' + pos.market_id);\n    if (resp.ok) {\n      const market = await resp.json();\n      const prices = typeof market.outcomePrices === 'string' ? JSON.parse(market.outcomePrices) : market.outcomePrices;\n      if (pos.direction === 'YES' && prices?.[0]) currentPrice = parseFloat(prices[0]);\n      else if (pos.direction === 'NO' && prices?.[1]) currentPrice = parseFloat(prices[1]);\n    }\n  } catch {}\n\n  const entryPrice = pos.entry_price || 0;\n\n  // Take profit: price > 0.85\n  if (currentPrice > 0.85) {\n    actions.push({ id: pos.id, action: 'exit', reason: 'take_profit', currentPrice, entryPrice, market_id: pos.market_id });\n  }\n  // Stop loss: price < 0.08 and entered at > 0.20\n  else if (currentPrice < 0.08 && entryPrice > 0.20) {\n    actions.push({ id: pos.id, action: 'exit', reason: 'stop_loss', currentPrice, entryPrice, market_id: pos.market_id });\n  }\n  // Position weakening alert\n  else if (currentPrice < 0.30 && entryPrice > 0.50) {\n    alerts.push({ id: pos.id, question: pos.question || pos.market_id, currentPrice, entryPrice });\n  }\n\n  // Update current price in DB\n  actions.push({ id: pos.id, action: 'update_price', currentPrice });\n}\n\nreturn [{ json: { actions, alerts, positionCount: positions.length } }];"
+          "jsCode": "const positions = $input.first().json;\nif (!Array.isArray(positions) || positions.length === 0) {\n  return [{ json: { actions: [], alerts: [], positionCount: 0 } }];\n}\n\nconst SUPABASE = 'https://fdabygmromuqtysitodp.supabase.co';\nconst headers = {\n  'apikey': $env.SUPABASE_SERVICE_ROLE_KEY,\n  'Authorization': 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY\n};\n\n// simulation_id -> conditionId. trading_positions stores no Polymarket\n// identifier of its own (market_id is a uuid FK to trading_markets and stays\n// NULL), so the simulation row is the only route back to a priceable market.\nasync function conditionIdFor(pos) {\n  if (!pos.simulation_id) return null;\n  const url = SUPABASE + '/rest/v1/trading_simulations?id=eq.'\n    + encodeURIComponent(pos.simulation_id) + '&select=raw_output';\n  const resp = await fetch(url, { headers });\n  if (!resp.ok) {\n    throw new Error('simulation lookup failed ' + resp.status + ': ' + (await resp.text()));\n  }\n  const rows = await resp.json();\n  const raw = rows && rows[0] && rows[0].raw_output;\n  return (raw && (raw.polymarket_condition_id || raw.condition_id)) || null;\n}\n\nasync function priceFor(conditionId, direction) {\n  const url = 'https://gamma-api.polymarket.com/markets?condition_ids='\n    + encodeURIComponent(conditionId);\n  const resp = await fetch(url);\n  if (!resp.ok) return null;\n  const markets = await resp.json();\n  const market = Array.isArray(markets) ? markets[0] : markets;\n  if (!market) return null;\n  const prices = typeof market.outcomePrices === 'string'\n    ? JSON.parse(market.outcomePrices)\n    : market.outcomePrices;\n  if (!prices) return null;\n  if (direction === 'YES' && prices[0] != null) return parseFloat(prices[0]);\n  if (direction === 'NO' && prices[1] != null) return parseFloat(prices[1]);\n  return null;\n}\n\nconst actions = [];\nconst alerts = [];\nconst unpriceable = [];\n\nfor (const pos of positions) {\n  const entryPrice = pos.entry_price || 0;\n  let currentPrice = null;\n\n  try {\n    const conditionId = await conditionIdFor(pos);\n    if (conditionId) currentPrice = await priceFor(conditionId, pos.direction);\n  } catch (e) {\n    // Surface rather than swallow: a lookup failure must not read as\n    // \"price unchanged\", which is what the old bare catch produced.\n    unpriceable.push({ id: pos.id, reason: String(e && e.message || e) });\n    continue;\n  }\n\n  if (currentPrice == null) {\n    // No price means no exit decision. Do NOT fall back to entry_price \u2014\n    // that silently guarantees the position never takes profit or stops out.\n    unpriceable.push({ id: pos.id, reason: 'no_price_available' });\n    continue;\n  }\n\n  const shares = pos.shares != null ? Number(pos.shares) : null;\n  const usdc = pos.usdc_amount != null ? Number(pos.usdc_amount) : null;\n\n  if (currentPrice > 0.85) {\n    actions.push({ id: pos.id, action: 'exit', reason: 'take_profit',\n                   currentPrice, entryPrice, shares, usdc });\n  } else if (currentPrice < 0.08 && entryPrice > 0.20) {\n    actions.push({ id: pos.id, action: 'exit', reason: 'stop_loss',\n                   currentPrice, entryPrice, shares, usdc });\n  } else if (currentPrice < 0.30 && entryPrice > 0.50) {\n    alerts.push({ id: pos.id, question: pos.question || pos.id,\n                  currentPrice, entryPrice });\n  }\n}\n\nreturn [{ json: { actions, alerts, unpriceable, positionCount: positions.length } }];"
         },
         "id": "evaluate-positions",
         "name": "Evaluate Positions",
@@ -317,7 +404,7 @@
       },
       {
         "parameters": {
-          "jsCode": "const data = $input.first().json;\n\n// Update prices in Supabase\nfor (const a of data.actions.filter(a => a.action === 'update_price')) {\n  await fetch('https://fdabygmromuqtysitodp.supabase.co/rest/v1/trading_positions?id=eq.' + a.id, {\n    method: 'PATCH',\n    headers: {\n      'apikey': $env.SUPABASE_ANON_KEY,\n      'Authorization': 'Bearer ' + $env.SUPABASE_ANON_KEY,\n      'Content-Type': 'application/json'\n    },\n    body: JSON.stringify({ current_price: a.currentPrice })\n  });\n}\n\n// Close positions that need exit\nfor (const a of data.actions.filter(a => a.action === 'exit')) {\n  await fetch('https://fdabygmromuqtysitodp.supabase.co/rest/v1/trading_positions?id=eq.' + a.id, {\n    method: 'PATCH',\n    headers: {\n      'apikey': $env.SUPABASE_ANON_KEY,\n      'Authorization': 'Bearer ' + $env.SUPABASE_ANON_KEY,\n      'Content-Type': 'application/json'\n    },\n    body: JSON.stringify({ status: 'closed', close_reason: a.reason, current_price: a.currentPrice })\n  });\n}\n\nreturn [{ json: { ...data, updated: true } }];"
+          "jsCode": "const data = $input.first().json;\n\nconst SUPABASE = 'https://fdabygmromuqtysitodp.supabase.co';\nconst headers = {\n  'apikey': $env.SUPABASE_SERVICE_ROLE_KEY,\n  'Authorization': 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY,\n  'Content-Type': 'application/json'\n};\n\nasync function patchPosition(id, body) {\n  const resp = await fetch(SUPABASE + '/rest/v1/trading_positions?id=eq.'\n    + encodeURIComponent(id), {\n    method: 'PATCH',\n    headers,\n    body: JSON.stringify(body)\n  });\n  // Without this the node reports success on a 400 and the position stays\n  // open in the DB while the operator is told it closed.\n  if (!resp.ok) {\n    const text = await resp.text();\n    throw new Error('PATCH failed ' + resp.status + ': ' + text);\n  }\n  return resp;\n}\n\nconst closed = [];\n\nfor (const a of data.actions.filter(a => a.action === 'exit')) {\n  // exit_usdc = shares * exit price; pnl = proceeds - cost. Both need shares\n  // and usdc_amount, which the Python executor writes at entry. Null when\n  // absent rather than guessed \u2014 a wrong pnl is worse than a missing one.\n  const exitUsdc = (a.shares != null && a.currentPrice != null)\n    ? Number((a.shares * a.currentPrice).toFixed(6))\n    : null;\n  const pnl = (exitUsdc != null && a.usdc != null)\n    ? Number((exitUsdc - a.usdc).toFixed(6))\n    : null;\n\n  await patchPosition(a.id, {\n    status: 'closed',\n    exit_reason: a.reason,\n    exit_price: a.currentPrice,\n    exit_usdc: exitUsdc,\n    pnl: pnl,\n    closed_at: new Date().toISOString()\n  });\n  closed.push({ id: a.id, reason: a.reason, exit_price: a.currentPrice,\n                exit_usdc: exitUsdc, pnl });\n}\n\nreturn [{ json: { ...data, closed, updated: true } }];"
         },
         "id": "update-positions",
         "name": "Update Positions",
@@ -335,14 +422,20 @@
               {
                 "id": "has-alerts",
                 "leftValue": "={{ $json.alerts.length + $json.actions.filter(a => a.action === 'exit').length }}",
-                "rightValue": "0",
+                "rightValue": 0,
                 "operator": {
                   "type": "number",
                   "operation": "gt"
                 }
               }
             ],
-            "combinator": "and"
+            "combinator": "and",
+            "options": {
+              "caseSensitive": true,
+              "leftValue": "",
+              "typeValidation": "strict",
+              "version": 2
+            }
           },
           "options": {}
         },
@@ -372,6 +465,56 @@
           1360,
           208
         ]
+      },
+      {
+        "parameters": {
+          "operation": "executeQuery",
+          "query": "select public.record_heartbeat('{{ $workflow.id }}'::text, 'started'::text, 'Trading - Position Monitor'::text, '{{ $execution.id }}'::text);",
+          "options": {}
+        },
+        "name": "Heartbeat: Start",
+        "type": "n8n-nodes-base.postgres",
+        "typeVersion": 2.6,
+        "position": [
+          496,
+          80
+        ],
+        "retryOnFail": true,
+        "maxTries": 2,
+        "waitBetweenTries": 2000,
+        "id": "4e2b2da3-8a17-4567-b8fa-631eaf7e01f1",
+        "credentials": {
+          "postgres": {
+            "id": "qGUxEHfEZkZGdAcZ",
+            "name": "Supabase Postgres DB"
+          }
+        },
+        "continueOnFail": true
+      },
+      {
+        "parameters": {
+          "operation": "executeQuery",
+          "query": "select public.record_heartbeat('{{ $workflow.id }}'::text, 'success'::text, 'Trading - Position Monitor'::text, '{{ $execution.id }}'::text);",
+          "options": {}
+        },
+        "name": "Heartbeat: Success",
+        "type": "n8n-nodes-base.postgres",
+        "typeVersion": 2.6,
+        "position": [
+          1616,
+          208
+        ],
+        "retryOnFail": true,
+        "maxTries": 2,
+        "waitBetweenTries": 2000,
+        "id": "7cba9a2f-16cd-4c1d-ab83-121880ce5b72",
+        "credentials": {
+          "postgres": {
+            "id": "qGUxEHfEZkZGdAcZ",
+            "name": "Supabase Postgres DB"
+          }
+        },
+        "continueOnFail": true
       }
     ],
     "connections": {
@@ -380,6 +523,11 @@
           [
             {
               "node": "Fetch Open Positions",
+              "type": "main",
+              "index": 0
+            },
+            {
+              "node": "Heartbeat: Start",
               "type": "main",
               "index": 0
             }
@@ -428,7 +576,29 @@
               "index": 0
             }
           ],
+          [
+            {
+              "node": "Heartbeat: Success",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Heartbeat: Start": {
+        "main": [
           []
+        ]
+      },
+      "Notify Monitor": {
+        "main": [
+          [
+            {
+              "node": "Heartbeat: Success",
+              "type": "main",
+              "index": 0
+            }
+          ]
         ]
       }
     },
@@ -438,18 +608,10 @@
     "autosaved": false,
     "workflowPublishHistory": [
       {
-        "createdAt": "2026-04-06T09:52:47.047Z",
-        "id": 453,
+        "createdAt": "2026-08-05T11:32:14.408Z",
+        "id": 1084,
         "workflowId": "UYA0JppH7eqyI7fQ",
-        "versionId": "f6eb4d27-f9be-477f-accb-9d846f3af89c",
-        "event": "activated",
-        "userId": "b1512bca-25b8-4b8b-add0-b86540e5144d"
-      },
-      {
-        "createdAt": "2026-04-06T09:53:16.567Z",
-        "id": 454,
-        "workflowId": "UYA0JppH7eqyI7fQ",
-        "versionId": "f6eb4d27-f9be-477f-accb-9d846f3af89c",
+        "versionId": "5c010519-e28f-4bee-8d84-06b3de27028e",
         "event": "activated",
         "userId": "b1512bca-25b8-4b8b-add0-b86540e5144d"
       }
