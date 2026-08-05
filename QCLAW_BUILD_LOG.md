@@ -18289,3 +18289,308 @@ Parts 2 and 3 of the alerter fix; credential migrations; the 5 unmonitored
 dead-credential workflows; `yPt090tPv4FJtwAZ` weekly-branch paired-item bug;
 `watcher.log` 8.5MB unrotated (infrastructure debt list, alongside JWT rotation and
 `.env.bak*` cleanup).
+
+---
+
+## 2026-08-05 — Phase 5 Session 12 — Trade Engine Sessions 4 & 5 shipped (PR #82/#84): approval gate + executor live
+
+Two trade-engine sessions merged and deployed. The advisory pipeline was completed
+(Session 4) and then the first real-money execution path was wired behind it
+(Session 5). The n8n Trade Executor was deactivated. No trade was placed in either
+session.
+
+**State at end of session:** `trading_enabled=true`, n8n Trade Executor
+`fq7spfyiNcpt8Mf7` **inactive**, Python executor **live on main**,
+`trading_positions` **0 rows**. Cron is NOT wired — `/scan` only runs on demand.
+
+---
+
+### PR #82 (`5886421`) — Session 4: Telegram approval gate
+
+Sends a trade opportunity to Telegram with Execute/Skip buttons and blocks the scan
+until the tap or a 30-minute timeout. Pipeline after this: scanner → analyst →
+approval gate (all advisory, no executor).
+
+**Blocking audit finding — the brief's "different bot token" assumption was wrong.**
+`.env` held exactly one Telegram pair, and `getMe` resolved it to `@tyson_quantumbot`
+— Charlie's own bot, which the `quantumclaw` process long-polls continuously via the
+grammY runner (`allowed_updates: ['message','callback_query']`,
+`src/channels/manager.js:1126`). Telegram permits **one `getUpdates` consumer per
+bot**: a second poller would not merely miss callbacks, it would steal Charlie's
+message updates.
+
+`getWebhookInfo` verbatim (no webhook → long polling):
+
+```json
+{"ok":true,"result":{"url":"","has_custom_certificate":false,"pending_update_count":0,"allowed_updates":["message","callback_query"]}}
+```
+
+Confirmed empirically: a single `getUpdates?timeout=0` from a second consumer
+returned `{"ok":true,"result":[]}` and terminated Charlie's in-flight poll. Charlie's
+process held `ESTAB … 149.154.166.110:443` throughout (`ss -tnp`, pid 3961574).
+
+**Resolution:** a dedicated bot was provisioned — `@Flowos_trade_bot` (id
+8895488594) — and the poller gated on `TRADE_TELEGRAM_BOT_TOKEN` being *present and
+different* (`config.telegram_poller_enabled`). Absent or identical → poller refuses
+to start, logs a warning, approvals time out. Failure direction is "approval times
+out", never "trade executes unreviewed" and never "Charlie's bot breaks".
+
+The new bot could not DM until `/start` was pressed once:
+
+```json
+{"ok":false,"error_code":400,"description":"Bad Request: chat not found"}
+```
+
+**Implementation:** direct Telegram HTTP API via `httpx` — no grammY, no bot
+framework — matching the `sendTelegram` shape in `src/dashboard/server.js`. Added
+`src/trade_engine/approval.py` (`ApprovalGate` + `run_update_poller`), models
+`ApprovalStatus`/`PendingApproval`/`ApprovalResult`, `POST /approval/callback` for
+webhook mode, and poller start/stop in the FastAPI lifespan.
+
+**Token-in-URL leak, caught only in live testing.** httpx logs every request line at
+INFO and Telegram carries the bot token in the URL **path**, so each 30s poll wrote
+the token to the PM2 log — the 2026-05-14 leak class. The stubbed unit tests could
+never have caught it. Observed verbatim (token redacted here):
+
+```
+INFO     httpx: HTTP Request: GET https://api.telegram.org/bot<TRADE_TELEGRAM_BOT_TOKEN>/getUpdates?timeout=30&allowed_updates=%5B%22callback_query%22%5D "HTTP/1.1 200 OK"
+```
+
+Fixed by filtering the `httpx`/`httpcore`/`urllib3` loggers rather than silencing
+them (Supabase authenticates by header, so its request logging stays useful). After
+the fix, verified live on the running process:
+
+```
+INFO     httpx: HTTP Request: GET https://api.telegram.org/bot***/getUpdates?timeout=30&allowed_updates=%5B%22callback_query%22%5D "HTTP/1.1 200 OK"
+```
+
+**Verification:** real `POST /scan` — 1,448 markets → 21 candidates → 4 high-edge;
+best_trade ETH above $1,900 @ edge 21.64%; Analyst `reduce` correctly halved the
+position $10 → $5; `HTTP 200 in 330.4s` (scan ~30s + 300s approval window), timing
+out to `approval_result.status = timeout`. Both button branches then proven live
+against the real bot: ✅ → `status=approved, source=user` (~7s), ❌ →
+`status=skipped, source=user` (~4s). 32 approval tests.
+
+**Deployed:** `pm2 restart trade-engine`; `/health` returns `approval_gate_active: true`.
+
+---
+
+### PR #84 (`404be7a`) — Session 5: Executor (first real-money path)
+
+`src/trade_engine/executor.py`. Nothing runs until a human taps Execute; even then
+every gate is re-checked against **live** Supabase state, because an approval can be
+stale by the time it is acted on.
+
+Live `trading_config` at audit time:
+
+```json
+[{"id":1,"trading_enabled":true,"max_position_usdc":10,"min_edge_threshold":7,"daily_loss_limit":20}]
+```
+
+Note `min_edge_threshold` is stored in **percentage points** (7), while
+`candidate.edge` is a fraction (0.07) — Gate 4 divides by 100. A raw comparison
+would reject every trade.
+
+#### Five audit findings, three not anticipated by the brief
+
+**F1 — `candidate.market_id` is the wrong identifier; every trade would have failed.**
+`_to_candidate` set `market_id` from Gamma's *numeric* id and dropped `condition_id`.
+`execute_trade.py` passes `--market` to `client.get_market()`, which resolves by
+on-chain conditionId only. Verbatim:
+
+```
+GET https://clob.polymarket.com/markets/559651
+  -> HTTP 404 {"error":"market not found"}
+GET https://clob.polymarket.com/markets/0xa467b14d51f01b957109d9cbb1d6c124fab2a089d52ed8f471d23c2812e743b7
+  -> HTTP 200, tokens [('Yes', …), ('No', …)]
+```
+
+Fail-safe (no money lost) but the executor would have been 100% non-functional.
+`condition_id` is now threaded from the scanner and **Gate 6** refuses anything that
+is not exactly `0x`+64 hex.
+
+**F2 — `trading_positions` has no `raw_output` column.** The brief specified writing
+it; `_request` raises on ≥300, so the first real trade would have `SupabaseError`d
+*after* spending money. Live schema is 19 columns (`id, market_id, simulation_id,
+direction, entry_price, shares, usdc_amount, entry_simulation_probability,
+entry_implied_odds, entry_edge, status, exit_price, exit_usdc, pnl, exit_reason,
+opened_at, closed_at, tx_hash, created_at`) — no JSONB anywhere. Dropped from the
+write; full stdout logged at DEBUG only, scrubbed of the Polymarket key first.
+
+**F3 — Position Monitor close wrote none of the exit fields.** The brief described
+two renames; the actual published body was worse. Verbatim before:
+
+```js
+body: JSON.stringify({ status: 'closed', close_reason: a.reason, current_price: a.currentPrice })
+```
+
+`exit_price`, `exit_usdc`, `pnl`, `closed_at` were never attempted, and neither
+`fetch` assigned a response so no `resp.ok` check was possible — PostgREST
+rejections were discarded while the node returned `{updated: true}`. Both
+`current_price` and `close_reason` confirmed **MISSING** from the schema, so the
+price-update loop was 400ing every 15 minutes for every open position.
+
+**F4 — positions were unpriceable at all (not in brief).** `Evaluate Positions`
+fetched `gamma-api/markets/{pos.market_id}`, but `market_id` is a uuid FK that stays
+NULL for engine-written positions → `/markets/null` → fallback
+`currentPrice = entry_price` forever → never takes profit, never stops out. Now
+resolves `simulation_id` → `trading_simulations.raw_output.polymarket_condition_id`
+→ Gamma `?condition_ids=`. This required the executor to write `simulation_id`,
+which in turn required moving simulation persistence *before* the approval gate in
+`/scan` so `best_trade` carries its id.
+
+**F5 — the n8n executor's own insert was broken while armed (not in brief).**
+`Save Position` verbatim fields:
+
+```
+market_id: marketId    -> uuid column, Polymarket id  -> 400
+amount_usdc: amount    -> column is usdc_amount       -> 400
+trade_response: $json  -> no such column              -> 400
+entry_price: 0
+```
+
+It calls the real execution API (`agentboardroom.flowos.tech/api/trading/execute`)
+**first**, then fails to record — i.e. it could spend money and keep no record, which
+also explains the empty table. **Deactivated immediately** rather than after
+dry-run verification: it was a liability, not a fallback.
+`POST /api/v1/workflows/fq7spfyiNcpt8Mf7/deactivate` → HTTP 200, re-fetch confirms
+`active: False`, 12 nodes and `errorWorkflow: 7kpNnMtnuDWXgWcX` preserved.
+Backup: `n8n-workflows/backups/trading-executor.PRE-DEACTIVATION-20260805.json`.
+
+#### Gates (all fail closed — a Supabase error is a refusal, never a pass)
+
+| Gate | Refuses when |
+|---|---|
+| `not_approved` | `status != approved` (request body is not trusted) |
+| `stale_approval` | `decided_at` >5 min old, >60s in the future, or missing |
+| `trading_disabled` | `trading_enabled is not True`, or config unreadable |
+| `position_cap` | ≥2 open, or count unreadable |
+| `daily_loss_limit` | `pnl < 0 and abs(pnl) >= limit`, or pnl unreadable |
+| `edge_below_threshold` | `edge < min_edge_threshold / 100` |
+| `invalid_amount` | `<=0`, over `max_position_usdc`, or over a hard $25 ceiling |
+| `invalid_market_identifier` | `condition_id` not exactly `0x`+64 hex |
+
+Subprocess is an **arg array, never `shell=True`** (the market identifier is remote
+data), 60s timeout, run via `asyncio.to_thread` so the money path cannot block the
+event loop shared with the approval poller and `/health`. `execute()` never raises.
+
+#### Adversarial review — no CRITICAL/HIGH; 5 fixes applied (`16311d1`)
+
+- **M1** `stale_approval` gate, checked *before any Supabase read*. Also refuses a
+  `decided_at` >60s in the future (a skewed or forged timestamp would otherwise never
+  expire) and reads naive datetimes as UTC, so a JSON body without an offset reports
+  `stale_approval` rather than the generic `gate_error`.
+- **M2** `_derive_fill` returns `None`, not `0.0`, when the fill price is unknown.
+  `0.0` reads as a real price downstream: it disables the stop-loss rule
+  (`entry_price > 0.20`) and poisons any `pnl` derived from it, which then feeds the
+  executor's own daily-loss gate.
+- **M4** `run()` warns when `best_trade` carries no `simulation_id` — `run()` does not
+  persist simulations, so anything it opens is unpriceable. Warns, does not block.
+- **L2** `re.fullmatch`, not `re.match`. Python's `$` also matches before a trailing
+  newline, so `re.match` accepted `0x<64 hex>\n` as a conditionId.
+- **L3 (PARTIAL)** `Notify Monitor` referenced `a.market_id`, which exit action
+  objects never carried, so every alert rendered `undefined`. Fixed to use the
+  resolved `conditionId`, with `entryPrice` null-guarded. `Evaluate Positions` also
+  now isolates each position in its own `try` so one bad lookup cannot abort the
+  sweep and leave healthy positions unmonitored. **The token switch to
+  `TRADE_TELEGRAM_BOT_TOKEN` was NOT done** — see Known gaps.
+
+#### Verification (no real order placed)
+
+No `DRY_RUN` flag was added. Instead `TradeExecutor` was subclassed in a throwaway
+driver overriding **only** `_run_script`, so all gates, the real `write_position` and
+real Telegram ran against live state with zero changes to shipped code
+(`git grep -i dry.run` returns nothing).
+
+Happy path wrote a real row, verbatim (deleted immediately after):
+
+```json
+{"id":"0b66a3e0-b568-4964-ab9c-4afd3edb6d41","market_id":null,"simulation_id":null,
+ "direction":"YES","entry_price":0.0465,"shares":64.52,"usdc_amount":3.0,
+ "entry_simulation_probability":0.3,"entry_implied_odds":0.0465,"entry_edge":0.18,
+ "status":"open","exit_price":null,"exit_usdc":null,"pnl":null,"exit_reason":null,
+ "opened_at":"2026-08-05T11:45:05.173685+00:00","closed_at":null,
+ "tx_hash":"SESSION5-VERIFY-NOT-A-REAL-ORDER"}
+```
+
+`usdc_amount` (not `amount_usdc`), `entry_price` parsed from the fill, `shares =
+3.0/0.0465` — and the insert succeeding is what proves F2. Seven gate-refusal cases
+run against live Supabase, **0 orders placed on any**. `npm test` EXIT=0
+(node + 20 analyst + 32 approval + 51 executor). Test row deleted; table back to 0 rows.
+
+---
+
+### Position Monitor close-path verification (read-only audit, post-merge)
+
+Read from the **published runtime version** — `workflow_history` row for
+`activeVersionId`, not the API draft. n8n is 2.4.8, which executes the published
+version; confirmed `versionId == activeVersionId` =
+`4211a924-8104-4e8a-b5a2-30d848baadbf`.
+
+| Item | Result |
+|---|---|
+| `exit_reason` present (not `close_reason`) | ✅ Y |
+| `exit_price` written on close | ✅ Y |
+| `closed_at` written on close | ✅ Y |
+| `pnl` written on close | ✅ Y |
+| `exit_usdc` written on close | ✅ Y |
+| `current_price` absent entirely | ✅ Y |
+| `resp.ok` guard + throw on failure | ✅ confirmed in substance |
+
+Occurrence counts in the published node: `close_reason` **0**, `current_price` **0**,
+`fetch(SUPABASE` **1**, `if (!resp.ok)` **1**, `throw new Error` **1**. The audit item
+asked about "both PATCH loops" — that premise is stale: the `update_price` loop was
+removed in Session 5 because it wrote the non-existent `current_price`, so there is
+now a **single** PATCH loop, routed through one guarded `patchPosition()` helper.
+Every PATCH the node can issue throws on failure. All five written fields
+cross-check as `EXISTS` against the live PostgREST schema.
+
+Consequence worth noting: with `update_price` gone, nothing writes a running market
+price back to `trading_positions` (correct — no column exists), so position price
+state lives only in the monitor's execution data.
+
+Backup: `n8n-workflows/backups/position-monitor.PRE-COLUMNFIX-20260805.json`.
+
+---
+
+### Known gaps — read before cron activation
+
+1. **The `simulation_id` → position → monitor join has never run end-to-end.** Live
+   verification used `simulation_id=None` (no scan involved). Unit tests cover the
+   pieces; the join itself is unexercised. **Highest-severity gap** — if it fails,
+   positions open unpriceable with no automatic exit. The first live trade must be
+   watched through a full 15-minute monitor cycle.
+2. **L3 token switch deferred to Session 6.** The n8n host's `.env` has no
+   `TRADE_TELEGRAM_BOT_TOKEN` (it has `TELEGRAM_BOT_TOKEN` and
+   `SUPABASE_SERVICE_ROLE_KEY` only), and n8n reloads `env_file` only on
+   `docker compose up -d`, which recreates the shared container and briefly
+   interrupts *every* workflow on that host. Switching the reference without the
+   variable would produce `/botundefined/sendMessage` and silently kill monitor
+   alerts. Monitor continues to notify via `TELEGRAM_BOT_TOKEN`, which works today.
+3. **`run()` warns on missing `simulation_id`** — `run()` does not persist
+   simulations (only the `/scan` route does), so anything opened via `run()` is
+   unpriceable. Must be wired before cron.
+4. `position_not_recorded` returns `success=True` — correct (money moved), but a
+   caller reading `success` as "safe to proceed" gets the wrong answer.
+5. Gate 3 reads `daily_loss_limit` from the `cfg` fetched in Gate 1, so a config
+   change mid-execution is invisible.
+6. `shares` rounds to 6dp; `exit_usdc`/`pnl` inherit that error.
+7. `execute_trade.py` has **no slippage protection** — market order, no `max_price`
+   bound (pre-existing; TODO at `src/trading/execute_trade.py:72`).
+
+Also fixed in passing: `run_update_poller` used
+`token or config.trade_telegram_bot_token`, so a unit test passing `token=""` fell
+through to the **real** bot and issued a live `getUpdates`, which 409'd against the
+running trade-engine poller when the suite ran on the droplet. `None` now means "use
+config", `""` means "do not poll"; the test injects a client that raises on any
+request. Approval suite runtime dropped 5.353s → 0.131s.
+
+---
+
+### Next session queue
+
+- **Session 6** — wire simulation persist into `run()`; L3 token switch +
+  n8n container recreate; Python position monitor; cron wiring; deactivate the n8n
+  scanner and position monitor; learning-loop verification.
+- `trading-worker` port binding fix (bind `0.0.0.0:4001` — currently internet-exposed).
+- n8n scanner pagination fix (`/markets?limit=200` silently returns 100).
