@@ -234,10 +234,21 @@ async def get_daily_pnl() -> float:
 
 async def count_open_positions() -> int:
     """Cheap count for /health — asks PostgREST for the count header only."""
+    return await _count_positions({"status": "eq.open", "select": "id"})
+
+
+async def count_all_positions() -> int:
+    """Total rows in trading_positions, open and closed. /health only."""
+    return await _count_positions({"select": "id"})
+
+
+async def _count_positions(params: dict[str, Any]) -> int:
+    """Shared count-header read. Raises SupabaseError on anything unparseable —
+    a count that silently returns 0 would read as "no exposure" to the caller."""
     client = get_client()
     response = await client.get(
         "/trading_positions",
-        params={"status": "eq.open", "select": "id"},
+        params=params,
         headers={**config.supabase_headers(), "Prefer": "count=exact", "Range": "0-0"},
     )
     log.debug("<- GET /trading_positions (count) HTTP %s", response.status_code)

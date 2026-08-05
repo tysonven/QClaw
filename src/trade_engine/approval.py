@@ -590,7 +590,12 @@ async def run_update_poller(
 
     stop_after bounds the loop iterations for tests; production passes None.
     """
-    poll_token = token or config.trade_telegram_bot_token
+    # `token=None` means "take it from config"; an explicit "" means "there is
+    # no token, do not poll". Collapsing those with `token or config...` made a
+    # unit test fall back to the REAL bot and issue a live getUpdates, which
+    # 409'd against the running trade-engine poller (seen on the droplet
+    # 2026-08-05). Tests must never be able to reach the live bot by accident.
+    poll_token = token if token is not None else config.trade_telegram_bot_token
     if not poll_token:
         log.warning("update poller not started: no dedicated bot token")
         return

@@ -122,6 +122,21 @@ class ScannerCandidate(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     market_id: str
+    # Polymarket's on-chain conditionId (0x + 64 hex). REQUIRED to trade:
+    # market_id here is the Gamma *numeric* id, and the CLOB endpoint that
+    # execute_trade.py calls resolves markets by conditionId only — verified
+    # 2026-08-05, /markets/<numeric> returns 404 "market not found" while
+    # /markets/<conditionId> returns the token pair. Optional on the model so
+    # an ApprovalResult persisted before Session 5 still validates; the
+    # executor gates on its absence rather than trading the wrong identifier.
+    condition_id: Optional[str] = None
+    # trading_simulations.id for this candidate's Monte Carlo row, populated
+    # after the simulations are persisted. The executor writes it onto the
+    # position so the Position Monitor can resolve the market later: positions
+    # carry no Polymarket identifier of their own (market_id is a uuid FK that
+    # stays NULL), so simulation_id -> raw_output.polymarket_condition_id is
+    # the only path from an open position back to a priceable market.
+    simulation_id: Optional[str] = None
     question: str
     asset: str
     direction: str  # 'YES' or 'NO'
@@ -198,6 +213,38 @@ class ApprovalResult(BaseModel):
     decision_source: str  # 'user', 'timeout', 'analyst_skip'
 
 
+class ExecutionGateError(Exception):
+    """A financial pre-flight gate refused the trade.
+
+    Carries only the gate name — the caller turns that into an operator-facing
+    message. Never surfaced to an API response as a stack trace.
+    """
+
+    def __init__(self, gate: str) -> None:
+        super().__init__(gate)
+        self.gate = gate
+
+
+class TradeExecutionResult(BaseModel):
+    """Outcome of one execution attempt.
+
+    `success=False` with `gate_blocked` set means nothing was sent to
+    Polymarket. `success=False` with `error` set means the subprocess ran and
+    failed — which does NOT prove no order was placed, only that we could not
+    confirm one. Treat that state as "reconcile by hand", never as "safe to
+    retry automatically".
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    success: bool
+    gate_blocked: Optional[str] = None
+    position_id: Optional[str] = None
+    tx_hash: Optional[str] = None
+    error: Optional[str] = None
+    executed_at: datetime
+
+
 class ScannerRunSummary(BaseModel):
     """Result of one scanner pass."""
 
@@ -216,6 +263,7 @@ class ScannerRunSummary(BaseModel):
     analyst_recommendation: Optional[AnalystRecommendation] = None
     analyst_skip: bool = False  # true when the Analyst returned 'pass'
     approval_result: Optional[ApprovalResult] = None
+    execution_result: Optional[TradeExecutionResult] = None
 
 
 class HealthResponse(BaseModel):
@@ -229,4 +277,6 @@ class HealthResponse(BaseModel):
     analyst_available: bool = False
     pending_approvals: int = 0
     approval_gate_active: bool = False
+    total_positions: int = 0
+    daily_pnl: float = 0.0
     error: Optional[str] = None

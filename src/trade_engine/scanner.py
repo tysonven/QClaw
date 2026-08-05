@@ -34,7 +34,12 @@ import httpx
 
 from src.trade_engine.config import config
 from src.trade_engine.approval import ApprovalGate, ApprovalGateBusy
-from src.trade_engine.models import ScannerCandidate, ScannerRunSummary
+from src.trade_engine.executor import TradeExecutor
+from src.trade_engine.models import (
+    ApprovalStatus,
+    ScannerCandidate,
+    ScannerRunSummary,
+)
 
 if TYPE_CHECKING:  # avoids a circular import at runtime
     from src.trade_engine.analyst import TradeAnalyst
@@ -205,6 +210,7 @@ class PolymarketScanner:
         client: Optional[httpx.AsyncClient] = None,
         analyst: Optional["TradeAnalyst"] = None,
         approval_gate: Optional["ApprovalGate"] = None,
+        executor: Optional["TradeExecutor"] = None,
     ) -> None:
         self._client = client
         self._owns_client = client is None
@@ -214,6 +220,10 @@ class PolymarketScanner:
         # still selected, it just carries no approval_result. Nothing in
         # Session 4 executes either way.
         self.approval_gate = approval_gate
+        # Optional: without an executor an approved trade is recorded as
+        # approved and simply not placed. That is the safe default — a
+        # misconfigured pipeline must not spend money by accident.
+        self.executor = executor
 
     async def __aenter__(self) -> "PolymarketScanner":
         if self._client is None:
@@ -566,8 +576,14 @@ class PolymarketScanner:
         row: dict[str, Any], edge: float, sim_probability: float
     ) -> ScannerCandidate:
         slug = row.get("slug") or ""
+        condition_id = row.get("condition_id")
         return ScannerCandidate(
             market_id=str(row["market_id"]),
+            # Carried separately from market_id because they are different
+            # identifier spaces: market_id is Gamma's numeric id, condition_id
+            # is the on-chain id the CLOB trades by. Dropping it here is what
+            # would make every execution 404 (Session 5 audit, F1).
+            condition_id=str(condition_id) if condition_id else None,
             question=row["question"] or "",
             asset=row["asset"],
             direction="YES" if edge > 0 else "NO",
@@ -690,10 +706,59 @@ class PolymarketScanner:
             result.status.value.upper(), summary.best_trade.question,
         )
 
+    # --- execution --------------------------------------------------------
+
+    async def apply_execution(self, summary: ScannerRunSummary) -> None:
+        """Place the trade if, and only if, a human approved it.
+
+        The ONLY path in this pipeline that spends money. Everything upstream
+        is advisory. Requires an explicit `approved` status — any other status,
+        a missing approval_result, or no executor leaves execution_result None
+        and places nothing.
+
+        The executor never raises, so this cannot abort a scan; a refusal comes
+        back as a TradeExecutionResult with gate_blocked set.
+        """
+        summary.execution_result = None
+
+        approval = summary.approval_result
+        if approval is None:
+            return
+        if approval.status is not ApprovalStatus.approved:
+            log.info(
+                "approval status is %s, executor not invoked", approval.status.value
+            )
+            return
+        if self.executor is None:
+            log.warning(
+                "trade APPROVED but no executor configured — nothing placed: %s",
+                approval.candidate.question,
+            )
+            return
+
+        result = await self.executor.execute(approval)
+        summary.execution_result = result
+
+        if result.success:
+            log.info(
+                "EXECUTED: %s (position_id=%s)",
+                approval.candidate.question, result.position_id,
+            )
+        elif result.gate_blocked:
+            log.warning(
+                "EXECUTION BLOCKED by %s: %s",
+                result.gate_blocked, approval.candidate.question,
+            )
+        else:
+            log.error(
+                "EXECUTION FAILED (%s): %s",
+                result.error, approval.candidate.question,
+            )
+
     # --- orchestration ----------------------------------------------------
 
     async def run(self, *, open_positions: int = 0) -> ScannerRunSummary:
-        """fetch → analyse → simulate → summarise → select → approve."""
+        """fetch → analyse → simulate → summarise → select → approve → execute."""
         markets = await self.fetch_markets()
         candidates = await self.analyse_edge(markets)
         simulated, sim_errors = await self.run_simulations(candidates)
@@ -706,7 +771,21 @@ class PolymarketScanner:
         )
         summary.best_trade = self.select_best_trade(summary)
         await self.apply_analyst(summary)
+
+        # run() does not persist simulations — the /scan route does, and that is
+        # where simulation_id gets attached. Anything opened from run() therefore
+        # carries no simulation_id, and a position without one cannot be resolved
+        # back to a market by the Position Monitor: it never prices, never takes
+        # profit and never stops out. Warn loudly rather than block, since the
+        # trade itself is still valid and a human approved it.
+        if summary.best_trade is not None and summary.best_trade.simulation_id is None:
+            log.warning(
+                "Trade will be unpriceable — simulation_id not attached. "
+                "Session 6 must wire persist into run() before cron activation."
+            )
+
         await self.apply_approval(summary)
+        await self.apply_execution(summary)
         record_run(summary)
 
         if summary.best_trade:
