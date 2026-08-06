@@ -19287,3 +19287,231 @@ footer links unaffected (route unchanged, only body content replaced).
 **not merged** — PR #1 (github.com/tysonven/flowos-web/pull/1) opened
 against `main` with the four carry-forward items in the description.
 Tyson merges after review.
+
+## 2026-08-06 — flowos-web Slice 3.5 — link-in-bio built (cutover blocker cleared), CTA/redirect fixes, a11y findings reported
+
+**`git pull --ff-only` first:** already up to date with `origin/main` @
+`3dc5b29` (privacy-policy rewrite, merged). Worked directly in
+`~/Projects/flowos-web` on `main`, matching the Slice 1–3 pattern (no
+worktree needed — no concurrent session detected this time).
+
+**`/link-in-bio` rebuilt native — the hard cutover blocker from Slice
+3 is cleared.** Not a port of the GHL template: `BaseLayout` gained a
+`minimal` prop (bare centred logo, no nav; footer reduced to policy
+links only, no contact/socials/resources/products grid) so this
+single-purpose page doesn't drag in the marketing-site chrome. Shared
+`<head>`/GTM/cookie-banner untouched. `SOCIAL_ICONS` (previously
+inlined in `BaseLayout`) moved to `site.ts` so both layouts can use it
+without duplicating six SVG path strings.
+
+Social URLs recovered by fetching the live GHL `/link-in-bio` page —
+verified twice, once via `WebFetch`'s markdown conversion and once by
+`curl`-ing the raw HTML and grepping for `facebook\.com`/`instagram\.com`
+directly, since a markdown-converted fetch summarizing links is not
+proof of the literal href. Both methods agreed and matched what was
+already in `site.ts`'s `SOCIALS` array (Facebook
+`facebook.com/flowosagency`, Instagram `instagram.com/flow_os_`) — no
+drift. Reported to Tyson before wiring, per the brief's pause point.
+
+**Design review round-trip (second pause point, before commit):**
+first pass reused `.btn-signal` (green fill, JetBrains Mono) for the
+primary button. Tyson's review flagged four things, all applied before
+commit: (1) primary button switched off `.btn-signal` entirely to a
+new `.bio-btn-primary` — dark teal fill (`var(--ink)`) + light text
+(`var(--base)`), Raleway not mono, matching the `.btn-primary`/
+`.btn-large` "primary CTA" treatment already established site-wide
+rather than the signal-green treatment (which read as the weakest-
+contrast element on the page at that size); (2) logo doubled 44px →
+88px — it's the only brand mark on the page and read smaller than
+body copy; (3) "Activate the follow-up system" (the revenue CTA)
+distinguished from its four sibling buttons via a `.bio-btn-cta`
+modifier (2px signal-dim border + light green fill) so it doesn't read
+as interchangeable with "Join the community"; (4) confirmed the logo
+*is* served from `media.flowos.tech/site/flowos-web/logo.webp`
+(curl 200) — it's in the `MEDIA` config object from Slice 1, just not
+one of the five content images, so easy to miss. Re-screenshotted at
+375px and 1440px (Playwright, real mobile viewport emulation — see
+tooling note below) after the changes; approved.
+
+**Screenshot tooling note:** plain headless-Chrome CLI
+(`--headless=new --screenshot --window-size=390,844`) does not honour
+the CSS viewport it's given — rendered the page at desktop layout
+widths and just cropped the screenshot canvas, so mobile media queries
+never fired and text/buttons appeared to bleed off the right edge.
+Confirmed as a tooling artifact, not a real bug, the same way the
+privacy-policy entry above did: screenshotted the *unmodified* home
+page at the same viewport as a control and got identical clipping.
+Installed Playwright's Chromium (`npx playwright install chromium
+--with-deps`) and used real device-viewport emulation instead —
+accurate 375px and 1440px captures, no clipping. Same class of gap as
+the "no chrome-devtools MCP" note two entries above; worth setting one
+up if mobile-viewport review keeps recurring.
+
+**Buttons wired:** Start here → `/`; Activate the follow-up system →
+`CHECKOUT_URL`; Browse products → `/products`; 7-day automation
+challenge and Automate to Elevate → new `CHALLENGE_URL`/`EBOOK_URL`
+constants added to `site.ts` (both `https://go.flowos.tech/...`,
+verified 200 directly — see below); Join the community → existing
+`COMMUNITY_URL` (the brief's table gave a shorter URL without the
+`/home?invite=...` suffix already in config — used the existing
+constant instead of a second, slightly different hardcoded one, and
+verified *that exact* URL is also 200). `noindex, follow` set via
+`BaseLayout`'s existing `noindex` prop; not added to
+`sitemap.xml.ts`'s `STATIC_ROUTES` (that list is hand-curated, so
+omission is the whole mechanism — nothing extra needed).
+
+**All `go.flowos.tech` destinations verified 200 before wiring
+anything** (`/activate`, `/7-day-automation-challenge`,
+`/automate-to-elevate`, `/challenge-flowos-trial` — direct curl, 0
+redirects each), plus the Stripe payment link and the full
+`COMMUNITY_URL` with its invite query string. Nothing was found dead;
+no button was omitted, no redirect was left pointing at `/` for lack
+of a live target.
+
+**SMS Gateway CTA hop removed:** `SMS_GATEWAY_URL` in `site.ts`
+repointed from `https://sms.flowos.tech` straight to
+`https://buy.stripe.com/eVqfZi2K14ur8zefQs3cc03` — only one usage site-
+wide (`products/sms-gateway.astro`'s CTA), so repointing the constant
+itself was cleaner than adding a second one. The adjacent "Purchase at
+sms.flowos.tech" caption next to the button was now inaccurate (buyer
+no longer lands there) — changed to "Secure checkout via Stripe."
+Support Bot CTA left untouched per the brief (Clerk modal fires on
+`support.flowos.tech/ghl` itself, no deeper URL to link). Confirmed
+`sms.flowos.tech` no longer appears anywhere in `dist/` except
+`privacy-policy/index.html`, where it's expected, correct content
+(out of scope, describing that product site's own analytics practice).
+
+**`/products` case-studies/blog links rebuilt:** the old `.link-block`
+(small mono-text links in a full-width panel, reads as a footnote
+under the product cards) replaced with `.link-cards` — two proper
+card-weight tappable elements (Montserrat 700 20px + a mono arrow),
+same panel/border/radius language as the product cards above but
+without their delivery-tag/description, so they read as navigation at
+appropriate weight without being mistaken for a third product.
+Destinations unchanged (`PORTFOLIO_URL`, `BLOG_URL`).
+
+**Redirect map updated — 4 relocated funnels, all destinations
+verified live first:** `/7-day-automation-challenge`,
+`/7-day-automation-challenge-page`, and `/automate-to-elevate-1`
+repointed from `→ /` to their real `go.flowos.tech` destinations;
+`/challenge-flowos-trial` — the live Stripe order-form page flagged as
+a cutover blocker in the Slice 3 entry above, which had *no* redirect
+rule at all — got one for the first time, now that its
+`go.flowos.tech` equivalent is confirmed live. All four resolve to a
+true 301 via Astro's plain-string redirect map (same mechanism
+verified in the Slice 3 entry). None of the four needed to fall back
+to the old `→ /` behavior — every destination in the brief's table
+came back 200.
+
+**Accessibility — `heading-order` and `color-contrast`, reported per
+the brief, not fixed:**
+
+*Heading order* fails identically on every page carrying the full
+footer (`/`, `/refund-policy`, `/products`; confirmed absent on
+`/link-in-bio` since its minimal footer has no headings at all).
+Root cause: `.footer-col h4` in `BaseLayout` is a hardcoded `<h4>`
+regardless of what heading level precedes it in page content — e.g.
+on `/privacy-policy` the last content heading before the footer is
+`<h2>15. Contact us</h2>`, so the footer's `<h4>` skips a level.
+Proposed fix (not applied): convert the four footer column labels from
+real `<h4>` elements to non-heading markup (e.g. `<p class="footer-
+heading">` or `<span role="none">`, same visual styling) — footers are
+their own landmark and don't need to participate in the document's
+heading outline, which also stops this from silently recurring as
+different content pages end on different heading depths. A same-level
+`<h2>` swap would also technically pass but re-couples the footer to
+content structure again.
+
+*Color contrast* — computed exact WCAG ratios for every distinct
+failing pair (axe/Lighthouse reports the pair, not a fix) rather than
+guessing at replacement hexes:
+
+| Element | Fg / Bg | Ratio | Needs |
+|---|---|---|---|
+| `.no-contracts`, `.who-block h3`, `.legal-page a`, `.arrow-link` | `--signal-dim` #059669 on `--base`/`--panel` | 3.21–3.44 | 4.5 |
+| `.delivery-tag` | `--signal-dim` #059669 on tinted panel #d0eae0 | 2.96 | 4.5 |
+| `.split-copy p`, `.step p`, `.guarantee-card p` etc. | `--muted` #5d7373 on `--panel` #e5efeb | 4.29 | 4.5 |
+| `.who-block.not h3` | `--warning` #ea580c on `--base` | 3.25 | 4.5 |
+| `.pricing-alt`, `.founding-no-refund` | `rgba(255,255,255,.5–.6)` on dark founding-card panel | 3.60–4.46 | 4.5 |
+| `.cookie-banner a` | `--signal` #10b981 on `--ink` #1a4a4a | 3.90 | 4.5 |
+
+Per Tyson's standing instruction (darken ink over touching the mint
+base/teal ink brand pair), computed a darkening ladder for every
+*light-background* failure: `--signal-dim` needs to move to
+approximately `#047857` (5.01:1 on base, 4.67:1 on panel — the
+worst-case surface) or one step further, `#046c5b`, for margin;
+`--muted` to approximately `#4d6161` (5.59:1); `--warning` to
+approximately `#c2410c` (4.73:1). **The cookie banner and founding-
+card instances are the opposite case** — light text on a *dark*
+background, where darkening the foreground makes contrast worse, not
+better (confirmed: darkening `--signal` toward `--ink` drops the ratio
+from 3.90 to under 2). Those need lightening instead — cheapest fix
+reuses the existing `--base` token already established site-wide for
+light-text-on-dark (used by `.btn-primary`/`.btn-large`), which gives
+9.04:1 against `--ink`, rather than inventing a new value. Flagging
+this split explicitly since a blanket "darken everything" reading of
+the standing instruction would make the dark-background instances
+worse, not better.
+
+**Lighthouse — performance/SEO on the four required pages, mobile
+emulation, local `lighthouse` CLI (same tooling gap as prior entries,
+no chrome-devtools MCP):**
+
+| Page | Perf | SEO |
+|---|---|---|
+| `/` | 100 | 100 |
+| `/products` | 100 | 100 |
+| `/products/sms-gateway` | 100 | 100 |
+| `/link-in-bio` | 100 | 69 |
+
+`/link-in-bio`'s SEO score is the one deliberate exception, not a
+defect: the *only* failing SEO audit is `is-crawlable`, which
+Lighthouse fails by definition on any page carrying `noindex` — which
+this page is required to carry, per the brief's own indexing section.
+Every other SEO audit (title, meta description, etc.) passes clean.
+The ≥95 SEO acceptance criterion and the noindex requirement are in
+direct tension for this one page; did not remove `noindex` to force
+the number up, since that would violate an explicit, deliberate
+requirement to chase a metric. Flagging rather than silently picking
+one.
+
+**Origin greps — only two found documented in this project's history,
+both clean:** `grep -ri filesafe dist/` → 0 (Slice 2 convention);
+`grep -ri "call intel" dist/` → 0, checked `call-intel`/`callintel`
+too (Slice 1 convention, Call Intel is a work-in-progress product that
+must never appear on this site). The brief's acceptance criterion
+references "the other two origin greps" (implying three total,
+ongoing); searched all four Downloads briefs and this log for a third
+established one and didn't find one — `gohighlevel`/`highlevel` do
+appear in `dist/` (4 files) but that's expected content (SMS Gateway
+page legitimately describes GoHighLevel compatibility), not a leak.
+Flagging the gap to Tyson rather than guessing at what a third check
+should be.
+
+**Verification:** `npm run build` clean, 79 routes. `dist/link-in-
+bio/index.html` exists, 200 locally; `noindex, follow` meta confirmed
+present; confirmed absent from `sitemap.xml` (24 URLs, unchanged) and
+from any `robots.txt` disallow. `CHECKOUT_URL` still resolves only
+through the config constant on every page that uses it (unchanged this
+slice). No new webhooks, endpoints, Supabase tables, or hardcoded
+credentials introduced.
+
+**Security gate:** all five items pass — no hardcoded credentials; no
+Stripe keys (publishable or secret) anywhere in the repo, the SMS
+Gateway change is an outbound anchor to an existing public Stripe
+Payment Link, not payment code; `CHECKOUT_URL` still a config constant
+on every page; no new webhooks/endpoints/Supabase tables;
+`/link-in-bio` excluded from the sitemap.
+
+**Slice 3.5 state:** committed `37c3b92` directly to `main` in
+`~/Projects/flowos-web`, **not yet pushed** — held pending Tyson's
+call on (a) the two open questions above (footer-heading fix
+direction, the missing third origin grep) and (b) whether to push now
+(triggers the `flowos-web.vercel.app` staging redeploy; no production
+domain touched either way). `flowos.tech` DNS untouched, still fully
+GHL-served. Slice 4 (DNS cutover) now blocked only on: `/link-in-bio`
+✅ cleared this slice, `/challenge-flowos-trial` and
+`/7-day-automation-challenge-page`'s order form still needing to move
+off `flowos.tech` to `go.flowos.tech` on the GHL side (Tyson's
+follow-up, unchanged from the Slice 3 entry), and the color-contrast/
+heading-order fixes above still awaiting a decision.
