@@ -19579,3 +19579,138 @@ all acceptance criteria met, no open items carried forward except the
 pre-existing GHL-side cutover blockers already logged (`/challenge-
 flowos-trial`, `/7-day-automation-challenge-page` order form → Tyson's
 follow-up on the GHL side before Slice 4).
+
+## 2026-08-06 — Phase 5 Session 14 — First live trade attempt, 3 GHL sub-account replicas, project/capability audit
+
+### Slice 1 — `execute_trade.py` fix: missing `side` argument
+
+First live scanner-driven trade attempt today failed at the executor
+subprocess boundary. Raw trace from `/root/.pm2/logs/trade-engine-error.log`:
+
+```
+2026-08-06 14:26:36,385 INFO     trade_engine.executor: executing: btc YES $3.27 (condition_id=0xd8aa759cd1...)
+2026-08-06 14:26:37,932 ERROR    trade_engine.executor: execute_trade.py exited 1: MarketOrderArgs.__init__() missing 1 required positional argument: 'side'
+2026-08-06 14:26:38,165 ERROR    trade_engine.scanner: EXECUTION FAILED (execution_failed): Will the price of Bitcoin be above $66,000 on August 7?
+2026-08-06 14:26:38,165 INFO     trade_engine.scanner: best_trade: btc YES edge=0.1106 amount=$3.27
+```
+
+`py_clob_client.clob_types.MarketOrderArgs` requires `side` and
+`execute_trade.py` never set it. Fix (`3a333b4`):
+
+```diff
+ from py_clob_client.client import ClobClient
+ from py_clob_client.clob_types import MarketOrderArgs
++from py_clob_client.order_builder.constants import BUY
+ ...
+ order_args = MarketOrderArgs(
+     token_id=token_id,
+     amount=float(amount_usdc),
++    side=BUY,
+ )
+```
+
+Verified with a monkeypatched `ClobClient`/`create_and_post_order` (no real
+order placed, no funds moved) — confirms `MarketOrderArgs` now constructs
+without the `TypeError` and the corrected call reaches the mocked post-order
+call. Not a committed test; ad-hoc verification only, since this only takes
+BUY side today (`execute_trade.py`'s SELL path is still the pre-existing
+TODO). `trading_positions` is still 0 rows — no trade has closed the loop
+end-to-end yet.
+
+### Slice 2 — First live trade attempt (pre-fix): approval gate + executor path confirmed clean
+
+Before the fix landed, today's scan (`btc YES edge=0.1106 amount=$3.27`,
+market "Will the price of Bitcoin be above $66,000 on August 7?") cleared
+the approval gate correctly and the executor reached the `execute_trade.py`
+subprocess — it failed there on the missing `side` argument (Slice 1), not
+on any gate or approval-flow defect. **No funds moved; no order was placed
+with GHL/Polymarket at any point.** This is the first evidence the full
+scan → gate → executor chain reaches the subprocess boundary correctly on
+a real (non-mocked) scan.
+
+### Slice 3 — Crete GHL replica (`ghl-crete.md`, commit `8da0c5d`)
+
+Third per-brand GHL skill (after `ghl-flowos`/`ghl-fsc`), replica of the
+`ghl-fsc.md` template: 8 endpoints (3 reads + 5 gated writes — contacts,
+opportunities, notes, tasks, email drafts), all writes behind ApprovalGate
+(PR #58, inherited, no registry.js changes). Location `MAa3kyOci0F70XpcjBfO`.
+Literal user ID `69tCvPgBIDhYWXHk5yOE` ("Tyson Crete Projects",
+hello@creteprojects.com) — the only admin scoped exclusively to the Crete
+location (agency-wide admins span many locations and were rejected as the
+wrong pick). Secrets (`ghl_crete_api_key` / `ghl_crete_location_id`)
+provisioned into the encrypted store via a script-file pattern — the API key
+was never placed on a command line or in shell history, to keep it out of
+`ps aux`/history on the host. 8 tool registrations confirmed live in
+`/root/.quantumclaw/tool-call.log` post-restart
+(`charlie__ghl-crete__ghl-crete__*`). Symlinked into
+`~/.quantumclaw/workspace/agents/charlie/skills/`; `pm2 restart
+quantumclaw --update-env && pm2 save` done; full `npm test` green both
+before and after a clean rebase onto 2 upstream build-log commits.
+
+### Slice 4 — SproutCode GHL replica (`ghl-sproutcode.md`, commit `6b9e253`)
+
+Fourth brand, same pattern as Crete. Location `cJ5ZGn9UhH8WiR2uUnjX`.
+Literal user ID `xiCdm9qfzH0KkBXX31B9` ("Tyson Venables",
+tyson@sproutcode.com) — again the sole admin scoped exclusively to the
+SproutCode location. Same secrets-via-script-file provisioning, same
+symlink + restart + save flow. 8 tool registrations confirmed in
+`tool-call.log`. Full `npm test` green; pushed as a clean fast-forward onto
+`origin/main` (no upstream drift this time).
+
+### Slice 5 — Kairos Wines GHL replica (`ghl-kairos.md`, commit `f998b1f`)
+
+Fifth brand. Location `mmeEdz5BtPbVPiok8LnW`. **Deviation from the Crete/
+SproutCode pattern**: `GET /users/?locationId=...` returned no admin scoped
+exclusively to Kairos — all 3 returned users are multi-location (2
+agency-wide: Emma Maidment, Flow Os Agency; 1 personal: Tyson Gmail,
+spanning 3 locations). Paused and asked rather than silently defaulting to
+the agency-wide account; Tyson chose his personal Gmail user
+(`XawO37AiqDTKQfIKozky`, tyson.venables@gmail.com — the narrowest-scoped of
+the three) as the literal `userId`/`assignedTo`. No Kairos notify contact
+exists yet either — skill explicitly says not to fabricate one, matching
+Crete/SproutCode.
+
+Verification surfaced a timing gap in the established check: tool
+registration in `tool-call.log` isn't lazy-on-first-message as previously
+assumed — it fires when `AgentRegistry.loadAll()` completes during process
+boot (`src/index.js`, unconditional), but boot itself (secrets/trustKernel/
+tool-system init ahead of agent load) takes 15–45s. A grep immediately
+after `pm2 restart` came back empty; rather than treating that as a
+failure, polled (backgrounded `until` loop) until the real registration
+batch landed at `19:18:41Z` — all 8 `ghl-kairos` tools confirmed present.
+Full `npm test` green; pushed as a clean fast-forward.
+
+### Slice 6 — Charlie's GHL surface
+
+With Crete/SproutCode/Kairos live, Charlie now has read + write GHL tools
+(all writes ApprovalGate-gated) across **5 sub-accounts**: Flow OS, FSC,
+Crete, SproutCode, Kairos Wines.
+
+### Slice 7 — Project state check
+
+Confirmed SMS Gateway Phase 2 is **complete** — memory had it flagged as
+in-progress; corrected. Kairos Wines added as a tracked business unit
+(vineyard; waitlist + "sponsor a vine" initiative) alongside the existing
+Flow OS / FSC / Crete / SproutCode roster.
+
+### Slice 8 — Charlie capability gap identified
+
+Charlie's default behaviour under ambiguity is to present "here are your
+options" rather than pick one and act. Flagged as a gap in the FSC GHL
+Operator skill specifically — it needs directive engagement-ranking
+guidance (rank leads/actions and act on the top one, rather than listing
+choices back to the operator) rather than the current open-ended framing.
+Not yet fixed — carried to next session queue below.
+
+### Next session queue
+
+- **First live trade** — watch a real trade through a full monitor cycle
+  now that the `side=BUY` fix is in (Slice 1/2 above).
+- **Full audit + doc update session** — reconcile memory/build-log drift
+  found in Slice 7 more broadly (this session only spot-corrected SMS
+  Gateway Phase 2 and added Kairos Wines).
+- **Charlie specialist activation.**
+- **Charlie proactive mode** — addresses the Slice 8 capability gap
+  (directive action over "here are options").
+- **Dashboard rebrand.**
+- **Content Studio Phase 2.**
