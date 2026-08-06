@@ -27,6 +27,7 @@ def execute_trade(market_id, direction, amount_usdc):
     try:
         from py_clob_client.client import ClobClient
         from py_clob_client.clob_types import MarketOrderArgs
+        from py_clob_client.order_builder.constants import BUY
 
         client = ClobClient(
             CLOB_HOST,
@@ -67,6 +68,7 @@ def execute_trade(market_id, direction, amount_usdc):
         order_args = MarketOrderArgs(
             token_id=token_id,
             amount=float(amount_usdc),
+            side=BUY,
         )
 
         # TODO: add max_price/slippage bound before live trading at scale
