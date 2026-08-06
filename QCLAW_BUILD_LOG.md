@@ -19043,3 +19043,165 @@ Slice 3: redirect map + sitemap (`/soulledbusinessblog` 301, graveyard
 pages), indexability decision on the 69 posts informed by the inventory
 audit above. Slice 4: checkout URL resolution, DNS cutover — still
 blocked on the privacy-policy rewrite logged 2026-08-05.
+
+## 2026-08-06 — flowos-web Slice 3 CLOSED — redirects, sitemap, indexability; 3 cutover blockers found
+
+**Indexability:** `indexed: boolean` added to the content schema,
+applied to all 69 posts from `docs/blog-inventory.md`'s `Decision`
+column, literally, row-for-row, per Tyson's instruction not to
+re-derive it — **15 `indexed: true` / 54 `indexed: false`**, matching
+the brief exactly. 5 rows where `Decision` overrode `Proposed`
+(followed `Decision` in every case): `ai-powered-crm-workflow-
+automation`, `ai-powered-workflow-automation-tools-business-
+operations`, `ai-powered-crm-and-automation-for-coaches-solopreneurs`,
+and `business-automation-for-coaches-streamline-success` flipped
+KEEP→noindex; `ai-powered-automation-no-code-workflow-platforms`
+flipped noindex→KEEP. Net effect: clusters T1-c, T1-e, T1-f end up with
+zero indexed survivors (both rows in each pair landed noindex) —
+**confirmed intentional by Tyson**, cut to 15 on quality, no cluster is
+required to have a survivor. All 69 URLs still build as live 200
+routes; nothing unpublished, deleted, or redirected.
+
+**Listing page:** `/follow-up-system-blog` rebuilt as a plain
+(non-paginated) page showing exactly the 15 indexed posts —
+`[...page].astro` retired in favor of `index.astro`, pagination markup
+removed rather than left dormant at 15 posts. No category/author
+archive pages built (already true going in; single category/author
+across the corpus would make them near-duplicates of the listing).
+
+**Sitemap + robots.txt:** `/sitemap.xml` generated with exactly 24
+URLs (9 static routes + 15 indexed posts), real per-page `lastmod`
+(git-history dates for static pages, `pubDate` for posts — not a
+single stale date like GHL's current sitemap). `robots.txt` added,
+references the sitemap, does **not** `Disallow` the 54 noindex posts —
+blocking crawl would hide the `noindex` meta tag from Google and risk
+indexing with no snippet; the meta tag alone does the work.
+
+**Redirect map — 20 entries, wired into `astro.config.mjs` via
+Astro's native `redirects` config** (not `vercel.json` — Astro's
+plain-string redirect destinations resolve to a true HTTP 301 through
+`@astrojs/vercel`'s static adapter, confirmed by reading
+`@astrojs/vercel/dist/lib/redirects.js`: `getRedirectStatus()` returns
+`301` unless an explicit `{status}` object is given). **Verified
+directly in the build output** (`.vercel/output/config.json`): 20/20
+redirect routes carry `"status": 301`, zero 302/307/308 — Tyson
+specifically flagged `/home` as the most-linked path on the domain, so
+this was checked route-by-route, not assumed. All brief-table
+`→ /home` destinations implemented as `→ /` directly (single-hop —
+`/home` has no Astro route to redirect to; a two-hop `/home`→`/` chain
+would only add latency). `/home` itself added as a new redirect
+(discovered — it's a live sitemap source not covered by the brief's
+known-handling table; GHL's own root `/` already 301s to `/home`
+today, confirming it's the true current homepage URL).
+`/test_path?item=123` dropped entirely (no rule — query-string source,
+dead test artifact); `/starter-stack-product` left as-is (already 404
+on GHL); `/post/ai-revolution-business-success` needs no action
+(already live at that path).
+
+**Cutover blockers found — none touched, all GHL-side, Tyson's
+follow-up:**
+
+1. **`/challenge-flowos-trial`** — live order-form/checkout page
+   (shipping fields, an order-bump, and a live Stripe key
+   `pk_live_MtxwO3obi7pfD7UZlGkfR2yj`), reached as the submit-target of
+   `/7-day-automation-challenge`'s lead-capture form. Not in the
+   brief's known-handling table — found by following the funnel chain
+   from the landing page's form-submit redirect. Confirmed via
+   `order-form`/`card-element` markup (not just the Stripe SDK
+   boilerplate present site-wide). Must move to `go.flowos.tech` before
+   DNS cutover; excluded entirely from this slice's redirect map (0
+   occurrences of `challenge-flowos-trial` in
+   `.vercel/output/config.json`) rather than pointed anywhere in Astro.
+2. **`/7-day-automation-challenge-page`** — same visible content as
+   `/7-day-automation-challenge` (title/copy identical, HTML
+   byte-different — likely a GHL-internal alias), live 200, not in the
+   sitemap or the brief's table. Given the same `→ /` treatment as its
+   sibling in this slice's map, but flagged since whether it's an
+   independently-linked live funnel entry point (like its sibling
+   feeding the checkout above) is unconfirmed.
+3. **`/link-in-bio`** — DEFERRED to Slice 3.5 per Tyson (native Astro
+   rebuild recommended and accepted: GHL "link-in-bio" page, 3 CTAs —
+   ebook lead-capture form widget, `/home` link, community invite link
+   — plus social icons; low complexity, no backend needed, safer than
+   redirecting since it's live in social bios across multiple
+   platforms). **No redirect rule added this slice, and verified it
+   cannot fall through to `/` or any other route**: 0 occurrences
+   anywhere in `.vercel/output/config.json`, 0 occurrences in
+   `dist/`/`.vercel/output/static`; the only non-redirect routes are
+   Astro's own filesystem handler and one `_astro/*` cache-header rule
+   — no wildcard/catch-all exists that could swallow it. It will 404.
+   **Hard cutover blocker — DNS must not move until this page exists or
+   is otherwise resolved.**
+
+**`media.flowos.tech` revalidation warning — root cause confirmed,
+NOT Cloudflare or R2. No infra config touched or needed.** It's a bug
+in Astro core (installed version 5.18.2):
+`node_modules/astro/dist/assets/build/remote.js`, function
+`revalidateRemoteImage()`, checks `res.status >= 300 && res.status <
+400` to detect a redirect — but that range also matches HTTP **304 Not
+Modified**, the exact response a correct conditional cache-revalidation
+request gets when nothing changed on the origin. Every successful
+revalidation is misclassified as "redirected," discarded, and the code
+falls back to the stale-but-still-correct cached copy. Reproduced
+directly: replicated Astro's exact request (conditional GET with
+`If-None-Match`/`If-Modified-Since`, `redirect: "manual"`) against live
+`media.flowos.tech` assets — confirmed genuine `304`, `redirected:
+false`, no `Location` header, `type: "basic"`. Not a redirect at any
+point in the chain. Only fires on revalidation of an already-cached
+file (which by definition has a stale-but-correct fallback), so it's
+not a cold-cache build-failure risk as originally feared — but the
+cache metadata's `expires` never gets refreshed on this path, so it
+will keep recurring on every future build indefinitely until fixed
+upstream. Latest published Astro is `7.2.0` (major-version jump from
+`5.18.2`) — **explicitly not bumping for this**; revisit at the next
+real Astro upgrade, not as a one-off patch.
+
+**Concurrent-session collision (process note, not a defect in this
+slice's work):** mid-slice, another session/process operating on this
+same working directory (`~/Projects/flowos-web`, no separate worktree)
+ran `git checkout -b privacy-policy-rewrite` from `main` while this
+slice's edits were still uncommitted — git carried the uncommitted
+working-tree changes onto the new branch silently (no conflict, so no
+warning surfaced). This slice's commit landed on `privacy-policy-
+rewrite` instead of `main`; caught before push by checking `git branch
+--show-current` after an unexpected branch name appeared in the commit
+output. Fixed with `git merge --ff-only` back onto `main` after
+confirming `main` was a direct ancestor (zero risk of losing or
+duplicating anything), then pushed. `.gitignore` (adding `.briefs/`)
+and `.briefs/BRIEF-privacy-policy-port.md` +
+`.briefs/privacy-policy.md` belong to that other session's queued
+privacy-policy work — left untouched throughout; this slice's files
+were staged individually (`git add <path>...`), never `git add -A`.
+**Flagging for Tyson: recommend the privacy-policy work move to a
+separate `git worktree` (or clone)** — this collision was harmless
+because the two efforts touched disjoint files, but the branch switch
+itself was silent and could just as easily have collided on a shared
+file.
+
+**Lighthouse:** 100/100 performance + SEO on `/`, `/follow-up-system-
+blog`, and `/post/ai-revolution-business-success` (sampled indexed
+post). chrome-devtools MCP wasn't configured in this session; ran via
+the local `lighthouse` CLI against `astro preview` (serves the static
+`dist/` build) instead — same Lighthouse engine, same result shape.
+
+**Verification:** 69/69 posts still build as live 200 routes (none
+404, none redirected, none unpublished); listing page shows exactly 15
+cards; sitemap.xml = exactly 24 URLs, zero noindex posts / redirect
+sources / 404s among them; robots.txt present and references the
+sitemap; `flowos.tech` DNS untouched, still fully GHL-served; no Vercel
+production domain touched.
+
+**Security gate:** no hardcoded credentials (redirect map is static
+path→path, no secrets, no dynamic origin data); no new webhooks,
+endpoints, or Supabase tables; sitemap + robots.txt expose only the 15
+indexed posts + 9 static routes, nothing unintended; no checkout/
+order-form path redirected into Astro (`/challenge-flowos-trial`
+confirmed absent from `.vercel/output/config.json` — 0 occurrences).
+
+**Slice 3 state:** COMPLETE. flowos-web main @ `550201f`. Open for
+Slice 3.5: `/link-in-bio` native rebuild (hard cutover blocker),
+cosmetic/layout batch. Slice 4 (DNS cutover) stays blocked until (a)
+`/link-in-bio` is resolved, (b) `/challenge-flowos-trial` and
+`/7-day-automation-challenge-page`'s order form moves off
+`flowos.tech` to `go.flowos.tech`, and (c) the privacy-policy rewrite
+(separate, queued on the `privacy-policy-rewrite` branch) lands.
