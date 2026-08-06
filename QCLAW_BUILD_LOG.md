@@ -19205,3 +19205,85 @@ cosmetic/layout batch. Slice 4 (DNS cutover) stays blocked until (a)
 `/7-day-automation-challenge-page`'s order form moves off
 `flowos.tech` to `go.flowos.tech`, and (c) the privacy-policy rewrite
 (separate, queued on the `privacy-policy-rewrite` branch) lands.
+
+## 2026-08-06 — flowos-web privacy policy rewrite — PR #1 open, not merged
+
+**Executed from a dedicated `git worktree`** (`~/Projects/flowos-web-
+privacy`, branch `privacy-policy-rewrite`) rather than the main checkout
+at `~/Projects/flowos-web` — directly implementing the recommendation
+from the Slice 3 entry above, after that slice's commit landed on the
+wrong branch mid-session when a second CC session checked out a new
+branch in the shared working directory. No collision this time; the two
+checkouts stayed fully isolated.
+
+**Scope: one file** (`src/pages/privacy-policy.astro`), plus minimal
+CSS. Replaced the placeholder policy (an unadapted Shopify template —
+referenced Shopify directly, an Arcadia Vale NSW address alongside the
+correct New Mexico one, shipping/returns language for a service
+business) with the rewritten policy supplied at `.briefs/privacy-
+policy.md`: 15 real sections, proper GDPR legal-basis and rights
+content, accurate processor list (GoHighLevel, Stripe, GTM-gated GA4 +
+Meta Pixel, Microsoft Clarity, Cloudflare, Vercel, Telnyx), and the
+10DLC-required mobile opt-in carve-out (§6.1) copied verbatim, as
+instructed — load-bearing for carrier compliance, not editable in this
+pass. Registered address copied verbatim with the correct Albuquerque
+spelling (not the live GHL footer's "Alburquerque").
+
+**Pattern-matched, not guessed:** `refund-policy.astro` (the brief's
+designated reference) and every other sibling legal page turned out to
+be flat `<p><strong>` GHL dumps with no real heading hierarchy or
+tables — but `global.css` already had unused `.legal-page h2`/`h3`/
+`.updated` rules sitting prepared and unexercised. This page is the
+first to actually use them, since it's the first with genuine nested
+section structure. Added `.legal-page table` + `.table-wrap` (mirroring
+the existing `.scale-table` pattern found elsewhere in the same file,
+adapted to left-aligned prose instead of right-aligned numerics) since
+no table precedent existed anywhere on the site — six tables, each
+wrapped in a scrollable container for mobile. `BaseLayout` props
+confirmed by reading the file rather than assumed (`title`,
+`description`, `noindex?`). No divergence found between the current
+`privacy-policy.astro` and `refund-policy.astro`'s conventions, so
+nothing to flag on that front.
+
+**Working notes stripped, not resolved:** the source markdown carried
+four `[[...]]` working notes. All four removed from the rendered page
+(`grep -n '\[\['` returns nothing) without resolving the underlying
+uncertainty — content stays exactly as written. Three matched the
+brief's enumerated carry-forward list (Clarity consent-gating
+verification on `sms.flowos.tech`, sibling-page audit, subdomain
+coverage in §2). A fourth, not enumerated in the brief, was found at
+the close of §6: whether the processor table is the complete list of
+everything on the site that touches personal data (booking widgets,
+chat, video embeds, form handlers). Flagged as a 4th carry-forward item
+in the PR description rather than silently dropped.
+
+**Mobile-viewport verification hit a tooling wall, worked around:** no
+chrome-devtools MCP configured (same gap as the Slice 3 Lighthouse run
+above). A first attempt via plain headless-Chrome `--window-size`
+screenshots showed the entire page — not just the new tables — clipped
+at the right edge. Before concluding it was a real overflow bug,
+screenshotted `/` (untouched, pre-existing) at the same viewport as a
+control: identical clipping. Confirmed as a `--window-size` capture
+artifact (headless Chrome without explicit mobile-emulation flags
+doesn't honour the viewport meta tag the way a real mobile browser
+does), not a defect on this page. Verified properly instead via
+Lighthouse's built-in mobile emulation (412×823, device-scale 1.75,
+`mobile: true`): **100 performance, 100 SEO** on `/privacy-policy`. No
+overflow/layout-shift signal in any audit.
+
+**`heading-order`, `color-contrast`, `errors-in-console` audits fail on
+this page — confirmed pre-existing, not introduced.** Ran the identical
+Lighthouse audits against `/refund-policy` (untouched, same
+`BaseLayout`) for comparison: same three failures, same scores.
+Sitewide `BaseLayout`/design-token issue, out of scope for a one-file
+content port — left untouched, noted in the PR rather than silently
+absorbed or silently fixed out-of-scope.
+
+**Verification:** `npm run build` clean; all 15 sections present in
+build output; `package.json`/lockfile diff empty (no new dependency);
+footer links unaffected (route unchanged, only body content replaced).
+
+**Close-out:** committed `6dc0cad` to `privacy-policy-rewrite`, pushed,
+**not merged** — PR #1 (github.com/tysonven/flowos-web/pull/1) opened
+against `main` with the four carry-forward items in the description.
+Tyson merges after review.
