@@ -158,6 +158,62 @@ if (flowos) {
     flowosRegistered.map(n => `${n}(${n.length})`).join(' '));
 }
 
+// ── ghl-crete skill (Crete Projects sub-account CRM — reads + gated writes) ────
+const creteRaw = readFileSync(join(SKILLS_DIR, 'ghl-crete.md'), 'utf-8');
+const crete = parseSkill('ghl-crete', creteRaw, stubSecrets);
+
+check('ghl-crete.md parses into an HTTP skill', crete !== null,
+  'parseSkill returned null — missing Base URL or Endpoints');
+
+if (crete) {
+  check('ghl-crete base URL is the LeadConnector host',
+    crete.baseUrl === 'https://services.leadconnectorhq.com', `got ${crete.baseUrl}`);
+
+  const auth = crete.headers['Authorization'] || '';
+  check('ghl-crete auth uses {{secrets.ghl_crete_api_key}}',
+    auth.includes('{{secrets.ghl_crete_api_key}}'), `got "${auth}"`);
+  check('ghl-crete does NOT use the FSC, Flow OS, or base ghl key',
+    !auth.includes('ghl_fsc_api_key') && !auth.includes('ghl_flowos_api_key') &&
+    !/\{\{secrets\.ghl_api_key\}\}/.test(auth), `got "${auth}"`);
+
+  const locHeader = crete.headers['Location-Id'] || '';
+  check('ghl-crete Location-Id header uses {{secrets.ghl_crete_location_id}}',
+    locHeader.includes('{{secrets.ghl_crete_location_id}}'), `got "${locHeader}"`);
+
+  // Endpoint surface: 3 reads + 5 gated writes, nothing destructive (mirrors ghl-fsc/ghl-flowos).
+  const methods = crete.endpoints.map(e => e.method);
+  check('ghl-crete has exactly 8 endpoints', crete.endpoints.length === 8,
+    `got ${crete.endpoints.length}: ${methods.join(',')}`);
+  check('ghl-crete has 4 POST + 1 PUT write endpoints',
+    methods.filter(m => m === 'POST').length === 4 && methods.filter(m => m === 'PUT').length === 1,
+    `methods: ${methods.join(',')}`);
+  check('ghl-crete has NO destructive endpoints (DELETE/PATCH)',
+    !methods.some(m => m === 'DELETE' || m === 'PATCH'), `methods: ${methods.join(',')}`);
+
+  const creteTools = skillToTools(crete);
+  const fnames = creteTools.map(t => t.name);
+  check('ghl-crete generates 8 tools', creteTools.length === 8, fnames.join(','));
+  check('ghl-crete registers no delete_ tools',
+    !fnames.some(n => n.includes('__delete')), fnames.join(','));
+  // Each read + write surface present by name.
+  check('ghl-crete has a contact search tool',
+    fnames.some(n => n.includes('contacts') && n.includes('query')), fnames.join(','));
+  check('ghl-crete has a create-contact tool',
+    fnames.some(n => n.startsWith('ghl-crete__create_contacts_locationid')), fnames.join(','));
+  check('ghl-crete has an add-note tool',
+    fnames.some(n => n === 'ghl-crete__create_contacts_id_notes'), fnames.join(','));
+  check('ghl-crete has an email-draft tool',
+    fnames.some(n => n === 'ghl-crete__create_conversations_messages'), fnames.join(','));
+
+  // Registered names: bound set to 120 — see the ghl-flowos block above for the
+  // rationale (verified 2026-07-21 via count_tokens: names up to 128+ chars
+  // return HTTP 200).
+  const creteRegistered = fnames.map(n => `charlie__ghl-crete__${n}`);
+  check('registered ghl-crete tool names are within the tool-name bound (≤120)',
+    creteRegistered.every(n => n.length <= 120),
+    creteRegistered.map(n => `${n}(${n.length})`).join(' '));
+}
+
 // ── Flow OS ghl.md unchanged (this slice left it on ghl_api_key) ────────
 const ghlRaw = readFileSync(join(SKILLS_DIR, 'ghl.md'), 'utf-8');
 const ghl = parseSkill('ghl', ghlRaw, stubSecrets);
