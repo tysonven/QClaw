@@ -19515,3 +19515,67 @@ GHL-served. Slice 4 (DNS cutover) now blocked only on: `/link-in-bio`
 off `flowos.tech` to `go.flowos.tech` on the GHL side (Tyson's
 follow-up, unchanged from the Slice 3 entry), and the color-contrast/
 heading-order fixes above still awaiting a decision.
+
+## 2026-08-06 — flowos-web Slice 3.5 CLOSED — a11y fixes applied, third/fourth origin greps corrected, pushed
+
+**Both open questions from the entry above resolved by Tyson within
+the same session:**
+
+1. **Origin greps — this project actually tracks four, not two.**
+   Tyson's correction: `filesafe.space`, `storage.googleapis.com`, and
+   `images.leadconnectorhq.com` are the three "origin" greps from a
+   Slice 2 amendment this log never captured explicitly (only
+   `filesafe` got written down); Call Intel is a separate, fourth,
+   unrelated-product-leak check. All four now re-run against the
+   rebuilt `dist/` after every change in this entry — 0 across the
+   board every time.
+2. **Accessibility fixes approved as proposed and applied this
+   session** (not deferred to a follow-up slice): footer `<h4>` → `<p
+   class="footer-heading">` (non-heading, since footers are their own
+   landmark); `--signal-dim`/`--muted`/`--warning` darkened for
+   light-background text; `.cookie-banner a`, `.pricing-price .per`,
+   `.pricing-alt`, `.founding-no-refund` switched from
+   `rgba(255,255,255,.5-.6)`/`var(--signal)` to `var(--base)` for the
+   dark-background cases — Tyson's read on his own "darken the ink"
+   instruction: it was written for dark-text-on-light and doesn't
+   extend to the inverse, and reusing an existing token beats adding a
+   new color for a one-off case.
+
+**One extra round needed:** after the first pass (`--signal-dim` →
+`#047857`, computed against `--base`/`--panel` only), re-running
+Lighthouse turned up a straggler `/products` hadn't been checked
+against directly enough — `.delivery-tag`'s translucent green-tinted
+background (`rgba(16,185,129,.1)` over `--panel`, composited to
+`#d0eae0`) landed at 4.31:1, just under the 4.5 target the flatter
+backgrounds cleared. Rather than special-case that one component,
+bumped `--signal-dim` one more step to `#046C5B` — clears every
+measured pair with margin (5.01–5.81:1) instead of sitting right at
+the threshold where font-rendering/rounding variance could tip it back
+under. Re-verified: `heading-order` and `color-contrast` both PASS on
+`/`, `/products`, `/refund-policy` (axe/Lighthouse, zero items in
+either audit's `details.items`).
+
+**Visual review before commit, per Tyson's ask** (token change cascades
+to every `--signal-dim`/`--muted`/`--warning` usage site-wide — arrow
+links, delivery tags, footer labels, pricing-card captions): full-page
+Playwright screenshots of `/` and `/products` at 1440px, cookie
+consent pre-accepted so the founding-card and footer are both visible
+uncovered. Approved — the darker green and muted-gray read as a subtle
+depth shift, not a palette change; nothing looked off-brand or
+mis-sized.
+
+**Verification:** `npm run build` clean, 79 routes. All four origin
+greps (`filesafe.space`, `storage.googleapis.com`,
+`images.leadconnectorhq.com`, `call intel`/`call-intel`/`callintel`) →
+0 against the final `dist/`. `heading-order`/`color-contrast` clean on
+every sampled page.
+
+**Close-out:** committed `090f0d3` to `main` (on top of `37c3b92` from
+the entry above, which Tyson also had pushed first), **both pushed** —
+`flowos-web` `origin/main` now at `090f0d3`; `flowos-web.vercel.app`
+staging redeploys automatically. `flowos.tech` DNS and Vercel
+production domain untouched throughout. **Slice 3.5 fully closed** —
+all acceptance criteria met, no open items carried forward except the
+pre-existing GHL-side cutover blockers already logged (`/challenge-
+flowos-trial`, `/7-day-automation-challenge-page` order form → Tyson's
+follow-up on the GHL side before Slice 4).
