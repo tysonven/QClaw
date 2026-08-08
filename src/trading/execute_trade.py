@@ -17,7 +17,7 @@ CLOB_HOST = "https://clob.polymarket.com"
 CHAIN_ID = 137  # Polygon mainnet
 
 
-def execute_trade(market_id, direction, amount_usdc):
+def execute_trade(market_id, direction, amount_usdc, price=None):
     """Execute a market order on Polymarket."""
     if not PRIVATE_KEY:
         return {"error": "POLYMARKET_PRIVATE_KEY not set in ~/.quantumclaw/.env"}
@@ -65,11 +65,14 @@ def execute_trade(market_id, direction, amount_usdc):
             return {"error": f"Could not find {direction} token for market"}
 
         # Create and execute market order
-        order_args = MarketOrderArgs(
-            token_id=token_id,
-            amount=float(amount_usdc),
-            side=BUY,
-        )
+        order_kwargs = {
+            "token_id": token_id,
+            "amount": float(amount_usdc),
+            "side": BUY,
+        }
+        if price is not None and float(price) > 0:
+            order_kwargs["price"] = float(price)
+        order_args = MarketOrderArgs(**order_kwargs)
 
         # TODO: add max_price/slippage bound before live trading at scale
         # Current: market order, no slippage protection
@@ -95,9 +98,10 @@ def main():
     parser.add_argument("--market", required=True, help="Polymarket market/condition ID")
     parser.add_argument("--direction", required=True, choices=["YES", "NO"], help="Trade direction")
     parser.add_argument("--amount", required=True, type=float, help="Amount in USDC")
+    parser.add_argument("--price", required=False, type=float, default=None, help="Fallback price if the market order can't derive one")
     args = parser.parse_args()
 
-    result = execute_trade(args.market, args.direction, args.amount)
+    result = execute_trade(args.market, args.direction, args.amount, price=args.price)
     print(json.dumps(result, indent=2, default=str))
 
     if "error" in result:

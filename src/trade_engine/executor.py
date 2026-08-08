@@ -283,6 +283,7 @@ class TradeExecutor:
             "--market", candidate.condition_id or "",
             "--direction", candidate.direction.upper(),
             "--amount", str(candidate.amount_usdc),
+            "--price", str(candidate.market_probability),
         ]
         # argv is logged deliberately: it contains no secret, and knowing the
         # exact command that spent money is worth more than the noise.
