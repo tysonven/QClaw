@@ -35,6 +35,9 @@ def execute_trade(market_id, direction, amount_usdc, price=None):
             chain_id=CHAIN_ID,
             funder=FUNDER_ADDRESS,
         )
+        # post_order requires Level 2 auth; derive CLOB API creds from the
+        # private key (deterministic, no extra secrets in .env)
+        client.set_api_creds(client.create_or_derive_api_creds())
 
         # Get market info to find token_id
         market = client.get_market(market_id)
