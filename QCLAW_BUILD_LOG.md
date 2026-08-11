@@ -20274,3 +20274,55 @@ margin-bottom zeroed inside the max-width 640px block, section padding
 carries the spacing. Verified by computed-box measurement on
 production after deploy: 375px gap now 80px, desktop unchanged at
 160px. Screenshots at both widths taken before commit. Commit c4242fd.
+
+## 2026-08-11, flowos-web: pain cards rebuilt as markup, footer un-crushed (Slice 6 mobile follow-ups)
+
+Two mobile faults Tyson reported at 375px on the live home page, both
+root-caused and fixed (commits 21f1b9a, f15b1b2).
+
+**Pain cards were an image.** "Leads Slip Away" / "Too Much Manual
+Work" / "Follow-up Is Fragmented" / "Enquiries Stop Converting" were
+one 1200x300 GHL image (follow-up-problem.webp) with four columns and
+the same stock glyph baked in four times; at phone width the whole
+strip scaled down to roughly 8px text (and only ~10px even in the
+520px desktop split column). Rebuilt as real HTML cards, text
+transcribed verbatim from the image with one deliberate deviation:
+the image omits the full stop after "enquiry to booking", added
+(same source-is-wrong rationale as the address and Albuquerque
+fixes). 2x2 grid in the split column on desktop, one column below
+640px, 14px body, no icons at any width. followUpProblem removed
+from MEDIA; R2 object retained.
+
+**Footer crushed by a bare element rule.** global.css line 760 has a
+bare `footer { display: flex; justify-content: space-between; ... }`
+(sms-landing vestige, the same class of bug as the bare `header` rule
+scoped on 2026-08-05 in 80c0bc8). It made every footer a flex row:
+.footer-bottom ("Flow OS LLC") rendered as a 48px-wide right-hand
+flex child, wrapping across two lines, with its border-top as a stray
+rule fragment; it also explains why footer body text renders mono
+(the bare rule sets JetBrains Mono and the column rules never
+override the family). Fix: .site-footer sets display:block, restoring
+the stack its own CSS was designed for (.footer-bottom was written as
+a full-width closing line); the border-top dropped per Tyson's
+instruction. Note the bare rule itself was left in place, only
+neutralised: scoping or deleting it would restyle the minimal footer
+variant and is a wider change than this fix needed.
+
+**Entity line:** switched from inherited mono 12px to body sans
+(Raleway) 11px with more top margin, so it reads as a legal note
+rather than a continuation of the address.
+
+**Also caught in verification:** the explanatory HTML comment above
+the new cards shipped into production page source (Astro ships HTML
+comments; the session section deliberately uses a JS-style template
+comment for exactly that reason). Dropped in f15b1b2; rationale lives
+in the CSS comment.
+
+**Verified on production at 375px** (computed styles, real browser):
+4 cards, one column, 14px body; .footer-bottom full-width with 0px
+border; entity line Raleway 11px. All five card strings verbatim in
+the live HTML. Desktop screenshots confirmed before commit: cards 2x2
+beside the copy, footer columns unchanged, Flow OS LLC below the grid
+(the position .footer-bottom's own margin/padding CSS always
+specified; its previous right-hand placement was the same flex bug at
+desktop width).
