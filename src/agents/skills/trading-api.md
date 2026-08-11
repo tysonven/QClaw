@@ -2,7 +2,7 @@
 name: trading-api
 category: on-demand
 surface: both
-keywords: [trade, trading, scanner, position]
+keywords: [trade, trading, scanner, position, bought, buy, sell, sold, polymarket, market]
 description: Trade engine HTTP surface - simulations, positions, config, manual trade logging (localhost:4003)
 ---
 
