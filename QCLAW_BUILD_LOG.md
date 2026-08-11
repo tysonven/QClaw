@@ -20244,3 +20244,17 @@ endpoints, or Supabase tables. MEDIA.guaranteeBadge constant removed
    current quotes move down.
 3. Em-dash follow-up sweep of legacy pages (/products, privacy policy,
    link-in-bio, blog index). Blog posts exempt permanently.
+
+## 2026-08-11, flowos-web: mobile hero dead zone fixed (Slice 6 follow-up)
+
+Tyson reported roughly 300px of empty space between the Learn more
+link and the trust line at 375px. Measured cause: the 64px .hero-cta
+bottom margin (sized for the desktop side-by-side CTA row) stacking on
+the hero's 80px mobile bottom padding, 144px of real dead space once
+the Slice 6 stacking fix made Learn more a lone centred line. Present
+at both widths by the numbers (desktop 160px) but desktop matches the
+page's section rhythm and reads deliberate, so the fix is mobile-only:
+margin-bottom zeroed inside the max-width 640px block, section padding
+carries the spacing. Verified by computed-box measurement on
+production after deploy: 375px gap now 80px, desktop unchanged at
+160px. Screenshots at both widths taken before commit. Commit c4242fd.
