@@ -19715,6 +19715,87 @@ Not yet fixed — carried to next session queue below.
 - **Dashboard rebrand.**
 - **Content Studio Phase 2.**
 
+## 2026-08-06 — flowos-web Slice 4 CLOSED — DNS cutover executed, verification 50/50
+
+**Pre-flight (Claude Code, this session):** Cloudflare API/dashboard
+credentials are not available in this environment — DNS inventory
+(1.1) was built from public resolution only, not an authoritative zone
+dump. Apex TTL lower-to-60s (1.2) could not be performed by Claude Code
+for the same reason; flagged to Tyson, who executed the cutover
+manually. Staging confirmed green pre-cutover: production deployment
+`dpl_EEeLW8XvmNbzKNrz8y3Sf9RuYinu` built from `090f0d3`, all 7 static
+routes + 2 product sub-pages + all 69 post URLs → 200, sitemap 24 URLs,
+20/20 redirects 301. Four origin greps re-run against a fresh `dist/`
+build and confirmed against this log's actual convention
+(`filesafe.space`, `storage.googleapis.com`,
+`images.leadconnectorhq.com`, `call intel`/`call-intel`/`callintel`) —
+0 across the board.
+
+**ROLLBACK VALUES — pre-cutover state (Tyson, verbatim from the
+Cloudflare dashboard):**
+
+```
+flowos.tech       A     162.159.140.166        Proxied (orange)
+www.flowos.tech   CNAME sites.ludicrous.cloud  Proxied (orange)
+```
+
+Cloudflare does not allow changing a record's type in place — rollback
+means deleting the CNAME on both records and recreating the A record
+on the apex (and the CNAME-to-`sites.ludicrous.cloud` on `www`), not a
+simple value edit.
+
+**Cutover (Tyson, manual — Claude Code has no Cloudflare write
+access):** both records changed to CNAME → `e417cf259e224427.vercel-
+dns-017.com`, DNS only (grey cloud, not proxied). Vercel: `flowos.tech`
+→ Production, `www.flowos.tech` → 308 redirect to apex. TLS issued by
+Vercel via Let's Encrypt within minutes of DNS resolving — verified
+independently (`openssl s_client`): `CN=flowos.tech` cert valid
+2026-08-06 through 2026-11-04, `CN=www.flowos.tech` cert valid the same
+window.
+
+**Post-cutover verification (`scripts/post-cutover-verify.sh`, run
+once certs confirmed issued):** 50/50 checks passed. All 7 static
+routes + 2 product pages + all 69 post URLs → 200. Sitemap 24 URLs,
+robots.txt references it. All 20 redirect rules → correct destination.
+`go.flowos.tech/activate`, `go.flowos.tech/challenge-flowos-trial`,
+`media.flowos.tech`, `support.flowos.tech`, **`app.flowos.tech`**
+(Tyson's designated hard-fail check) — all 200. MX unchanged (Google
+Workspace, 5 records). TXT unchanged: Search Console verification
+(`google-site-verification=G3rdePZVqFx9f-...`), SPF, DMARC all present
+and untouched.
+
+**`www.flowos.tech` → 308, confirmed PASS (Tyson):** this is Vercel's
+own domain-level "redirect to apex" setting (configured per brief
+§2.1), which always issues a 308 Permanent Redirect rather than the
+301 the brief's acceptance criterion named. Tyson's ruling: the 301
+criterion was written out of habit, not a real requirement — 308 and
+301 are both permanent, both consolidate link equity, Google treats
+them identically, and 308 additionally preserves the HTTP method
+across the redirect, which 301 does not. No reason to override
+Vercel's default. Recorded here so this does not get re-flagged in a
+future audit. The apex's own 20-entry redirect map (handled by the
+Astro/Vercel adapter, a separate mechanism from Vercel's domain
+redirect feature) still returns 301 exactly as specified, confirmed
+above.
+
+**Outstanding:** 3.4 (GTM does not fire before consent) verified
+statically (consent-gating code present, cookie banner links to
+`/privacy-policy`) but not live in a browser — flagged as a manual
+check for Tyson. Phase 4 (live checkout test, Search Console sitemap
+resubmit, Bing resubmit, 48h Coverage watch, two-week GHL hold before
+teardown) not started — Tyson's side per the brief.
+
+**Follow-up logged for the next slice (home page rewrite, not yet
+briefed) — Tyson:** meta titles and descriptions on `/` and `/products`
+exceed SERP truncation limits. Deliberately not fixed now — indexing
+was just requested this slice and the copy is being rewritten in the
+next slice anyway, so touching it now would be wasted work.
+
+**Slice 4 fully closed.** All acceptance criteria met (50/50
+verification, including the 308/301 item above ruled a pass). No open
+items block the slice; remaining work is Phase 4 (Tyson's side, per
+the brief) and the two-week GHL hold before any teardown.
+
 ## 2026-08-10 — Phase 5 Session 15 — Trading execution path taken to the last mile: 5 stacked bugs fixed, Amsterdam geoblock relay built, py-clob-client v2 migration; parked on Polymarket maker-address account linkage
 
 Five sequential bugs sat between the scanner and a real fill, each one masking
@@ -19864,6 +19945,99 @@ the `0xE44f…` developer address).
 - **Dashboard rebrand.**
 - **Content Studio Phase 2.**
 
+## 2026-08-10, flowos-web post-cutover redirect follow-up: ~25 Search Console 404s to 301, live-verified 20/20
+
+**Scope (Tyson's brief):** post-cutover Search Console surfaced ~25
+URLs that were never in GHL's sitemap, so they missed the Slice 3
+redirect map and 404 on production. Two wildcards
+(`/follow-up-system-blog/tag/*` and `/follow-up-system-blog/category/*`,
+covering 16 known URLs plus anything Google hasn't surfaced) and eight
+specifics (`/cart` and `/checkout` → `/products`,
+`/product-details/product/the-email-profit-system` → `/products`,
+`/elite-tier`, `/home/thank-you`, `/webinar-elite-thank-you`,
+`/webinar-registration-thankyou`, `/webinar-registration-thankyou-2`
+→ `/`). All 301. Explicitly out of scope: `/webinar-elite-tier` and
+`/webinar-starter-stack` (already 301), `/products/sms-gateway`
+(already 200).
+
+**Wildcards cannot live in the `redirects` map.** First attempt used
+Astro's documented dynamic-redirect syntax
+(`'/follow-up-system-blog/tag/[...slug]': '/follow-up-system-blog'`);
+with `output: 'static'` the build fails hard:
+
+```
+[GetStaticPathsRequired] `getStaticPaths()` function is required for dynamic routes. Make sure that you `export` a `getStaticPaths` function from your dynamic route.
+  Location:
+    /follow-up-system-blog/category/[...slug]:0:0
+  Stack trace:
+    at validateDynamicRouteModule (file:///Users/tysonvenables/Projects/flowos-web/node_modules/astro/dist/core/routing/validation.js:19:11)
+    at getPathsForRoute (file:///Users/tysonvenables/Projects/flowos-web/node_modules/astro/dist/core/build/generate.js:213:31)
+```
+
+Static output tries to prerender a meta-refresh page per redirect
+route and cannot enumerate a spread. `vercel.json` is not an
+alternative either: with the Build Output API, routing comes solely
+from `.vercel/output/config.json`. Fix: a small inline integration
+(`vercelWildcardRedirects`) in `astro.config.mjs` whose
+`astro:build:done` hook prepends two hand-written routes to
+`config.json`'s routes array. Ordering is safe because Astro
+**unshifts** the adapter onto the integrations list
+(`astro/dist/integrations/hooks.js:127`), so the Vercel adapter writes
+`config.json` before our hook runs; prepending keeps the wildcards
+with the adapter's own redirects, ahead of `handle: filesystem` and
+the 404 catch-all.
+
+**Space/case concern from the brief (tag slugs like "/tag/AI
+automation", "/tag/Business Automation" vs "/tag/business
+automation"):** `@vercel/routing-utils` compiles redirect sources with
+`sensitive: true` (`dist/superstatic.js:243`), matching is
+case-sensitive, but only the literal prefix is affected; the slug
+position is `(.*)`, which matches any characters, raw or
+percent-encoded, any casing. Verified pre-commit by executing the
+actual compiled `config.json` regexes in Node against 20 cases:
+`%20` and raw-space slugs, all three casing examples from the brief,
+bare `/tag` and `/tag/`, and negatives: `/follow-up-system-blog`
+itself, `/products/sms-gateway`, `/post/<slug>` all fall through to
+the filesystem (the wildcards do not swallow the live blog listing).
+
+**Shipped:** `ad1942b` on main ("fix: 301s for ~25 post-cutover Search
+Console 404s"), pushed 2026-08-10, Vercel auto-deploy. Pre-existing
+staged `scripts/post-cutover-verify.sh` in the worktree deliberately
+left out of the commit (pathspec commit of `astro.config.mjs` only).
+
+**Live verification (production flowos.tech, post-deploy): 20/20
+PASS.** All 7 wildcard variants → 301 `/follow-up-system-blog`
+(including `%20` + mixed-case slugs), all 8 specifics → 301 correct
+destination, and regressions clean: `/webinar-elite-tier` and
+`/webinar-starter-stack` still 301, `/products/sms-gateway`,
+`/follow-up-system-blog`, and `/` still 200.
+
+## 2026-08-10, flowos-web: /cart + /checkout re-aimed at checkout; Slice-4 verify script finally committed
+
+**Redirect destination change (Tyson's ruling):** `/cart` and
+`/checkout` were 301ing to `/products` (this morning's `ad1942b`);
+anyone on those paths had purchase intent, not browse intent, the
+catalogue page loses the sale. Both now 301 to
+`https://go.flowos.tech/activate`, mirroring `CHECKOUT_URL` in
+`src/config/site.ts` (value confirmed in-repo before editing;
+destination curl-verified 200 both before pointing traffic at it and
+again post-deploy as a follow-through check). Commit `0ca96a7`.
+
+**`scripts/post-cutover-verify.sh` committed (`43f1cb7`):** staged but
+uncommitted since Slice 4 close (2026-08-06). Read in full before
+committing, Slice 4 Phase 3 verification (core routing, static +
+post URLs, sitemap/robots, the 21 Slice-3 redirect rules,
+sibling-subdomain and MX/TXT spot checks, static consent-gating
+checks); its assertions all still hold against production, so it went
+in as-is, no edits.
+
+**Live verification post-deploy: 20/20 PASS.** `/cart` and
+`/checkout` → 301 `https://go.flowos.tech/activate`; all 7 wildcard
+variants and remaining 6 specifics from the morning entry unchanged;
+regressions clean (`/webinar-elite-tier`, `/webinar-starter-stack`
+still 301; `/products/sms-gateway`, `/follow-up-system-blog`, `/`
+still 200). Both commits pushed to main, Vercel auto-deploy.
+
 ## 2026-08-11 — Phase 5 Session 16 — Manual trade logging closes the learning-loop gap; trading-api skill repointed 4000→4003; first resolved trade recorded (XRP, +$1.11)
 
 With the executor parked on the Polymarket maker-address blocker, trades are
@@ -19974,3 +20148,99 @@ config.dashboard.authToken):
   live test (tap → 400 on fake URL → self-correct via /simulations →
   second approval → row created → delete duplicate) is STILL OWED and needs
   Tyson at Telegram within the 10-minute approval window.
+
+## 2026-08-11, flowos-web Slice 6 CLOSED: home page rewrite live on production
+
+**Scope (BRIEF_flowos-web_slice6-homepage.md, copy from
+flowos-home-copy-rewrite.md):** full copy replacement in the existing
+structure, two new sections, meta tags, mobile hero fix, typographic
+guarantee badge, footer entity line, FAQ 4 to 8. Both brief pause
+points honoured: badge design surfaced and approved by Tyson before
+any commit; full-page screenshots at 375px and desktop surfaced and
+approved before push.
+
+**Copy fidelity:** transcribed verbatim, verified mechanically: 26/26
+deck strings matched character for character in the rendered HTML
+(tag-stripped, entity-decoded). Sections marked Unchanged untouched,
+one ruled exception: the infrastructure strip's mdash entity swapped
+for a colon (Tyson: the standing no-em-dash rule outranks Unchanged).
+Stars: deck showed a "5 stars" line per quote; brief's
+no-star-graphics instruction won (Tyson confirmed: quotes and names
+only).
+
+**Standing rule established: NO EM-DASHES anywhere in new work** (page
+copy, commit messages, code comments, build log entries). Scope ruling
+(Tyson): applies to all new copy and any page being rewritten; NOT
+retroactive. flowos-web blog posts are permanently exempt
+(transcriptions of published content; rewriting punctuation changes
+the record). Legacy pages (/products, privacy policy, link-in-bio,
+blog index) left as-is: FOLLOW-UP SWEEP OWED, logged here. All files
+touched this slice are clean including code comments.
+
+**Reviews link decision trail:** no Google reviews URL existed
+anywhere in the repo or deck. Tyson supplied g.page/r/CUq84_mOsthOEBM/review,
+which resolves to the write-a-review flow behind a Google sign-in;
+flagged, and Tyson ruled the reading view ships on the site button
+("Read all reviews on Google") while the write link is reserved for
+the subscriber email where soliciting is the intent. Shipped:
+search.google.com/local/reviews?placeid=ChIJX_FQu3Ulc2sRSrzj-Y6y2E4
+(curl shows 404 from bot detection; a real browser 302s to the
+google.com/search reviews panel for the Flow Os listing, verified in
+headless Chromium up to Google's CAPTCHA wall).
+
+**Session section (Not sure what to automate first?):** built in
+index.astro inside a JS-style template comment with a TODO, so it
+ships zero bytes to production (verified absent from dist and from
+live HTML, including the TODO text). SESSION_URL added to config.
+Blocked on the Automate to Elevate Stripe product; Tyson un-comments
+after the purchase path is tested.
+
+**Deploy:** commits 0c88e15 (slice), 4acbf90 (reviews URL to reading
+view), 81fe8e0 (empty retrigger), b8ff63e (verify script title
+assertion). First Vercel build of 4acbf90 FAILED with a transient
+error, verbatim from the build log:
+
+```
+17:35:33  fetch failed
+17:35:33    Stack trace:
+17:35:33      at node:internal/deps/undici/undici:14976:13
+17:35:33      at async inferRemoteSize (file:///vercel/path0/dist/chunks/_astro_assets_Bxxadv_8.mjs:1447:20)
+17:35:33      at async getImage (file:///vercel/path0/dist/chunks/_astro_assets_Bxxadv_8.mjs:1830:44)
+17:35:33    Caused by:
+17:35:33      at internalConnectMultiple (node:net:1134:18)
+17:35:33      at internalConnectMultiple (node:net:1210:5)
+17:35:33      at GetAddrInfoReqWrap.emitLookup [as callback] (node:net:1552:7)
+17:35:33  Error: Command "npm run build" exited with 1
+```
+
+DNS lookup failure inside the build container fetching a
+media.flowos.tech image (inferSize). Host verified healthy from here
+(logo, dashboard, blog image all 200 direct; DNS resolves). Production
+never flipped: Vercel kept serving the previous READY deployment
+throughout. Empty-commit retrigger built clean.
+
+**Production verification (flowos.tech, post-deploy):** 22/22 Slice 6
+content checks (15 new-copy strings live incl. meta title and
+description; absences confirmed: session section, session URL, TODO
+text, old stock badge, write-review link, em-dash character; 8 FAQ
+items). Regression: post-cutover-verify.sh 60/60 after updating its
+hardcoded title assertion to the Slice 6 value (same stale-assertion
+class as the www 308 case; committed b8ff63e). Lighthouse against
+production: performance 98, SEO 100 (gate is 95). Local pre-push run
+was 100/100. Origin greps in dist/: 0, 0, 0, 0 (filesafe,
+googleapis, leadconnector, call intel).
+
+**Security gate:** no hardcoded credentials; CHECKOUT_URL, SESSION_URL,
+GOOGLE_REVIEWS_URL all config constants, no checkout URL hardcoded on
+any page; session section commented out, not live; no new webhooks,
+endpoints, or Supabase tables. MEDIA.guaranteeBadge constant removed
+(stock image no longer referenced; R2 object left in place).
+
+**Open items:**
+1. Automate to Elevate Stripe product + purchase automations (Tyson,
+   GHL side): blocks un-commenting the session section.
+2. Outcome testimonial: when one arrives from the subscriber check-in
+   email it takes the top slot in the proof section and the two
+   current quotes move down.
+3. Em-dash follow-up sweep of legacy pages (/products, privacy policy,
+   link-in-bio, blog index). Blog posts exempt permanently.
