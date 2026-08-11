@@ -20326,3 +20326,44 @@ beside the copy, footer columns unchanged, Flow OS LLC below the grid
 (the position .footer-bottom's own margin/padding CSS always
 specified; its previous right-hand placement was the same flex bug at
 desktop width).
+
+## 2026-08-12, flowos-web: hero screenshot location-ID exposure fixed; bare nav rule scoped
+
+**dashboard.webp URL bar cropped (interim, commit a65e460).** The hero
+image on the public home page showed the browser URL bar with the live
+GHL location ID (ugjYGuhqguQ0cJyCZWL) and a folder UUID. The URL-bar
+band was spliced out of the image (pill rows located
+programmatically, seam verified clean at 2x zoom), re-encoded webp
+q92, and re-uploaded to R2 at the same path (988x779, was 988x848;
+original backed up in .briefs/, gitignored). One deviation from
+re-upload-only, flagged to Tyson in the commit: Cloudflare's edge
+cache kept serving the old bytes (cf-cache-status HIT, old
+content-length) and cannot be purged from this environment (no CF
+credentials, established at Slice 4), so the MEDIA entry gained
+?v=2026-08-12 to change the cache key and make the build fetch
+deterministic. Verified live: the production derivative's aspect
+ratio matches the cropped source and the rendered height attribute is
+779.
+
+**Bare nav rule scoped to .site-header (commit 068c799).** Sweep of
+global.css found the bare element selectors: html, body, h1, h2 (plus
+scoped decoration and overrides) are the intentional base system; the
+bare `nav` rule was the last live member of the sms-landing pattern
+that produced the header (80c0bc8) and footer layout bugs. Scoped;
+computed styles verified identical before and after. Per Tyson: the
+bare footer rule stays as-is (neutralised earlier via
+.site-footer display:block); untangling it needs a screenshot pass
+across every page in both footer variants and is not worth it now.
+Noted quirk left alone: the base h2 rule carries max-width 720px, a
+layout property in a type rule, load-bearing site-wide.
+
+**TYSON CONTENT JOB (his side, logged at his request): retake both
+hero images from a live account view.** dashboard.webp and
+what-flow-os-does.webp are GHL UI screenshots that undercut the page:
+dashboard shows every workflow as Draft with 0 total and 0 active
+enrolled, all timestamped Mar 13 2025, 12:04 AM, plus the "Elite Tier
+Snapshot / fairy meadow, nsw" sidebar label; what-flow-os-does shows
+Published workflows but mostly 0 enrolled. The page's pitch is "the
+system just runs". Retake wants: live-looking enrollment numbers, no
+URL bar, no snapshot label. When retaken, drop the ?v= cache-buster
+from MEDIA.dashboard or bump it to the new date.
