@@ -19931,3 +19931,46 @@ learning loop.
 - Charlie live round-trip (Telegram → skill tool → endpoint) still owed — it
   needs Tyson to send the message and take the approval tap. Skill parse
   verified post-restart instead.
+
+### Session 16 addendum — fabricated-confirmation incident, routing + reflex fixes (2026-08-11 evening)
+
+Live Charlie test surfaced a trust-critical failure: told "I bought YES on
+the XRP dip to $1.00 market at 90 cents for $10" at 17:47 Athens, Charlie
+confirmed the trade as logged — quoting position id f4a0bd50, amounts and
+"status: open" — with ZERO tool calls. tool-call.log 15:47:33Z shows
+`routed_on_demand_skills: []` (the phrasing matched none of
+[trade, trading, scanner, position]; "bought" was not a keyword), the
+trade-engine access log shows no requests in the window, and the quoted
+status contradicted the DB (row closed at 15:41:37Z). Every value was echoed
+from conversation context. The Slice 4 completion-claim gates did NOT fire
+on this phrasing — worth a follow-up look at the gate classifier.
+
+Fixes (commit fa91fb7 + this one):
+- trading-api keywords += bought/buy/sell/sold/polymarket/market
+  (token-boundary matching — "marketing" does not match "market";
+  router tests auto-derive per-keyword assertions, all green).
+- verification-reflexes.md (always-on, every turn) += "No tool, no action
+  claim": an action claim requires a confirming tool result in the SAME
+  turn; if no relevant tool was routed, say so plainly instead of narrating
+  the outcome. Cites this incident.
+- trading-api usage notes += explicit /positions/manual body contract
+  (only market_url/condition_id + direction/entry_price/usdc_amount/shares;
+  unknown fields 400) after Charlie invented a `question` field on retry.
+
+Re-test evidence (via dashboard POST /api/chat → agent.process, Bearer
+config.dashboard.authToken):
+- Routing FIXED: 17:30:23Z turn routed ["trading-api"], all 7 tools
+  activated including create_positions_manual.
+- Extraction honest: a quoting-mangled "$0" amount got a clarification
+  question back, not an invented log.
+- ApprovalGate held both write attempts ([118] 17:31Z, [119] 17:45Z);
+  both timed out after 10 min untapped → denied → no row written. Failure
+  direction correct throughout; trading_positions still exactly one row
+  (the closed XRP win).
+- Residual Haiku behaviour: it skips the "GET /simulations first" step and
+  fabricates INPUTS (attempt 1: bogus `question` field; attempt 2: invented
+  market_url slug will-xrp-reach-1-by-end-of-2024). The endpoint's strict
+  validation 400s both, so nothing wrong can land — but the approved-path
+  live test (tap → 400 on fake URL → self-correct via /simulations →
+  second approval → row created → delete duplicate) is STILL OWED and needs
+  Tyson at Telegram within the 10-minute approval window.

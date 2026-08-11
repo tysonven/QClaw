@@ -33,7 +33,8 @@ POST /monitor/run - Run the Position Monitor sweep once, on demand
 - Use /simulations to check the latest sim results and /positions to check open Polymarket positions
 - Use /positions/manual when Tyson says he took a trade manually (e.g. "I bought YES on that BTC market at 65 cents for $5") - extract market, direction, price and amount from his message and call this endpoint
 - Tyson must state market, direction, price and amount explicitly: the scanner/approval bot is a separate Telegram thread you cannot see, so never infer trade details from context you do not have
-- Finding the market for /positions/manual: if Tyson gives a URL, pass it as market_url; if he only names the market, GET /simulations and match his description against raw_output.question, then pass that row's raw_output.polymarket_condition_id as condition_id; if neither matches, ask him for the market URL
+- Finding the market for /positions/manual: if Tyson gives a URL, pass it as market_url; if he only names the market, FIRST call GET /simulations and match his description against raw_output.question, then pass that row's raw_output.polymarket_condition_id as condition_id; if neither matches, ask him for the market URL
+- The /positions/manual body accepts ONLY these fields: market_url or condition_id, direction, entry_price, usdc_amount, shares (optional) - there is no question field and unknown fields are rejected with a 400, so never call it with a market name alone
 - entry_price is the price paid for HIS side as a fraction (65 cents = 0.65); usdc_amount is total dollars spent; omit shares unless he states them (the engine computes usdc_amount / entry_price)
 - After logging, confirm back to Tyson exactly what was recorded, including whether it linked to a recent scan (simulation_id_linked true/false)
 - A trade on a market the scanner never simulated still logs fine with simulation_id_linked false - that only means less context for the Analyst
