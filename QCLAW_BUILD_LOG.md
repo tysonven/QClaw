@@ -19863,3 +19863,71 @@ the `0xE44f…` developer address).
 - **Charlie proactive mode** (directive action over "here are options").
 - **Dashboard rebrand.**
 - **Content Studio Phase 2.**
+
+## 2026-08-11 — Phase 5 Session 16 — Manual trade logging closes the learning-loop gap; trading-api skill repointed 4000→4003; first resolved trade recorded (XRP, +$1.11)
+
+With the executor parked on the Polymarket maker-address blocker, trades are
+happening by hand in the UI and were invisible to trading_positions — the
+Analyst had nothing to learn from them. This session added POST
+/positions/manual: Tyson tells Charlie what he traded, the engine resolves the
+market, links the most recent simulation of it, and writes an executor-shaped
+position row. tx_hash NULL is the durable manual-entry marker (automated
+entries always record a real hash).
+
+### What shipped
+
+- `src/trade_engine/manual.py` (new) — validation, Gamma slug→conditionId
+  resolution, 24h simulation auto-link (`raw_output->>polymarket_condition_id`
+  PostgREST filter), executor-shaped `write_position()` row. No CLOB, no money.
+- `main.py` — POST /positions/manual (400s with operator-readable messages,
+  not 422s — Charlie says the error text back to Tyson). Plus GET /positions,
+  GET /simulations and a POST /simulate proxy to the Monte Carlo worker: the
+  old skill documented those against localhost:4000/api/trading (the
+  pre-engine dashboard), and none of them existed on 4003 — repointing the
+  skill without adding them would have lobotomised Charlie's trading reads.
+- `database.py` — `get_recent_simulations()`, `get_latest_simulation_for_condition()`.
+- `src/agents/skills/trading-api.md` — rewritten: base URL 4000→4003, bearer
+  `{{config.dashboard.authToken}}` header removed (engine is loopback-bound,
+  unauthenticated by design), /positions/manual documented with the
+  "Tyson must state market/direction/price/amount explicitly" rule (the
+  scanner bot is a separate Telegram thread Charlie cannot see). Skill POSTs
+  ride the PR #58 ApprovalGate — Tyson gets an approval tap before a log write.
+- `tests/test_manual_position.py` — 19 tests (validation 400s, closed-market
+  URL resolution, link/no-link, shares math, tx_hash marker, monitor pickup
+  linked + unlinked). Wired into the package.json chain; full suite green.
+
+### Found during audit: Gamma LIST endpoint hides closed markets — monitor gap
+
+`GET /markets?condition_ids=0x803747…` (the XRP dip-to-$1.00 market, resolved)
+returns `[]`; the same query plus `closed=true` returns the market with
+`outcomePrices ["1","0"]`. Verified 2026-08-11 against markets 3257488
+(closed → hidden) and 559651 (open → returned). Consequence: monitor.py's
+`_fetch_market()` passes only `condition_ids`, so any position whose market
+closes between sweeps goes permanently "unpriceable" — the resolution branch
+(`active=false AND closed=true`) is unreachable for exactly the markets it was
+written for. Affects automated positions identically. NOT fixed this session
+(monitor explicitly out of scope); follow-up: retry the fetch with
+`closed=true`, or resolve via `/markets/<numeric-id>` using
+`raw_output.polymarket_market_id`, which ignores the filter.
+
+### The real trade
+
+Logged live via the endpoint (market_url form, exercising the closed=true
+retry): position f4a0bd50-da3a-46ed-97ee-cbc131f15f3f, YES @ 0.90, $10,
+auto-linked to sim cee4eacd (14:00Z scan, probability 0.989 → entry_edge
+0.089). /monitor/run picked it up without error (unpriceable per the gap
+above). The market had already resolved YES, and the monitor can never close
+it (same gap) — leaving it open would occupy a MAX_CONCURRENT_POSITIONS slot
+forever — so the close was booked by hand exactly as the monitor writes it:
+resolved_win @ 1.0, exit_usdc 11.11, pnl +1.11. First resolved row in the
+learning loop.
+
+### Notes
+
+- trading_positions.shares rounds to 2dp at the column (sent 11.111111,
+  stored 11.11) — pre-existing schema precision, sub-cent pnl effect.
+- Old dashboard /api/trading/* routes on 4000 still answer (401 without
+  token); nothing references them from the skill any more.
+- Charlie live round-trip (Telegram → skill tool → endpoint) still owed — it
+  needs Tyson to send the message and take the approval tap. Skill parse
+  verified post-restart instead.

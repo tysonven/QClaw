@@ -188,6 +188,52 @@ async def get_simulations_by_ids(sim_ids: list[str]) -> list[dict[str, Any]]:
     return rows or []
 
 
+async def get_recent_simulations(limit: int = 10) -> list[dict[str, Any]]:
+    """Most recent trading_simulations rows, newest first.
+
+    Read-only, for GET /simulations (the Charlie trading-api skill). raw_output
+    is included deliberately: it carries `question` and
+    `polymarket_condition_id`, which is how a market someone names in chat
+    gets mapped to a condition_id for /positions/manual.
+    """
+    rows = await _request(
+        "GET",
+        "/trading_simulations",
+        params={
+            "select": "id,asset,probability,edge,implied_odds,current_price,"
+                      "created_at,raw_output",
+            "order": "created_at.desc",
+            "limit": str(limit),
+        },
+    )
+    return rows or []
+
+
+async def get_latest_simulation_for_condition(
+    condition_id: str, since_iso: str
+) -> Optional[dict[str, Any]]:
+    """Newest simulation of one market since `since_iso`, or None.
+
+    Matches on raw_output->>polymarket_condition_id — the only place a
+    simulation row records which Polymarket market it simulated (market_id is
+    a uuid FK to the empty trading_markets table). PostgREST accepts the JSON
+    operator directly as a query key; verified live 2026-08-11.
+    """
+    rows = await _request(
+        "GET",
+        "/trading_simulations",
+        params={
+            "select": "id,asset,probability,edge,implied_odds,created_at,"
+                      "raw_output",
+            "raw_output->>polymarket_condition_id": f"eq.{condition_id}",
+            "created_at": f"gte.{since_iso}",
+            "order": "created_at.desc",
+            "limit": "1",
+        },
+    )
+    return rows[0] if rows else None
+
+
 async def write_simulation(sim: dict[str, Any]) -> dict[str, Any]:
     """Insert one trading_simulations row and return it.
 

@@ -61,6 +61,26 @@ class TradePosition(BaseModel):
     created_at: Optional[datetime] = None
 
 
+class ManualPositionRequest(BaseModel):
+    """POST /positions/manual body — a trade already executed by hand in the
+    Polymarket UI. Either market_url or condition_id identifies the market.
+
+    extra="forbid", unlike the table-mirroring models: a typoed field name in
+    a hand-built request must 400, not be silently dropped into a wrong log.
+    Range/format validation lives in manual._validated so every failure is a
+    400 with an operator-readable message rather than a FastAPI 422.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    market_url: Optional[str] = None
+    condition_id: Optional[str] = None
+    direction: str
+    entry_price: float
+    usdc_amount: float
+    shares: Optional[float] = None
+
+
 class SimulationResult(BaseModel):
     """public.trading_simulations — persisted Monte Carlo output.
 

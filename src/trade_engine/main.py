@@ -24,10 +24,12 @@ import logging  # noqa: E402
 from contextlib import asynccontextmanager  # noqa: E402
 from typing import Any, Optional  # noqa: E402
 
+import httpx  # noqa: E402
 import uvicorn  # noqa: E402
 from fastapi import FastAPI, Request  # noqa: E402
 from fastapi.encoders import jsonable_encoder  # noqa: E402
 from fastapi.responses import JSONResponse  # noqa: E402
+from pydantic import ValidationError  # noqa: E402
 
 from src.trade_engine.approval import ApprovalGate, run_update_poller  # noqa: E402
 from src.trade_engine.executor import TradeExecutor  # noqa: E402
@@ -38,7 +40,13 @@ from src.trade_engine.database import (  # noqa: E402
     count_all_positions,
     count_open_positions,
     get_daily_pnl,
+    get_open_positions,
+    get_recent_simulations,
     get_trading_config,
+)
+from src.trade_engine.manual import (  # noqa: E402
+    ManualPositionError,
+    log_manual_position,
 )
 from src.trade_engine.analyst import TradeAnalyst  # noqa: E402
 from src.trade_engine.models import (  # noqa: E402
@@ -46,6 +54,7 @@ from src.trade_engine.models import (  # noqa: E402
     ApprovalResult,
     ApprovalStatus,
     HealthResponse,
+    ManualPositionRequest,
     MonitorRunResult,
     ScannerCandidate,
     ScannerRunSummary,
@@ -277,6 +286,132 @@ async def health() -> JSONResponse:
 async def read_config() -> TradingConfig:
     """Current trading_config. No auth — loopback-bound, internal only."""
     return await get_trading_config()
+
+
+@app.get("/positions")
+async def positions() -> JSONResponse:
+    """Open positions, newest first. No auth — loopback-bound, internal only.
+
+    Engine-native replacement for the old dashboard's GET
+    /api/trading/positions, so the Charlie trading-api skill reads from the
+    same service that writes.
+    """
+    try:
+        rows = await get_open_positions()
+    except SupabaseError as exc:
+        log.error("/positions failed: %s", exc)
+        return JSONResponse(
+            status_code=503,
+            content={"error": "could not read positions", "detail": str(exc)},
+        )
+    return JSONResponse(
+        content=jsonable_encoder({"count": len(rows), "positions": rows})
+    )
+
+
+@app.get("/simulations")
+async def simulations() -> JSONResponse:
+    """Last 10 simulations, newest first. No auth — loopback-bound, internal
+    only.
+
+    raw_output is included on purpose: its `question` and
+    `polymarket_condition_id` are how a market named in chat gets mapped to
+    the condition_id that POST /positions/manual needs.
+    """
+    try:
+        rows = await get_recent_simulations()
+    except SupabaseError as exc:
+        log.error("/simulations failed: %s", exc)
+        return JSONResponse(
+            status_code=503,
+            content={"error": "could not read simulations", "detail": str(exc)},
+        )
+    return JSONResponse(
+        content=jsonable_encoder({"count": len(rows), "simulations": rows})
+    )
+
+
+@app.post("/positions/manual")
+async def positions_manual(request: Request) -> JSONResponse:
+    """Log a trade that was already executed by hand in the Polymarket UI.
+
+    Records only — nothing here places, sizes or closes an order, so there
+    are no financial gates to run. tx_hash is written as NULL, the durable
+    marker distinguishing manual entries from executor ones.
+
+    Validation failures are 400 with an operator-readable message (not
+    FastAPI's default 422 — the caller is Charlie relaying a chat message,
+    and the error text is what gets said back to Tyson). No auth —
+    loopback-bound, internal only.
+    """
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001 - malformed body is a caller error
+        return JSONResponse(
+            status_code=400, content={"error": "body must be valid JSON"}
+        )
+    try:
+        req = ManualPositionRequest.model_validate(body)
+    except ValidationError as exc:
+        detail = "; ".join(
+            f"{'.'.join(str(loc) for loc in err['loc'])}: {err['msg']}"
+            for err in exc.errors()
+        )
+        return JSONResponse(status_code=400, content={"error": detail})
+
+    try:
+        result = await log_manual_position(req)
+    except ManualPositionError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+    except SupabaseError as exc:
+        log.error("/positions/manual write failed: %s", exc)
+        return JSONResponse(
+            status_code=503,
+            content={"error": "could not write position", "detail": str(exc)},
+        )
+    return JSONResponse(content=jsonable_encoder(result))
+
+
+@app.post("/simulate")
+async def simulate(request: Request) -> JSONResponse:
+    """Proxy one Monte Carlo run to the worker on MONTE_CARLO_HOST.
+
+    Compute-only — the worker prices a hypothetical, nothing is written or
+    traded. Exists so the Charlie skill keeps its single 4003 base URL after
+    moving off the old dashboard, which used to proxy this same call. Body is
+    forwarded as-is ({asset, target, horizon_days, question}); the worker's
+    response and status come back as-is.
+    """
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001 - malformed body is a caller error
+        return JSONResponse(
+            status_code=400, content={"error": "body must be valid JSON"}
+        )
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(120.0, connect=10.0)
+        ) as client:
+            response = await client.post(
+                f"{config.monte_carlo_host}/simulate", json=body
+            )
+    except httpx.HTTPError as exc:
+        log.error("/simulate proxy failed: %s", type(exc).__name__)
+        return JSONResponse(
+            status_code=502,
+            content={
+                "error": "monte carlo worker unreachable",
+                "detail": type(exc).__name__,
+            },
+        )
+    try:
+        payload = response.json()
+    except ValueError:
+        return JSONResponse(
+            status_code=502,
+            content={"error": "monte carlo worker returned non-JSON"},
+        )
+    return JSONResponse(status_code=response.status_code, content=payload)
 
 
 @app.post("/scan", response_model=ScannerRunSummary)
