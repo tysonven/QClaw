@@ -20038,116 +20038,132 @@ regressions clean (`/webinar-elite-tier`, `/webinar-starter-stack`
 still 301; `/products/sms-gateway`, `/follow-up-system-blog`, `/`
 still 200). Both commits pushed to main, Vercel auto-deploy.
 
-## 2026-08-11 — Phase 5 Session 16 — Manual trade logging closes the learning-loop gap; trading-api skill repointed 4000→4003; first resolved trade recorded (XRP, +$1.11)
+## 2026-08-11 — Phase 5 Session 16 — Manual trade logging closes the learning-loop gap; first resolved trade in the loop (+$1.11); Charlie fabricated-confirmation incident found, fixed and live-re-verified
 
 With the executor parked on the Polymarket maker-address blocker, trades are
 happening by hand in the UI and were invisible to trading_positions — the
-Analyst had nothing to learn from them. This session added POST
-/positions/manual: Tyson tells Charlie what he traded, the engine resolves the
-market, links the most recent simulation of it, and writes an executor-shaped
-position row. tx_hash NULL is the durable manual-entry marker (automated
-entries always record a real hash).
+Analyst had nothing to learn from them. This session built the manual logging
+path, put the first resolved trade into the learning loop, and surfaced (then
+fixed and live-re-verified) a trust-critical Charlie failure: a fabricated
+action confirmation on a financial log entry.
 
-### What shipped
+### Manual trade logging built (3d7ae97)
 
-- `src/trade_engine/manual.py` (new) — validation, Gamma slug→conditionId
-  resolution, 24h simulation auto-link (`raw_output->>polymarket_condition_id`
-  PostgREST filter), executor-shaped `write_position()` row. No CLOB, no money.
-- `main.py` — POST /positions/manual (400s with operator-readable messages,
-  not 422s — Charlie says the error text back to Tyson). Plus GET /positions,
-  GET /simulations and a POST /simulate proxy to the Monte Carlo worker: the
-  old skill documented those against localhost:4000/api/trading (the
-  pre-engine dashboard), and none of them existed on 4003 — repointing the
-  skill without adding them would have lobotomised Charlie's trading reads.
-- `database.py` — `get_recent_simulations()`, `get_latest_simulation_for_condition()`.
-- `src/agents/skills/trading-api.md` — rewritten: base URL 4000→4003, bearer
-  `{{config.dashboard.authToken}}` header removed (engine is loopback-bound,
-  unauthenticated by design), /positions/manual documented with the
-  "Tyson must state market/direction/price/amount explicitly" rule (the
-  scanner bot is a separate Telegram thread Charlie cannot see). Skill POSTs
-  ride the PR #58 ApprovalGate — Tyson gets an approval tap before a log write.
-- `tests/test_manual_position.py` — 19 tests (validation 400s, closed-market
+- `POST /positions/manual` on the trade engine; `src/trade_engine/manual.py`
+  does Gamma slug→conditionId resolution (tries the last two URL path
+  segments, each with a closed-market retry — see Finding 6), a 24h
+  simulation auto-link via the PostgREST JSON-operator filter
+  `raw_output->>polymarket_condition_id=eq.<cid>`, direction-aware
+  entry-anchored edge (side probability minus the price actually paid), and
+  an executor-shaped `write_position()` row. **`tx_hash: None` is the manual
+  marker convention** — automated entries always record a real hash.
+- `trading-api.md` rewritten: base URL fixed from the stale
+  `localhost:4000/api/trading` (pre-engine dashboard, bearer
+  `{{config.dashboard.authToken}}`) to `localhost:4003`, no auth header —
+  loopback is the access control. All 7 endpoints documented (health,
+  config, simulations, positions, simulate, positions/manual, monitor/run);
+  GET /positions, GET /simulations and a POST /simulate proxy to the Monte
+  Carlo worker were ADDED to the engine because none of the skill's
+  documented endpoints actually existed on 4003.
+- `tests/test_manual_position.py`: 19 tests (validation 400s, closed-market
   URL resolution, link/no-link, shares math, tx_hash marker, monitor pickup
-  linked + unlinked). Wired into the package.json chain; full suite green.
+  linked + unlinked), wired into the npm chain. Full suite green.
 
-### Found during audit: Gamma LIST endpoint hides closed markets — monitor gap
+### Finding 6 — Gamma list endpoint hides closed markets
 
-`GET /markets?condition_ids=0x803747…` (the XRP dip-to-$1.00 market, resolved)
-returns `[]`; the same query plus `closed=true` returns the market with
+`GET /markets?condition_ids=0x803747…` (the resolved XRP dip market) returns
+`[]`; the identical query plus `closed=true` returns the market with
 `outcomePrices ["1","0"]`. Verified 2026-08-11 against markets 3257488
 (closed → hidden) and 559651 (open → returned). Consequence: monitor.py's
-`_fetch_market()` passes only `condition_ids`, so any position whose market
-closes between sweeps goes permanently "unpriceable" — the resolution branch
-(`active=false AND closed=true`) is unreachable for exactly the markets it was
-written for. Affects automated positions identically. NOT fixed this session
-(monitor explicitly out of scope); follow-up: retry the fetch with
-`closed=true`, or resolve via `/markets/<numeric-id>` using
-`raw_output.polymarket_market_id`, which ignores the filter.
+`_fetch_market()` passes only `condition_ids`, so it can never detect
+resolution for a market that closed between sweeps — the resolution branch
+(`active=false AND closed=true`) is unreachable for exactly the markets it
+was written for, and such positions stick "unpriceable" while occupying
+MAX_CONCURRENT_POSITIONS slots. Affects manual AND automated positions.
+Flagged as follow-up, NOT fixed this session (monitor out of scope). Fix
+candidates: retry the fetch with `closed=true`, or resolve via path-form
+`/markets/<numeric-id>` using `raw_output.polymarket_market_id`, which
+ignores the filter. manual.py's URL resolver already does the closed=true
+retry.
 
-### The real trade
+### First real trade in the learning loop
 
-Logged live via the endpoint (market_url form, exercising the closed=true
-retry): position f4a0bd50-da3a-46ed-97ee-cbc131f15f3f, YES @ 0.90, $10,
-auto-linked to sim cee4eacd (14:00Z scan, probability 0.989 → entry_edge
-0.089). /monitor/run picked it up without error (unpriceable per the gap
-above). The market had already resolved YES, and the monitor can never close
-it (same gap) — leaving it open would occupy a MAX_CONCURRENT_POSITIONS slot
-forever — so the close was booked by hand exactly as the monitor writes it:
-resolved_win @ 1.0, exit_usdc 11.11, pnl +1.11. First resolved row in the
-learning loop.
+XRP "Will XRP dip to $1.00 in August?" — manual entry 90c YES, $10
+(2026-08-10 evening). Logged live via the endpoint (market_url form,
+exercising the closed-market retry against real Gamma): position
+`f4a0bd50-da3a-46ed-97ee-cbc131f15f3f`, auto-linked to the 14:00Z scan
+(probability 0.989 → entry_edge 0.089). The market had already resolved YES
+and the monitor can never see it (Finding 6), so the close was booked by
+hand exactly as the monitor writes it: **resolved_win @ 1.0, exit_usdc
+11.11, pnl +$1.11** — the first resolved row the Analyst can learn from.
+(Schema note: trading_positions.shares rounds to 2dp at the column — sent
+11.111111, stored 11.11.)
 
-### Notes
+### Critical Charlie finding — fabricated action confirmation
 
-- trading_positions.shares rounds to 2dp at the column (sent 11.111111,
-  stored 11.11) — pre-existing schema precision, sub-cent pnl effect.
-- Old dashboard /api/trading/* routes on 4000 still answer (401 without
-  token); nothing references them from the skill any more.
-- Charlie live round-trip (Telegram → skill tool → endpoint) still owed — it
-  needs Tyson to send the message and take the approval tap. Skill parse
-  verified post-restart instead.
+Told "I bought YES on the XRP dip to $1.00 market at 90 cents for $10"
+(17:47 Athens), Charlie confirmed the trade as logged — quoting position id
+f4a0bd50, dollar amounts and "status: open" — with ZERO tool calls behind
+it. Evidence: tool-call.log 15:47:33Z shows `routed_on_demand_skills: []`
+(the phrasing matched none of the skill's keywords
+[trade, trading, scanner, position] — "bought" was not a keyword); the
+trade-engine access log shows no requests in the window; and the quoted
+status contradicted the DB (row closed at 15:41:37Z). Root cause: the
+on-demand skill never routed, and Charlie answered anyway from conversation
+context instead of declining. Every value in the reply was an echo of
+thread history presented as a live result — on a financial log entry.
 
-### Session 16 addendum — fabricated-confirmation incident, routing + reflex fixes (2026-08-11 evening)
+### Fix 1 (fa91fb7) — broadened keywords
 
-Live Charlie test surfaced a trust-critical failure: told "I bought YES on
-the XRP dip to $1.00 market at 90 cents for $10" at 17:47 Athens, Charlie
-confirmed the trade as logged — quoting position id f4a0bd50, amounts and
-"status: open" — with ZERO tool calls. tool-call.log 15:47:33Z shows
-`routed_on_demand_skills: []` (the phrasing matched none of
-[trade, trading, scanner, position]; "bought" was not a keyword), the
-trade-engine access log shows no requests in the window, and the quoted
-status contradicted the DB (row closed at 15:41:37Z). Every value was echoed
-from conversation context. The Slice 4 completion-claim gates did NOT fire
-on this phrasing — worth a follow-up look at the gate classifier.
+trading-api keywords += `bought, buy, sell, sold, polymarket, market`.
+Router matching is token-boundary ("marketing" does not match "market");
+the router test suite auto-derives a per-keyword assertion for each, all
+green.
 
-Fixes (commit fa91fb7 + this one):
-- trading-api keywords += bought/buy/sell/sold/polymarket/market
-  (token-boundary matching — "marketing" does not match "market";
-  router tests auto-derive per-keyword assertions, all green).
-- verification-reflexes.md (always-on, every turn) += "No tool, no action
-  claim": an action claim requires a confirming tool result in the SAME
-  turn; if no relevant tool was routed, say so plainly instead of narrating
-  the outcome. Cites this incident.
-- trading-api usage notes += explicit /positions/manual body contract
-  (only market_url/condition_id + direction/entry_price/usdc_amount/shares;
-  unknown fields 400) after Charlie invented a `question` field on retry.
+### Fix 2 (7b51a8f) — "No tool, no action claim"
 
-Re-test evidence (via dashboard POST /api/chat → agent.process, Bearer
-config.dashboard.authToken):
-- Routing FIXED: 17:30:23Z turn routed ["trading-api"], all 7 tools
-  activated including create_positions_manual.
-- Extraction honest: a quoting-mangled "$0" amount got a clarification
-  question back, not an invented log.
-- ApprovalGate held both write attempts ([118] 17:31Z, [119] 17:45Z);
-  both timed out after 10 min untapped → denied → no row written. Failure
-  direction correct throughout; trading_positions still exactly one row
-  (the closed XRP win).
-- Residual Haiku behaviour: it skips the "GET /simulations first" step and
-  fabricates INPUTS (attempt 1: bogus `question` field; attempt 2: invented
-  market_url slug will-xrp-reach-1-by-end-of-2024). The endpoint's strict
-  validation 400s both, so nothing wrong can land — but the approved-path
-  live test (tap → 400 on fake URL → self-correct via /simulations →
-  second approval → row created → delete duplicate) is STILL OWED and needs
-  Tyson at Telegram within the 10-minute approval window.
+New section in `verification-reflexes.md` — the always-on, prompt-surface
+skill injected into EVERY turn, a stronger guarantee than CHARLIE_ROLE.md,
+which only loads at session start. The rule: never claim to have performed
+an action (logged a trade, sent a message, made a change, called an API)
+unless a tool call in the SAME turn returned a result confirming it, and
+every reported id/amount/status must come from that tool result, not from
+conversation history. No relevant tool routed → say so plainly ("I don't
+have the right tool active for that right now — try rephrasing, or I can
+check what's available") and stop — never answer as if the action
+succeeded. The section cites this incident as the burn case. The skill
+notes also now pin the /positions/manual body contract after interim
+retries fabricated inputs (a `question` field, then an invented market_url
+slug) — the endpoint's strict validation 400'd both.
+
+### Live end-to-end re-verification (real Telegram flow)
+
+Charlie correctly declined to guess a market URL and asked for
+clarification, routed trading-api correctly on retry, and went through the
+ApprovalGate: 19:21:18Z prompt [120] carrying the REAL slug
+`will-xrp-dip-to-1-in-august-2026`, approved 19:21:27Z, POST
+/positions/manual 200 → a genuine tool-backed position
+`82256da8-34d5-4bd7-beaf-0d1f6e347d04` with correct values, the simulation
+auto-linked and tx_hash NULL. The duplicate was deleted after verification;
+the real trade (f4a0bd50…) untouched — trading_positions back to exactly
+one row, /health reporting open_positions 0, total_positions 1, daily_pnl
+1.11.
+
+### Flagged follow-up — Slice 4 gate classifier
+
+The Slice 4 runtime verification gates should have caught the original
+fabricated completion claim ("logged" + specific values, no backing tool
+result this turn) and did not fire. Gate classifier needs investigation.
+
+### Next session queue
+
+- Dashboard Trading Room repair — querying/displaying against old n8n-era
+  assumptions, appears dysfunctional
+- monitor.py Gamma closed-market fix (Finding 6)
+- Full audit + doc update session (outstanding since Aug 6)
+- Charlie specialist activation
+- Charlie proactive mode
+- Slice 4 gate classifier investigation
 
 ## 2026-08-11, flowos-web Slice 6 CLOSED: home page rewrite live on production
 
