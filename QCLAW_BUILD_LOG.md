@@ -20397,6 +20397,200 @@ the working-session sentence, wording untouched. Hierarchy against
 the pricing block's filled primary verified by screenshot at both
 widths before commit; live-verified post-deploy. Commit 45473be.
 
+## 2026-08-12, ghl-support-bot: selfGrant privilege escalation closed (PR #1, merged a350928)
+
+`access.selfGrant` took `accessLevel` straight from the client, with
+`z.enum(["free","paid","admin"]).default("paid")` in its input schema
+and no admin check, so any authenticated caller could ask for and
+receive `admin`. The only barrier was `verifySubAccountId`, which
+failed OPEN twice over: it returned `{ valid: true, locationName:
+"Demo Account" }` when `GHL_AGENCY_API_KEY` was unset, and
+`{ valid: true, locationName: "Verified Account" }` inside its catch
+block on any API error. During a GHL outage the grant was therefore
+unconditional.
+
+Fixes, all on branch `cc/selfgrant-privesc-2026-08-12`:
+
+- `accessLevel` removed from the input schema entirely so a caller
+  cannot reintroduce it; the level is now a server-side constant.
+  `brand` pinned to `flowos`, because holding a GHL sub-account ID is
+  evidence of Flow OS client status, not entitlement to the paid GHL
+  product, which is sold through Stripe and the founders code.
+- `verifySubAccountId` now returns a discriminated status
+  (`verified` / `not_found` / `inactive` / `unavailable`) and fails
+  closed. Missing key or API error yields `unavailable`, which grants
+  nothing. Upstream error text is no longer passed back to the caller.
+- `/api/upload/image` had no authentication at all. Now gated by
+  `authenticateRequest`, the same contract as `/api/chat/stream`,
+  ordered before multer so an unauthenticated caller never gets a
+  10MB buffer allocated.
+- Unique key added on `user_access(userId, brand)` (migration 0008).
+  Without it the `onDuplicateKeyUpdate` calls in `grantUserAccess`
+  and `saveGhlLocationId` could never fire, so they inserted
+  duplicate rows instead of updating. This is the latent bug that
+  could have let a paying customer lose access by editing their
+  Location ID on the account page.
+- `getUserAccess` read was `LIMIT 1` with no `ORDER BY`. Now orders
+  by privilege then newest id, so the read is deterministic and errs
+  toward the access the user paid for if duplicates ever reappear.
+- `revokeUserAccess` was a hard `DELETE`, which destroyed the only
+  record that access ever existed. Now downgrades to `free`.
+- New `grantSource` and `grantedByUserId` columns record which code
+  path wrote each row and the acting admin. All 8 write sites wired.
+
+30 new tests across 4 files. Verified properly by stashing the source
+and re-running: 21 of 30 fail against the pre-patch tree. The other 9
+are confirmation tests for admin gating that was already correct.
+`tsc --noEmit` clean. Full suite 85 passed, 4 failed, all 4
+pre-existing and env-dependent on a machine without the production
+env (`auth.logout.test.ts` dies at import with `Error: Neither apiKey
+nor config.authenticator provided` from `new Stripe(process.env
+.STRIPE_SECRET_KEY ?? "")` at routers.ts:51).
+
+Tyson opened PR #1 and merged it himself at 19:33:57Z as a350928.
+Railway auto-deployed main at 19:33:59Z; container up 19:35:24Z,
+`[DB] Migrations complete.` at 19:35:27Z. Migration row 9 present.
+Live GHL agency key checked against `/locations/search` before the
+merge: HTTP 200, so the fail-closed change did not break Flow OS
+onboarding.
+
+Handoff note: `grantSource` and `grantedByUserId` are NULL on all
+four existing rows. The migration adds columns and does not backfill,
+and those rows genuinely predate the audit trail, so NULL is the
+honest value. They populate on the next write to each row.
+
+## 2026-08-12, ghl-support-bot: Phase 1 blast radius, no evidence of exploitation
+
+Read-only audit of the production MySQL before any patching. Note
+this is Railway MySQL reached over the TCP proxy, verified as the
+same instance the app uses (identical credentials and database name
+to the app's internal `DATABASE_URL`).
+
+`user_access` held 4 rows total. Zero rows at `accessLevel = 'admin'`.
+Zero duplicate `(userId, brand)` groups, so the unique key applied
+cleanly with no row deletion needed. The only GHL paid row was
+Tyson's own test account (`tysonvenables@protonmail.com`, "Tyson
+testing flow"), granted via `stripePriceId = 'founders_code_3mo'` and
+expired since 2026-07-21. Effective unpaid GHL paid access: zero
+accounts. Nothing to revoke, so the planned Phase 3 revocation was
+dropped as a no-op.
+
+The reported "six accounts holding paid access that was never
+purchased" is not present in the data. Tyson's read, which the
+evidence supports: those were GHLPOWER50 founders-code redemptions,
+which grant `accessLevel: 'paid'` with no card and no Stripe
+subscription entirely by design, plus rows since hard-deleted by
+`revokeUserAccess`, surfacing through `admin.listUsers`. That
+procedure LEFT JOINs users to user_access and returns all 16 users
+regardless of access, so a user with no access row still appears in
+the list and reads as an account. Not selfGrant abuse.
+
+Five non-admin accounts (brucesilverman@mac.com, murray@pfga.com.au,
+lefaahaad@gmail.com, 7sense.ae@gmail.com, jkromano4@gmail.com) have
+GHL chat activity but no access row today. They must have held access
+at the time: the paid gate has existed since 417dc60 (2026-03-12),
+well before their earliest session (2026-04-25). The rows are gone
+because revocation was a hard DELETE. This is exactly the gap the new
+`grantSource` column closes going forward.
+
+There is no usage, audit, or activity table in this schema, and
+`selfGrant` logged nothing, so provenance was not determinable from
+the data at the time. Railway log retention is roughly one day: a
+direct probe of `--since 2026-04-20 --until 2026-04-30` returned 0
+lines, so the April window was unrecoverable.
+
+Also worth recording: `user_access` has no `createdAt` or `updatedAt`
+column and never has. A query against it returns
+`ERROR ER_BAD_FIELD_ERROR: Unknown column 'createdAt' in 'field list'`.
+The real timestamp columns are `grantedAt` and `expiresAt`.
+
+## 2026-08-12, ghl-support-bot: embeddings backfilled, 751/751
+
+`scripts/backfill-embeddings.mjs` run for the first time. It had
+never been run and is still not wired into package.json. Reviewed
+before running: it selects `WHERE isActive = 1 AND embedding IS NULL`
+so docs with good embeddings are never in scope, and the UPDATE sits
+inside the try after `embedBatch` resolves, so a failure only
+increments a counter. There is no code path that writes NULL over a
+good embedding, and it is safely re-runnable.
+
+Result: 144 processed, 0 errors. `missing` went 144 to 0, total 751.
+All 751 embeddings verified at exactly 6144 bytes (1536 float32),
+zero malformed.
+
+Root cause of the backlog was OpenAI credit exhaustion starting about
+2026-07-29, restored today. Verbatim, from the crawler logs:
+
+```
+[crawler] Embedding failed for doc, skipping: Error: OpenAI embeddings API error 429: {
+    "error": {
+        "message": "You have no credits remaining. Add credits to continue using the API at https://platform.openai.com/settings/organization/billing/.",
+        "type": "insufficient_quota",
+        "param": null,
+        "code": "credit_balance_exhausted"
+    }
+}
+```
+
+Evidence for the date: the last doc to receive an embedding was
+2026-07-30T13:19:51Z. 2026-07-29 crawled 8 docs, 3 embedded and 5
+not; 2026-07-30 crawled 5, none embedded; every crawl day after that
+embedded zero. Probed with a single 2-token call before running the
+backfill rather than firing batches into a possible 429: HTTP 200.
+
+Two distinct causes had been conflated in the NULL count. The count
+was 307 earlier in the session and 144 by the time the backfill
+started, because the redeploy restarted the crawler and with credits
+working it embedded roughly 163 docs on its own passes. The residue
+was roughly 150 docs from March that had never been embedded at any
+point, predating the `embedding` column (added by migration 0007,
+2026-03-26). The crawler no longer revisits those, so they would
+never have healed on their own. That is precisely what the script
+existed for.
+
+Note this fixed the backlog, not the cause. See known issues below.
+
+## 2026-08-12, ghl-support-bot: new known issues
+
+**GHL_AGENCY_API_KEY is now load-bearing and fails silently.** With
+`verifySubAccountId` failing closed, an expired or rotated Private
+Integration Token blocks all new Flow OS self-service onboarding.
+The failure surfaces to the user as "Sub-account verification is
+temporarily unavailable" and to operators as a single
+`console.error`, with no alert and no health check. `fetchGHLLocations`
+already throws a specific message on 401 ("GHL API key is invalid or
+expired. Please update GHL_AGENCY_API_KEY..."), so a heartbeat has
+something clean to assert on. Key verified HTTP 200 as of 2026-08-12.
+Needs a heartbeat before this bites.
+
+**Embedding failures are swallowed at all three write points, and the
+crawler reports success while embedding zero docs.** The three
+catches are `crawler.ts` `getEmbedding` (returns undefined, comment
+says "Returns undefined silently on failure so crawling continues"),
+`db.ts` `getEmbeddingBuffer` (same), and the query-time catch in
+`chatStream.ts` which drops to keyword search. `crawler_state` still
+recorded `status: 'success'` for all three sources through the entire
+two-week outage, because embedding success is not part of its success
+criteria. The only signal was log spam, which also burned the short
+Railway retention window. Compounding effect worth knowing: the
+semantic branch filters on `isNotNull(embedding)`, so any doc without
+one is invisible to semantic search permanently, while the keyword
+fallback searches the whole corpus. During the outage the fallback
+had better coverage than the primary path.
+
+**Location correction, ghl-support-bot.** It is a Railway app
+(project `wholesome-emotion`, services `ghl-support-bot` and `MySQL`,
+single `production` environment), deployed from GitHub main, serving
+support.flowos.tech. It is NOT on the qclaw host and has no
+relationship to it. LOCATIONS.md currently has no entry for it at
+all, so this is an addition rather than a correction to a wrong line.
+Related stale reference: the `.manus/db/*.json` query dumps committed
+in the ghl-support-bot repo show a TiDB host
+(`gateway04.us-east-1.prod.aws.tidbcloud.com`). That host is stale;
+the database moved to Railway MySQL. Those dumps also leak production
+DB host, user, database name and five real customer email addresses
+into the repo, which matters if that repo is ever shared with a
+white-label partner.
 ## 2026-08-15 - Phase 5 Session 17 - Hedge consolidation (PR #89), reflex table + delegate_to retirement (PR #90), branch cleanup, Dashboard Trading Room rebuilt against the trade engine (PR #91)
 
 Four pieces of work. Three of them were trust failures of the same shape:
