@@ -11,7 +11,7 @@ import { log } from '../core/logger.js';
 import { parseSkill, skillToTools, executeSkillTool } from './skill-parser.js';
 import { loadSkills } from './skill-loader.js';
 import { scanSpecialistResults } from '../tools/delegate-to.js';
-import { regenerateWithGates, isGatedTurn } from './gates.js';
+import { regenerateWithGates, isGatedTurn, buildProvenanceText } from './gates.js';
 import { gatherCcResults, depositCcEvidence } from './cc-results.js';
 import { appendGateLog } from '../observability/gate-log.js';
 import { appendChannelEvent } from '../observability/channel-events.js';
@@ -559,6 +559,12 @@ export class Agent {
         // Slice 4.1: this-session bootstrap snapshot — backs RECITED claims
         // about known entities (not first-person action claims). See gates.js.
         bootstrap: context?.bootstrap || null,
+        // Gate 5 (2026-08-12): identifier provenance. USER-authored text only —
+        // this turn's message plus the user's earlier turns — so an id Tyson
+        // pasted and Charlie echoes back is legitimate. Charlie's own assistant
+        // turns are excluded on purpose: counting them would let a fabricated id
+        // become self-justifying on the following turn.
+        provenance: buildProvenanceText(textMessage, truncatedHistory),
         baseMessages: messages,
         onGateLog: (gateOut, attempt) => {
           for (const g of gateOut.gates) {
