@@ -144,6 +144,14 @@ const successPair = (action, entity) => ([
   { action, detail: `{"id":"p1","result":"OK updated"}`, result_status: 'success', timestamp: ts2 },
   { action, detail: `{"id":"p1","args":{"id":"${entity}"}}`, result_status: null, timestamp: ts2 },
 ]);
+// A realistic READ pair: a GET echoes the requested record back, so the id is in
+// the RESULT payload. The older successPair puts the entity only in the call
+// ARGS, which stopped being full provenance in round 2 (a success row does not
+// mean the server validated the argument).
+const readPair = (action, entity) => ([
+  { action, detail: `{"id":"r1","result":"{\\"id\\": \\"${entity}\\", \\"active\\": true}"}`, result_status: 'success', timestamp: ts2 },
+  { action, detail: `{"id":"r1","args":{"id":"${entity}"}}`, result_status: null, timestamp: ts2 },
+]);
 const errorPair = (action, entity) => ([
   { action, detail: `{"id":"p2","result":"boom"}`, result_status: 'error', timestamp: ts2 },
   { action, detail: `{"id":"p2","args":{"id":"${entity}"}}`, result_status: null, timestamp: ts2 },
@@ -211,7 +219,7 @@ check('R(P1c): pre-turn entity success → NOT backed', matchEvidence('deployed 
 check('runGates: phantom + unbacked completion → hard_fail',
   runGates('Used charlie__nope__doit and deployed workflow Zz000000zz11.', mkAudit([]), reg, { now: Date.now(), turnStartMs: Date.now() - 60000 }).result === 'hard_fail');
 check('runGates: clean factual w/ backing → pass',
-  runGates('The workflow Qf39NEOEgz2W0uls is running.', mkAudit(successPair('shared__n8n-api__n8n-api__get_workflows_id', 'Qf39NEOEgz2W0uls')), reg, { now: Date.now(), turnStartMs: Date.now() - 60000 }).result === 'pass');
+  runGates('The workflow Qf39NEOEgz2W0uls is running.', mkAudit(readPair('shared__n8n-api__n8n-api__get_workflows_id', 'Qf39NEOEgz2W0uls')), reg, { now: Date.now(), turnStart: Date.now() - 60000 }).result === 'pass');
 // Slice 5: a "Claude Code completed" claim backed ONLY by a queued dispatch must
 // hard_fail end-to-end — Gate 2 (strictRelevant) overrides any Gate 1 entity-path
 // false-pass off the dispatch event.
@@ -291,14 +299,14 @@ const r4c = await regenerateWithGates({
 check('U3 (G5): unsourced non-UUID id → hedged in place, no regeneration',
   n4c === 1 && r4c.gateOutcome === 'pass' && r4c.content.includes('Unverified'));
 check('U3 (G5): same claim WITH a this-turn probe for that id → pass, unhedged', (() => {
-  const r = mkAudit(successPair('shared__n8n-api__n8n-api__get_workflows_id', 'Qf39NEOEgz2W0uls'));
+  const r = mkAudit(readPair('shared__n8n-api__n8n-api__get_workflows_id', 'Qf39NEOEgz2W0uls'));
   return runGates('The workflow Qf39NEOEgz2W0uls is running.', r, reg, { now: Date.now(), turnStart: past }).result === 'pass';
 })());
 
 // (5) clean backed claim → pass on first attempt, content untouched
 const r5 = await regenerateWithGates({
   generate: async () => ({ content: 'The workflow Qf39NEOEgz2W0uls is running.', model: 'm' }),
-  auditLog: mkAudit(successPair('shared__n8n-api__n8n-api__get_workflows_id', 'Qf39NEOEgz2W0uls')), toolRegistry: reg, turnStart: past, baseMessages: BM,
+  auditLog: mkAudit(readPair('shared__n8n-api__n8n-api__get_workflows_id', 'Qf39NEOEgz2W0uls')), toolRegistry: reg, turnStart: past, baseMessages: BM,
 });
 check('U3: backed claim → pass attempt 1, content unchanged', r5.gateOutcome === 'pass' && r5.gateAttempts === 1 && r5.content === 'The workflow Qf39NEOEgz2W0uls is running.');
 
@@ -560,9 +568,17 @@ check('G5: honest error report about a genuinely-created id → not fired',
   gateEntityEvidence(`The close call for position ${REAL_POS} returned a 400.`,
     ctx([...createPair('charlie__trading-api__trading-api__create_positions_manual', REAL_POS),
          ...errorPair('charlie__trading-api__trading-api__close_position', REAL_POS)])).fired === false);
-check('G5: a SUCCESS-paired call arg is still provenance (server accepted it)',
+// ROUND 2: a success row does NOT mean the server validated the argument —
+// out_of_scope returns, the content-queue intercept, empty reads and ignored
+// query params all log success while echoing Charlie's own args back. So an
+// id seen ONLY in call args is a weak signal: hedge, never a clean pass.
+check('G5 ROUND2: id only in a successful call\'s ARGS → hedged, not passed',
+  (() => { const g = gateEntityEvidence(`Workflow Qf39NEOEgz2W0uls is the content pipeline.`,
+    ctx(successPair('shared__n8n-api__n8n-api__get_workflows_id', 'Qf39NEOEgz2W0uls')));
+    return g.fired === true && g.severity === 'soft'; })());
+check('G5 ROUND2: same id echoed in the RESULT payload → clean pass',
   gateEntityEvidence(`Workflow Qf39NEOEgz2W0uls is the content pipeline.`,
-    ctx(successPair('shared__n8n-api__n8n-api__get_workflows_id', 'Qf39NEOEgz2W0uls'))).fired === false);
+    ctx(readPair('shared__n8n-api__n8n-api__get_workflows_id', 'Qf39NEOEgz2W0uls'))).fired === false);
 
 // FALSE-POSITIVE CHECK 4 (brief) — a real past entity from an EARLIER turn's
 // tool call, referenced with no fresh probe. Backed via the wider history window.
@@ -645,6 +661,85 @@ check('provenance: non-array history does not throw', (() => { try { buildProven
 const registrySrc = readFileSync(new URL('../src/agents/registry.js', import.meta.url), 'utf-8');
 check('WIRING: registry passes provenance built by buildProvenanceText into the gate loop',
   /provenance:\s*buildProvenanceText\(\s*textMessage\s*,\s*truncatedHistory\s*\)/.test(registrySrc));
+
+console.log('Round 2 — pseudo-success paths must not confer provenance:');
+const FAKE2 = 'deadbeef-1111-2222-3333-444455556666';
+// Each variant logs result_status='success' while carrying Charlie's own
+// unvalidated argument. None may back a claim about that id.
+const pseudoPair = (action, resultText, id) => ([
+  { action, detail: `{"id":"ps","result":${JSON.stringify(resultText)}}`, result_status: 'success', timestamp: ts2 },
+  { action, detail: `{"id":"ps","args":{"position_id":"${id}"}}`, result_status: null, timestamp: ts2 },
+]);
+check('R2-a: out_of_scope success row → NOT provenance (hard, no read ran)',
+  (() => { const g = gateEntityEvidence(`Position ${FAKE2} is open.`,
+    ctx(pseudoPair('charlie__trading-api__trading-api__create_positions_manual',
+      '{"error":"out_of_scope","tool":"charlie__x__y","suggestion":"not routed"}', FAKE2)));
+    return g.fired === true && g.severity === 'hard'; })());
+check('R2-b: content-queue intercept success row → NOT provenance (hard)',
+  (() => { const g = gateEntityEvidence(`Position ${FAKE2} is open.`,
+    ctx(pseudoPair('charlie__content__content__publish',
+      'Content queued for review [ID: 42]. Use content-queue approve 42 to publish.', FAKE2)));
+    return g.fired === true && g.severity === 'hard'; })());
+check('R2-c: empty-result read → args-only, so hedged not passed',
+  (() => { const g = gateEntityEvidence(`Position ${FAKE2} is open.`,
+    ctx(pseudoPair('charlie__trading-api__trading-api__get_positions_id', '[]', FAKE2)));
+    return g.fired === true && g.severity === 'soft'; })());
+check('R2-d: ignored extra query param (substantive result, no echo) → hedged not passed',
+  (() => { const g = gateEntityEvidence(`Position ${FAKE2} is open.`,
+    ctx(pseudoPair('charlie__ghl__ghl__get_contacts', '{"contacts":[{"name":"someone else"}]}', FAKE2)));
+    return g.fired === true && g.severity === 'soft'; })());
+check('R2: system-deposited claude_code_result args ARE provenance (db-authored, not model-authored)',
+  gateEntityEvidence(`Claude Code finished task ${FAKE2}.`,
+    ctx([{ action: 'claude_code_result', detail: `{"id":"ccr_1","args":{"task_id":"${FAKE2}"}}`, result_status: null, timestamp: ts2 },
+         { action: 'claude_code_result', detail: '{"id":"ccr_1","result":"audit complete"}', result_status: 'success', timestamp: ts2 }])).fired === false);
+
+console.log('Round 2 — 140-char truncation collision (Blocking Fix 2):');
+// A real read returns two positions; index.js stores only the first 140 chars,
+// so the SECOND position's honest citation finds no evidence. It must hedge,
+// never escalate — this is the trading flow the PR exists to protect.
+const POS_A = '82256da8-34d5-4bd7-beaf-0d1f6e347d04';
+const POS_B = '9f1e2d3c-4b5a-6789-0123-456789abcdef';
+const twoPositionRead = [
+  { action: 'charlie__trading-api__trading-api__get_positions', result_status: 'success', timestamp: ts2,
+    detail: `{"id":"tp","result":"[{\\"position_id\\": \\"${POS_A}\\", \\"market\\": \\"XRP dip to $1.00\\", \\"direction\\": \\"YES\\", \\"entry\\": 0.9"}` },
+  { action: 'charlie__trading-api__trading-api__get_positions', detail: '{"id":"tp","args":{"status":"open"}}', result_status: null, timestamp: ts2 },
+];
+check('R2 truncation: FIRST position (survived truncation) → clean pass',
+  gateEntityEvidence(`Position ${POS_A} is open at $0.90.`, ctx(twoPositionRead)).fired === false);
+check('R2 truncation: SECOND position (truncated away) → SOFT hedge, not hard escalation',
+  (() => { const g = gateEntityEvidence(`Position ${POS_B} is open at $0.40.`, ctx(twoPositionRead));
+    return g.fired === true && g.severity === 'soft'; })());
+check('R2 truncation: with NO relevant read this turn → still hard (incident shape preserved)',
+  (() => { const g = gateEntityEvidence(`Position ${POS_B} is open at $0.40.`, ctx([]));
+    return g.fired === true && g.severity === 'hard'; })());
+check('R2 truncation: a successful WRITE does not buy the softer verdict (read-scoped)',
+  (() => { const g = gateEntityEvidence(`Position ${POS_B} is open.`,
+    ctx(successPair('charlie__trading-api__trading-api__create_positions_manual', 'unrelated-1234'))); 
+    return g.fired === true && g.severity === 'hard'; })());
+
+console.log('Round 2 — placeholder ids, explanatory phrasing, corpus contract, hex case:');
+check('R2: nil UUID is exempt', gateEntityEvidence('An unset id shows as 00000000-0000-0000-0000-000000000000.', ctx([])).fired === false);
+check('R2: RFC 4122 sample UUID is exempt', gateEntityEvidence('The RFC sample is f81d4fae-7dec-11d0-a765-00a0c91e6bf6.', ctx([])).fired === false);
+check('R2: docs sample UUID is exempt', gateEntityEvidence('Docs use 123e4567-e89b-12d3-a456-426614174000.', ctx([])).fired === false);
+check('R2: explanatory "looks like" → soft, not hard',
+  (() => { const g = gateEntityEvidence(`A position id looks like ${INVENTED}.`, ctx([])); return g.fired && g.severity === 'soft'; })());
+check('R2: "e.g." → soft', (() => { const g = gateEntityEvidence(`Pass a position id, e.g. ${INVENTED}.`, ctx([])); return g.fired && g.severity === 'soft'; })());
+check('R2: a bare assertion is still HARD (explanatory downgrade is narrow)',
+  (() => { const g = gateEntityEvidence(`Position ${INVENTED} is open.`, ctx([])); return g.fired && g.severity === 'hard'; })());
+check('R2: hex UUID re-cited in UPPERCASE is the same id (RFC 4122 case-insensitive)',
+  gateEntityEvidence(`Position ${POS_A.toUpperCase()} is open.`, ctx([], { provenanceText: `close ${POS_A}` })).fired === false);
+check('R2: case-insensitivity does NOT extend to case-sensitive id families',
+  gateEntityEvidence('Workflow Qf39NEOEgz2W0ULS is live.', ctx([], { provenanceText: 'check Qf39NEOEgz2W0uls' })).fired === true);
+check('R2: an ALL-CAPS token is dropped as a constant, never treated as an id',
+  extractCitedIds('Workflow QF39NEOEGZ2W0ULS is live.').length === 0);
+import { _asCorpusText } from '../src/agents/gates.js';
+check('R2 corpus contract: raw array is JSON-stringified, never "[object Object]"',
+  _asCorpusText([{ position_id: POS_A }]).includes(POS_A));
+check('R2 corpus contract: raw object is searchable',
+  corpusHasEntity(_asCorpusText({ open: [POS_A] }), POS_A));
+check('R2 corpus contract: an object entityCorpus actually backs a claim end-to-end',
+  gateEntityEvidence(`Position ${POS_A} is open.`, ctx([], { entityCorpusText: _asCorpusText({ open: [POS_A] }) })).fired === false);
+check('R2 corpus contract: null/undefined stay null', _asCorpusText(null) === null && _asCorpusText(undefined) === null);
 
 console.log('gate-log:');
 process.env.QCLAW_GATE_LOG_PATH = join(dir, 'gate.log');

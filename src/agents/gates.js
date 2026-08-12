@@ -408,10 +408,16 @@ function _escapeRegExp(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$
  * bare digit-run claim ("Run 8842217 …") cannot be falsely backed by a different
  * id/timestamp ("exec_8842217", "1749… ") that merely contains those digits.
  */
-export function corpusHasEntity(corpus, entity) {
+export function corpusHasEntity(corpus, entity, { caseInsensitive = false } = {}) {
   if (!corpus || !entity) return false;
   try {
-    return new RegExp(String.raw`(?<![A-Za-z0-9_])${_escapeRegExp(entity)}(?![A-Za-z0-9_])`).test(corpus);
+    // caseInsensitive is opt-in and used ONLY for UUIDs, whose hex digits are
+    // case-insensitive by RFC 4122 — a lowercase id re-cited in uppercase is
+    // the same id and must not hard-fail. Other identifiers (n8n, Stripe, GHL)
+    // are case-SENSITIVE, so matching them loosely would manufacture false
+    // provenance; the default is unchanged for every existing caller.
+    const flags = caseInsensitive ? 'i' : '';
+    return new RegExp(String.raw`(?<![A-Za-z0-9_])${_escapeRegExp(entity)}(?![A-Za-z0-9_])`, flags).test(corpus);
   } catch {
     return corpus.includes(entity); // pathological entity → conservative fallback
   }
@@ -553,6 +559,22 @@ export function gateDelegation(response, ctx) {
  */
 const UUID_SRC = String.raw`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`;
 const UUID_RE = new RegExp(`^${UUID_SRC}$`, 'i');
+
+// Well-known placeholder UUIDs: the nil and max UUIDs, RFC 4122's own example,
+// and the ubiquitous docs sample. These are illustrations, never real records,
+// so citing one is not a provenance claim.
+const PLACEHOLDER_UUIDS = new Set([
+  '00000000-0000-0000-0000-000000000000',
+  'ffffffff-ffff-ffff-ffff-ffffffffffff',
+  'f81d4fae-7dec-11d0-a765-00a0c91e6bf6',
+  '123e4567-e89b-12d3-a456-426614174000',
+]);
+const isPlaceholderId = (id) => PLACEHOLDER_UUIDS.has(String(id || '').toLowerCase());
+
+// An explanatory sentence is teaching the SHAPE of an identifier, not asserting
+// a record exists ("the id looks like a7c3…", "e.g. a7c3…"). Hedging is the
+// right response; escalating is not.
+const EXPLANATORY_RE = /\blooks like\b|\be\.g\.|\bfor example\b|\bsuch as\b|\bplaceholder\b|\bexample\b/i;
 const ID_CITATION_RE = new RegExp([
   String.raw`\b${UUID_SRC}\b`,
   String.raw`\b(?=[A-Za-z0-9_]*[0-9])(?=[A-Za-z0-9_]*[A-Za-z])[A-Za-z0-9_]{12,}\b`,
@@ -574,52 +596,89 @@ export function extractCitedIds(sentence) {
     // ALL-CAPS tokens are constants, env vars and doc names by convention
     // (N8N_WORKFLOW_INDEX, FLOW_OS_STATE, QCLAW_GATES_ENABLED) — never the
     // mixed-case or lowercase-hex ids the services here actually mint.
-    .filter(t => !/^[A-Z0-9_]+$/.test(t));
+    .filter(t => !/^[A-Z0-9_]+$/.test(t))
+    .filter(t => !isPlaceholderId(t));
 }
 
 /**
- * SERVER-AUTHORED tool corpus over a wide window (default 30 days).
+ * Result payloads and accepted-argument text from SUCCESS tool rows, over a
+ * wide window (default 30 days), as two SEPARATE corpora.
  *
- * Only success-paired rows count, and this is the security-critical part:
- * a tool call's ARGUMENTS are composed by Charlie, so an id he invented and
- * then passed into a call is his own assertion, not evidence. Accepting raw
- * call args let a fabricated UUID launder itself — invent it, look it up, let
- * the lookup 404, then state it as fact (adversarial review, 2026-08-12).
- * Pairing with a SUCCESS result is what makes an argument trustworthy: the
- * server accepted it. This mirrors the reason Charlie's own prior replies are
- * excluded — both are the model vouching for itself.
+ * The split is the round-2 finding: `result_status === 'success'` means "the
+ * executor did not throw", NOT "the server validated this argument". Four live
+ * paths log a success row carrying Charlie-composed args that nothing checked —
+ * an out-of-scope call (registry._outOfScope RETURNS a structured value rather
+ * than throwing, so the executor books it as ok:true), the content-queue
+ * intercept (executor.js short-circuits with ok:true before the tool ever
+ * runs), a read that legitimately returns an empty set, and extra query params
+ * a skill HTTP tool silently ignores. So an argument is no longer proof.
  *
- * The window is wide because an identifier that a real tool ever returned is
- * real regardless of age; a fabricated one appears in no result, ever. So
- * widening costs no detection power and prevents false alarms on long-lived
- * entities (a Polymarket position can stay open for weeks). The practical
- * bound is the row cap, not the window: audit.db holds ~2k tool rows in total.
+ *  - RESULT payloads are server-authored → full provenance.
+ *  - Accepted ARGS are Charlie-authored but reached a real success → not proof,
+ *    but enough to hedge instead of escalate (see the severity split below).
+ *
+ * Both exclude pseudo-success shapes explicitly, so neither tier can launder
+ * through a call that never executed. Success result payloads are read
+ * directly rather than through correlatePairs, so a result whose call row fell
+ * outside the scan window is not silently dropped. Failed result payloads are
+ * excluded: an API echoing the requested id in its 404 would otherwise launder
+ * an invented one.
  *
  * Read failure returns '' — no provenance, which fires the gate (fail closed).
  */
-function _serverAuthoredCorpus(ctx) {
+// Matched against the STORED detail, which is JSON-encoded — the payload reads
+// {"result":"{\"error\":\"out_of_scope\"...}"}, so a pattern anchored on
+// unescaped quotes never fires. Match the distinctive tokens instead.
+const PSEUDO_SUCCESS_RE = /out_of_scope|Content queued for review \[ID:/i;
+const _isPseudoSuccess = (detail) => PSEUDO_SUCCESS_RE.test(String(detail || ''));
+
+// Rows the SYSTEM deposits rather than the model composing them: cc-results.js
+// builds these from the claude_code_dispatches table, so the task_id in their
+// `args` field is a database value, not a model-authored argument. The
+// args-are-untrusted rule targets arguments the MODEL wrote, so these are full
+// provenance on both halves — otherwise every legitimate "Claude Code completed
+// <task uuid>" reply would hard-fail, since the result half carries only the
+// summary text.
+const SYSTEM_DEPOSITED_ACTIONS = new Set(['claude_code_result', 'delegate_to_result']);
+
+function _successCorpora(ctx) {
   const mins = ctx.windowMinEntityHistory ?? 43_200; // 30 days
+  const empty = { results: '', acceptedArgs: '' };
   try {
-    if (!ctx.auditLog || typeof ctx.auditLog.toolEventsSince !== 'function') return '';
+    if (!ctx.auditLog || typeof ctx.auditLog.toolEventsSince !== 'function') return empty;
     const cutoff = new Date(ctx.now - mins * 60_000).toISOString();
     const events = ctx.auditLog.toolEventsSince(cutoff, 2000);
-    // Two server-authored surfaces:
-    //  1. every SUCCESS result payload, taken directly rather than via
-    //     correlatePairs — a result whose call row fell outside the scan window
-    //     is orphaned, and pairing would silently drop it, failing an honest
-    //     reference to a genuinely-created entity.
-    //  2. the args of calls PAIRED with a success result, since the server
-    //     accepted them. Args of failed calls are excluded: that is the
-    //     laundering path this function exists to close.
-    // Failed result payloads are excluded too — an API that echoes the
-    // requested id back in its 404 would otherwise launder an invented one.
-    const successResults = events.filter(e => e.result_status === 'success');
-    const acceptedArgs = correlatePairs(events)
-      .filter(p => p.result.result_status === 'success')
-      .map(p => p.call.detail);
-    return [...successResults.map(r => r.detail), ...acceptedArgs]
-      .map(d => String(d || '')).join('\n');
-  } catch { return ''; }
+    const genuine = (r) => r.result_status === 'success' && !_isPseudoSuccess(r.detail);
+    const systemRows = events.filter(r => SYSTEM_DEPOSITED_ACTIONS.has(r.action));
+    return {
+      results: [...events.filter(genuine), ...systemRows]
+        .map(r => String(r.detail || '')).join('\n'),
+      acceptedArgs: correlatePairs(events)
+        .filter(p => genuine(p.result))
+        .map(p => String(p.call.detail || '')).join('\n'),
+    };
+  } catch { return empty; }
+}
+
+/**
+ * Did a relevant READ-type tool succeed THIS turn? Round 2's truncation
+ * collision: index.js stores only the first 140 chars of a result, so a read
+ * returning two positions preserves one UUID and drops the other. Hard-failing
+ * the second position's honest citation would break exactly the trading flow
+ * this gate protects. When a read that could plausibly have returned the entity
+ * succeeded this turn, an unfound id degrades to a hedge instead of an
+ * escalation. Scoped to read-type tools so it cannot become a blanket
+ * "any successful tool this turn buys a softer verdict" bypass — both
+ * 2026-08-11 fabrications still hard-fail (one ran no tools at all, the other's
+ * create call errored).
+ */
+function _thisTurnReadSucceeded(ctx) {
+  try {
+    const events = windowEvents(ctx, ctx.windowMinComplete);
+    return events.some(r => r.result_status === 'success'
+      && !_isPseudoSuccess(r.detail)
+      && isStateTool(r.action));
+  } catch { return false; }
 }
 
 /**
@@ -656,49 +715,65 @@ export function gateEntityEvidence(response, ctx) {
   // inline span. Stripping those would reopen the exact incident.
   const prose = stripFencedBlocks(response || '');
   const cited = [];
+  let prev = '';
   for (const s of splitSentences(prose)) {
     if (isSuppressed(s)) continue;                 // questions / negations / future — never fire
     const ids = extractCitedIds(s);
-    if (ids.length) cited.push({ sentence: s, ids });
+    // Carry the preceding fragment so an explanatory marker survives sentence
+    // splitting: "e.g." is itself split on its periods, orphaning the id from
+    // the phrase that makes it an example. Used ONLY for the explanatory
+    // downgrade, so it can soften a verdict but never harden one.
+    if (ids.length) cited.push({ sentence: s, ids, context: `${prev} ${s}` });
+    prev = s;
   }
   if (!cited.length) return { gate: 'entity_evidence', fired: false };
 
-  let _corpus = null;
-  const serverText = () => (_corpus ??= _serverAuthoredCorpus(ctx));
-  const hasProvenance = (id) =>
-    corpusHasEntity(ctx.bootstrapText, id)
-    || corpusHasEntity(ctx.provenanceText, id)
-    || corpusHasEntity(ctx.entityCorpusText, id)
-    || corpusHasEntity(serverText(), id);
+  let _c = null;
+  const corpora = () => (_c ??= _successCorpora(ctx));
+  let _read = null;
+  const readRan = () => (_read ??= _thisTurnReadSucceeded(ctx));
+  // UUID hex is case-insensitive per RFC 4122; other id families are not.
+  const opts = (id) => ({ caseInsensitive: UUID_RE.test(id) });
 
-  // Severity is split by what the sentence DOES with the unsourced id, because
-  // the audit log truncates tool result payloads to 200 chars: an id returned
-  // deep inside a large response (a Stripe customer list, a GHL contact page)
-  // leaves no trace, so "no provenance" cannot be read as "fabricated" on its
-  // own. Replaying 200 real Telegram turns, a blanket hard-fail fired on ~5% of
-  // legitimate replies that were merely quoting ids out of tool output.
-  //   - id + an action/completion claim ("Confirmed logged: Position <uuid>") →
-  //     HARD. This is the incident shape, and the reprompt loop is what turned
-  //     two fabrications into real tool calls on 2026-08-11.
-  //   - bare citation with no action claim ("Customer: cus_…") → SOFT, so the
-  //     unverifiable sentence is hedged rather than triggering regeneration.
-  // Either way the claim never reaches the user unchallenged, which is the
-  // structural guarantee this gate exists to provide.
+  // FULL provenance — someone other than the model produced this id.
+  const hasProvenance = (id) =>
+    corpusHasEntity(ctx.bootstrapText, id, opts(id))
+    || corpusHasEntity(ctx.provenanceText, id, opts(id))
+    || corpusHasEntity(ctx.entityCorpusText, id, opts(id))
+    || corpusHasEntity(corpora().results, id, opts(id));
+
+  // WEAK signal — the id reached a genuinely successful call as an argument.
+  // Not proof (nothing validated it), but not nothing either, so it hedges
+  // rather than escalates. The round-1 bypass stays closed because a FAILED
+  // call is not success: invent → look up → 404 → assert still hard-fails.
+  const argsOnly = (id) => corpusHasEntity(corpora().acceptedArgs, id, opts(id));
+
   const fired = [];
   let anyHard = false;
-  for (const { sentence, ids } of cited) {
+  for (const { sentence, ids, context } of cited) {
     const unsourced = ids.filter(id => !hasProvenance(id));
     if (!unsourced.length) continue;
-    // HARD when the unsourced id is UUID-shaped, or the sentence asserts an
-    // action about it. A UUID is unforgeable-looking, never a human handle or a
-    // credential name, and is exactly what both fabrications invented. Every
-    // over-fire seen in the 200-turn replay cited a NON-UUID identifier it was
-    // quoting out of truncated tool output (Qf39NEOEgz2W0uls, cus_UP8VeCZ3X9hZbX,
-    // washingmachine17), so those hedge instead of triggering regeneration.
-    const hard = unsourced.some(id => UUID_RE.test(id))
+    // Base severity: an unsourced UUID, or an action claim about an unsourced
+    // id, is the incident shape. A bare non-UUID citation hedges (audit detail
+    // is truncated at 140 chars, so absence is not proof of fabrication).
+    let hard = unsourced.some(id => UUID_RE.test(id))
       || COMPLETION_RE.test(sentence) || isExtendedActionClaim(sentence);
+    let why = 'no provenance for the cited identifier';
+    if (hard) {
+      // Downgrades, each a case where absence of evidence is explainable.
+      if (EXPLANATORY_RE.test(context || sentence)) {
+        hard = false; why = 'identifier cited as an example/shape, not as a record';
+      } else if (readRan()) {
+        // Round-2 truncation collision: a read returning two positions stores
+        // only the first 140 chars, so the second position's honest citation
+        // finds nothing. A relevant read DID succeed this turn, so hedge.
+        hard = false; why = 'a relevant read succeeded this turn but stored detail is truncated';
+      } else if (unsourced.every(argsOnly)) {
+        hard = false; why = 'identifier only reached a successful call as an unvalidated argument';
+      }
+    }
     if (hard) anyHard = true;
-    fired.push({ text: sentence, verification_attempted: true, verified: false, severity: hard ? 'hard' : 'soft' });
+    fired.push({ text: sentence, verification_attempted: true, verified: false, severity: hard ? 'hard' : 'soft', reason: why });
   }
   if (!fired.length) return { gate: 'entity_evidence', fired: false };
   return {
@@ -774,6 +849,18 @@ export function isGatedTurn(agentName, context = {}) {
 /** Flatten the this-session bootstrap snapshot into a single searchable corpus
  * (state doc, recent build/audit log, probe results, memory) for entity-membership
  * checks. Null when no bootstrap was loaded this turn. */
+/**
+ * Normalise a caller-supplied corpus into searchable text. A raw array or
+ * object would otherwise become "[object Object]" via String(), silently
+ * providing zero provenance while looking configured — so structured input is
+ * JSON-stringified rather than accepted at face value.
+ */
+export function _asCorpusText(value) {
+  if (value == null) return null;
+  if (typeof value === 'string') return value || null;
+  try { return JSON.stringify(value) || null; } catch { return null; }
+}
+
 export function bootstrapCorpus(bootstrap) {
   if (!bootstrap) return null;
   try { return JSON.stringify(bootstrap); } catch { return null; }
@@ -806,7 +893,7 @@ export function runGates(response, auditLog, toolRegistry, opts = {}) {
     // replies, which would let a fabricated id launder itself forward.
     // windowMinEntityHistory is the wider lookback for real ids produced by an
     // earlier turn's tool call (default 30 days).
-    provenanceText: opts.provenance ? String(opts.provenance) : null,
+    provenanceText: _asCorpusText(opts.provenance),
     windowMinEntityHistory: opts.windowMinEntityHistory ?? 43_200,
     // Optional authoritative entity corpus, supplied by the CALLER. Gates run
     // synchronously in the reply path and fail closed, so they must never do
@@ -814,7 +901,7 @@ export function runGates(response, auditLog, toolRegistry, opts = {}) {
     // HTTP, and a blip would turn every id-bearing reply into an escalation.
     // A caller that already holds such a snapshot (fetched pre-turn, like
     // gatherCcResults) can pass it here to back long-lived entities directly.
-    entityCorpusText: opts.entityCorpus ? String(opts.entityCorpus) : null,
+    entityCorpusText: _asCorpusText(opts.entityCorpus),
   };
 
   const results = [];
