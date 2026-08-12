@@ -109,6 +109,41 @@ files and are still mutable via the dashboard. Reconciliation TBD.
 - n8n internal Postgres database — used by some n8n workflows for state/dedup logic (e.g. Morning Light WL→HL conflict resolution). Distinct from external Supabase. Hidden architectural dependency; access scope is internal-to-n8n only, not externally queryable from the Charlie or QClaw stack.
 
 - n8n Health Dashboard (email alerter): runs in a Manus GCP workspace (external platform, unaudited runtime); code exported 2026-08-18 to `github.com/tysonven/n8n-health-dashboard` (private). Sends "n8n Alert" emails via Gmail app password "n8n dashboard email" (created 2026-03-16, Manus-side env only); polls the n8n REST API every 5 min with the dedicated unscoped key "manus API" (`MYYZFn3DjtKQ43i4`). **DECOMMISSION-PENDING**: revoke the app password and the API key only after the heartbeat-based Telegram alerter is live and proven. Standing rule from this incident: platform-hosted builder workspaces (Manus and similar) get a LOCATIONS.md entry at creation, not at first commit; estate recon cannot enumerate them later.
+## Standalone applications (separate infrastructure, NOT on qclaw)
+
+Apps that have their own hosting and their own database. They share
+branding and sometimes credentials with the QClaw stack, but nothing about
+them is reachable from `ssh qclaw`. Do not assume a repo root, a `.env`, or
+a database is on the qclaw droplet just because the product is Flow OS.
+
+- **ghl-support-bot** (GHL Support Specialist + Flow OS Support chat)
+  - Repo: `github.com/tysonven/ghl-support-bot` (private). Local checkouts:
+    `~/Projects/ghl-support-bot` (primary) and `~/code/ghl-support-bot`
+    (second clone, same remote, keep them in sync or delete one)
+  - Default branch: `main`. Railway auto-deploys on merge to main, so a
+    merged PR is a production deploy. Migrations run at boot via
+    `runMigrations()` in `server/_core/index.ts` before the server listens
+  - Host: Railway project `wholesome-emotion`, single `production`
+    environment, services `ghl-support-bot` and `MySQL`
+  - Database: Railway MySQL, database `railway`. Internal
+    `mysql.railway.internal:3306` (app only, not reachable from a laptop);
+    external access via the MySQL service's `MYSQL_PUBLIC_URL` TCP proxy
+    (`caboose.proxy.rlwy.net`). Both are the same instance
+  - Domain: `support.flowos.tech`. Routes: `/` Flow OS app, `/ghl` GHL app,
+    `/ghl/landing` public marketing page
+  - Dependencies: Clerk (auth), Stripe (billing), Anthropic
+    `claude-haiku-4-5-20251001` (all user-facing answers), OpenAI
+    `text-embedding-3-small` (retrieval embeddings only), GHL Agency API
+    (sub-account verification)
+  - `GHL_AGENCY_API_KEY` is load-bearing: since the 2026-08-12 fail-closed
+    patch, an expired PIT blocks all new Flow OS self-service onboarding
+    and fails silently. No heartbeat yet
+  - Stale reference warning: the `.manus/db/*.json` dumps committed in that
+    repo show a TiDB host (`gateway04.us-east-1.prod.aws.tidbcloud.com`).
+    That is NOT the live database. It moved to Railway MySQL. Those dumps
+    also contain production DB host, user, database name and five real
+    customer email addresses, which is a problem if the repo is ever shared
+    with a white-label partner
 
 ## Secrets and credentials
 
