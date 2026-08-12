@@ -19,6 +19,7 @@
  */
 
 import { parseAuditTs } from '../security/audit.js';
+import { getEnv } from '../core/env.js';
 
 // ── §2.5 detection helpers ────────────────────────────────────────────────
 
@@ -163,10 +164,14 @@ export function matchEvidence(sentence, events, { requireStatus = 'success', tur
       // not just the call args. Dispatch tools (delegate_to / claude_code_dispatch)
       // return a SERVER-GENERATED task_id in the result — never in the call args —
       // so a dispatch claim that cites that task_id can only bind against the
-      // result row. Gated behind the flag + strictRelevant (dispatch-tool-only,
-      // success-only candidates) so it can't loosen completion/state matching,
-      // which must not bind entities that merely appear in arbitrary tool output.
-      const hay = matchResultDetail
+      // result row. The same is true of any created record's id (Gate 1 uses
+      // this for create_positions_manual's position_id, 2026-08-12).
+      // The `relevant` guard keeps it from loosening completion/state matching:
+      // when a relevance predicate is supplied, the result payload is searched
+      // only for tools that plausibly PRODUCE the entity, so an id that merely
+      // appears in some unrelated read's output can never back a claim.
+      const resultUsable = matchResultDetail && (!relevant || relevant(p.result.action));
+      const hay = resultUsable
         ? String(p.call.detail || '') + '\n' + String(p.result.detail || '')
         : String(p.call.detail || '');
       if (entities.some(e => hay.includes(e))) return { backed: true, evidence: p };
@@ -240,12 +245,37 @@ export function gateToolReference(response, ctx) {
 
 // Hyphen-aware boundaries (?<![\w-])…(?![\w-]) so hyphenated compounds like
 // "completed-tasks" / "auto-deploy" don't false-fire (P2 over-fire).
-// 2026-08-12: broadened with the trading/manual-logging verbs the 2026-08-11
-// fabrications used ("Manual trade logged", "Confirmed logged", "I bought YES
-// on ..."). Detection is verb-first, so a verb outside this list never reached
-// entity matching at all; Gate 5 (entity evidence) closes the structural
-// class, this keeps the verb path aligned with live vocabulary.
-const COMPLETION_RE = /(?<![\w-])(done|finished|complete|completed|shipped|deployed|fixed|resolved|merged|published|posted|sent|successfully|logged|confirmed|bought|sold|created|recorded|placed|executed|opened)(?![\w-])/i;
+const COMPLETION_RE = /(?<![\w-])(done|finished|complete|completed|shipped|deployed|fixed|resolved|merged|published|posted|sent|successfully)(?![\w-])/i;
+
+// 2026-08-12: the trading/manual-logging vocabulary the 2026-08-11 fabrications
+// used ("Manual trade logged", "Confirmed logged: Position …", "I bought YES").
+// These are SEPARATE from COMPLETION_RE because, unlike "deployed"/"shipped",
+// they are overwhelmingly used in NON-action senses in Charlie's real traffic.
+// Replaying 200 live Telegram turns with them folded straight into COMPLETION_RE
+// flipped 14 legitimate replies to hard_fail: "answer from logged state", "this
+// is logged in your preferences", "invoice (void status, created 6 May)",
+// "opened email" (a GHL contact tag), "no execution recorded", "1 active n8n
+// workflow confirmed so far". Blanket inclusion would reproduce the 2026-06-04
+// over-fire loop, so they count only in a FIRST-PERSON or elided-subject action
+// form — "I logged X" / "Logged X" / "Confirmed logged:" — which is the shape an
+// actual false completion claim takes. Same discriminator as Slice 4.1's
+// isFirstPersonAction, applied to detection rather than to bootstrap backing.
+const EXTENDED_ACTION_VERB = 'logged|confirmed|bought|sold|created|recorded|placed|executed|opened';
+const EXTENDED_ANY_RE = new RegExp(String.raw`(?<![\w-])(?:${EXTENDED_ACTION_VERB})(?![\w-])`, 'i');
+const EXTENDED_FP_RE = new RegExp(String.raw`\b(?:i|we)(?:'ve|'ll|'d)?\b(?:\s+(?:just|already|have|then|also|now|successfully|finally))*\s+(?:${EXTENDED_ACTION_VERB})\b`, 'i');
+// The trailing (?![\s*_]*:) keeps a markdown FIELD LABEL from reading as an
+// action: "- **Created:** Apr 25, 2026" is a Stripe invoice field, not a claim
+// that Charlie created something. "**Confirmed logged:**" is unaffected — the
+// colon follows a second word, not the verb.
+const EXTENDED_ELIDED_RE = new RegExp(String.raw`^[\s*_>#-]*(?:just\s+|already\s+|successfully\s+|finally\s+)?(?:${EXTENDED_ACTION_VERB})\b(?![\s*_]*:)`, 'i');
+
+/** True when a sentence asserts a this-session action using the extended
+ * trading/logging vocabulary (first-person or elided subject). */
+export function isExtendedActionClaim(sentence) {
+  const s = (sentence || '').trim();
+  if (!s || !EXTENDED_ANY_RE.test(s)) return false;
+  return EXTENDED_FP_RE.test(s) || EXTENDED_ELIDED_RE.test(s);
+}
 const STATE_RE = /(?<![\w-])(running|live|active|online|enabled|connected|working|up|healthy|passed|succeeded|successful|stable)(?![\w-])/i;
 // Characterization (needs a SUCCESS probe; an errored probe → hard_fail). Liveness
 // words moved here (R: "running" backed by an errored probe was a false-pass).
@@ -382,12 +412,20 @@ function windowEvents(ctx, windowMin) {
 
 /** Gate 1 — completion: each claim needs a backing success tool result (entity-aware). */
 export function gateCompletion(response, ctx) {
-  const claims = detectClaims(response, COMPLETION_RE);
+  const claims = splitSentences(response)
+    .filter(s => !isSuppressed(s))
+    .filter(s => COMPLETION_RE.test(s) || isExtendedActionClaim(s));
   if (!claims.length) return { gate: 'completion', fired: false };
   const events = windowEvents(ctx, ctx.windowMinComplete);
   const unbacked = [];
   for (const c of claims) {
-    const m = matchEvidence(c, events, { requireStatus: 'success', turnStartMs: ctx.turnStartMs ?? 0, relevant: isCompletionTool, bootstrapText: ctx.bootstrapText });
+    // matchResultDetail: a created record's id is SERVER-generated and exists
+    // only in the result payload (e.g. create_positions_manual returns
+    // position_id), never in the call args. Without this, an honest "logged
+    // position <id>" backed by a real successful create hard-failed — observed
+    // replaying the genuine 2026-08-11 19:21 position. Confined to
+    // isCompletionTool actions by the `relevant` guard in matchEvidence.
+    const m = matchEvidence(c, events, { requireStatus: 'success', turnStartMs: ctx.turnStartMs ?? 0, relevant: isCompletionTool, bootstrapText: ctx.bootstrapText, matchResultDetail: true });
     if (!m.backed) unbacked.push({ text: c, verification_attempted: true, verified: false });
   }
   if (!unbacked.length) return { gate: 'completion', fired: false };
@@ -470,12 +508,175 @@ export function gateDelegation(response, ctx) {
   };
 }
 
+// ── Gate 5 — entity evidence / identifier provenance (2026-08-12) ─────────
+
+/**
+ * Which citations Gate 5 polices. Deliberately NARROWER than ENTITY_PATTERNS'
+ * long-id rule, which is an extraction heuristic for an already-detected claim
+ * and may over-match harmlessly there. Gate 5 inspects EVERY assertive sentence
+ * and hard-fails, so its trigger must only match machine-generated identifiers:
+ *   1. UUID — the shape both 2026-08-11 fabrications invented.
+ *   2. Opaque token — 12+ chars of [A-Za-z0-9_] mixing at least one letter AND
+ *      one digit (n8n/GHL/Stripe-style ids: Qf39NEOEgz2W0uls, tnvXFYvODL1PrhJa).
+ * Hyphens are excluded from (2) on purpose: the broad long-id rule accepts any
+ * 12+ char hyphenated run, which would fire on ordinary prose Charlie writes
+ * constantly ("trading-worker", "claude-code-dispatcher", "flowos-sms-gateway")
+ * and on ISO timestamps ("2026-08-11T15"). Requiring a digit AND a letter also
+ * drops dictionary words ("successfully") and env var names (QCLAW_GATES_ENABLED).
+ */
+const UUID_SRC = String.raw`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`;
+const UUID_RE = new RegExp(`^${UUID_SRC}$`, 'i');
+const ID_CITATION_RE = new RegExp([
+  String.raw`\b${UUID_SRC}\b`,
+  String.raw`\b(?=[A-Za-z0-9_]*[0-9])(?=[A-Za-z0-9_]*[A-Za-z])[A-Za-z0-9_]{12,}\b`,
+].join('|'), 'gi');
+
+/** Identifiers cited by an assertive sentence (deduped, order-preserving).
+ * Tool names are blanked first: `charlie__n8n-api__…__get_workflows_limit_200`
+ * contains digit-bearing fragments ("charlie__n8n") that look like opaque ids,
+ * so listing available tools would otherwise fire this gate. Tool names are
+ * Gate 4's job, and it resolves them against the real registry. */
+export function extractCitedIds(sentence) {
+  // Any whitespace-delimited token containing `__` is a tool name by this
+  // codebase's convention. Blanking the whole token (rather than the part
+  // TOOL_NAME_RE matches) matters because the tail of
+  // `charlie__n8n-api__…__get_workflows_limit_200` survives as
+  // "workflows_limit_200", which reads as an opaque id.
+  const s = String(sentence || '').replace(/\S*__\S*/g, ' ');
+  return [...new Set([...s.matchAll(ID_CITATION_RE)].map(m => m[0]))]
+    // ALL-CAPS tokens are constants, env vars and doc names by convention
+    // (N8N_WORKFLOW_INDEX, FLOW_OS_STATE, QCLAW_GATES_ENABLED) — never the
+    // mixed-case or lowercase-hex ids the services here actually mint.
+    .filter(t => !/^[A-Z0-9_]+$/.test(t));
+}
+
+/**
+ * Tool-event detail corpus over a WIDER window than this turn (default 24h).
+ * This is what lets Charlie legitimately reference an entity a real tool call
+ * produced earlier in the session ("your XRP position 82256da8-… is closed")
+ * without a fresh probe. A fabricated id appears in no tool row, ever, so the
+ * widening costs nothing in detection power. Read failure returns '' — i.e. no
+ * provenance, which fires the gate (fail closed).
+ */
+function _toolHistoryCorpus(ctx) {
+  const mins = ctx.windowMinEntityHistory ?? 1440;
+  try {
+    if (!ctx.auditLog || typeof ctx.auditLog.toolEventsSince !== 'function') return '';
+    const cutoff = new Date(ctx.now - mins * 60_000).toISOString();
+    return ctx.auditLog.toolEventsSince(cutoff, 2000)
+      .map(r => String(r.detail || '')).join('\n');
+  } catch { return ''; }
+}
+
+/**
+ * Gate 5 — identifier provenance. Structural, verb-independent complement to
+ * Gate 1: ANY assertive sentence citing a machine identifier must be able to
+ * say where that identifier came from. Closes the class the 2026-08-11
+ * incidents exploited — a claim phrased with a verb outside COMPLETION_RE
+ * ("Confirmed logged: Position a7c3d8e2-…") never reached entity matching at
+ * all, so an invented UUID passed unchallenged.
+ *
+ * Gate 5 checks PROVENANCE, not truth: it asks "did this id come from
+ * somewhere real", while Gates 1/3 ask "is the claim about it true". Hence
+ * requireStatus 'nonnull' — an id that appears in a FAILED tool call is still
+ * real, so honest error reporting ("the create call for position X returned
+ * 400") does not fire, while Gate 1 still holds any success claim to a success
+ * result. matchResultDetail is set because server-generated ids (a created
+ * position_id) exist only in the RESULT payload, never in the call args.
+ *
+ * Accepted provenance, in order: this-turn tool traffic → this-session
+ * bootstrap snapshot → user-supplied text (Tyson's own messages, so an id he
+ * pasted and Charlie echoes back is fine) → any tool row in the wider history
+ * window. Charlie's own prior assistant turns are deliberately NOT a source:
+ * treating them as provenance would let a fabricated id launder itself into
+ * legitimacy on the next turn.
+ */
+export function gateEntityEvidence(response, ctx) {
+  const cited = [];
+  for (const s of splitSentences(response || '')) {
+    if (isSuppressed(s)) continue;                 // questions / negations / future — never fire
+    const ids = extractCitedIds(s);
+    if (ids.length) cited.push({ sentence: s, ids });
+  }
+  if (!cited.length) return { gate: 'entity_evidence', fired: false };
+
+  const events = windowEvents(ctx, ctx.windowMinComplete);
+  let _history = null;
+  const historyText = () => (_history ??= _toolHistoryCorpus(ctx));
+  const hasProvenance = (id) =>
+    matchEvidence(id, events, {
+      requireStatus: 'nonnull', turnStartMs: ctx.turnStartMs ?? 0,
+      noEntityFallback: false, matchResultDetail: true,
+    }).backed
+    || corpusHasEntity(ctx.bootstrapText, id)
+    || corpusHasEntity(ctx.provenanceText, id)
+    || corpusHasEntity(historyText(), id);
+
+  // Severity is split by what the sentence DOES with the unsourced id, because
+  // the audit log truncates tool result payloads to 200 chars: an id returned
+  // deep inside a large response (a Stripe customer list, a GHL contact page)
+  // leaves no trace, so "no provenance" cannot be read as "fabricated" on its
+  // own. Replaying 200 real Telegram turns, a blanket hard-fail fired on ~5% of
+  // legitimate replies that were merely quoting ids out of tool output.
+  //   - id + an action/completion claim ("Confirmed logged: Position <uuid>") →
+  //     HARD. This is the incident shape, and the reprompt loop is what turned
+  //     two fabrications into real tool calls on 2026-08-11.
+  //   - bare citation with no action claim ("Customer: cus_…") → SOFT, so the
+  //     unverifiable sentence is hedged rather than triggering regeneration.
+  // Either way the claim never reaches the user unchallenged, which is the
+  // structural guarantee this gate exists to provide.
+  const fired = [];
+  let anyHard = false;
+  for (const { sentence, ids } of cited) {
+    const unsourced = ids.filter(id => !hasProvenance(id));
+    if (!unsourced.length) continue;
+    // HARD when the unsourced id is UUID-shaped, or the sentence asserts an
+    // action about it. A UUID is unforgeable-looking, never a human handle or a
+    // credential name, and is exactly what both fabrications invented. Every
+    // over-fire seen in the 200-turn replay cited a NON-UUID identifier it was
+    // quoting out of truncated tool output (Qf39NEOEgz2W0uls, cus_UP8VeCZ3X9hZbX,
+    // washingmachine17), so those hedge instead of triggering regeneration.
+    const hard = unsourced.some(id => UUID_RE.test(id))
+      || COMPLETION_RE.test(sentence) || isExtendedActionClaim(sentence);
+    if (hard) anyHard = true;
+    fired.push({ text: sentence, verification_attempted: true, verified: false, severity: hard ? 'hard' : 'soft' });
+  }
+  if (!fired.length) return { gate: 'entity_evidence', fired: false };
+  return {
+    gate: 'entity_evidence', fired: true, severity: anyHard ? 'hard' : 'soft', claims: fired,
+    action: anyHard ? 'reprompt' : 'rewrite',
+    reason: 'cited identifier has no provenance: no tool call/result this turn or in session history, not in the bootstrap snapshot, and not supplied by the user',
+  };
+}
+
 // ── Framework ─────────────────────────────────────────────────────────────
 
-const GATES = [gateToolReference, gateCompletion, gateState, gateDelegation];
+const GATES = [gateToolReference, gateCompletion, gateState, gateDelegation, gateEntityEvidence];
 
+/**
+ * Kill-switch resolution, in precedence order: real process env → the
+ * ~/.quantumclaw/.env file → default ON.
+ *
+ * The file fallback exists because on the production host NOTHING loads that
+ * file into process.env: QClaw has no dotenv, PM2 6.0.14's env_file does not
+ * work here (see ecosystem.config.cjs), and quantumclaw's environment is
+ * whatever was baked into ~/.pm2/dump.pm2 at `pm2 start` time. So the
+ * long-standing `QCLAW_GATES_ENABLED=1` line in that file was inert — an
+ * operator setting it to 0 during an incident would have seen no effect, and
+ * anyone reading the file would conclude the flag was doing something. Reading
+ * it here via the same core/env.js helper the dashboard and bootstrap probes
+ * already use makes the documented switch real without touching PM2.
+ *
+ * Note the file is read through getEnv()'s module-level cache, so a change
+ * takes effect on restart (same semantics as boot-cached secrets), and an
+ * unreadable/missing file yields {} → default ON. Default-ON is deliberate:
+ * losing the file must never silently disable verification.
+ */
 function gatesEnabled() {
-  const v = process.env.QCLAW_GATES_ENABLED;
+  let v = process.env.QCLAW_GATES_ENABLED;
+  if (v === undefined) {
+    try { v = getEnv().QCLAW_GATES_ENABLED; } catch { v = undefined; }
+  }
   return !(v === '0' || v === 'false');
 }
 
@@ -541,6 +742,13 @@ export function runGates(response, auditLog, toolRegistry, opts = {}) {
     agentScope: opts.agentScope || null,
     // Slice 4.1: this-session bootstrap as a backing source for recited claims.
     bootstrapText: bootstrapCorpus(opts.bootstrap),
+    // Gate 5: identifier provenance. `provenance` is USER-authored text only
+    // (this turn's message + the user's prior turns) — never Charlie's own
+    // replies, which would let a fabricated id launder itself forward.
+    // windowMinEntityHistory is the wider lookback for real ids created by an
+    // earlier turn's tool call.
+    provenanceText: opts.provenance ? String(opts.provenance) : null,
+    windowMinEntityHistory: opts.windowMinEntityHistory ?? 1440,
   };
 
   const results = [];
@@ -592,6 +800,7 @@ const VIOLATION_BY_GATE = {
   state: 'a state/liveness claim with no probe run THIS turn',
   tool_reference: 'a reference to a tool that is not registered in your current scope',
   delegation: 'a Claude Code claim with no backing evidence — a "dispatched/handed off" claim needs a successful claude_code_dispatch THIS turn, and an "it completed/found X" claim needs a completed Claude Code result for that specific task',
+  entity_evidence: 'an ID/UUID you cited that came from nowhere — no tool call or result produced it this turn or earlier in this session, it is not in your briefing, and the user did not give it to you. Never invent or guess an identifier: run the tool and quote the id it returns, or say you do not have one',
 };
 
 /** Augmented re-prompt note for a hard_fail (describes violations by class;
@@ -631,8 +840,8 @@ export function buildEscalation(gateOut) {
  * one. Branches on gateOut.result (NOT action literals). Caller keeps tools
  * registered for the whole call (cleanupTools fires once after this returns).
  */
-export async function regenerateWithGates({ generate, auditLog, toolRegistry, turnStart, agentScope = null, bootstrap = null, baseMessages, maxAttempts = 3, onGateLog = null, onEscalate = null, now = null }) {
-  const opts = () => ({ now: now || Date.now(), turnStart, agentScope, bootstrap });
+export async function regenerateWithGates({ generate, auditLog, toolRegistry, turnStart, agentScope = null, bootstrap = null, provenance = null, baseMessages, maxAttempts = 3, onGateLog = null, onEscalate = null, now = null }) {
+  const opts = () => ({ now: now || Date.now(), turnStart, agentScope, bootstrap, provenance });
   let messages = baseMessages;
   let result = await generate(messages);
   let attempt = 1;

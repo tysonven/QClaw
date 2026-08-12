@@ -559,6 +559,15 @@ export class Agent {
         // Slice 4.1: this-session bootstrap snapshot — backs RECITED claims
         // about known entities (not first-person action claims). See gates.js.
         bootstrap: context?.bootstrap || null,
+        // Gate 5 (2026-08-12): identifier provenance. USER-authored text only —
+        // this turn's message plus the user's earlier turns — so an id Tyson
+        // pasted and Charlie echoes back is legitimate. Charlie's own assistant
+        // turns are excluded on purpose: counting them would let a fabricated id
+        // become self-justifying on the following turn.
+        provenance: [
+          textMessage,
+          ...truncatedHistory.filter(h => h.role === 'user').map(h => h.content),
+        ].filter(c => typeof c === 'string').join('\n'),
         baseMessages: messages,
         onGateLog: (gateOut, attempt) => {
           for (const g of gateOut.gates) {
