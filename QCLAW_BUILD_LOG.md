@@ -20367,3 +20367,20 @@ Published workflows but mostly 0 enrolled. The page's pitch is "the
 system just runs". Retake wants: live-looking enrollment numbers, no
 URL bar, no snapshot label. When retaken, drop the ?v= cache-buster
 from MEDIA.dashboard or bump it to the new date.
+
+## 2026-08-12, flowos-web: session section LIVE (Slice 6 open item 1 closed)
+
+Tyson confirmed the Automate to Elevate purchase path tested end to
+end. The section built in Slice 6 un-commented (a5588a5): renders
+after the guarantee, before the infrastructure strip, in the quiet
+styling the brief specified (no card, no signal CTA, ghost link), so
+it does not compete with the pricing block; confirmed by screenshot
+at both widths against the dark pricing section. One polish fix
+found at 375px before commit: the CTA arrow wrapped onto its own
+line, bound to the last word with a non-breaking space. Verified on
+production: all copy strings live, CTA links
+go.flowos.tech/automate-to-elevate-session (200 follow-through), no
+TODO text, section ordering correct. Slice 6 open items remaining:
+outcome testimonial (top proof slot when it arrives), em-dash sweep
+of legacy pages, /products meta length, Tyson's hero screenshot
+retakes.
