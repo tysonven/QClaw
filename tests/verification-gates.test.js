@@ -129,7 +129,16 @@ check('fail-closed: throwing registry → hard_fail (no throw out)', (() => {
 console.log('Gate 1 / 3 / 2 (Unit 2):');
 import { gateCompletion, gateState, gateDelegation, isCompletionTool } from '../src/agents/gates.js';
 const ts2 = new Date().toISOString();
-const mkAudit = (events) => ({ toolEventsSince: () => events });
+// Honours the cutoff argument (2026-08-12). The previous version ignored it and
+// returned every event for any window, so the wide entity-history window was
+// never actually exercised — a sign error or a zeroed default would not have
+// failed a single test.
+const mkAudit = (events) => ({
+  toolEventsSince: (cutoffIso) => {
+    const cut = parseAuditTs(cutoffIso);
+    return events.filter(e => parseAuditTs(e.timestamp) >= cut);
+  },
+});
 const ctx = (events, extra = {}) => ({ auditLog: mkAudit(events), now: Date.now(), turnStartMs: Date.now() - 60000, windowMinComplete: 10, windowMinState: 5, ...extra });
 const successPair = (action, entity) => ([
   { action, detail: `{"id":"p1","result":"OK updated"}`, result_status: 'success', timestamp: ts2 },
@@ -536,9 +545,24 @@ check('G5 provenance: id present in the bootstrap snapshot → not fired',
   gateEntityEvidence(`Position ${REAL_POS} is open.`, ctx([], { bootstrapText: bootstrapCorpus({ state: { open_positions: `${REAL_POS} XRP` } }) })).fired === false);
 check('G5 provenance: id the USER supplied this turn, echoed back → not fired',
   gateEntityEvidence(`Position ${REAL_POS} is the one you mean.`, ctx([], { provenanceText: `close ${REAL_POS} please` })).fired === false);
-check('G5 provenance: honest error report about a REAL id (errored tool row) → not fired',
-  gateEntityEvidence(`The create call for position ${REAL_POS} returned a 400.`,
-    ctx(errorPair('charlie__trading-api__trading-api__create_positions_manual', REAL_POS))).fired === false);
+// BYPASS REGRESSION (adversarial review 2026-08-12): an id present ONLY in the
+// arguments of a FAILED call is Charlie's own invention echoed back, never
+// provenance. Invent a UUID → look it up → let it 404 → assert it as fact.
+check('G5 BYPASS: id only in a FAILED call\'s args → NOT provenance, fires',
+  gateEntityEvidence(`Position ${INVENTED} is open.`,
+    ctx(errorPair('charlie__trading-api__trading-api__get_positions_id', INVENTED))).fired === true);
+check('G5 BYPASS: same id, same failed call, bare portfolio framing → still fires',
+  gateEntityEvidence(`Position ${INVENTED} — YES @ 0.40, 24.93 shares.`,
+    ctx(errorPair('charlie__trading-api__trading-api__get_positions_id', INVENTED))).fired === true);
+// The honest-error report stays clean when the id has REAL provenance (a prior
+// successful create), which is the realistic shape of that sentence.
+check('G5: honest error report about a genuinely-created id → not fired',
+  gateEntityEvidence(`The close call for position ${REAL_POS} returned a 400.`,
+    ctx([...createPair('charlie__trading-api__trading-api__create_positions_manual', REAL_POS),
+         ...errorPair('charlie__trading-api__trading-api__close_position', REAL_POS)])).fired === false);
+check('G5: a SUCCESS-paired call arg is still provenance (server accepted it)',
+  gateEntityEvidence(`Workflow Qf39NEOEgz2W0uls is the content pipeline.`,
+    ctx(successPair('shared__n8n-api__n8n-api__get_workflows_id', 'Qf39NEOEgz2W0uls'))).fired === false);
 
 // FALSE-POSITIVE CHECK 4 (brief) — a real past entity from an EARLIER turn's
 // tool call, referenced with no fresh probe. Backed via the wider history window.
@@ -581,6 +605,46 @@ check('G5 fail-closed: history corpus unreadable → still fired',
     auditLog: { toolEventsSince: (iso) => { if (Date.parse(iso) < Date.now() - 3600_000) throw new Error('deep scan failed'); return []; } },
     now: Date.now(), turnStartMs: Date.now() - 60000, windowMinComplete: 10, windowMinState: 5,
   }).fired === true);
+
+console.log('Fix 3 — fenced-code exemption (Gate 5):');
+check('G5 FP: UUID inside a fenced block → NOT fired (documenting an API shape)',
+  gateEntityEvidence('Here is the call shape:\n```\ncurl -X POST /positions/manual -d {"position_id":"' + INVENTED + '"}\n```', ctx([])).fired === false);
+check('G5 LOAD-BEARING: UUID in an INLINE code span STILL fires (both incidents used backticks)',
+  gateEntityEvidence('**Confirmed logged:** Position `' + INVENTED + '`', ctx([])).fired === true);
+check('G5: prose id outside the fence still fires when a fence is present',
+  gateEntityEvidence('Position ' + INVENTED + ' is open.\n```\nexample\n```', ctx([])).fired === true);
+
+console.log('Fix 2 — wide entity-history window:');
+const dayMs = 86400_000;
+const agedRows = (ageDays) => ([
+  { action: 'charlie__trading-api__trading-api__create_positions_manual', detail: `{"id":"h1","result":"{\\"position_id\\": \\"${REAL_POS}\\"}"}`, result_status: 'success', timestamp: new Date(Date.now() - ageDays * dayMs).toISOString() },
+  { action: 'charlie__trading-api__trading-api__create_positions_manual', detail: '{"id":"h1","args":{"market_url":"https://polymarket.com/x"}}', result_status: null, timestamp: new Date(Date.now() - ageDays * dayMs).toISOString() },
+]);
+check('G5: position created 5 DAYS ago, no fresh probe → NOT fired (was a false positive at 24h)',
+  gateEntityEvidence(`Your XRP position ${REAL_POS} is still open.`, ctx(agedRows(5))).fired === false);
+check('G5: position created 29 days ago → still backed',
+  gateEntityEvidence(`Your XRP position ${REAL_POS} is still open.`, ctx(agedRows(29))).fired === false);
+check('G5: beyond the 30-day window → fires (window is a real boundary, not a no-op)',
+  gateEntityEvidence(`Your XRP position ${REAL_POS} is still open.`, ctx(agedRows(31))).fired === true);
+check('G5: injected authoritative entity corpus backs a long-lived id',
+  gateEntityEvidence(`Your XRP position ${REAL_POS} is still open.`,
+    ctx(agedRows(31), { entityCorpusText: `open positions: ${REAL_POS}` })).fired === false);
+
+console.log('Fix 4 — provenance assembly (registry wiring contract):');
+import { buildProvenanceText } from '../src/agents/gates.js';
+check('provenance: includes this turn\'s user message',
+  buildProvenanceText('close ' + REAL_POS, []).includes(REAL_POS));
+check('provenance: includes the user\'s EARLIER turns',
+  buildProvenanceText('do it', [{ role: 'user', content: `about ${REAL_POS}` }]).includes(REAL_POS));
+check('provenance: EXCLUDES assistant turns (anti-laundering)',
+  buildProvenanceText('do it', [{ role: 'assistant', content: `Position ${INVENTED}` }]).includes(INVENTED) === false);
+check('provenance: tolerates malformed history rows',
+  (() => { try { return typeof buildProvenanceText('x', [null, {}, { role: 'user' }, { role: 'user', content: 7 }]) === 'string'; } catch { return false; } })());
+check('provenance: non-array history does not throw', (() => { try { buildProvenanceText('x', null); return true; } catch { return false; } })());
+// Wiring guard: catches the gate being silently unwired from the reply path.
+const registrySrc = readFileSync(new URL('../src/agents/registry.js', import.meta.url), 'utf-8');
+check('WIRING: registry passes provenance built by buildProvenanceText into the gate loop',
+  /provenance:\s*buildProvenanceText\(\s*textMessage\s*,\s*truncatedHistory\s*\)/.test(registrySrc));
 
 console.log('gate-log:');
 process.env.QCLAW_GATE_LOG_PATH = join(dir, 'gate.log');

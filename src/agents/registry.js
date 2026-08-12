@@ -11,7 +11,7 @@ import { log } from '../core/logger.js';
 import { parseSkill, skillToTools, executeSkillTool } from './skill-parser.js';
 import { loadSkills } from './skill-loader.js';
 import { scanSpecialistResults } from '../tools/delegate-to.js';
-import { regenerateWithGates, isGatedTurn } from './gates.js';
+import { regenerateWithGates, isGatedTurn, buildProvenanceText } from './gates.js';
 import { gatherCcResults, depositCcEvidence } from './cc-results.js';
 import { appendGateLog } from '../observability/gate-log.js';
 import { appendChannelEvent } from '../observability/channel-events.js';
@@ -564,10 +564,7 @@ export class Agent {
         // pasted and Charlie echoes back is legitimate. Charlie's own assistant
         // turns are excluded on purpose: counting them would let a fabricated id
         // become self-justifying on the following turn.
-        provenance: [
-          textMessage,
-          ...truncatedHistory.filter(h => h.role === 'user').map(h => h.content),
-        ].filter(c => typeof c === 'string').join('\n'),
+        provenance: buildProvenanceText(textMessage, truncatedHistory),
         baseMessages: messages,
         onGateLog: (gateOut, attempt) => {
           for (const g of gateOut.gates) {

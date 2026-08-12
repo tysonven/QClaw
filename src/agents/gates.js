@@ -37,6 +37,33 @@ export function splitSentences(text) {
     .filter(Boolean);
 }
 
+/**
+ * Remove ONLY fenced code blocks, keeping inline `code` spans intact. Gate 5
+ * uses this instead of stripCodeSpans: a fenced block is an example or a
+ * command Charlie is showing, but an inline span is how he formats a real
+ * identifier in ordinary prose (both 2026-08-11 fabrications cited their
+ * invented UUID inside backticks), so stripping inline spans there would be a
+ * detection hole rather than a false-positive fix.
+ */
+export function stripFencedBlocks(text) {
+  if (!text) return '';
+  return String(text).replace(/```[\s\S]*?```/g, ' ');
+}
+
+/**
+ * Assemble the Gate 5 provenance corpus from USER-authored text only: this
+ * turn's message plus the user's earlier turns. Extracted from registry.js so
+ * the role-filtering contract is unit-testable — the previous inline version
+ * would have degraded silently to "current message only" if the history row
+ * shape ever changed, with no test failing.
+ */
+export function buildProvenanceText(textMessage, history = []) {
+  const parts = [textMessage, ...(Array.isArray(history) ? history : [])
+    .filter(h => h && h.role === 'user')
+    .map(h => h.content)];
+  return parts.filter(c => typeof c === 'string' && c).join('\n');
+}
+
 /** Remove code-fenced spans, inline-code spans, and blockquote lines. Gate-4 only. */
 export function stripCodeSpans(text) {
   if (!text) return '';
@@ -551,20 +578,47 @@ export function extractCitedIds(sentence) {
 }
 
 /**
- * Tool-event detail corpus over a WIDER window than this turn (default 24h).
- * This is what lets Charlie legitimately reference an entity a real tool call
- * produced earlier in the session ("your XRP position 82256da8-… is closed")
- * without a fresh probe. A fabricated id appears in no tool row, ever, so the
- * widening costs nothing in detection power. Read failure returns '' — i.e. no
- * provenance, which fires the gate (fail closed).
+ * SERVER-AUTHORED tool corpus over a wide window (default 30 days).
+ *
+ * Only success-paired rows count, and this is the security-critical part:
+ * a tool call's ARGUMENTS are composed by Charlie, so an id he invented and
+ * then passed into a call is his own assertion, not evidence. Accepting raw
+ * call args let a fabricated UUID launder itself — invent it, look it up, let
+ * the lookup 404, then state it as fact (adversarial review, 2026-08-12).
+ * Pairing with a SUCCESS result is what makes an argument trustworthy: the
+ * server accepted it. This mirrors the reason Charlie's own prior replies are
+ * excluded — both are the model vouching for itself.
+ *
+ * The window is wide because an identifier that a real tool ever returned is
+ * real regardless of age; a fabricated one appears in no result, ever. So
+ * widening costs no detection power and prevents false alarms on long-lived
+ * entities (a Polymarket position can stay open for weeks). The practical
+ * bound is the row cap, not the window: audit.db holds ~2k tool rows in total.
+ *
+ * Read failure returns '' — no provenance, which fires the gate (fail closed).
  */
-function _toolHistoryCorpus(ctx) {
-  const mins = ctx.windowMinEntityHistory ?? 1440;
+function _serverAuthoredCorpus(ctx) {
+  const mins = ctx.windowMinEntityHistory ?? 43_200; // 30 days
   try {
     if (!ctx.auditLog || typeof ctx.auditLog.toolEventsSince !== 'function') return '';
     const cutoff = new Date(ctx.now - mins * 60_000).toISOString();
-    return ctx.auditLog.toolEventsSince(cutoff, 2000)
-      .map(r => String(r.detail || '')).join('\n');
+    const events = ctx.auditLog.toolEventsSince(cutoff, 2000);
+    // Two server-authored surfaces:
+    //  1. every SUCCESS result payload, taken directly rather than via
+    //     correlatePairs — a result whose call row fell outside the scan window
+    //     is orphaned, and pairing would silently drop it, failing an honest
+    //     reference to a genuinely-created entity.
+    //  2. the args of calls PAIRED with a success result, since the server
+    //     accepted them. Args of failed calls are excluded: that is the
+    //     laundering path this function exists to close.
+    // Failed result payloads are excluded too — an API that echoes the
+    // requested id back in its 404 would otherwise launder an invented one.
+    const successResults = events.filter(e => e.result_status === 'success');
+    const acceptedArgs = correlatePairs(events)
+      .filter(p => p.result.result_status === 'success')
+      .map(p => p.call.detail);
+    return [...successResults.map(r => r.detail), ...acceptedArgs]
+      .map(d => String(d || '')).join('\n');
   } catch { return ''; }
 }
 
@@ -577,40 +631,45 @@ function _toolHistoryCorpus(ctx) {
  * all, so an invented UUID passed unchallenged.
  *
  * Gate 5 checks PROVENANCE, not truth: it asks "did this id come from
- * somewhere real", while Gates 1/3 ask "is the claim about it true". Hence
- * requireStatus 'nonnull' — an id that appears in a FAILED tool call is still
- * real, so honest error reporting ("the create call for position X returned
- * 400") does not fire, while Gate 1 still holds any success claim to a success
- * result. matchResultDetail is set because server-generated ids (a created
- * position_id) exist only in the RESULT payload, never in the call args.
+ * somewhere real", while Gates 1/3 ask "is the claim about it true".
  *
- * Accepted provenance, in order: this-turn tool traffic → this-session
- * bootstrap snapshot → user-supplied text (Tyson's own messages, so an id he
- * pasted and Charlie echoes back is fine) → any tool row in the wider history
- * window. Charlie's own prior assistant turns are deliberately NOT a source:
- * treating them as provenance would let a fabricated id launder itself into
- * legitimacy on the next turn.
+ * Every accepted source is authored by someone OTHER than the model: a
+ * success-paired tool call (the server accepted or produced it), the session
+ * bootstrap snapshot, an injected authoritative entity corpus, or the user's
+ * own messages (an id Tyson pasted and Charlie echoes back is fine). Charlie's
+ * prior assistant turns are excluded, and so are the arguments of failed tool
+ * calls — both are the model vouching for its own invention. An earlier
+ * revision accepted raw call args and was bypassable: invent a UUID, look it
+ * up, let the lookup fail, then assert it (adversarial review, 2026-08-12).
+ *
+ * Note there is no separate this-turn tier. The wide server corpus subsumes
+ * it — this turn's rows are in the window too — and the previous tiered
+ * version gave a false impression that its requireStatus/matchResultDetail
+ * options were gating something. Gates 1/2/3 remain the this-turn checks.
  */
 export function gateEntityEvidence(response, ctx) {
+  // Fenced code blocks are stripped: a UUID inside a ``` example is Charlie
+  // documenting an API shape, not asserting a fact, and hard-failing that is a
+  // false positive (adversarial review). Inline `code` spans are deliberately
+  // NOT stripped, unlike Gate 4 — Charlie formats real ids with backticks
+  // constantly, and BOTH 2026-08-11 fabrications put the invented UUID in an
+  // inline span. Stripping those would reopen the exact incident.
+  const prose = stripFencedBlocks(response || '');
   const cited = [];
-  for (const s of splitSentences(response || '')) {
+  for (const s of splitSentences(prose)) {
     if (isSuppressed(s)) continue;                 // questions / negations / future — never fire
     const ids = extractCitedIds(s);
     if (ids.length) cited.push({ sentence: s, ids });
   }
   if (!cited.length) return { gate: 'entity_evidence', fired: false };
 
-  const events = windowEvents(ctx, ctx.windowMinComplete);
-  let _history = null;
-  const historyText = () => (_history ??= _toolHistoryCorpus(ctx));
+  let _corpus = null;
+  const serverText = () => (_corpus ??= _serverAuthoredCorpus(ctx));
   const hasProvenance = (id) =>
-    matchEvidence(id, events, {
-      requireStatus: 'nonnull', turnStartMs: ctx.turnStartMs ?? 0,
-      noEntityFallback: false, matchResultDetail: true,
-    }).backed
-    || corpusHasEntity(ctx.bootstrapText, id)
+    corpusHasEntity(ctx.bootstrapText, id)
     || corpusHasEntity(ctx.provenanceText, id)
-    || corpusHasEntity(historyText(), id);
+    || corpusHasEntity(ctx.entityCorpusText, id)
+    || corpusHasEntity(serverText(), id);
 
   // Severity is split by what the sentence DOES with the unsourced id, because
   // the audit log truncates tool result payloads to 200 chars: an id returned
@@ -745,10 +804,17 @@ export function runGates(response, auditLog, toolRegistry, opts = {}) {
     // Gate 5: identifier provenance. `provenance` is USER-authored text only
     // (this turn's message + the user's prior turns) — never Charlie's own
     // replies, which would let a fabricated id launder itself forward.
-    // windowMinEntityHistory is the wider lookback for real ids created by an
-    // earlier turn's tool call.
+    // windowMinEntityHistory is the wider lookback for real ids produced by an
+    // earlier turn's tool call (default 30 days).
     provenanceText: opts.provenance ? String(opts.provenance) : null,
-    windowMinEntityHistory: opts.windowMinEntityHistory ?? 1440,
+    windowMinEntityHistory: opts.windowMinEntityHistory ?? 43_200,
+    // Optional authoritative entity corpus, supplied by the CALLER. Gates run
+    // synchronously in the reply path and fail closed, so they must never do
+    // network I/O themselves: the trading_positions table is Supabase over
+    // HTTP, and a blip would turn every id-bearing reply into an escalation.
+    // A caller that already holds such a snapshot (fetched pre-turn, like
+    // gatherCcResults) can pass it here to back long-lived entities directly.
+    entityCorpusText: opts.entityCorpus ? String(opts.entityCorpus) : null,
   };
 
   const results = [];
@@ -840,8 +906,8 @@ export function buildEscalation(gateOut) {
  * one. Branches on gateOut.result (NOT action literals). Caller keeps tools
  * registered for the whole call (cleanupTools fires once after this returns).
  */
-export async function regenerateWithGates({ generate, auditLog, toolRegistry, turnStart, agentScope = null, bootstrap = null, provenance = null, baseMessages, maxAttempts = 3, onGateLog = null, onEscalate = null, now = null }) {
-  const opts = () => ({ now: now || Date.now(), turnStart, agentScope, bootstrap, provenance });
+export async function regenerateWithGates({ generate, auditLog, toolRegistry, turnStart, agentScope = null, bootstrap = null, provenance = null, entityCorpus = null, baseMessages, maxAttempts = 3, onGateLog = null, onEscalate = null, now = null }) {
+  const opts = () => ({ now: now || Date.now(), turnStart, agentScope, bootstrap, provenance, entityCorpus });
   let messages = baseMessages;
   let result = await generate(messages);
   let attempt = 1;
