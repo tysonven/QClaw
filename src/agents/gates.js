@@ -633,13 +633,27 @@ const PSEUDO_SUCCESS_RE = /out_of_scope|Content queued for review \[ID:/i;
 const _isPseudoSuccess = (detail) => PSEUDO_SUCCESS_RE.test(String(detail || ''));
 
 // Rows the SYSTEM deposits rather than the model composing them: cc-results.js
-// builds these from the claude_code_dispatches table, so the task_id in their
-// `args` field is a database value, not a model-authored argument. The
-// args-are-untrusted rule targets arguments the MODEL wrote, so these are full
-// provenance on both halves — otherwise every legitimate "Claude Code completed
-// <task uuid>" reply would hard-fail, since the result half carries only the
-// summary text.
+// builds these from the claude_code_dispatches table. Only SOME of that row is
+// server-authored though — it is written as
+//   {id, args: {task_id, repo, subject}}
+// where `subject` is the first 80 chars of the dispatch BRIEF, which Charlie
+// wrote. Whitelisting the whole detail string therefore reopened the laundering
+// path from the other side: put an invented UUID in your own brief, wait for
+// the dispatch to be deposited, then cite the UUID as if a database had
+// produced it (round 3). Only `args.task_id` — a Supabase primary key — and the
+// result payload are genuinely server-authored, so only those are extracted.
+// `subject` stays in the audit row for Gate 2's entity binding; it just cannot
+// confer provenance.
 const SYSTEM_DEPOSITED_ACTIONS = new Set(['claude_code_result', 'delegate_to_result']);
+const _isSystemRow = (r) => SYSTEM_DEPOSITED_ACTIONS.has(r?.action);
+
+/** The server-issued task id from a system-deposited call row, or null. */
+function _systemTaskId(detail) {
+  try {
+    const tid = JSON.parse(detail)?.args?.task_id;
+    return tid ? String(tid) : null;
+  } catch { return null; }
+}
 
 function _successCorpora(ctx) {
   const mins = ctx.windowMinEntityHistory ?? 43_200; // 30 days
@@ -649,12 +663,20 @@ function _successCorpora(ctx) {
     const cutoff = new Date(ctx.now - mins * 60_000).toISOString();
     const events = ctx.auditLog.toolEventsSince(cutoff, 2000);
     const genuine = (r) => r.result_status === 'success' && !_isPseudoSuccess(r.detail);
-    const systemRows = events.filter(r => SYSTEM_DEPOSITED_ACTIONS.has(r.action));
+    const pairs = correlatePairs(events);
+    // System task ids count only when their OWN dispatch genuinely succeeded —
+    // the same status and pseudo-success filter every other row gets. A failed
+    // dispatch laundered its brief just as well as a completed one before this.
+    const systemTaskIds = pairs
+      .filter(p => _isSystemRow(p.call) && genuine(p.result))
+      .map(p => _systemTaskId(p.call.detail))
+      .filter(Boolean);
     return {
-      results: [...events.filter(genuine), ...systemRows]
-        .map(r => String(r.detail || '')).join('\n'),
-      acceptedArgs: correlatePairs(events)
-        .filter(p => genuine(p.result))
+      // Success RESULT payloads are server-authored wholesale (a result row
+      // carries no args). System CALL rows contribute their task_id ONLY.
+      results: [...events.filter(genuine).map(r => String(r.detail || '')), ...systemTaskIds].join('\n'),
+      acceptedArgs: pairs
+        .filter(p => genuine(p.result) && !_isSystemRow(p.call))
         .map(p => String(p.call.detail || '')).join('\n'),
     };
   } catch { return empty; }
@@ -717,14 +739,19 @@ export function gateEntityEvidence(response, ctx) {
   const cited = [];
   let prev = '';
   for (const s of splitSentences(prose)) {
+    // Short trailing fragment only, and advanced for EVERY sentence including
+    // suppressed ones. Carrying the whole preceding sentence let an "example"
+    // far away soften an unrelated assertion, and skipping the update on
+    // suppressed sentences let that window reach arbitrarily far back (round 3).
+    const tail = prev.slice(-40);
+    prev = s;
     if (isSuppressed(s)) continue;                 // questions / negations / future — never fire
     const ids = extractCitedIds(s);
     // Carry the preceding fragment so an explanatory marker survives sentence
     // splitting: "e.g." is itself split on its periods, orphaning the id from
     // the phrase that makes it an example. Used ONLY for the explanatory
     // downgrade, so it can soften a verdict but never harden one.
-    if (ids.length) cited.push({ sentence: s, ids, context: `${prev} ${s}` });
-    prev = s;
+    if (ids.length) cited.push({ sentence: s, ids, context: `${tail} ${s}` });
   }
   if (!cited.length) return { gate: 'entity_evidence', fired: false };
 

@@ -177,7 +177,12 @@ check('G3: characterization "healthy" but probe ERRORED → hard_fail',
 
 // Gate 2 — Claude Code delegation/outcome (Slice 5, evidence-checked)
 const ccDispatch = (entity) => successPair('claude_code_dispatch', entity);
-const ccResult = (entity) => successPair('claude_code_result', entity);
+// Mirrors depositCcEvidence exactly: result row first (toolEventsSince returns
+// id-DESC), and the server-issued key is args.task_id — not args.id.
+const ccResult = (entity) => ([
+  { action: 'claude_code_result', detail: '{"id":"p1","result":"audit complete"}', result_status: 'success', timestamp: ts2 },
+  { action: 'claude_code_result', detail: `{"id":"p1","args":{"task_id":"${entity}","repo":"QClaw","subject":"audit the executor"}}`, result_status: null, timestamp: ts2 },
+]);
 const T1 = 'a1b2c3d4-1111-2222-3333-444455556666';
 const T2 = '99999999-aaaa-bbbb-cccc-dddddddddddd';
 
@@ -688,10 +693,39 @@ check('R2-d: ignored extra query param (substantive result, no echo) → hedged 
   (() => { const g = gateEntityEvidence(`Position ${FAKE2} is open.`,
     ctx(pseudoPair('charlie__ghl__ghl__get_contacts', '{"contacts":[{"name":"someone else"}]}', FAKE2)));
     return g.fired === true && g.severity === 'soft'; })());
-check('R2: system-deposited claude_code_result args ARE provenance (db-authored, not model-authored)',
+// System rows are deposited by cc-results.js from the dispatches TABLE, but only
+// parts of them are server-authored. Shape mirrors depositCcEvidence exactly.
+const ccRows = ({ taskId, subject, status = 'success' }) => ([
+  { action: 'claude_code_result', result_status: status, timestamp: ts2,
+    detail: JSON.stringify({ id: 'ccr_1', result: 'audit complete' }) },
+  { action: 'claude_code_result', result_status: null, timestamp: ts2,
+    detail: JSON.stringify({ id: 'ccr_1', args: { task_id: taskId, repo: 'QClaw', subject } }) },
+]);
+check('R2: system task_id (a Supabase primary key) IS provenance',
   gateEntityEvidence(`Claude Code finished task ${FAKE2}.`,
-    ctx([{ action: 'claude_code_result', detail: `{"id":"ccr_1","args":{"task_id":"${FAKE2}"}}`, result_status: null, timestamp: ts2 },
-         { action: 'claude_code_result', detail: '{"id":"ccr_1","result":"audit complete"}', result_status: 'success', timestamp: ts2 }])).fired === false);
+    ctx(ccRows({ taskId: FAKE2, subject: 'audit the executor' }))).fired === false);
+// ROUND 3 BLOCKING: `subject` is the first 80 chars of the dispatch BRIEF, which
+// Charlie writes. Invent a UUID, put it in your own brief, cite it later as if a
+// database produced it.
+const BRIEF_FAKE = 'beefcafe-1111-2222-3333-444455556666';
+check('G5 ROUND3: a UUID smuggled through the dispatch SUBJECT is NOT provenance',
+  (() => { const g = gateEntityEvidence(`Confirmed logged: Position ${BRIEF_FAKE} is recorded.`,
+    ctx(ccRows({ taskId: FAKE2, subject: `Look into position ${BRIEF_FAKE} handling in the executor` })));
+    return g.fired === true && g.severity === 'hard'; })());
+check('G5 ROUND3: a FAILED dispatch does not confer provenance on its task_id either',
+  gateEntityEvidence(`Claude Code finished task ${FAKE2}.`,
+    ctx(ccRows({ taskId: FAKE2, subject: 'audit', status: 'error' }))).fired === true);
+// Fix 4 — explanatory context must not bleed across sentences
+check('G5 ROUND3: an "example" in an earlier sentence does not soften a later assertion',
+  (() => { const g = gateEntityEvidence(
+    `Here is an example of the id format for your reference and documentation purposes.\nPosition ${INVENTED} is open.`, ctx([]));
+    return g.fired === true && g.severity === 'hard'; })());
+check('G5 ROUND3: a suppressed sentence does not extend the explanatory window',
+  (() => { const g = gateEntityEvidence(
+    `For example, ids look like this.\nIs that clear?\nPosition ${INVENTED} is open.`, ctx([]));
+    return g.fired === true && g.severity === 'hard'; })());
+check('G5: genuine same-sentence "e.g." still hedges (downgrade intact)',
+  (() => { const g = gateEntityEvidence(`Pass a position id, e.g. ${INVENTED}.`, ctx([])); return g.fired && g.severity === 'soft'; })());
 
 console.log('Round 2 — 140-char truncation collision (Blocking Fix 2):');
 // A real read returns two positions; index.js stores only the first 140 chars,
