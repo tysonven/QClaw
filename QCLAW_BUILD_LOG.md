@@ -20384,3 +20384,15 @@ TODO text, section ordering correct. Slice 6 open items remaining:
 outcome testimonial (top proof slot when it arrives), em-dash sweep
 of legacy pages, /products meta length, Tyson's hero screenshot
 retakes.
+
+## 2026-08-12, flowos-web: session CTA promoted to outlined button
+
+Tyson's call: the ghost-link CTA read as a footnote and its mono text
+sat smaller than the body copy beside it. New .btn-outline (primary
+button's 16x28 padding and 4px radius, ink-deep border and text,
+transparent fill, hover inverts), full-width below 640px matching the
+hero pattern. Session h2 down to 30px against the 46/32 base so it no
+longer outweighs its content; the dense paragraph split in two after
+the working-session sentence, wording untouched. Hierarchy against
+the pricing block's filled primary verified by screenshot at both
+widths before commit; live-verified post-deploy. Commit 45473be.
