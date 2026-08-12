@@ -240,7 +240,12 @@ export function gateToolReference(response, ctx) {
 
 // Hyphen-aware boundaries (?<![\w-])…(?![\w-]) so hyphenated compounds like
 // "completed-tasks" / "auto-deploy" don't false-fire (P2 over-fire).
-const COMPLETION_RE = /(?<![\w-])(done|finished|complete|completed|shipped|deployed|fixed|resolved|merged|published|posted|sent|successfully)(?![\w-])/i;
+// 2026-08-12: broadened with the trading/manual-logging verbs the 2026-08-11
+// fabrications used ("Manual trade logged", "Confirmed logged", "I bought YES
+// on ..."). Detection is verb-first, so a verb outside this list never reached
+// entity matching at all; Gate 5 (entity evidence) closes the structural
+// class, this keeps the verb path aligned with live vocabulary.
+const COMPLETION_RE = /(?<![\w-])(done|finished|complete|completed|shipped|deployed|fixed|resolved|merged|published|posted|sent|successfully|logged|confirmed|bought|sold|created|recorded|placed|executed|opened)(?![\w-])/i;
 const STATE_RE = /(?<![\w-])(running|live|active|online|enabled|connected|working|up|healthy|passed|succeeded|successful|stable)(?![\w-])/i;
 // Characterization (needs a SUCCESS probe; an errored probe → hard_fail). Liveness
 // words moved here (R: "running" backed by an errored probe was a false-pass).

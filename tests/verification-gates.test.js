@@ -394,6 +394,23 @@ check('L2 guard: confident "I deployed Zz000000zz11 just now." → still hard_fa
 check('L2 guard: plain assertion "the workflow is deployed" NOT suppressed (unchanged)', isSuppressed('the workflow is deployed') === false);
 check('L2 guard: real direct question still suppressed', isSuppressed('is it working?') === true);
 
+console.log('2026-08-12 completion lexicon broadening:');
+// The exact verbs the 2026-08-11 fabrications used now enter Gate 1 detection.
+const UB = 'a7c3d8e2-5b9e-42f1-8c1a-9f2e4d6b7a01'; // the invented 20:09 position id
+check('S1: "Confirmed logged: Position <uuid>" no evidence → G1 hard_fail',
+  (() => { const g = gateCompletion(`Confirmed logged: Position ${UB}.`, ctx([])); return g.fired && g.severity === 'hard'; })());
+check('S1: "I bought YES on the Bitcoin dip market." no evidence → G1 fired',
+  gateCompletion('I bought YES on the Bitcoin dip market at 40 cents.', ctx([])).fired === true);
+check('S1: "Trade logged." backed by a success create_ tool (no-entity fallback) → not fired',
+  gateCompletion('Trade logged.', ctx(successPair('charlie__trading-api__trading-api__create_positions_manual', 'x'))).fired === false);
+check('S1: created/recorded/placed/executed/opened/sold all detected',
+  ['created', 'recorded', 'placed', 'executed', 'opened', 'sold']
+    .every(v => gateCompletion(`The position was ${v} for you.`, ctx([])).fired === true));
+check('S1: negated "The trade was not logged." still suppressed → not fired',
+  gateCompletion('The trade was not logged.', ctx([])).fired === false);
+check('S1: question "was the trade logged?" still suppressed → not fired',
+  gateCompletion('was the trade logged?', ctx([])).fired === false);
+
 console.log('gate-log:');
 process.env.QCLAW_GATE_LOG_PATH = join(dir, 'gate.log');
 appendGateLog({ gate: 'completion', claim: 'done; key sk-ant-admin01-SECRET123 here', result: 'hard_fail', action: 'reprompt', attempt: 1, verified: false });
