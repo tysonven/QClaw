@@ -24,6 +24,16 @@ const COST_TABLE = {
   'gemini-2.0-flash': { input: 0.1, output: 0.4 },
 };
 
+// Tier 0 canned replies. Matched EXACTLY (trimmed + lowercased) and returned
+// WITHOUT an LLM call, WITHOUT any tool surface, and WITHOUT persisting the turn
+// to `conversations` (see registry.js: the reflex branch returns before
+// _processNonReflex). That makes this table safe ONLY for pure social
+// pleasantries.
+//
+// Do NOT add any word that can answer a question. 'yes' / 'no' / 'ok' lived here
+// until 2026-08-14 and silently swallowed every confirmation Tyson gave Charlie:
+// the agent never saw the reply, no tool could run, and the turn left no trace in
+// history. Approvals, confirmations, rejections and choices MUST reach the model.
 const REFLEX_RESPONSES = {
   'hello': 'Hey! What can I do for you?',
   'hi': 'Hi! What do you need?',
@@ -32,10 +42,7 @@ const REFLEX_RESPONSES = {
   'thank you': 'You\'re welcome.',
   'cheers': 'No worries.',
   'ta': 'Anytime.',
-  'ok': 'Got it.',
   'bye': 'Catch you later.',
-  'yes': 'Noted.',
-  'no': 'Understood.',
 };
 
 export class ModelRouter {

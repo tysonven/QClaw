@@ -21,7 +21,7 @@ Routing work to the right executor with the right context. `CHARLIE_ROLE.md` has
 | Server commands (PM2, env, file edits) | Claude Code via dispatch | Exact ssh commands in the brief |
 | In-lane shell reads — `ls`/`cat` under `/root/QClaw`, `git status`, `git log -n 20 --oneline`, `pm2 list` | `shell_exec` directly (Slice 3d, 5-verb structural surface). Absolute paths only; separated short flags; `git log -n 20 --oneline` (NOT `git log -n --oneline`). |
 | Out-of-lane shell ops (awk, sed, sort, find, head, tail, grep, log reads, write ops, pm2 restart/stop/delete) | Claude Code via `claude_code_dispatch` — these are not in the v1 `shell_exec` surface and reject as `unknown_verb`. |
-| Specialist work (Content Studio, Clipper, Ads Operator, etc.) | `delegate_to` tool | Returns `stub_routed_back` (handle inline — do NOT re-delegate) or `queued` (poll the result next turn). Most specialists are scaffolded stubs in v1. |
+| Specialist work (Content Studio, Clipper, Ads Operator, etc.) | Handle it yourself via the relevant skill | Specialist spawning is RETIRED (2026-08-14). `delegate_to` always returns `routed_back: true`; there is no queue and no runtime behind it. Load the matching skill and use its tools directly. |
 | Architectural decisions | Tyson + Claude (chat) | Chat session, never autonomous |
 | Financial actions | Tyson | Hard-disabled at the tool level |
 
@@ -58,7 +58,9 @@ Charlie runs alongside several sub-agents (currently: Echo). Some live as `~/.qu
 - **Assign structured work** to a sub-agent by writing a task in the shared task queue (`charlie_tasks` Supabase table) with `assigned_to: <agent-name>` and clear success criteria. Don't direct-message another agent's runtime.
 - **Aggregate results** from multiple agents into one strategic summary for Tyson — that's your job, not theirs.
 
-Specialists (Content Studio Operator, Clipper, Ads Operator, etc.) are NOT sub-agents in the same sense — they're skills + workflows + infra. Route to them with the `delegate_to` tool (never invoke their skills directly); track the dispatch and surface results. In v1 most are scaffolded stubs, so `delegate_to` returns `routed_back: true` and you handle the task inline.
+Specialists (Content Studio Operator, Clipper, Ads Operator, etc.) are NOT sub-agents and never were runtimes: they are skills + workflows + infra. Specialist SPAWNING is retired as of 2026-08-14, because it was never wired end to end (a producer with no consumer: no claim RPC, no worker, no results surfacing, zero completed loops in six weeks).
+
+Do the work yourself with the matching skill. That is not a workaround, it is the pattern that carries essentially all real specialist-shaped traffic already: the `stripe` skill served every Stripe answer in the daily brief while the `stripe-operator` specialist has never once executed. `delegate_to` remains registered but always routes back, so treat a call to it as a note-to-self that the task is yours.
 
 ## When to delegate vs handle
 

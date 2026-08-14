@@ -301,11 +301,13 @@ class QuantumClaw {
         scope: dispatchAgents,
         ...createClaudeCodeDispatchTool({ audit: this.audit, auditActor: 'charlie', notify: ccApprovalNotify }),
       });
-      // Slice 6b: delegate_to — Charlie routes work to a Flow OS specialist.
-      // Scoped to charlie only (specialists cannot delegate). Enqueue-only; in 6b
-      // every specialist routes back as a stub (live path gated by the EMPTY
-      // QCLAW_SPECIALIST_LIVE_IDS allowlist). Sequential + rate limiting live in
-      // the tool fn (registerBuiltin honours only description/inputSchema/fn/scope).
+      // delegate_to (RETIRED 2026-08-14). Specialist spawning was never wired end
+      // to end, so the tool now routes every task straight back to Charlie: there
+      // is no live path, no allowlist read and no DB write left in it. It stays
+      // REGISTERED deliberately, because agents/gates.js keys its Gate 2 evidence
+      // predicate (isSpecialistDispatch) on a `delegate_to` event; unregistering
+      // would weaken a security control as a side effect of retiring a feature.
+      // Rationale and evidence in src/tools/delegate-to.js.
       this.tools.registerBuiltin('delegate_to', {
         scope: ['charlie'],
         ...createDelegateToTool({ audit: this.audit, auditActor: 'charlie' }),

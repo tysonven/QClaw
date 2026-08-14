@@ -4,6 +4,18 @@ This is the canonical specialist registry. Charlie reads this at session start t
 
 This file is the fifth canonical doc Charlie reads at session start, after `CEO_OPERATING_MODEL.md`, `CHARLIE_ROLE.md`, `LOCATIONS.md`, and `FLOW_OS_STATE.md`.
 
+## Status of this registry (read this first)
+
+**Specialist spawning is RETIRED as of 2026-08-14. No specialist in this file can be given work, and none ever executed.**
+
+The `delegate_to` tool was a producer with no consumer: it wrote a `queued` row that nothing ever claimed, ran or surfaced. There was no claim RPC, no worker process and no results-surfacing module. In roughly six weeks it was invoked twice, both on the same day for the same task, and that one row was still `queued` with `attempts=0` forty-four days later. Zero loops ever completed. For the two ids briefly allowlisted it returned a success-shaped `queued` response, which is worse than doing nothing because it reads as "the specialist has it".
+
+**Specialist-shaped work is done by Charlie loading the matching skill and calling its tools directly.** That is the pattern carrying effectively all real traffic today. The clearest example is Stripe: the `stripe` skill has served every invoice and subscription answer in the daily brief (166 tool calls over the audit window), while the `stripe-operator` specialist in this file has never run once. GHL and n8n look the same. Code and infrastructure work goes to `claude_code_dispatch`, which does have a complete working loop.
+
+**So what is this file still for?** It remains the canonical definition of scope, boundaries, out-of-scope rules, verification reflexes and escalation paths per domain. Those definitions are accurate and load-bearing: Charlie uses them to decide what may be done in a given lane and when to escalate. Only the spawning mechanism is dead.
+
+Consequently, read the **Status** field below as a statement about how mature a scope definition is, NOT as a runtime capability. A specialist marked `live` is fully specified; it is not a thing that can be handed a task.
+
 ## How to read this file
 
 Every specialist entry has the same fields:

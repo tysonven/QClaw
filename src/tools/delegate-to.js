@@ -1,83 +1,79 @@
 /**
- * Slice 6b — delegate_to tool (specialist routing surface).
+ * delegate_to: specialist routing surface (RETIRED 2026-08-14).
  *
- * The ONLY tool Charlie uses to invoke a specialist. Enqueue-only, returns
- * immediately. In 6b every specialist is effectively a stub: the live dispatch
- * path is gated by the QCLAW_SPECIALIST_LIVE_IDS allowlist (EMPTY in 6b), so all
- * calls route back with { routed_back: true } and Charlie handles inline. The
- * live path is implemented in full so Slice 6d just adds the two intended ids to
- * the allowlist (Slice 6b audit U1-A).
+ * ── Why this is a stub ───────────────────────────────────────────────────────
+ * The specialist-spawning layer was never wired end to end. `delegate_to` was a
+ * complete PRODUCER with no CONSUMER: the live path inserted a `queued` row into
+ * `specialist_dispatches`, and nothing ever claimed, executed, or surfaced it.
+ * There are no claim/reap RPCs, no worker process, and no results-surfacing
+ * module (contrast `src/dispatch/claude-code-dispatcher.js` + `agents/cc-results.js`,
+ * which have all three and work).
  *
- * Gate-2 safety (mirrors claude-code-dispatch.js): hard failures THROW so the
- * tool's audit result_status is 'error' — a rejected/failed call can never be
- * treated by Gate 2 (gateDelegation) as a real dispatch. Only legitimate
- * outcomes RETURN a structured object: stub_routed_back, queued, sequential_only.
+ * Evidence at retirement: 2 invocations in ~6 weeks, both on 2026-07-01, same
+ * task. The single row written that day was still `status='queued', attempts=0,
+ * surfaced_at=null` 44 days later. Zero completed loops, ever. Meanwhile the
+ * skill-based pattern (Charlie loading a skill and calling its tools directly)
+ * carried effectively all real specialist-shaped work: 166 Stripe calls, 227 GHL,
+ * 203 n8n-api over the same period.
  *
- * Security: session_id is derived from the runtime turn context (channel:userId),
- * NOT from Charlie's args — he cannot spoof which session a dispatch belongs to.
- * Live writes use the service_role key; specialist_dispatches is RLS-locked.
+ * The live path was actively HARMFUL, not merely dead: for allowlisted ids it
+ * returned a success-shaped `{status:'queued', routed_back:false}`, which reads
+ * as "the specialist has the task" and is exactly the substrate for a fabricated
+ * completion claim. The stub path was honest by contrast.
+ *
+ * ── What this file does now ──────────────────────────────────────────────────
+ * Every call routes back. No allowlist read, no Supabase client, no INSERT, so
+ * false-success path is GONE from the code, so `QCLAW_SPECIALIST_LIVE_IDS` is no
+ * longer load-bearing (it is also emptied on the host; both, deliberately).
+ *
+ * The tool stays REGISTERED on purpose. `agents/gates.js` uses the presence of a
+ * `delegate_to` event as a Gate 2 evidence predicate (`isSpecialistDispatch`);
+ * deleting the tool would silently weaken a security control as a side effect of
+ * retiring a feature. Keeping it also means a reach for `delegate_to` returns a
+ * clear instruction instead of an unknown-tool error.
+ *
+ * The return shape is UNCHANGED from the old stub path (same five keys, same
+ * `status: 'stub_routed_back'`), so the typed loop-break in `_processNonReflex`
+ * and the Gate 2 predicates keep working untouched. Only the human-readable
+ * message changed.
+ *
+ * Route specialist-shaped work through the relevant SKILL instead (see
+ * `FLOW_OS_SPECIALISTS.md` for scope definitions, which remain accurate as
+ * documentation). Heavy async/code work goes to `claude_code_dispatch`.
+ *
+ * Gate-2 safety (unchanged): hard failures THROW so the tool's audit
+ * result_status is 'error', so a rejected call can never be read as a real
+ * dispatch. Only legitimate outcomes RETURN.
  */
 
 import { randomUUID as nodeRandomUUID } from 'crypto';
-import { log } from '../core/logger.js';
 import { getEnv } from '../core/env.js';
 import { getSpecialist as defaultGetSpecialist } from '../agents/specialist-registry.js';
 
-const TABLE = 'specialist_dispatches';
 const DEFAULT_RATE = { perMinute: 2, perHour: 20 };
 
-function parseLiveIds(env) {
-  return new Set(String(env.QCLAW_SPECIALIST_LIVE_IDS || '')
-    .split(',').map((s) => s.trim().toLowerCase()).filter(Boolean));
-}
-
-/** Default Supabase REST surface (service_role). Injectable for tests. */
-function makeSupabaseRest(env) {
-  const url = (env.SUPABASE_URL || '').replace(/\/+$/, '');
-  const key = env.SUPABASE_SERVICE_ROLE_KEY || '';
-  async function rest(method, path, { body, prefer } = {}) {
-    const headers = { apikey: key, Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' };
-    if (prefer) headers.Prefer = prefer;
-    const res = await fetch(`${url}/rest/v1/${path}`, {
-      method, headers, body: body ? JSON.stringify(body) : undefined,
-    });
-    if (!res.ok) throw new Error(`Supabase ${method} ${res.status}: ${(await res.text()).slice(0, 200)}`);
-    const text = await res.text();
-    return text ? JSON.parse(text) : null;
-  }
-  return {
-    configured: () => !!(url && key),
-    async findActiveBySession(session_id) {
-      const rows = await rest('GET', `${TABLE}?session_id=eq.${encodeURIComponent(session_id)}&status=eq.in_progress&select=id`);
-      return Array.isArray(rows) ? rows : [];
-    },
-    async insert(row) {
-      const inserted = await rest('POST', TABLE, { prefer: 'return=representation', body: row });
-      return Array.isArray(inserted) ? inserted[0] : inserted;
-    },
-  };
-}
+const RETIRED_MESSAGE =
+  'Specialist spawning is retired: there is no runtime that executes specialist '
+  + 'dispatches. Handle this yourself using the relevant skill directly (the pattern '
+  + 'that actually works), or use claude_code_dispatch for code/infra work. Do NOT '
+  + 'say this was delegated, queued, or handed off. You are doing the work.';
 
 export function createDelegateToTool({
   audit,
   auditActor = 'charlie',
   env = getEnv(),
   getSpecialist = defaultGetSpecialist,
-  supabase = null,
   randomUUID = nodeRandomUUID,
-  liveIds = null,
   rateLimit = DEFAULT_RATE,
   now = () => Date.now(),
 } = {}) {
-  const LIVE = liveIds || parseLiveIds(env);
-  const db = supabase || makeSupabaseRest(env);
-  // Per-factory sliding-window rate state (persists for the tool's lifetime;
-  // fresh per createDelegateToTool() call, so tests are isolated).
+  // Per-factory sliding-window rate state. Retained post-retirement purely as a
+  // cheap loop guard: a confused agent retrying delegate_to in a tight loop burns
+  // tokens, and the throw is Gate-2 safe.
   const callTimes = [];
 
   function enforceRate() {
     const t = now();
-    // prune > 1h
     while (callTimes.length && t - callTimes[0] > 3_600_000) callTimes.shift();
     const lastMinute = callTimes.filter((ts) => t - ts < 60_000).length;
     const lastHour = callTimes.length;
@@ -92,15 +88,16 @@ export function createDelegateToTool({
 
   return {
     description:
-      'Route a task to a Flow OS specialist (the canonical registry is FLOW_OS_SPECIALISTS.md). '
-      + 'Enqueue-only: returns immediately. Most specialists are scaffolded stubs — for those the tool '
-      + 'returns { routed_back: true } and you HANDLE THE TASK DIRECTLY (do not re-delegate). Live '
-      + 'specialists return { status: "queued" } and the result is surfaced to you in a later turn. '
-      + 'Do NOT claim a specialist "did" or "completed" anything until a result has been surfaced back.',
+      'RETIRED: specialist spawning is not implemented; nothing executes specialist '
+      + 'dispatches. Every call routes the task straight back to you. Prefer handling the '
+      + 'task yourself with the relevant skill (e.g. the stripe or ghl skill), which is the '
+      + 'working pattern, or use claude_code_dispatch for code and infrastructure work. '
+      + 'This tool never queues, assigns, or hands off anything: NEVER tell the user a '
+      + 'specialist "has" a task, is "working on" it, or that anything was delegated.',
     inputSchema: {
       type: 'object',
       properties: {
-        specialist: { type: 'string', description: 'Specialist id or display name (e.g. "content-studio-operator").' },
+        specialist: { type: 'string', description: 'Specialist id or display name (e.g. "content-studio-operator"). Validated against the registry; the task still routes back to you.' },
         task: { type: 'string', description: 'What the specialist should do (the core instruction).' },
         context: { type: 'string', description: 'Background the specialist needs.' },
       },
@@ -120,78 +117,45 @@ export function createDelegateToTool({
 
       enforceRate();
 
-      const session_id = `${ctx.channel || 'unknown'}:${ctx.userId ?? 'owner'}`;
-      const takesLivePath = entry.isLive && LIVE.has(entry.id);
-
-      // ── Stub path: synchronous, NO Supabase. Loop-break is Charlie's job. ──
-      if (!takesLivePath) {
-        return {
-          task_id: randomUUID(),
+      // Unconditional route-back. No allowlist, no Supabase, no INSERT: there is
+      // no live path left to take. Shape is byte-identical to the pre-retirement
+      // stub path so the loop-break scan and Gate 2 predicates are unaffected.
+      return {
+        task_id: randomUUID(),
+        specialist: entry.id,
+        status: 'stub_routed_back',
+        routed_back: true,
+        stub_result: {
           specialist: entry.id,
-          status: 'stub_routed_back',
-          routed_back: true,
-          stub_result: {
-            specialist: entry.id,
-            status: 'stub',
-            task,
-            routed_back: true,
-            message: 'Specialist not yet live. Charlie will handle directly.',
-          },
-        };
-      }
-
-      // ── Live path (gated; never fires in 6b — empty allowlist). ──
-      if (!db.configured || !db.configured()) {
-        throw new Error('specialist dispatch storage is not configured (SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY missing); cannot queue.');
-      }
-
-      // Sequential enforcement: one in-flight specialist dispatch per turn.
-      let active = [];
-      try { active = await db.findActiveBySession(session_id); }
-      catch (e) { log.warn(`delegate_to: sequential check failed (${e.message}) — proceeding`); }
-      if (active.length > 0) {
-        return {
-          error: 'sequential_only',
-          message: 'One specialist dispatch per turn. Wait for the current dispatch to complete.',
-        };
-      }
-
-      let row;
-      try {
-        row = await db.insert({
-          specialist_id: entry.id,
-          status: 'queued',
+          status: 'retired',
           task,
-          context: args.context ? String(args.context).trim() : null,
-          session_id,
-          created_by: auditActor,
-        });
-      } catch (e) {
-        log.error(`delegate_to: insert failed: ${e.message}`);
-        throw new Error(`could not queue the specialist dispatch (${e.message}).`);
-      }
-      const taskId = row?.task_id || row?.id;
-      if (!taskId) throw new Error('specialist dispatch row did not return an id; not queued.');
-
-      return { task_id: taskId, specialist: entry.id, status: 'queued', routed_back: false };
+          routed_back: true,
+          message: RETIRED_MESSAGE,
+        },
+      };
     },
   };
 }
 
 // ── Loop-break detection helpers (Slice 6b Unit 4) ─────────────────────────
 // Pure, typed checks over the executor's surfaced tool results. Used by
-// _processNonReflex to detect a stub routed-back (Charlie handles inline) or a
-// sequential_only rejection (surface as a structured tool error). These inspect
-// the RAW result object (executor stores it pre-stringify), so NO JSON.parse and
-// NO string matching — a typed check only.
+// _processNonReflex to detect a routed-back delegation (Charlie handles inline).
+// These inspect the RAW result object (executor stores it pre-stringify), so NO
+// JSON.parse and NO string matching, just a typed check.
+//
+// Post-retirement every delegate_to call is a route-back, so isStubRoutedBack is
+// now the only reachable outcome. isSequentialOnly is retained (pure, exported,
+// tested) because it guarded the removed live path and costs nothing to keep;
+// it can no longer fire from this tool.
 
-/** True iff a tool-result entry is a delegate_to stub routed-back. */
+/** True iff a tool-result entry is a delegate_to route-back. */
 export function isStubRoutedBack(toolResult) {
   const r = toolResult && toolResult.result;
   return !!(r && typeof r === 'object' && r.routed_back === true && r.status === 'stub_routed_back');
 }
 
-/** True iff a tool-result entry is a delegate_to sequential_only rejection. */
+/** True iff a tool-result entry is a delegate_to sequential_only rejection.
+ *  Unreachable from the retired tool; kept for shape-compat with stored results. */
 export function isSequentialOnly(toolResult) {
   const r = toolResult && toolResult.result;
   return !!(r && typeof r === 'object' && r.error === 'sequential_only');

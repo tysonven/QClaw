@@ -1,5 +1,14 @@
 /**
- * Slice 6b — specialist registry (pure data layer).
+ * Specialist registry (pure data layer).
+ *
+ * DEPRECATED as an execution surface (2026-08-14). Specialist SPAWNING is retired
+ * (see src/tools/delegate-to.js) and nothing in this module can dispatch, run or
+ * schedule anything. It is RETAINED, not deleted, for two live reasons: the
+ * dashboard Agents page renders from it, and delegate_to still validates the
+ * specialist id against it so a typo throws instead of silently succeeding.
+ *
+ * Read `isLive` as "the scope definition in FLOW_OS_SPECIALISTS.md is mature",
+ * NOT as "this specialist can be given work". No specialist has ever executed.
  *
  * Parses FLOW_OS_SPECIALISTS.md (the canonical specialist registry) into a
  * structured Map<id, SpecialistEntry>. This module does NOT load skills or
