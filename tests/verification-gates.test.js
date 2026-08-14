@@ -234,7 +234,7 @@ check('runGates: Claude Code "completed" backed by a real result → pass',
   runGates(`Claude Code completed the audit of task ${T1}.`, mkAudit(ccResult(T1)), reg, { now: Date.now(), turnStartMs: Date.now() - 60000 }).result === 'pass');
 
 console.log('Unit 3 — regeneration loop:');
-import { regenerateWithGates, isGatedAgent } from '../src/agents/gates.js';
+import { regenerateWithGates, isGatedAgent, hedgeResponse, hedgeNote, NO_VERIFIED_ANSWER } from '../src/agents/gates.js';
 // P0 scoping: gates apply to charlie only by default; background agents skip them.
 check('U3: isGatedAgent("charlie") default true', isGatedAgent('charlie') === true);
 check('U3: isGatedAgent("echo") default false (background agent skips gates)', isGatedAgent('echo') === false);
@@ -277,12 +277,15 @@ check('U3: cleanupTools fires exactly once AFTER the loop', registered === false
 // sentence now escalates instead of hedging (asserted directly below). The
 // hedge mechanism itself is unchanged and still applies to the common state
 // claim, which names a process/service rather than an opaque id.
+// 2026-08-14: the reply here is a SINGLE unbacked sentence, so removing it
+// leaves nothing — the all-hedged fallback answers instead of an empty body.
 let n4 = 0;
 const r4 = await regenerateWithGates({
   generate: async () => { n4++; return { content: 'The dormancy alerter is running.', model: 'm' }; },
   auditLog: mkAudit([]), toolRegistry: reg, turnStart: past, baseMessages: BM,
 });
-check('U3: soft_fail hedged without a second generate call', n4 === 1 && r4.content.includes('Unverified') && r4.gateOutcome === 'pass');
+check('U3: soft_fail hedged without a second generate call',
+  n4 === 1 && r4.content === NO_VERIFIED_ANSWER && r4.gateOutcome === 'pass');
 // Deliberate severity change when the claim cites an UNSOURCED UUID: soft hedge
 // → hard_fail + escalation. Strengthening, not weakening, and recorded here so
 // the interaction is explicit rather than incidental.
@@ -301,8 +304,9 @@ const r4c = await regenerateWithGates({
   generate: async () => { n4c++; return { content: 'The workflow Qf39NEOEgz2W0uls is running.', model: 'm' }; },
   auditLog: mkAudit([]), toolRegistry: reg, turnStart: past, baseMessages: BM,
 });
-check('U3 (G5): unsourced non-UUID id → hedged in place, no regeneration',
-  n4c === 1 && r4c.gateOutcome === 'pass' && r4c.content.includes('Unverified'));
+check('U3 (G5): unsourced non-UUID id → hedged, no regeneration',
+  n4c === 1 && r4c.gateOutcome === 'pass' && r4c.content === NO_VERIFIED_ANSWER
+  && !r4c.content.includes('Qf39NEOEgz2W0uls'));
 check('U3 (G5): same claim WITH a this-turn probe for that id → pass, unhedged', (() => {
   const r = mkAudit(readPair('shared__n8n-api__n8n-api__get_workflows_id', 'Qf39NEOEgz2W0uls'));
   return runGates('The workflow Qf39NEOEgz2W0uls is running.', r, reg, { now: Date.now(), turnStart: past }).result === 'pass';
@@ -322,6 +326,96 @@ const r6 = await regenerateWithGates({
   auditLog: mkAudit([]), toolRegistry: reg, turnStart: past, baseMessages: BM,
 });
 check('U3: hard_fail then corrected re-prompt → pass, not escalated', r6.gateOutcome === 'pass' && n6 === 2 && !r6.gateEscalated);
+
+// ── Hedge presentation (2026-08-14 placeholder-leak incident) ──────────────
+// Live at 11:33:21Z: seven state claims soft-failed in one reply, six of them
+// markdown table rows whose Status cell read "Live". Each was substituted with
+// the same bracketed template, so the internal placeholder printed six times
+// inside a wrecked table. These assertions pin the PRESENTATION contract only —
+// the gate-firing assertions above are untouched.
+console.log('Hedge presentation (2026-08-14 leak):');
+const softOut = (text) => {
+  const g = runGates(text, mkAudit([]), reg, { now: Date.now(), turnStart: past });
+  return { gate: g, out: hedgeResponse(text, g) };
+};
+
+const INCIDENT_REPLY = [
+  '**Community Manager — FSC is a live specialist** (as of Slice 6d, 2026-07-01).',
+  '',
+  '**Defined capability:**',
+  '',
+  '| Capability | Status |',
+  '|---|---|',
+  '| Member welcome sequences | Live |',
+  '| Live event planning support | Live |',
+  '| Community announcements drafting | Live |',
+  '| Gamification recommendations | Live |',
+  '',
+  '**Out of scope:**',
+  '- Direct posting without review, drafts only',
+  '- Member account-level changes (access, billing)',
+  '',
+  'Want me to delegate a specific community task to them?',
+].join('\n');
+
+const inc = softOut(INCIDENT_REPLY);
+check('HEDGE: incident reply still soft_fails (detection unchanged)', inc.gate.result === 'soft_fail');
+check('HEDGE: no bracketed placeholder reaches the user', !inc.out.includes('[Unverified'));
+check('HEDGE: exactly one caveat, not one per claim',
+  inc.out.split('Note: I left out').length - 1 === 1);
+check('HEDGE: caveat counts every soft claim', (() => {
+  const n = inc.gate.gates.filter(g => g.fired && g.severity === 'soft')
+    .reduce((a, g) => a + g.claims.length, 0);
+  return n >= 4 && inc.out.includes(hedgeNote(n));
+})());
+check('HEDGE: unbacked claim text is gone, not surfaced',
+  !inc.out.includes('Member welcome sequences') && !inc.out.includes('Gamification recommendations'));
+check('HEDGE: surviving prose is preserved verbatim',
+  inc.out.includes('**Out of scope:**')
+  && inc.out.includes('- Member account-level changes (access, billing)')
+  && inc.out.includes('Want me to delegate a specific community task to them?'));
+check('HEDGE: table with no surviving body rows is dropped whole (no orphan header)',
+  !inc.out.includes('| Capability | Status |') && !inc.out.includes('|---|---|'));
+check('HEDGE: hedged output re-checks clean (caveat never self-fires)',
+  runGates(inc.out, mkAudit([]), reg, { now: Date.now(), turnStart: past }).result === 'pass');
+
+// A table that keeps at least one backed row must stay a table.
+const MIXED = [
+  '| Capability | Status |',
+  '|---|---|',
+  '| Member welcome sequences | Live |',
+  '| Draft review queue | Manual for now |',
+].join('\n');
+const mixed = softOut(MIXED);
+check('HEDGE: partially-hedged table keeps its header, separator and backed rows',
+  mixed.out.includes('| Capability | Status |') && mixed.out.includes('|---|---|')
+  && mixed.out.includes('| Draft review queue | Manual for now |')
+  && !mixed.out.includes('Member welcome sequences'));
+
+// Every substantive line unbacked → distinct fallback, not scaffolding + caveat.
+const allSoft = softOut('The dormancy alerter is running.\nThe scanner is live and healthy.');
+check('HEDGE: all-substance-hedged → distinct fallback message',
+  allSoft.out === NO_VERIFIED_ANSWER && !allSoft.out.includes('Note: I left out'));
+check('HEDGE: fallback re-checks clean',
+  runGates(allSoft.out, mkAudit([]), reg, { now: Date.now(), turnStart: past }).result === 'pass');
+
+// Mid-paragraph splice (the 11:32:47Z variant) must not glue text together.
+const midPara = softOut('The alerter is running. The skill file exists on disk.');
+check('HEDGE: mid-paragraph claim removed cleanly, neighbour sentence intact',
+  midPara.out.startsWith('The skill file exists on disk.')
+  && !midPara.out.includes('[Unverified')
+  && midPara.out.includes(hedgeNote(1)));
+
+check('HEDGE: singular caveat reads naturally', hedgeNote(1).includes('one statement')
+  && hedgeNote(2).includes('2 statements'));
+check('HEDGE: no soft claims → response returned untouched', (() => {
+  const t = 'Nothing to see here.';
+  return hedgeResponse(t, { gates: [] }) === t;
+})());
+check('HEDGE: hard-fired claims are never hedged away (reprompt path owns them)', (() => {
+  const t = 'Deployed workflow Zz000000zz11 successfully.';
+  return hedgeResponse(t, runGates(t, mkAudit([]), reg, { now: Date.now(), turnStart: past })) === t;
+})());
 
 console.log('Slice 4.1 — bootstrap-as-evidence + recitation scoping:');
 import { isFirstPersonAction, isGatedTurn, bootstrapCorpus, buildRepromptNote } from '../src/agents/gates.js';

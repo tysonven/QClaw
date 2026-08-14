@@ -954,19 +954,118 @@ export function runGates(response, auditLog, toolRegistry, opts = {}) {
 
 // ── Regeneration loop (Unit 3) ────────────────────────────────────────────
 
-const SOFT_HEDGE = "[Unverified — I don't have a confirmed tool result for that this turn; let me check and confirm before stating it.]";
+/**
+ * 2026-08-14: the hedge is CONSOLIDATED, not substituted per sentence.
+ *
+ * The original implementation replaced every soft-failed sentence in place with
+ * one fixed bracketed template. That was only ever safe under two assumptions
+ * that do not hold: that at most one sentence hedges per reply, and that a
+ * "sentence" is prose. Both broke live at 2026-08-14 11:33:21Z, when seven state
+ * claims soft-failed in one reply. splitSentences() splits on newlines, so each
+ * markdown table ROW is a sentence, and STATE_RE matches the bare word "Live" in
+ * a Status cell. Six body rows were each replaced by the full template, leaving
+ * an orphaned table header and separator above six identical bracketed lines
+ * (gate.log, 7 × gate:"state" soft_fail at that timestamp). A quieter variant one
+ * turn earlier spliced the template mid-paragraph, gluing it onto the next
+ * sentence.
+ *
+ * So: drop the unbacked sentences and state ONCE, in Charlie's own voice, that
+ * they were left out. That is strictly no more leaky than substitution (the raw
+ * claim still never reaches the user), and it cannot mangle surrounding markup.
+ * None of this changes WHEN a gate fires; only what the user reads afterwards.
+ */
 
-/** Replace each SOFT-fired claim sentence with a fixed hedge (no surgical leak). */
-export function hedgeResponse(response, gateOut) {
-  let out = response;
+/** Anything left when a soft-failed sentence is stripped out of its line. */
+const _scaffoldOnly = (line) => !/[A-Za-z0-9]/.test(
+  String(line).replace(/[|>#*_~`•–—:.\-]/g, ' '));
+
+const _isTableRow = (l) => /^\s*\|.*\|\s*$/.test(l);
+const _isTableSep = (l) => /^\s*\|?[\s:|-]*-[\s:|-]*\|[\s:|-]*$/.test(l);
+
+/** The soft-fired claim sentences, deduplicated, in gate order. */
+function softClaims(gateOut) {
+  const seen = new Set();
   for (const g of (gateOut.gates || [])) {
     if (!g.fired || g.severity !== 'soft') continue;
     for (const c of (g.claims || [])) {
-      const t = c.text || '';
-      if (t && out.includes(t)) out = out.split(t).join(SOFT_HEDGE);
+      const t = String(c.text || '').trim();
+      if (t) seen.add(t);
     }
   }
+  return [...seen];
+}
+
+/**
+ * A table whose every body row was an unbacked claim is left as a bare header
+ * plus separator, which renders as an empty grid. Drop the skeleton too.
+ */
+function dropEmptyTables(lines) {
+  const out = [...lines];
+  for (let i = out.length - 1; i >= 1; i--) {
+    if (!_isTableSep(out[i]) || !_isTableRow(out[i - 1])) continue;
+    let body = 0;
+    for (let j = i + 1; j < out.length && _isTableRow(out[j]) && !_isTableSep(out[j]); j++) body++;
+    if (body === 0) out.splice(i - 1, 2);
+  }
   return out;
+}
+
+/** Collapse the blank-line runs that removal opens up; trim the ends. */
+function tidyBlanks(lines) {
+  const out = [];
+  for (const l of lines) {
+    if (l.trim() === '' && (out.length === 0 || out[out.length - 1].trim() === '')) continue;
+    out.push(l);
+  }
+  while (out.length && out[out.length - 1].trim() === '') out.pop();
+  return out;
+}
+
+/**
+ * Single consolidated caveat. Deliberately a plain sentence in first person,
+ * never a bracketed system-internal token: this string IS user-facing text.
+ * Both sentences are suppressed by isSuppressed ("couldn't" → NEG_RE, "I'll" →
+ * FUTURE_RE), so the post-hedge re-check cannot fire on the caveat itself.
+ */
+export function hedgeNote(n) {
+  return n === 1
+    ? "Note: I left out one statement I couldn't confirm with a tool result this turn. I'll verify it and come back with evidence."
+    : `Note: I left out ${n} statements I couldn't confirm with a tool result this turn. I'll verify them and come back with evidence.`;
+}
+
+/**
+ * Shown when EVERY substantive line was an unbacked claim. Without this the
+ * reply degrades to bare scaffolding plus a caveat, which reads as a glitch
+ * rather than as an answer.
+ */
+export const NO_VERIFIED_ANSWER =
+  "I don't have verified information to answer that right now. Let me run the checks and come back with evidence.";
+
+/** Remove SOFT-fired claim sentences and replace them with ONE caveat. */
+export function hedgeResponse(response, gateOut) {
+  const claims = softClaims(gateOut);
+  const src = String(response ?? '');
+  const present = claims.filter(t => src.includes(t));
+  if (!present.length) return response;
+
+  const kept = [];
+  for (const line of src.split('\n')) {
+    let text = line;
+    let hit = false;
+    for (const t of present) {
+      if (text.includes(t)) { text = text.split(t).join(' '); hit = true; }
+    }
+    if (!hit) { kept.push(line); continue; }
+    // The line was the claim (or is now only markdown punctuation) → drop it.
+    // Anything genuinely left over is kept, with its indentation, so a nested
+    // list item that also held an unbacked sentence does not lose its nesting.
+    const rest = text.replace(/[ \t]+/g, ' ').trim();
+    if (rest && !_scaffoldOnly(rest)) kept.push((line.match(/^[ \t]*/) || [''])[0] + rest);
+  }
+
+  const body = tidyBlanks(dropEmptyTables(kept));
+  if (!body.some(l => !_scaffoldOnly(l))) return NO_VERIFIED_ANSWER;
+  return `${body.join('\n')}\n\n${hedgeNote(present.length)}`;
 }
 
 // Slice 4.1 (V3): describe the VIOLATION by gate, never echo the claim text.
