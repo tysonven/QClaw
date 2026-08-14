@@ -833,13 +833,22 @@
             <div style="font-size:.65rem;color:var(--text-dim);text-transform:uppercase;margin-bottom:4px">💰 USDC Balance</div>
             <div id="tr-balance" style="font-size:1.3rem;font-weight:700;color:var(--text)">—</div>
           </div>
+          <!-- Confirmed fills only. Hand-logged positions (tx_hash NULL) are
+               counted in the separate Paper tile below, never in this number. -->
           <div style="background:var(--bg-2);border:1px solid var(--border);border-radius:10px;padding:14px 20px;flex:1;min-width:140px">
             <div style="font-size:.65rem;color:var(--text-dim);text-transform:uppercase;margin-bottom:4px">📈 Realised PnL</div>
             <div id="tr-pnl" style="font-size:1.3rem;font-weight:700;color:var(--text-dim)">—</div>
+            <div id="tr-pnl-sub" style="font-size:.62rem;color:var(--text-dim);margin-top:3px">confirmed fills only</div>
+          </div>
+          <div style="background:var(--bg-2);border:1px solid var(--border);border-radius:10px;padding:14px 20px;flex:1;min-width:140px">
+            <div style="font-size:.65rem;color:var(--text-dim);text-transform:uppercase;margin-bottom:4px">📝 Paper PnL</div>
+            <div id="tr-paper-pnl" style="font-size:1.3rem;font-weight:700;color:var(--text-dim)">—</div>
+            <div id="tr-paper-sub" style="font-size:.62rem;color:var(--text-dim);margin-top:3px">hand-logged, not on-chain</div>
           </div>
           <div style="background:var(--bg-2);border:1px solid var(--border);border-radius:10px;padding:14px 20px;flex:1;min-width:140px">
             <div style="font-size:.65rem;color:var(--text-dim);text-transform:uppercase;margin-bottom:4px">📊 Open Positions</div>
             <div id="tr-open-count" style="font-size:1.3rem;font-weight:700;color:var(--text)">—</div>
+            <div id="tr-open-sub" style="font-size:.62rem;color:var(--text-dim);margin-top:3px">&nbsp;</div>
           </div>
         </div>
 
@@ -866,6 +875,23 @@
             <span style="font-size:.75rem;color:var(--text-dim)">Telegram OTP</span>
             <input class="input" id="tr-otp-input" style="width:90px;font-size:.78rem" maxlength="6" inputmode="numeric" placeholder="123456">
             <button class="btn btn-sm" onclick="trConfirmEnable()">Confirm</button>
+          </div>
+          <!-- Shown when GET /api/trading/config fails. Until it succeeds the
+               limit inputs are disabled, so a failed read can never be written
+               back as a widened limit. -->
+          <span id="tr-config-error" style="display:none;font-size:.72rem;color:var(--red);font-weight:600"></span>
+        </div>
+
+        <!-- Engine Status: trade_engine (:4003), proxied via /api/trading/engine.
+             Scanner / Analyst / approval-gate state, previously Telegram-only. -->
+        <div style="background:var(--bg-2);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:24px">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
+            <div style="font-weight:600;font-size:.85rem">Engine Status</div>
+            <span id="tr-engine-badge" class="badge">—</span>
+            <span style="font-size:.68rem;color:var(--text-dim)">trade_engine: scanner, analyst, approval gate, position monitor</span>
+          </div>
+          <div id="tr-engine-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));gap:10px">
+            <div style="color:var(--text-dim);font-size:.78rem">Loading…</div>
           </div>
         </div>
 
@@ -926,7 +952,7 @@
           <div class="section-title" style="font-size:.9rem">Live Positions</div>
           <div class="table-wrap">
             <table>
-              <thead><tr><th>Question</th><th>Direction</th><th>Entry Price</th><th>Amount</th><th>Status</th></tr></thead>
+              <thead><tr><th>Market</th><th>Direction</th><th>Entry Price</th><th>Amount</th><th>Status</th></tr></thead>
               <tbody id="tr-positions-body"><tr><td colspan="5" style="color:var(--text-dim)">Loading...</td></tr></tbody>
             </table>
           </div>
@@ -937,8 +963,8 @@
           <div class="section-title" style="font-size:.9rem">Latest Simulations</div>
           <div class="table-wrap">
             <table>
-              <thead><tr><th>Asset</th><th>Sim Probability</th><th>Current Price</th><th>DXY</th><th>TNX</th><th>Time</th></tr></thead>
-              <tbody id="tr-sims-body"><tr><td colspan="6" style="color:var(--text-dim)">Loading...</td></tr></tbody>
+              <thead><tr><th>Market</th><th>Asset</th><th>Sim Prob</th><th>Implied</th><th>Edge</th><th>Current Price</th><th>DXY</th><th>TNX</th><th>Time</th></tr></thead>
+              <tbody id="tr-sims-body"><tr><td colspan="9" style="color:var(--text-dim)">Loading...</td></tr></tbody>
             </table>
           </div>
         </div>
@@ -2136,20 +2162,53 @@ async function csViewJob(id) {
 }
 
 /* ─── Trading Room ───────────────────────────────────── */
-let _trConfig = { trading_enabled: false, max_position_usdc: 25, min_edge_threshold: 25, daily_loss_limit: 50 };
+// Last successful GET /api/trading/config. Seeded with nulls, NOT with plausible
+// numbers: a fabricated default here is what let a failed config read be written
+// back as a widened limit (max position 10 -> 25, edge floor 7 -> 25, daily loss
+// 20 -> 50) on the next onchange. Nothing is ever posted from this object until
+// a real read has populated it. See _trConfigLoaded.
+let _trConfig = { trading_enabled: null, max_position_usdc: null, min_edge_threshold: null, daily_loss_limit: null };
+let _trConfigLoaded = false;
 let _trRefreshTimer = null;
 // True between a 202 otp_sent response and a successful confirm (or cancel): the
 // server keeps reporting trading_enabled=false during this window, so trLoadConfig
 // must NOT snap the toggle back to OFF while this is set.
 let _trPending = false;
 
+// Every string interpolated into the tables below goes through this. `question`
+// comes from Polymarket market titles via trading_simulations.raw_output: text
+// this dashboard does not control, rendered into innerHTML on the same page as
+// the trading kill switch.
+const trEsc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+// Compact relative time for engine timestamps ("12m ago"). Returns the empty
+// placeholder for null/unparseable input rather than "NaN ago".
+function trAgo(iso) {
+  if (!iso) return '—';
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return '—';
+  const s = Math.max(0, Math.round((Date.now() - t) / 1000));
+  if (s < 90) return s + 's ago';
+  const m = Math.round(s / 60);
+  if (m < 90) return m + 'm ago';
+  const h = Math.round(m / 60);
+  if (h < 36) return h + 'h ago';
+  return Math.round(h / 24) + 'd ago';
+}
+
 function initTrading() {
   trLoadConfig();
   trLoadBalance();
+  trLoadEngine();
   trLoadPositions();
   trLoadSimulations();
   if (_trRefreshTimer) clearInterval(_trRefreshTimer);
-  _trRefreshTimer = setInterval(() => { trLoadBalance(); trLoadPositions(); trLoadSimulations(); }, 60000);
+  _trRefreshTimer = setInterval(() => {
+    trLoadBalance(); trLoadEngine(); trLoadPositions(); trLoadSimulations();
+    // Re-read config too: it is the recovery path out of the disabled state
+    // after a transient failure.
+    trLoadConfig();
+  }, 60000);
 }
 
 async function trLoadBalance() {
@@ -2157,57 +2216,141 @@ async function trLoadBalance() {
     const data = await (await fetch(API('/api/trading/balance'))).json();
     if (data.error) return;
     $('tr-balance').textContent = '$' + (data.usdc_balance ?? 0).toFixed(2);
+
+    // Confirmed fills only: the server excludes tx_hash IS NULL rows.
     const pnl = data.realised_pnl ?? 0;
     $('tr-pnl').textContent = (pnl >= 0 ? '+$' : '-$') + Math.abs(pnl).toFixed(2);
     $('tr-pnl').style.color = pnl > 0 ? 'var(--green)' : pnl < 0 ? 'var(--red)' : 'var(--text-dim)';
+    const nReal = data.realised_closed_count ?? 0;
+    $('tr-pnl-sub').textContent = nReal === 0
+      ? 'no confirmed fills yet'
+      : nReal + ' confirmed close' + (nReal === 1 ? '' : 's');
+
+    const paper = data.paper_pnl ?? 0;
+    const nPaper = data.paper_closed_count ?? 0;
+    $('tr-paper-pnl').textContent = (paper >= 0 ? '+$' : '-$') + Math.abs(paper).toFixed(2);
+    $('tr-paper-pnl').style.color = 'var(--text-dim)';
+    $('tr-paper-sub').textContent = nPaper === 0
+      ? 'hand-logged, not on-chain'
+      : nPaper + ' hand-logged close' + (nPaper === 1 ? '' : 's');
+
     $('tr-open-count').textContent = data.open_positions ?? 0;
+    const openPaper = data.open_paper_count ?? 0;
+    $('tr-open-sub').innerHTML = openPaper > 0
+      ? trEsc(openPaper + ' paper')
+      : '&nbsp;';
   } catch {}
 }
 
-// Toggle has three visual states: 'off' (default), 'pending' (purple accent —
-// enable requested, awaiting the Telegram OTP), 'on' (green — live).
+// Toggle has four visual states: 'off' (default), 'pending' (purple accent,
+// enable requested, awaiting the Telegram OTP), 'on' (green, live), and
+// 'unknown' (config unreadable; must not render as OFF, which would falsely
+// read as "trading is disabled").
 function trSetToggle(state) {
   const btn = $('tr-trading-toggle');
   if (state === 'on') {
     btn.textContent = 'ON'; btn.style.background = 'var(--green)'; btn.style.color = '#000';
   } else if (state === 'pending') {
     btn.textContent = 'PENDING'; btn.style.background = 'var(--accent)'; btn.style.color = '#fff';
+  } else if (state === 'unknown') {
+    btn.textContent = '?'; btn.style.background = 'var(--red)'; btn.style.color = '#fff';
   } else {
     btn.textContent = 'OFF'; btn.style.background = ''; btn.style.color = '';
   }
 }
 
-async function trLoadConfig() {
-  try {
-    const cfg = await (await fetch(API('/api/trading/config'))).json();
-    if (cfg && !cfg.error) {
-      _trConfig = cfg;
-      $('tr-max-position').value = cfg.max_position_usdc || 25;
-      $('tr-min-edge').value = cfg.min_edge_threshold || 25;
-      $('tr-loss-limit').value = cfg.daily_loss_limit || 50;
-      // While an enable is pending OTP confirmation the server still reports
-      // trading_enabled=false — leave the purple pending toggle as-is.
-      if (!_trPending) trSetToggle(cfg.trading_enabled ? 'on' : 'off');
-    }
-  } catch {}
+// Failed config read: surface it, and lock the limit inputs so a stale DOM value
+// can never be posted back. The toggle stays clickable on purpose. See
+// trToggleTrading, where the only action offered in this state is disable.
+function trSetConfigError(msg) {
+  const el = $('tr-config-error');
+  const inputs = ['tr-max-position', 'tr-min-edge', 'tr-loss-limit'];
+  if (msg) {
+    el.style.display = 'inline';
+    el.textContent = '⚠ Config unreadable (' + msg + '): limits locked, kill switch still available';
+    inputs.forEach(id => { $(id).disabled = true; });
+    if (!_trPending) trSetToggle('unknown');
+  } else {
+    el.style.display = 'none';
+    el.textContent = '';
+    inputs.forEach(id => { $(id).disabled = false; });
+  }
 }
 
-// POST config. `extra` may carry trading_enabled — field-only saves omit it so
-// the server never touches the brake (and never re-arms the OTP) on a limit tweak.
+async function trLoadConfig() {
+  try {
+    const res = await fetch(API('/api/trading/config'));
+    const cfg = await res.json();
+    // A route-level {error} body used to fall through the old `if (cfg && !cfg.error)`
+    // guard silently, leaving HTML defaults on screen. Treat it as failure.
+    if (!res.ok || !cfg || cfg.error) throw new Error(cfg && cfg.error ? cfg.error : 'HTTP ' + res.status);
+    _trConfig = cfg;
+    _trConfigLoaded = true;
+    $('tr-max-position').value = cfg.max_position_usdc ?? '';
+    $('tr-min-edge').value = cfg.min_edge_threshold ?? '';
+    $('tr-loss-limit').value = cfg.daily_loss_limit ?? '';
+    trSetConfigError(null);
+    // While an enable is pending OTP confirmation the server still reports
+    // trading_enabled=false — leave the purple pending toggle as-is.
+    if (!_trPending) trSetToggle(cfg.trading_enabled ? 'on' : 'off');
+  } catch (err) {
+    _trConfigLoaded = false;
+    trSetConfigError((err && err.message) || 'unavailable');
+  }
+}
+
+// Raw POST that sends exactly the fields given. The server prunes undefined keys and
+// leaves absent columns untouched, so this is how the kill switch is sent without
+// dragging any limit value along with it.
+async function trPostConfigRaw(body) {
+  return fetch(API('/api/trading/config'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+}
+
+// POST config including the three limit fields read from the DOM. `extra` may
+// carry trading_enabled — field-only saves omit it so the server never touches
+// the brake (and never re-arms the OTP) on a limit tweak.
 async function trPostConfig(extra) {
-  const cfg = {
-    max_position_usdc: parseFloat($('tr-max-position').value) || 25,
-    min_edge_threshold: parseFloat($('tr-min-edge').value) || 25,
-    daily_loss_limit: parseFloat($('tr-loss-limit').value) || 50,
-    ...extra,
+  if (!_trConfigLoaded) {
+    // Never write limits we could not first read: the inputs may hold markup
+    // defaults rather than live values.
+    toast('Config not loaded: refusing to write trading limits', 'err');
+    throw new Error('config_not_loaded');
+  }
+  // Fall back to last-known-good from the server, never to a hardcoded number.
+  const num = (id, lastGood) => {
+    const v = parseFloat($(id).value);
+    return Number.isFinite(v) ? v : lastGood;
   };
-  return fetch(API('/api/trading/config'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cfg) });
+  return trPostConfigRaw({
+    max_position_usdc: num('tr-max-position', _trConfig.max_position_usdc),
+    min_edge_threshold: num('tr-min-edge', _trConfig.min_edge_threshold),
+    daily_loss_limit: num('tr-loss-limit', _trConfig.daily_loss_limit),
+    ...extra,
+  });
 }
 
 // Item 8 (redesigned): enabling is two-step — the server replies 202 otp_sent
 // and delivers a 6-digit OTP over Telegram; trConfirmEnable() completes it.
 // Disabling stays one-step (always permitted, no OTP).
 async function trToggleTrading() {
+  // Config unreadable: we do not know the current state, so the only action
+  // offered is disable. It never needs an OTP and is always safe, which keeps
+  // the kill switch working even while the limit inputs are locked.
+  if (!_trConfigLoaded) {
+    try {
+      await trPostConfigRaw({ trading_enabled: false });
+      _trPending = false;
+      trShowOtpRow(false);
+      trSetToggle('off');
+      toast('Trading disabled', 'ok');
+      trLoadConfig();
+    } catch { toast('Failed to disable trading', 'err'); }
+    return;
+  }
   try {
     if (_trConfig.trading_enabled || _trPending) {
       // Currently ON, or a pending enable awaiting OTP — turn OFF. Sending
@@ -2269,7 +2412,64 @@ async function trSaveConfig() {
   try {
     await trPostConfig({});
     toast('Config saved', 'ok');
-  } catch (e) { toast('Failed to save config', 'err'); }
+  } catch (e) {
+    // trPostConfig already toasted the config_not_loaded case.
+    if (!e || e.message !== 'config_not_loaded') toast('Failed to save config', 'err');
+  }
+}
+
+/* ── Engine Status (trade_engine :4003, proxied) ───────── */
+function trEngineTile(label, value, sub, tone) {
+  const colour = tone === 'good' ? 'var(--green)' : tone === 'bad' ? 'var(--red)' : tone === 'warn' ? 'var(--accent-l)' : 'var(--text)';
+  return '<div style="background:var(--bg-3);border-radius:8px;padding:10px 12px">'
+    + '<div style="font-size:.6rem;color:var(--text-dim);text-transform:uppercase;margin-bottom:3px">' + trEsc(label) + '</div>'
+    + '<div style="font-size:.95rem;font-weight:600;color:' + colour + '">' + trEsc(value) + '</div>'
+    + (sub ? '<div style="font-size:.62rem;color:var(--text-dim);margin-top:2px">' + trEsc(sub) + '</div>' : '')
+    + '</div>';
+}
+
+async function trLoadEngine() {
+  const grid = $('tr-engine-grid');
+  const badge = $('tr-engine-badge');
+  try {
+    const res = await fetch(API('/api/trading/engine'));
+    const h = await res.json();
+    if (!res.ok || !h || h.error) throw new Error(h && h.error ? h.error : 'HTTP ' + res.status);
+
+    const ok = h.status === 'ok';
+    badge.textContent = ok ? 'online' : String(h.status || 'unknown');
+    badge.className = 'badge ' + (ok ? 'badge-green' : 'badge-yellow');
+
+    const pnl = Number(h.daily_pnl ?? 0);
+    grid.innerHTML = [
+      trEngineTile('Last Scan', trAgo(h.last_scan_at),
+        (h.last_scan_high_edge_count ?? 0) + ' high-edge',
+        h.last_scan_at ? 'good' : 'warn'),
+      trEngineTile('Scheduler', h.scheduler_running ? 'running' : 'stopped',
+        (h.scheduler_jobs ?? 0) + ' jobs',
+        h.scheduler_running ? 'good' : 'bad'),
+      trEngineTile('Analyst', h.analyst_available ? 'ready' : 'unavailable', null,
+        h.analyst_available ? 'good' : 'bad'),
+      trEngineTile('Approval Gate', h.approval_gate_active ? 'armed' : 'off',
+        (h.pending_approvals ?? 0) + ' pending',
+        h.approval_gate_active ? 'good' : 'warn'),
+      trEngineTile('Last Monitor', trAgo(h.last_monitor_at),
+        (h.monitor_positions_resolved ?? 0) + ' resolved',
+        h.last_monitor_at ? 'good' : 'warn'),
+      trEngineTile('Positions', String(h.total_positions ?? 0),
+        (h.open_positions ?? 0) + ' open', null),
+      trEngineTile('Daily PnL', (pnl >= 0 ? '+$' : '-$') + Math.abs(pnl).toFixed(2), 'since UTC midnight',
+        pnl > 0 ? 'good' : pnl < 0 ? 'bad' : null),
+      trEngineTile('Trading', h.trading_enabled ? 'ENABLED' : 'disabled', 'engine view',
+        h.trading_enabled ? 'good' : null),
+    ].join('');
+  } catch (err) {
+    badge.textContent = 'unreachable';
+    badge.className = 'badge badge-red';
+    grid.innerHTML = '<div style="color:var(--red);font-size:.78rem;grid-column:1/-1">'
+      + 'Engine unreachable: scanner, analyst and approval state unknown ('
+      + trEsc((err && err.message) || 'error') + ')</div>';
+  }
 }
 
 async function trRunSimulation() {
@@ -2302,7 +2502,9 @@ async function trRunSimulation() {
     if (factors.tnx) fText.push('10Y: ' + (factors.tnx.current || '—') + ' (' + (factors.tnx.change_pct > 0 ? '+' : '') + (factors.tnx.change_pct || 0).toFixed(2) + '%)');
     $('tr-sim-factors').textContent = fText.length ? 'Macro: ' + fText.join(' | ') : '';
 
-    trLoadSimulations();
+    // Not persisted by design. See the comment on POST /api/trading/simulate in
+    // server.js. This panel is a what-if tool; only the scanner writes
+    // trading_simulations. So there is nothing to reload here.
   } catch (err) {
     toast('Simulation failed: ' + err.message, 'err');
   }
@@ -2319,12 +2521,21 @@ async function trLoadPositions() {
     $('tr-positions-body').innerHTML = positions.map(p => {
       const statusBadge = p.status === 'open' ? '<span class="badge badge-green">open</span>'
         : p.status === 'closed' ? '<span class="badge">closed</span>'
-        : '<span class="badge badge-yellow">' + (p.status || '—') + '</span>';
-      return '<tr><td style="font-size:.78rem;max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + (p.question || p.market_id || '—') + '</td>'
-        + '<td><span class="badge ' + (p.direction === 'YES' ? 'badge-green' : 'badge-red') + '">' + (p.direction || '—') + '</span></td>'
+        : '<span class="badge badge-yellow">' + trEsc(p.status || '—') + '</span>';
+      // No confirmed on-chain fill, so this row is hand-logged. Flagged so it is never read as
+      // a real trade; these are also excluded from the Realised PnL tile.
+      const paperBadge = p.is_paper
+        ? ' <span class="badge badge-yellow" title="No tx_hash: hand-logged, not confirmed on-chain">Paper</span>'
+        : '';
+      // question resolves via simulation_id -> trading_simulations.raw_output.
+      // Positions carry no market name of their own.
+      const market = p.question || (p.asset ? p.asset.toUpperCase() + ' (unnamed market)' : null);
+      return '<tr><td style="font-size:.78rem;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + trEsc(market || '') + '">'
+          + (market ? trEsc(market) : '<span style="color:var(--text-dim)">unlinked</span>') + '</td>'
+        + '<td><span class="badge ' + (p.direction === 'YES' ? 'badge-green' : 'badge-red') + '">' + trEsc(p.direction || '—') + '</span></td>'
         + '<td style="font-size:.78rem">' + (p.entry_price != null ? '$' + Number(p.entry_price).toFixed(2) : '—') + '</td>'
-        + '<td style="font-size:.78rem">' + (p.amount_usdc != null ? '$' + Number(p.amount_usdc).toFixed(2) : '—') + '</td>'
-        + '<td>' + statusBadge + '</td></tr>';
+        + '<td style="font-size:.78rem">' + (p.usdc_amount != null ? '$' + Number(p.usdc_amount).toFixed(2) : '—') + '</td>'
+        + '<td style="white-space:nowrap">' + statusBadge + paperBadge + '</td></tr>';
     }).join('');
   } catch { $('tr-positions-body').innerHTML = '<tr><td colspan="5" style="color:var(--text-dim)">Failed to load</td></tr>'; }
 }
@@ -2333,24 +2544,34 @@ async function trLoadSimulations() {
   try {
     const sims = await (await fetch(API('/api/trading/simulations'))).json();
     if (!Array.isArray(sims) || !sims.length) {
-      $('tr-sims-body').innerHTML = '<tr><td colspan="6" style="color:var(--text-dim)">No simulations yet</td></tr>';
+      $('tr-sims-body').innerHTML = '<tr><td colspan="9" style="color:var(--text-dim)">No simulations yet</td></tr>';
       return;
     }
     $('tr-sims-body').innerHTML = sims.map(s => {
       const macro = s.macro_factors || {};
       const dxy = macro.dxy ? String(macro.dxy.current ?? '—') : '—';
       const tnx = macro.tnx ? String(macro.tnx.current ?? '—') : '—';
-      const time = s.created_at ? new Date(s.created_at).toLocaleString('en-GB', { day:'numeric', month:'short', hour:'2-digit', minute:'2-digit' }) : '—';
+      const time = s.created_at ? new Date(s.created_at).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—';
       const prob = ((s.probability || 0) * 100).toFixed(1);
       const probColor = s.probability > 0.6 ? 'var(--green)' : s.probability < 0.3 ? 'var(--red)' : 'var(--text)';
-      return '<tr><td style="font-size:.78rem;text-transform:uppercase;font-weight:600">' + (s.asset || '—') + '</td>'
+      // edge is a raw fraction (0.07 == 7 percentage points), matching the unit
+      // executor.py gate 4 compares against. Rendered as points.
+      const edgeNum = s.edge == null ? null : Number(s.edge) * 100;
+      const edgeTxt = edgeNum == null || !Number.isFinite(edgeNum) ? '—' : (edgeNum > 0 ? '+' : '') + edgeNum.toFixed(1) + '%';
+      const edgeColor = edgeNum == null ? 'var(--text-dim)' : edgeNum >= 7 ? 'var(--green)' : edgeNum <= 0 ? 'var(--red)' : 'var(--text)';
+      const implied = s.implied_odds == null ? '—' : (Number(s.implied_odds) * 100).toFixed(1) + '%';
+      return '<tr><td style="font-size:.75rem;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + trEsc(s.question || '') + '">'
+          + (s.question ? trEsc(s.question) : '<span style="color:var(--text-dim)">—</span>') + '</td>'
+        + '<td style="font-size:.78rem;text-transform:uppercase;font-weight:600">' + trEsc(s.asset || '—') + '</td>'
         + '<td style="font-size:.78rem;font-weight:600;color:' + probColor + '">' + prob + '%</td>'
+        + '<td style="font-size:.78rem">' + implied + '</td>'
+        + '<td style="font-size:.78rem;font-weight:600;color:' + edgeColor + '">' + edgeTxt + '</td>'
         + '<td style="font-size:.78rem">$' + (s.current_price ? Number(s.current_price).toLocaleString() : '—') + '</td>'
-        + '<td style="font-size:.78rem">' + dxy + '</td>'
-        + '<td style="font-size:.78rem">' + tnx + '</td>'
-        + '<td style="font-size:.72rem;color:var(--text-dim)">' + time + '</td></tr>';
+        + '<td style="font-size:.78rem">' + trEsc(dxy) + '</td>'
+        + '<td style="font-size:.78rem">' + trEsc(tnx) + '</td>'
+        + '<td style="font-size:.72rem;color:var(--text-dim);white-space:nowrap">' + trEsc(time) + '</td></tr>';
     }).join('');
-  } catch { $('tr-sims-body').innerHTML = '<tr><td colspan="6" style="color:var(--text-dim)">Failed to load</td></tr>'; }
+  } catch { $('tr-sims-body').innerHTML = '<tr><td colspan="9" style="color:var(--text-dim)">Failed to load</td></tr>'; }
 }
 
 /* ─── Crete Marketing ─────────────────────────────────── */

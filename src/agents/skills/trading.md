@@ -24,31 +24,33 @@ Live execution requires BOTH `trading_config.trading_enabled = true` AND the
 Trade Executor workflow active. Never enable either without explicit
 confirmation from Tyson in the current conversation.
 
-Status snapshot (2026-07-28, verify via the n8n API before acting):
-- Position Monitor, Market Scanner, Weekly Analyst — ACTIVE (monitoring /
-  analysis / notification only; none of these place trades).
-- Trade Executor — **ACTIVE**. Both execution brakes are currently OFF.
-- `trading_config.trading_enabled` = **true**.
-
-  Live execution is ARMED as of this snapshot. `trading_positions` is still
-  empty (no trade has ever been placed), so nothing has fired yet — but the
-  gate described above is open, not closed. Both brakes were previously
-  documented as off on 2026-07-23; that snapshot was stale.
+Status snapshot (2026-08-14, verify via the n8n API before acting):
+- **ALL FOUR n8n trading workflows are now INACTIVE.** Market Scanner, Trade
+  Executor and Position Monitor were deactivated 2026-08-05; Weekly Analyst
+  2026-08-14. The n8n trading cluster is retired, not paused.
+- Scanning, analysis, approval, execution and position monitoring are now owned
+  by the standalone trade engine (PM2: trade-engine). See System Architecture.
+- `trading_config.trading_enabled` = **true**, and the engine's scheduler is
+  running, so live execution is ARMED through the engine (not through n8n).
+- `trading_positions` holds 2 rows, both with tx_hash NULL. See Supabase
+  Tables: neither is a confirmed on-chain fill.
 
 ## System Architecture
 
-Three-agent system:
-- Agent 1: Monte Carlo worker (Python Flask, port 4001, PM2: trading-worker)
-- Agent 2: Trade Scout — n8n Market Scanner (workflow 3YahxqOguET3pifj)
-- Agent 3: Weekly Analyst — Claude Sonnet, Mondays 9am (workflow vjj2uBIPc07FpIxx)
+CURRENT (since 2026-08-05): the standalone trade engine, PM2 `trade-engine`,
+src/trade_engine/. One process owns scanner, analyst, approval gate, executor
+and position monitor, on an internal scheduler. It still calls out to the
+Monte Carlo worker (Python Flask, port 4001, PM2: trading-worker), which
+remains live and is the one piece carried over from the old system.
 
-Two additional workflows:
-- Trade Executor (fq7spfyiNcpt8Mf7) — webhook /webhook/trading-execute; the
-  ONLY workflow that places trades (gated on trading_enabled)
-- Position Monitor (UYA0JppH7eqyI7fQ) — runs every 15 min
+RETIRED (all INACTIVE, kept for history only):
+- Market Scanner (3YahxqOguET3pifj), deactivated 2026-08-05
+- Trade Executor (fq7spfyiNcpt8Mf7), deactivated 2026-08-05
+- Position Monitor (UYA0JppH7eqyI7fQ), deactivated 2026-08-05
+- Weekly Analyst (vjj2uBIPc07FpIxx), deactivated 2026-08-14
 
-Shared Error Handler (7kpNnMtnuDWXgWcX) is the errorWorkflow for the trading
-workflows (receives their failures).
+Shared Error Handler (7kpNnMtnuDWXgWcX) remains the errorWorkflow on those
+workflow definitions, but receives nothing while they are inactive.
 
 ## n8n Access
 
@@ -65,11 +67,11 @@ Supabase table `trading_config` — a single-row table (id=1) with columns
   gate, currently OPEN. ALWAYS confirm with Tyson before changing it in
   either direction.
 - max_position_usdc: 10
-- min_edge_threshold: 7 — whole-number percent (7 = 7%). Mirrors the
-  scanner's high-edge threshold for reference ONLY; nothing enforces it
-  (the executor reads only trading_enabled + max_position_usdc). The
-  operational thresholds live in the scanner workflow — see Scanner
-  Calibration below. (Updated 2026-07-23 from the stale pre-April value 30.)
+- min_edge_threshold: 7, whole-number percent (7 = 7%). CORRECTION
+  (2026-08-14): this is no longer reference-only. The trade engine enforces it
+  in executor.py GATE 4, which compares candidate.edge (a raw fraction) against
+  min_edge_threshold / 100. Lowering this value now widens what the engine will
+  actually trade. (Updated 2026-07-23 from the stale pre-April value 30.)
 - daily_loss_limit: 20 (USDC)
 
 ## Scanner Calibration (live values, verified 2026-07-23)
@@ -98,10 +100,22 @@ Monte Carlo worker — http://localhost:4001 (PM2: trading-worker):
 - GET  /health    — liveness; returns {"status":"ok","service":"monte-carlo-worker"}
 - POST /simulate  — run a Monte Carlo simulation (JSON body: asset, target, horizon_days)
 
-Trade execution path: the Trade Executor n8n workflow calls the main app on
-port 4000 (/trading/execute, requires the TRADING_WEBHOOK_SECRET header). The
-4001 worker does NOT serve /trading/* paths — verify the exact port-4000
-route surface before relying on it.
+Trade execution path (rewritten 2026-08-14): execution belongs entirely to the
+standalone trade engine, src/trade_engine/executor.py, which invokes
+src/trading/execute_trade.py as a subprocess behind six pre-flight gates
+(trading_enabled, position cap, daily loss, edge floor, size, conditionId).
+
+There is NO HTTP execution route any more. The dashboard's
+POST /api/trading/execute was removed on 2026-08-14. It bypassed the edge
+floor, conditionId validation, the Analyst and the approval gate. Its only
+caller, the "Trading - Trade Executor" n8n workflow (fq7spfyiNcpt8Mf7), was
+deactivated on 2026-08-05. Do not reintroduce an HTTP execution route: route
+through the engine so the gates cannot be skipped.
+
+The trade engine runs at http://127.0.0.1:4003 (PM2: trade-engine) and is
+loopback-bound. Its health endpoint reports scanner, analyst, approval and
+monitor state, and is surfaced on the dashboard Trading Room through the
+read-only proxy route GET /api/trading/engine.
 
 ## Wallet
 
@@ -111,9 +125,19 @@ Credentials: POLYMARKET_PRIVATE_KEY + POLYMARKET_FUNDER_ADDRESS
 
 ## Supabase Tables
 
-- trading_positions: all trades (open + closed) — currently empty (no trades placed to date)
+- trading_positions: all trades (open + closed). As of 2026-08-14 it holds 2
+  rows (1 open, 1 closed), BOTH with tx_hash NULL, meaning neither was ever
+  confirmed on-chain. They are hand-logged rows (POST /positions/manual and an
+  early test insert), not real fills. No live fill has been proven to date, so
+  do not describe the closed row's +$1.11 as realised trading profit. The
+  dashboard counts confirmed fills and paper rows in separate tiles.
+- trading_simulations: scanner Monte Carlo output. Written ONLY by
+  src/trade_engine/scanner.py. The market's identity lives in
+  raw_output (question, polymarket_condition_id), not in a column.
 - trading_config: live config (single row, see above)
-- trading_analyst_reports: weekly analyst output
+- trading_analyst_reports: weekly analyst output (legacy). The "Trading -
+  Weekly Analyst" n8n workflow that wrote this was deactivated 2026-08-14;
+  the engine's own Analyst (src/trade_engine/analyst.py) supersedes it.
 
 ## Safety Rules
 
@@ -128,22 +152,27 @@ Credentials: POLYMARKET_PRIVATE_KEY + POLYMARKET_FUNDER_ADDRESS
 5. Daily loss limit is $20 USDC. If this is hit, trading must stop for the day.
 6. The high-edge bar is +7% edge (scanner Build Run Summary node — see
    Scanner Calibration). Do not recommend markets below this edge.
-7. All trade executions require the TRADING_WEBHOOK_SECRET header — never
-   expose this value in responses.
+7. There is no HTTP execution route and no TRADING_WEBHOOK_SECRET path any
+   more (both retired 2026-08-14). Execution runs only through the trade
+   engine's executor, behind its six gates plus the Telegram approval gate.
+   Never propose reinstating an HTTP execution route.
 8. The Monte Carlo worker must be running (PM2: trading-worker) before any
    simulation or execution calls.
 
 ## Checking System Health
 
-1. Verify trading-worker is running: PM2 process list on ssh qclaw, or
-   GET http://localhost:4001/health
-2. Verify each workflow's active-state via the n8n API before acting
+1. Verify trade-engine is running: PM2 process list on ssh qclaw, or
+   GET http://127.0.0.1:4003/health (also on the dashboard Trading Room via
+   the Engine Status panel). That one response covers scanner freshness,
+   scheduler, analyst availability, pending approvals and daily PnL.
+2. Verify trading-worker is running: PM2 list, or GET http://localhost:4001/health
 3. Check open positions: query trading_positions
 4. Check today's P&L: query trading_positions where date = today
 
 ## Weekly Analyst
 
-Runs automatically every Monday at 9am UTC.
-Reviews last 7 days of trades, calls Claude Sonnet for analysis, saves report
-to trading_analyst_reports, sends summary to Telegram.
-Charlie can trigger manually via n8n workflow vjj2uBIPc07FpIxx.
+RETIRED 2026-08-14. The n8n Weekly Analyst (vjj2uBIPc07FpIxx) ran Mondays 9am
+UTC, reviewed the last 7 days, and wrote trading_analyst_reports. It is now
+INACTIVE and must not be triggered: the trade engine's own Analyst
+(src/trade_engine/analyst.py) supersedes it and runs per-candidate, inline with
+the approval gate, rather than weekly.

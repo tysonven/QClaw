@@ -108,8 +108,15 @@ export function checkOtp(pending, otp, nowMs = Date.now()) {
 // positions than one page holds means the sum would silently undercount, so the
 // caller must 503 rather than trade on a partial number. The throw deliberately
 // escapes this function's fail-soft contract; ordering makes the page deterministic.
-// Limit interpretation lives in the caller (execute route): NULL daily_loss_limit → 0
+// Limit interpretation lives in the caller: NULL daily_loss_limit → 0
 // (kill-switch — blocks all trades). Only undefined/NaN disables the check.
+//
+// NOTE (2026-08-14): its only in-repo caller was POST /api/trading/execute,
+// removed with that route. Kept because it is exported, independently unit
+// tested (tests/trading-pre-enable.test.js), and is the correct primitive for
+// any future daily-loss check. It is NOT wired into a live path right now:
+// the trade engine has its own gate (executor.py GATE 3, via
+// database.get_daily_pnl). Do not assume this function guards anything.
 export async function fetchDailyRealisedLoss(sbUrl, sbKey, fetchImpl = fetch, nowMs = Date.now()) {
   let rows;
   try {
@@ -225,7 +232,6 @@ export class DashboardServer {
     this.app.use('/api/content-studio/upload-image', rateLimit({ windowMs: 60000, max: 10, message: { error: 'Too many image upload requests' } }));
     this.app.use("/api/crete/generate-image", rateLimit({ windowMs: 60000, max: 10, message: { error: "Too many image generation requests" } }));
     this.app.use("/api/flowos/generate-image", rateLimit({ windowMs: 60000, max: 20, message: { error: "Too many image generation requests" } }));
-    this.app.use('/api/trading/execute', rateLimit({ windowMs: 60000, max: 5, message: { error: 'Too many trade requests' } }));
     // Item 8 (redesigned): OTP confirm attempts — 5 per 15 minutes. A 6-digit OTP
     // with a 5-minute TTL then allows at most 5 guesses per mint (brute-force guard).
     this.app.use('/api/trading/confirm-enable', rateLimit({ windowMs: 900000, max: 5, message: { error: 'Too many OTP attempts' } }));
@@ -1427,16 +1433,36 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
         const headers = { apikey: sbKey, Authorization: `Bearer ${sbKey}` };
 
         const [closedRes, openRes] = await Promise.all([
-          fetch('https://fdabygmromuqtysitodp.supabase.co/rest/v1/trading_positions?status=eq.closed&select=pnl', { headers }),
-          fetch('https://fdabygmromuqtysitodp.supabase.co/rest/v1/trading_positions?status=eq.open&select=id', { headers })
+          fetch('https://fdabygmromuqtysitodp.supabase.co/rest/v1/trading_positions?status=eq.closed&select=pnl,tx_hash', { headers }),
+          fetch('https://fdabygmromuqtysitodp.supabase.co/rest/v1/trading_positions?status=eq.open&select=id,tx_hash', { headers })
         ]);
         const closedRows = await closedRes.json();
         const openRows = await openRes.json();
 
-        const realisedPnl = Array.isArray(closedRows) ? closedRows.reduce((sum, r) => sum + (parseFloat(r.pnl) || 0), 0) : 0;
-        const openPositions = Array.isArray(openRows) ? openRows.length : 0;
+        // A position with no tx_hash was never confirmed on-chain: it is a
+        // hand-logged ("paper") row from POST /positions/manual or an early
+        // test insert. Summing those into the headline "Realised PnL" reads as
+        // trading profit that never happened, so the two are counted apart and
+        // realised_pnl carries CONFIRMED fills only. Both current rows (as of
+        // 2026-08-14) are paper, so this moves the tile from +$1.11 to $0.00,
+        // which is the honest number until a real fill lands.
+        const isPaper = (r) => r.tx_hash == null || String(r.tx_hash).trim() === '';
+        const sumPnl = (rows) => rows.reduce((sum, r) => sum + (parseFloat(r.pnl) || 0), 0);
 
-        res.json({ usdc_balance: Math.round(usdcBalance * 100) / 100, realised_pnl: Math.round(realisedPnl * 100) / 100, open_positions: openPositions });
+        const closed = Array.isArray(closedRows) ? closedRows : [];
+        const confirmedClosed = closed.filter((r) => !isPaper(r));
+        const paperClosed = closed.filter(isPaper);
+        const open = Array.isArray(openRows) ? openRows : [];
+
+        res.json({
+          usdc_balance: Math.round(usdcBalance * 100) / 100,
+          realised_pnl: Math.round(sumPnl(confirmedClosed) * 100) / 100,
+          realised_closed_count: confirmedClosed.length,
+          paper_pnl: Math.round(sumPnl(paperClosed) * 100) / 100,
+          paper_closed_count: paperClosed.length,
+          open_positions: open.length,
+          open_paper_count: open.filter(isPaper).length
+        });
       } catch (err) { res.status(500).json({ error: err.message }); }
     });
 
@@ -1451,124 +1477,120 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
         const data = await mcRes.json();
         if (!mcRes.ok) return res.status(mcRes.status).json(data);
 
-        // Save simulation to Supabase
-        const sbKey = SB_SERVICE_ROLE_KEY; // service_role (server-side only) — was a hardcoded anon literal
-        await fetch('https://fdabygmromuqtysitodp.supabase.co/rest/v1/trading_simulations', {
-          method: 'POST',
-          headers: { apikey: sbKey, Authorization: `Bearer ${sbKey}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            asset: data.asset, question: data.question, target: data.target,
-            probability: data.probability, confidence_lower: data.confidence_lower,
-            confidence_upper: data.confidence_upper, current_price: data.current_price,
-            macro_factors: data.macro_factors, macro_adjustment: data.macro_adjustment
-          })
-        }).catch(() => {});
-
+        // Deliberately NOT persisted to trading_simulations.
+        //
+        // This used to POST a row here. It never worked: the body carried
+        // `question`, `target` and `macro_adjustment`, none of which are
+        // columns (the real ones live inside raw_output), so PostgREST
+        // answered 400 PGRST204 on every call and the unchecked response plus
+        // a bare .catch() swallowed it. Every dashboard simulation since has
+        // been silently discarded.
+        //
+        // Fixing the INSERT would be worse than removing it. This panel is a
+        // manual what-if tool: the row it could write has no `edge`, no
+        // `implied_odds` and no raw_output.polymarket_condition_id, so it can
+        // never link back to a market or a position. It would, however, occupy
+        // slots in database.py's get_recent_simulations(limit=10), the window
+        // the Charlie trading-api skill reads, pushing real scanner output out
+        // of view. An ad-hoc simulation can only ever displace signal there.
+        //
+        // Scanner-driven simulations are written by src/trade_engine/scanner.py
+        // via write_simulation(). That remains the only writer.
         res.json(data);
       } catch (err) { res.status(502).json({ error: 'Monte Carlo worker unavailable: ' + err.message }); }
     });
 
-    // ─── Trading: Execute Trade (called by n8n) ──────────────
-    // Polymarket condition id: 64-hex, optional 0x prefix. Injection-safe (hex only,
-    // no shell metacharacters possible). Accepts both bare-64 and 0x-prefixed forms.
-    const POLY_MARKET_ID_RE = /^(0x)?[0-9a-f]{64}$/i;
-    const TRADE_DIRECTIONS = new Set(['YES', 'NO']);
-    this.app.post('/api/trading/execute', async (req, res) => {
-      try {
-        const { market_id, direction, amount } = req.body;
-        if (!market_id || !direction || amount === undefined || amount === null) {
-          return res.status(400).json({ error: 'market_id, direction, and amount required' });
-        }
-        // Item 1: validate inputs before any subprocess (no shell interpolation)
-        if (typeof market_id !== 'string' || !POLY_MARKET_ID_RE.test(market_id)) {
-          return res.status(400).json({ error: 'invalid market_id' });
-        }
-        if (typeof direction !== 'string' || !TRADE_DIRECTIONS.has(direction)) {
-          return res.status(400).json({ error: "invalid direction (expected 'YES' or 'NO')" });
-        }
-        // Item 2: server-side trading_config gate (fail closed) — one fetch feeds the
-        // amount ceiling, the trading_enabled brake, and the daily_loss_limit (item 6),
-        // independently of the n8n workflow.
-        let cfg;
-        try {
-          const sbKey = SB_SERVICE_ROLE_KEY;
-          const cfgRes = await fetch(`${SB_URL}/rest/v1/trading_config?id=eq.1&select=trading_enabled,max_position_usdc,daily_loss_limit`, {
-            headers: { apikey: sbKey, Authorization: `Bearer ${sbKey}` }
-          });
-          cfg = (await cfgRes.json())[0] || {};
-        } catch {
-          return res.status(503).json({ error: 'trading_config_unavailable' });
-        }
-        const maxPos = Number.isFinite(Number(cfg.max_position_usdc)) && Number(cfg.max_position_usdc) > 0 ? Number(cfg.max_position_usdc) : 25;
-        const amt = Number(amount);
-        if (!Number.isFinite(amt) || amt <= 0 || amt > maxPos) {
-          return res.status(400).json({ error: `invalid amount (must be > 0 and <= ${maxPos})` });
-        }
-        if (cfg.trading_enabled !== true && cfg.trading_enabled !== 'true') {
-          return res.status(403).json({ error: 'trading_disabled' });
-        }
-        // Item 6: daily_loss_limit defence — fail closed if PnL query unavailable.
-        // Limit from trading_config (currently $20). daily_loss is signed (negative =
-        // net loss); reject once the day's realised loss meets or exceeds the limit.
-        // A configured limit of 0 is a valid kill-switch (blocks every trade, 0 <= -0).
-        // NULL daily_loss_limit → 0 (kill-switch — blocks all trades). Only undefined/NaN
-        // disables the check.
-        const lossLimit = Number(cfg.daily_loss_limit);
-        if (Number.isFinite(lossLimit) && lossLimit >= 0) {
-          let pnl;
-          try {
-            pnl = await fetchDailyRealisedLoss(SB_URL, SB_SERVICE_ROLE_KEY);
-          } catch {
-            // M2: >1000 closed positions today — the one-page sum would
-            // undercount, so refuse to trade on a partial number.
-            return res.status(503).json({ error: 'pnl_check_unavailable' });
-          }
-          if (!pnl.ok) {
-            return res.status(503).json({ error: 'pnl_check_unavailable' });
-          }
-          if (pnl.daily_loss <= -lossLimit) {
-            return res.status(403).json({ error: 'daily_loss_limit_reached', daily_loss: pnl.daily_loss, limit: lossLimit });
-          }
-        }
-        // execFile — args as array, no /bin/sh, no string interpolation
-        const { execFile } = await import('child_process');
-        const { promisify } = await import('util');
-        const execFileAsync = promisify(execFile);
-        const { stdout } = await execFileAsync(
-          'python3',
-          ['/root/QClaw/src/trading/execute_trade.py',
-           '--market', market_id, '--direction', direction, '--amount', String(amt)],
-          { timeout: 30000 }
-        );
-        res.json(JSON.parse(stdout));
-      } catch (err) {
-        // Fix (adversarial review): err.message from execFile includes subprocess stderr —
-        // don't return it to the client. Log details server-side only.
-        log.error(`[trading/execute] execution failed: ${err && err.message}`);
-        res.status(500).json({ error: 'execution_failed' });
-      }
-    });
+    // ─── Trading: Execute Trade, REMOVED 2026-08-14 ─────────
+    // POST /api/trading/execute used to shell out to
+    // src/trading/execute_trade.py. Its only caller was the n8n "Trading -
+    // Trade Executor" workflow (fq7spfyiNcpt8Mf7), deactivated 2026-08-05 when
+    // the standalone trade engine took over execution.
+    //
+    // Removed rather than left dormant because it was a second, weaker door to
+    // real money: it enforced trading_enabled, max_position_usdc and
+    // daily_loss_limit, but NOT the trade engine's edge floor (gate 4),
+    // conditionId validation (gate 6), the Analyst, or the Telegram approval
+    // gate. Anything holding the dashboard authToken could place a trade that
+    // bypassed the whole decision chain.
+    //
+    // src/trade_engine/executor.py now owns every path to execute_trade.py.
+    // Do not reintroduce an HTTP execution route here. Route through the
+    // engine so the gates cannot be skipped.
 
     // ─── Trading: Positions ─────────────────────────────────
+    // trading_positions carries no market identity of its own: `market_id` is a
+    // uuid FK to trading_markets, which the trade engine never populates, so it
+    // is always NULL. The only route back to a named market is
+    // simulation_id -> trading_simulations.raw_output.question, embedded here
+    // over the real FK so this stays one round trip. raw_output is projected
+    // down to `question` rather than returned whole: the full blob carries
+    // daily_mu/sigma/event_slug/condition_id that no caller here needs.
     this.app.get('/api/trading/positions', async (req, res) => {
       try {
         const sbKey = SB_SERVICE_ROLE_KEY; // service_role (server-side only) — was a hardcoded anon literal
-        const sbRes = await fetch('https://fdabygmromuqtysitodp.supabase.co/rest/v1/trading_positions?status=eq.open&order=created_at.desc&limit=50', {
-          headers: { apikey: sbKey, Authorization: `Bearer ${sbKey}` }
-        });
-        res.json(await sbRes.json());
+        const select = '*,trading_simulations(asset,question:raw_output->>question)';
+        const sbRes = await fetch(
+          `${SB_URL}/rest/v1/trading_positions?status=eq.open&order=created_at.desc&limit=50&select=${encodeURIComponent(select)}`,
+          { headers: { apikey: sbKey, Authorization: `Bearer ${sbKey}` } }
+        );
+        const rows = await sbRes.json();
+        // A PostgREST error is an object, not an array, so pass it through as-is
+        // rather than mapping over it.
+        if (!Array.isArray(rows)) return res.status(sbRes.ok ? 500 : sbRes.status).json(rows);
+        res.json(rows.map(({ trading_simulations: sim, ...p }) => ({
+          ...p,
+          question: sim?.question ?? null,
+          asset: sim?.asset ?? null,
+          // No tx_hash means the fill was never confirmed on-chain, so this is a
+          // hand-logged row, not a real trade. The UI badges these so a paper
+          // position is never read as a live one.
+          is_paper: p.tx_hash == null || String(p.tx_hash).trim() === ''
+        })));
       } catch (err) { res.status(500).json({ error: err.message }); }
     });
 
     // ─── Trading: Simulations ───────────────────────────────
+    // `question` (from raw_output) is what makes rows distinguishable: one scan
+    // writes several simulations per asset, so without it the table renders as
+    // four identical-looking BTC rows. edge/implied_odds are what make a row
+    // interpretable at all.
     this.app.get('/api/trading/simulations', async (req, res) => {
       try {
         const sbKey = SB_SERVICE_ROLE_KEY; // service_role (server-side only) — was a hardcoded anon literal
-        const sbRes = await fetch('https://fdabygmromuqtysitodp.supabase.co/rest/v1/trading_simulations?select=asset,probability,current_price,macro_factors,created_at&order=created_at.desc&limit=10', {
-          headers: { apikey: sbKey, Authorization: `Bearer ${sbKey}` }
-        });
+        const select = 'asset,probability,edge,implied_odds,current_price,macro_factors,created_at,question:raw_output->>question';
+        const sbRes = await fetch(
+          `${SB_URL}/rest/v1/trading_simulations?select=${encodeURIComponent(select)}&order=created_at.desc&limit=10`,
+          { headers: { apikey: sbKey, Authorization: `Bearer ${sbKey}` } }
+        );
         res.json(await sbRes.json());
       } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+
+    // ─── Trading: Engine Status (proxy to trade_engine :4003) ─
+    // The trade engine binds 127.0.0.1:4003 and is deliberately unauthenticated
+    // ("loopback-bound, internal only"), so the browser cannot reach it. This
+    // proxy is the only way its state is visible outside Telegram, and it
+    // inherits the dashboard's /api auth middleware.
+    // Read-only: GET /health has no side effects. The engine's mutating routes
+    // (/scan, /execute, /positions/manual) are NOT proxied and must not be.
+    // exposing them here would rebuild the gate-bypass this PR just removed.
+    this.app.get('/api/trading/engine', async (req, res) => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 5000);
+      try {
+        const r = await fetch('http://127.0.0.1:4003/health', { signal: controller.signal });
+        if (!r.ok) {
+          log.error(`[trading/engine] health returned HTTP ${r.status}`);
+          return res.status(502).json({ error: 'engine_unhealthy' });
+        }
+        res.json(await r.json());
+      } catch (err) {
+        // Covers both a down engine and the 5s abort. Detail stays server-side.
+        log.error(`[trading/engine] health fetch failed: ${err && err.message}`);
+        res.status(503).json({ error: 'engine_unreachable' });
+      } finally {
+        clearTimeout(timer);
+      }
     });
 
     // ─── Trading: Config ────────────────────────────────────

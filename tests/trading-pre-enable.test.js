@@ -286,23 +286,78 @@ async function withSupabaseStub(fn) {
 }
 
 {
-  console.log('Route: /api/trading/execute — M2 position-count overflow → 503');
+  // Regression guard for the 2026-08-14 removal. POST /api/trading/execute was
+  // an HTTP path straight to execute_trade.py whose only caller (the n8n Trade
+  // Executor) had already been retired. It enforced trading_enabled,
+  // max_position_usdc and daily_loss_limit but NOT the trade engine's edge floor
+  // (gate 4), conditionId validation (gate 6), the Analyst or the approval gate,
+  // so anything holding the dashboard authToken could trade around the whole
+  // decision chain. Execution belongs to src/trade_engine/executor.py alone.
+  //
+  // This asserts the route stays gone. If it comes back, it must come back
+  // through the engine, not as a dashboard route.
+  console.log('Route: /api/trading/execute removed, must not be reintroduced');
   const { server } = makeServer();
-  const exec = server.app.routes['post /api/trading/execute'];
+  check('post /api/trading/execute is not registered',
+    !('post /api/trading/execute' in server.app.routes),
+    JSON.stringify(Object.keys(server.app.routes).filter(k => k.includes('trading'))));
+  check('no dashboard route shells out to execute_trade.py',
+    !Object.keys(server.app.routes).some(k => /trading\/(execute|trade|order)/.test(k)));
+}
+
+{
+  console.log('Route: /api/trading/engine read-only proxy to trade_engine :4003');
+  const { server } = makeServer();
+  check('get /api/trading/engine is registered',
+    'get /api/trading/engine' in server.app.routes);
+  // The engine's mutating routes (/scan, /execute, /positions/manual) must never
+  // gain a dashboard proxy, which would rebuild the bypass removed above.
+  check('no proxy for the engine mutating routes',
+    !['post /api/trading/engine', 'post /api/trading/scan', 'post /api/trading/engine/scan',
+      'post /api/trading/engine/execute'].some(k => k in server.app.routes));
+
+  const handler = server.app.routes['get /api/trading/engine'];
   const orig = globalThis.fetch;
-  // Config read says enabled (stub only — nothing written) so the flow reaches
-  // the PnL check; 1001 positions must 503 before any execution is attempted.
+  globalThis.fetch = async () => { throw new Error('ECONNREFUSED 127.0.0.1:4003'); };
+  try {
+    const res = fakeRes();
+    await handler({}, res);
+    check('engine down → 503 engine_unreachable', res.statusCode === 503 && res.body?.error === 'engine_unreachable', JSON.stringify(res.body));
+    check('engine error detail is not leaked to the client',
+      !JSON.stringify(res.body).includes('ECONNREFUSED'), JSON.stringify(res.body));
+  } finally { globalThis.fetch = orig; }
+}
+
+{
+  console.log('Route: /api/trading/balance paper positions excluded from realised PnL');
+  const { server } = makeServer();
+  const handler = server.app.routes['get /api/trading/balance'];
+  const orig = globalThis.fetch;
+  // One confirmed close (+2.50) and two hand-logged ones (+1.11, -0.40). The
+  // headline figure must report only the confirmed fill.
   globalThis.fetch = async (url) => {
     const u = String(url);
-    if (u.includes('trading_config')) return { ok: true, json: async () => [{ trading_enabled: true, max_position_usdc: 25, daily_loss_limit: 20 }] };
-    if (u.includes('trading_positions')) return { ok: true, json: async () => Array.from({ length: 1001 }, () => ({ pnl: -0.01 })) };
+    if (u.includes('status=eq.closed')) {
+      return { ok: true, json: async () => [
+        { pnl: 2.5, tx_hash: '0xabc' },
+        { pnl: 1.11, tx_hash: null },
+        { pnl: -0.4, tx_hash: '   ' },
+      ] };
+    }
+    if (u.includes('status=eq.open')) {
+      return { ok: true, json: async () => [{ id: '1', tx_hash: null }, { id: '2', tx_hash: '0xdef' }] };
+    }
     return { ok: true, json: async () => [] };
   };
   try {
     const res = fakeRes();
-    await exec({ body: { market_id: '0x' + 'a'.repeat(64), direction: 'YES', amount: 5 } }, res);
-    check('1001 positions → 503 pnl_check_unavailable on execute route',
-      res.statusCode === 503 && res.body?.error === 'pnl_check_unavailable', JSON.stringify(res.body));
+    await handler({}, res);
+    check('realised_pnl counts confirmed fills only', res.body?.realised_pnl === 2.5, JSON.stringify(res.body));
+    check('paper_pnl carries the hand-logged rows', res.body?.paper_pnl === 0.71, JSON.stringify(res.body));
+    check('whitespace-only tx_hash counts as paper', res.body?.paper_closed_count === 2, JSON.stringify(res.body));
+    check('confirmed close count reported', res.body?.realised_closed_count === 1, JSON.stringify(res.body));
+    check('open positions still counted in full', res.body?.open_positions === 2, JSON.stringify(res.body));
+    check('open paper count reported', res.body?.open_paper_count === 1, JSON.stringify(res.body));
   } finally { globalThis.fetch = orig; }
 }
 
