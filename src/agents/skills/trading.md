@@ -126,11 +126,24 @@ Credentials: POLYMARKET_PRIVATE_KEY + POLYMARKET_FUNDER_ADDRESS
 ## Supabase Tables
 
 - trading_positions: all trades (open + closed). As of 2026-08-14 it holds 2
-  rows (1 open, 1 closed), BOTH with tx_hash NULL, meaning neither was ever
-  confirmed on-chain. They are hand-logged rows (POST /positions/manual and an
-  early test insert), not real fills. No live fill has been proven to date, so
-  do not describe the closed row's +$1.11 as realised trading profit. The
-  dashboard counts confirmed fills and paper rows in separate tiles.
+  rows (1 open BTC, 1 closed XRP), both REAL money trades executed by hand on
+  the Polymarket UI and logged through POST /positions/manual. Verified against
+  the live Polymarket activity log.
+
+  **tx_hash NULL does NOT mean paper.** tx_hash is written only by the
+  automated executor.py path, and automated execution is currently blocked by
+  the Polymarket maker-address restriction. Manual logging is therefore the
+  only route a real trade takes into this table today, so every genuine
+  position currently in it has tx_hash NULL by construction. Never treat
+  tx_hash IS NULL as "not a real trade" or exclude those rows from PnL: doing
+  so would zero out 100% of real trading history. There is no way to log a
+  paper trade in this system at present.
+
+  Caveat on accuracy: the manual-logging flow records whatever price and amount
+  the user reports, which is often the PROPOSED trade from the Telegram
+  approval message rather than the confirmed fill. Treat logged entry_price /
+  usdc_amount as approximate until reconciled against the Polymarket activity
+  log. The BTC row was corrected this way on 2026-08-14.
 - trading_simulations: scanner Monte Carlo output. Written ONLY by
   src/trade_engine/scanner.py. The market's identity lives in
   raw_output (question, polymarket_condition_id), not in a column.

@@ -1433,36 +1433,28 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
         const headers = { apikey: sbKey, Authorization: `Bearer ${sbKey}` };
 
         const [closedRes, openRes] = await Promise.all([
-          fetch('https://fdabygmromuqtysitodp.supabase.co/rest/v1/trading_positions?status=eq.closed&select=pnl,tx_hash', { headers }),
-          fetch('https://fdabygmromuqtysitodp.supabase.co/rest/v1/trading_positions?status=eq.open&select=id,tx_hash', { headers })
+          fetch('https://fdabygmromuqtysitodp.supabase.co/rest/v1/trading_positions?status=eq.closed&select=pnl', { headers }),
+          fetch('https://fdabygmromuqtysitodp.supabase.co/rest/v1/trading_positions?status=eq.open&select=id', { headers })
         ]);
         const closedRows = await closedRes.json();
         const openRows = await openRes.json();
 
-        // A position with no tx_hash was never confirmed on-chain: it is a
-        // hand-logged ("paper") row from POST /positions/manual or an early
-        // test insert. Summing those into the headline "Realised PnL" reads as
-        // trading profit that never happened, so the two are counted apart and
-        // realised_pnl carries CONFIRMED fills only. Both current rows (as of
-        // 2026-08-14) are paper, so this moves the tile from +$1.11 to $0.00,
-        // which is the honest number until a real fill lands.
-        const isPaper = (r) => r.tx_hash == null || String(r.tx_hash).trim() === '';
-        const sumPnl = (rows) => rows.reduce((sum, r) => sum + (parseFloat(r.pnl) || 0), 0);
+        // Sums EVERY closed position. An earlier revision of this PR split the
+        // figure on tx_hash, treating NULL as a paper trade. That was wrong.
+        // tx_hash is only ever written by the automated executor.py path, and
+        // automated execution is currently blocked by the Polymarket
+        // maker-address restriction, so POST /positions/manual is the only way
+        // a real trade enters this table right now. Every genuine real-money
+        // position in it therefore has tx_hash NULL by construction, not
+        // because it is fake. Verified 2026-08-14 against the live Polymarket
+        // activity log: both current rows are real executed trades with real
+        // fills. Nothing in the system can currently log a paper trade, so
+        // there is nothing to exclude. Do not reintroduce tx_hash IS NULL as a
+        // proxy for "not a real trade".
+        const realisedPnl = Array.isArray(closedRows) ? closedRows.reduce((sum, r) => sum + (parseFloat(r.pnl) || 0), 0) : 0;
+        const openPositions = Array.isArray(openRows) ? openRows.length : 0;
 
-        const closed = Array.isArray(closedRows) ? closedRows : [];
-        const confirmedClosed = closed.filter((r) => !isPaper(r));
-        const paperClosed = closed.filter(isPaper);
-        const open = Array.isArray(openRows) ? openRows : [];
-
-        res.json({
-          usdc_balance: Math.round(usdcBalance * 100) / 100,
-          realised_pnl: Math.round(sumPnl(confirmedClosed) * 100) / 100,
-          realised_closed_count: confirmedClosed.length,
-          paper_pnl: Math.round(sumPnl(paperClosed) * 100) / 100,
-          paper_closed_count: paperClosed.length,
-          open_positions: open.length,
-          open_paper_count: open.filter(isPaper).length
-        });
+        res.json({ usdc_balance: Math.round(usdcBalance * 100) / 100, realised_pnl: Math.round(realisedPnl * 100) / 100, open_positions: openPositions });
       } catch (err) { res.status(500).json({ error: err.message }); }
     });
 
@@ -1537,14 +1529,13 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
         // A PostgREST error is an object, not an array, so pass it through as-is
         // rather than mapping over it.
         if (!Array.isArray(rows)) return res.status(sbRes.ok ? 500 : sbRes.status).json(rows);
+        // No is_paper flag: see the note on /api/trading/balance. tx_hash is
+        // NULL on every real position right now, so it says nothing about
+        // whether a trade happened.
         res.json(rows.map(({ trading_simulations: sim, ...p }) => ({
           ...p,
           question: sim?.question ?? null,
-          asset: sim?.asset ?? null,
-          // No tx_hash means the fill was never confirmed on-chain, so this is a
-          // hand-logged row, not a real trade. The UI badges these so a paper
-          // position is never read as a live one.
-          is_paper: p.tx_hash == null || String(p.tx_hash).trim() === ''
+          asset: sim?.asset ?? null
         })));
       } catch (err) { res.status(500).json({ error: err.message }); }
     });

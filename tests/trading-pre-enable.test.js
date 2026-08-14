@@ -329,35 +329,63 @@ async function withSupabaseStub(fn) {
 }
 
 {
-  console.log('Route: /api/trading/balance paper positions excluded from realised PnL');
+  // Regression guard. An earlier revision of this PR excluded tx_hash IS NULL
+  // rows from realised_pnl as "paper". That was wrong: tx_hash is written only
+  // by the automated executor.py path, which is currently blocked by the
+  // Polymarket maker-address restriction, so every REAL position logged through
+  // POST /positions/manual has tx_hash NULL. Excluding them zeroed out 100% of
+  // genuine trading history. Verified 2026-08-14 against the live Polymarket
+  // activity log. Nothing can log a paper trade today, so nothing is excluded.
+  console.log('Route: /api/trading/balance realised PnL sums every closed position');
   const { server } = makeServer();
   const handler = server.app.routes['get /api/trading/balance'];
   const orig = globalThis.fetch;
-  // One confirmed close (+2.50) and two hand-logged ones (+1.11, -0.40). The
-  // headline figure must report only the confirmed fill.
   globalThis.fetch = async (url) => {
     const u = String(url);
     if (u.includes('status=eq.closed')) {
       return { ok: true, json: async () => [
-        { pnl: 2.5, tx_hash: '0xabc' },
-        { pnl: 1.11, tx_hash: null },
-        { pnl: -0.4, tx_hash: '   ' },
+        { pnl: 2.5, tx_hash: '0xabc' },   // executor-filled
+        { pnl: 1.11, tx_hash: null },     // manually logged, still a real trade
+        { pnl: -0.4, tx_hash: null },
       ] };
     }
     if (u.includes('status=eq.open')) {
-      return { ok: true, json: async () => [{ id: '1', tx_hash: null }, { id: '2', tx_hash: '0xdef' }] };
+      return { ok: true, json: async () => [{ id: '1' }, { id: '2' }] };
     }
     return { ok: true, json: async () => [] };
   };
   try {
     const res = fakeRes();
     await handler({}, res);
-    check('realised_pnl counts confirmed fills only', res.body?.realised_pnl === 2.5, JSON.stringify(res.body));
-    check('paper_pnl carries the hand-logged rows', res.body?.paper_pnl === 0.71, JSON.stringify(res.body));
-    check('whitespace-only tx_hash counts as paper', res.body?.paper_closed_count === 2, JSON.stringify(res.body));
-    check('confirmed close count reported', res.body?.realised_closed_count === 1, JSON.stringify(res.body));
-    check('open positions still counted in full', res.body?.open_positions === 2, JSON.stringify(res.body));
-    check('open paper count reported', res.body?.open_paper_count === 1, JSON.stringify(res.body));
+    check('realised_pnl includes tx_hash NULL rows', res.body?.realised_pnl === 3.21, JSON.stringify(res.body));
+    check('open positions counted in full', res.body?.open_positions === 2, JSON.stringify(res.body));
+    check('no paper/confirmed split is reported',
+      !('paper_pnl' in (res.body || {})) && !('realised_closed_count' in (res.body || {})),
+      JSON.stringify(res.body));
+  } finally { globalThis.fetch = orig; }
+}
+
+{
+  console.log('Route: /api/trading/positions does not classify rows by tx_hash');
+  const { server } = makeServer();
+  const handler = server.app.routes['get /api/trading/positions'];
+  const orig = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: true,
+    json: async () => [{
+      id: 'p1', tx_hash: null, direction: 'YES', usdc_amount: 9.97, status: 'open',
+      trading_simulations: { asset: 'btc', question: 'Will Bitcoin dip to $60,000 in August?' },
+    }],
+  });
+  try {
+    const res = fakeRes();
+    await handler({}, res);
+    const row = (res.body || [])[0] || {};
+    check('question flattened from the simulation embed',
+      row.question === 'Will Bitcoin dip to $60,000 in August?', JSON.stringify(row));
+    check('usdc_amount passed through unchanged', row.usdc_amount === 9.97, JSON.stringify(row));
+    check('no is_paper flag emitted', !('is_paper' in row), JSON.stringify(row));
+    check('embed object not leaked to the client', !('trading_simulations' in row), JSON.stringify(row));
   } finally { globalThis.fetch = orig; }
 }
 
