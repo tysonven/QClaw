@@ -1,11 +1,11 @@
 /**
- * Slice 6b Unit 2 — delegate_to tool contract tests.
+ * delegate_to tool contract tests, post-retirement (2026-08-14).
  * Run: node tests/delegate-to.test.js
  *
- * Covers: stub routes back synchronously (no Supabase), unknown/bad args throw
- * (Gate-2 safe), live specialist writes a dispatch row, U1-A allowlist gate
- * (live-status but not allowlisted → stub), sequential enforcement, rate limit,
- * server-derived session_id, exact result shape.
+ * The specialist-spawning layer is retired: there is no live path, no allowlist
+ * read, no Supabase client and no INSERT in the tool. Every call routes back.
+ * These tests pin that contract, including the negative guarantees that matter
+ * most (no false-success shape can be produced, and no DB write can occur).
  */
 
 import { createDelegateToTool } from '../src/tools/delegate-to.js';
@@ -15,55 +15,68 @@ const check = (l, c, d = '') => { if (c) { console.log(`  ✓ ${l}`); passed++; 
 async function throwsAsync(fn) { try { await fn(); return null; } catch (e) { return e; } }
 
 // ── fakes ──
+// Deliberately includes ids that USED to take the live path (status 'live'), to
+// prove status/allowlist no longer influences the outcome.
 const SPECS = {
-  'build-specialist':         { id: 'build-specialist',         isLive: false, isStub: true,  status: 'scaffolded' },
-  'content-studio-operator':  { id: 'content-studio-operator',  isLive: true,  isStub: false, status: 'live' },
-  'qa-operator':              { id: 'qa-operator',              isLive: true,  isStub: false, status: 'live' },
+  'build-specialist':        { id: 'build-specialist',        isLive: false, isStub: true,  status: 'scaffolded' },
+  'content-studio-operator': { id: 'content-studio-operator', isLive: true,  isStub: false, status: 'live' },
+  'community-manager-fsc':   { id: 'community-manager-fsc',   isLive: true,  isStub: false, status: 'live' },
+  'qa-operator':             { id: 'qa-operator',             isLive: true,  isStub: false, status: 'live' },
 };
 const fakeGet = (name) => SPECS[String(name).toLowerCase()] || null;
 
-function fakeDb({ active = [], insertImpl } = {}) {
-  const inserts = [];
-  return {
-    inserts,
-    configured: () => true,
-    findActiveBySession: async () => active,
-    insert: async (row) => { inserts.push(row); return insertImpl ? insertImpl(row) : { task_id: 'tid-fixed', ...row }; },
-  };
-}
-
 const baseOpts = () => ({
-  audit: null, env: {}, getSpecialist: fakeGet,
-  liveIds: new Set(['content-studio-operator']), // U1-A: only this id is live-enabled
-  randomUUID: () => 'uuid-fixed',
-  supabase: fakeDb(),
+  audit: null, env: {}, getSpecialist: fakeGet, randomUUID: () => 'uuid-fixed',
 });
 
-console.log('stub path (no Supabase, synchronous routed_back):');
+const EXPECTED_KEYS = JSON.stringify(['routed_back', 'specialist', 'status', 'stub_result', 'task_id']);
+
+console.log('every call routes back (no live path exists):');
 {
-  const db = fakeDb();
-  const tool = createDelegateToTool({ ...baseOpts(), supabase: db });
+  const tool = createDelegateToTool(baseOpts());
   const r = await tool.fn({ specialist: 'build-specialist', task: 'check the thing' }, { channel: 'telegram', userId: 42 });
   check('routed_back true', r.routed_back === true);
   check('status stub_routed_back', r.status === 'stub_routed_back');
   check('task_id present', r.task_id === 'uuid-fixed');
   check('specialist is the id', r.specialist === 'build-specialist');
-  check('stub_result shape exact', JSON.stringify(r.stub_result) === JSON.stringify({
-    specialist: 'build-specialist', status: 'stub', task: 'check the thing',
-    routed_back: true, message: 'Specialist not yet live. Charlie will handle directly.',
-  }));
-  check('top-level keys exact', JSON.stringify(Object.keys(r).sort()) === JSON.stringify(['routed_back', 'specialist', 'status', 'stub_result', 'task_id']));
-  check('NO Supabase insert for a stub', db.inserts.length === 0);
+  check('top-level keys unchanged from pre-retirement shape', JSON.stringify(Object.keys(r).sort()) === EXPECTED_KEYS);
+  check('inner status marks retirement', r.stub_result.status === 'retired');
+  check('inner task carried', r.stub_result.task === 'check the thing');
+  check('message tells Charlie to handle it', /Handle this yourself/.test(r.stub_result.message));
+  check('message forbids a delegation claim', /Do NOT say this was delegated/.test(r.stub_result.message));
 }
 
-console.log('U1-A allowlist gate (live status but NOT allowlisted → stub):');
+console.log('formerly-live specialists ALSO route back (the false-success path is gone):');
+for (const id of ['content-studio-operator', 'community-manager-fsc', 'qa-operator']) {
+  const tool = createDelegateToTool(baseOpts());
+  const r = await tool.fn({ specialist: id, task: 't' }, { channel: 'telegram', userId: 1 });
+  check(`${id} routes back`, r.routed_back === true && r.status === 'stub_routed_back');
+  check(`${id} never returns queued`, r.status !== 'queued');
+  check(`${id} has no task/queue id leak`, JSON.stringify(Object.keys(r).sort()) === EXPECTED_KEYS);
+}
+
+console.log('no false-success shape is reachable for ANY registered specialist:');
 {
-  const db = fakeDb();
-  // qa-operator isLive:true but not in liveIds → must route back as a stub
-  const tool = createDelegateToTool({ ...baseOpts(), supabase: db });
-  const r = await tool.fn({ specialist: 'qa-operator', task: 't' }, { channel: 'telegram', userId: 1 });
-  check('live-status-not-allowlisted routes back', r.routed_back === true && r.status === 'stub_routed_back');
-  check('no Supabase write for non-allowlisted live', db.inserts.length === 0);
+  // fresh tool per call: the rate limiter is per-factory and would otherwise trip
+  for (const id of Object.keys(SPECS)) {
+    const tool = createDelegateToTool(baseOpts());
+    const r = await tool.fn({ specialist: id, task: 't' }, {});
+    if (r.status === 'queued' || r.routed_back === false || r.error === 'sequential_only') {
+      check(`${id} produced a non-routed-back outcome`, false, JSON.stringify(r));
+    }
+  }
+  check('all registered specialists route back', true);
+}
+
+console.log('the tool holds no Supabase/allowlist surface at all:');
+{
+  const src = await (await import('node:fs/promises')).readFile(new URL('../src/tools/delegate-to.js', import.meta.url), 'utf8');
+  const body = src.slice(src.indexOf('export function createDelegateToTool'));
+  check('no SUPABASE_URL reference in code body', !/SUPABASE_URL/.test(body));
+  check('no SERVICE_ROLE key reference in code body', !/SERVICE_ROLE/.test(body));
+  check('no specialist_dispatches table write in code body', !/specialist_dispatches/.test(body));
+  check('no QCLAW_SPECIALIST_LIVE_IDS read in code body', !/QCLAW_SPECIALIST_LIVE_IDS/.test(body));
+  check('no fetch/insert call in code body', !/\bfetch\(/.test(body) && !/\.insert\(/.test(body));
 }
 
 console.log('hard failures THROW (Gate-2 safe — status=error, no false dispatch):');
@@ -78,41 +91,15 @@ console.log('hard failures THROW (Gate-2 safe — status=error, no false dispatc
   check('missing specialist throws', !!e3 && /specialist is required/.test(e3.message));
 }
 
-console.log('live path (allowlisted + mocked Supabase writes a row):');
+console.log('description warns the model off delegation claims:');
 {
-  const db = fakeDb({ active: [] });
-  const tool = createDelegateToTool({ ...baseOpts(), supabase: db });
-  const r = await tool.fn({ specialist: 'content-studio-operator', task: 'process ep 12', context: 'r2 key X' }, { channel: 'telegram', userId: 99 });
-  check('queued (not routed back)', r.status === 'queued' && r.routed_back === false);
-  check('task_id from inserted row', r.task_id === 'tid-fixed');
-  check('result keys exact', JSON.stringify(Object.keys(r).sort()) === JSON.stringify(['routed_back', 'specialist', 'status', 'task_id']));
-  check('one Supabase insert', db.inserts.length === 1);
-  check('row.specialist_id is the id', db.inserts[0].specialist_id === 'content-studio-operator');
-  check('row.status queued', db.inserts[0].status === 'queued');
-  check('row.session_id is server-derived (channel:userId)', db.inserts[0].session_id === 'telegram:99');
-  check('row.context carried', db.inserts[0].context === 'r2 key X');
-  check('row.created_by is auditActor', db.inserts[0].created_by === 'charlie');
+  const tool = createDelegateToTool(baseOpts());
+  check('description marked RETIRED', /RETIRED/.test(tool.description));
+  check('description forbids "has the task" claims', /NEVER tell the user a specialist/.test(tool.description));
+  check('description points at skills + claude_code_dispatch', /skill/.test(tool.description) && /claude_code_dispatch/.test(tool.description));
 }
 
-console.log('session_id cannot be spoofed via args:');
-{
-  const db = fakeDb({ active: [] });
-  const tool = createDelegateToTool({ ...baseOpts(), supabase: db });
-  await tool.fn({ specialist: 'content-studio-operator', task: 't', session_id: 'telegram:1' /* spoof attempt */ }, { channel: 'dashboard', userId: 7 });
-  check('session_id from ctx, ignores args', db.inserts[0].session_id === 'dashboard:7');
-}
-
-console.log('sequential enforcement (in_progress row this session → sequential_only):');
-{
-  const db = fakeDb({ active: [{ id: 'already-running' }] });
-  const tool = createDelegateToTool({ ...baseOpts(), supabase: db });
-  const r = await tool.fn({ specialist: 'content-studio-operator', task: 't' }, { channel: 'telegram', userId: 5 });
-  check('returns sequential_only', r.error === 'sequential_only');
-  check('sequential message present', /One specialist dispatch per turn/.test(r.message));
-  check('no insert when sequential-blocked', db.inserts.length === 0);
-}
-
-console.log('rate limit (perMinute) throws:');
+console.log('rate limit (loop guard) still throws:');
 {
   let t = 1_000_000;
   const tool = createDelegateToTool({ ...baseOpts(), now: () => t, rateLimit: { perMinute: 2, perHour: 20 } });
@@ -120,7 +107,6 @@ console.log('rate limit (perMinute) throws:');
   await tool.fn({ specialist: 'build-specialist', task: 'b' }, {});
   const e = await throwsAsync(() => tool.fn({ specialist: 'build-specialist', task: 'c' }, {}));
   check('3rd call within a minute throws', !!e && /rate limit/.test(e.message), e?.message);
-  // after a minute it recovers
   t += 61_000;
   const r = await tool.fn({ specialist: 'build-specialist', task: 'd' }, {});
   check('recovers after the window', r.routed_back === true);

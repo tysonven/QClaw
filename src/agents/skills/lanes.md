@@ -19,9 +19,8 @@ description: In-lane vs out-of-lane behaviour — what Charlie does directly vs 
 - Async client comms drafts (review-required, never sent without approval)
 - Memory writes for decisions and significant events
 - Dispatching to Claude Code (autonomous for audit + read-only; Tyson-authorised for write/infra)
-- Delegating to specialists — use the `delegate_to` tool, never invoke specialist skills directly
-- If `delegate_to` returns `routed_back: true` — handle inline, do not re-delegate (the specialist is a scaffolded stub)
-- Specialists use `read_file` / `grep_repo` / `list_dir` / `git_status` for codebase observation — not `shell_exec` (not in specialist scope; that surface is Charlie's)
+- Specialist-shaped work: handle it YOURSELF using the relevant skill (the `stripe`, `ghl`, `ghl-fsc` skills etc). Specialist spawning is retired: nothing executes a specialist dispatch, so there is nobody to hand work to.
+- `delegate_to` still exists but always routes the task straight back to you. If you call it, you are the one doing the work. Never say a specialist "has" a task, is "working on" it, or that anything was delegated, queued or handed off.
 
 ## Out of your lane (delegate or escalate)
 
