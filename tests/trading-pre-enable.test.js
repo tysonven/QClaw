@@ -286,23 +286,183 @@ async function withSupabaseStub(fn) {
 }
 
 {
-  console.log('Route: /api/trading/execute — M2 position-count overflow → 503');
+  // Regression guard for the 2026-08-14 removal. POST /api/trading/execute was
+  // an HTTP path straight to execute_trade.py whose only caller (the n8n Trade
+  // Executor) had already been retired. It enforced trading_enabled,
+  // max_position_usdc and daily_loss_limit but NOT the trade engine's edge floor
+  // (gate 4), conditionId validation (gate 6), the Analyst or the approval gate,
+  // so anything holding the dashboard authToken could trade around the whole
+  // decision chain. Execution belongs to src/trade_engine/executor.py alone.
+  //
+  // This asserts the route stays gone. If it comes back, it must come back
+  // through the engine, not as a dashboard route.
+  console.log('Route: /api/trading/execute removed, must not be reintroduced');
   const { server } = makeServer();
-  const exec = server.app.routes['post /api/trading/execute'];
+  check('post /api/trading/execute is not registered',
+    !('post /api/trading/execute' in server.app.routes),
+    JSON.stringify(Object.keys(server.app.routes).filter(k => k.includes('trading'))));
+  check('no dashboard route shells out to execute_trade.py',
+    !Object.keys(server.app.routes).some(k => /trading\/(execute|trade|order)/.test(k)));
+}
+
+{
+  console.log('Route: /api/trading/engine read-only proxy to trade_engine :4003');
+  const { server } = makeServer();
+  check('get /api/trading/engine is registered',
+    'get /api/trading/engine' in server.app.routes);
+  // The engine's mutating routes (/scan, /execute, /positions/manual) must never
+  // gain a dashboard proxy, which would rebuild the bypass removed above.
+  check('no proxy for the engine mutating routes',
+    !['post /api/trading/engine', 'post /api/trading/scan', 'post /api/trading/engine/scan',
+      'post /api/trading/engine/execute'].some(k => k in server.app.routes));
+
+  const handler = server.app.routes['get /api/trading/engine'];
   const orig = globalThis.fetch;
-  // Config read says enabled (stub only — nothing written) so the flow reaches
-  // the PnL check; 1001 positions must 503 before any execution is attempted.
+  globalThis.fetch = async () => { throw new Error('ECONNREFUSED 127.0.0.1:4003'); };
+  try {
+    const res = fakeRes();
+    await handler({}, res);
+    check('engine down → 503 engine_unreachable', res.statusCode === 503 && res.body?.error === 'engine_unreachable', JSON.stringify(res.body));
+    check('engine error detail is not leaked to the client',
+      !JSON.stringify(res.body).includes('ECONNREFUSED'), JSON.stringify(res.body));
+  } finally { globalThis.fetch = orig; }
+}
+
+{
+  // Regression guard. An earlier revision of this PR excluded tx_hash IS NULL
+  // rows from realised_pnl as "paper". That was wrong: tx_hash is written only
+  // by the automated executor.py path, which is currently blocked by the
+  // Polymarket maker-address restriction, so every REAL position logged through
+  // POST /positions/manual has tx_hash NULL. Excluding them zeroed out 100% of
+  // genuine trading history. Verified 2026-08-14 against the live Polymarket
+  // activity log. Nothing can log a paper trade today, so nothing is excluded.
+  console.log('Route: /api/trading/balance realised PnL sums every closed position');
+  const { server } = makeServer();
+  const handler = server.app.routes['get /api/trading/balance'];
+  const orig = globalThis.fetch;
   globalThis.fetch = async (url) => {
     const u = String(url);
-    if (u.includes('trading_config')) return { ok: true, json: async () => [{ trading_enabled: true, max_position_usdc: 25, daily_loss_limit: 20 }] };
-    if (u.includes('trading_positions')) return { ok: true, json: async () => Array.from({ length: 1001 }, () => ({ pnl: -0.01 })) };
+    if (u.includes('status=eq.closed')) {
+      return { ok: true, json: async () => [
+        { pnl: 2.5, tx_hash: '0xabc' },   // executor-filled
+        { pnl: 1.11, tx_hash: null },     // manually logged, still a real trade
+        { pnl: -0.4, tx_hash: null },
+      ] };
+    }
+    if (u.includes('status=eq.open')) {
+      return { ok: true, json: async () => [{ id: '1' }, { id: '2' }] };
+    }
     return { ok: true, json: async () => [] };
   };
   try {
     const res = fakeRes();
-    await exec({ body: { market_id: '0x' + 'a'.repeat(64), direction: 'YES', amount: 5 } }, res);
-    check('1001 positions → 503 pnl_check_unavailable on execute route',
-      res.statusCode === 503 && res.body?.error === 'pnl_check_unavailable', JSON.stringify(res.body));
+    await handler({}, res);
+    check('realised_pnl includes tx_hash NULL rows', res.body?.realised_pnl === 3.21, JSON.stringify(res.body));
+    check('open positions counted in full', res.body?.open_positions === 2, JSON.stringify(res.body));
+    check('no paper/confirmed split is reported',
+      !('paper_pnl' in (res.body || {})) && !('realised_closed_count' in (res.body || {})),
+      JSON.stringify(res.body));
+  } finally { globalThis.fetch = orig; }
+}
+
+{
+  console.log('Route: /api/trading/positions does not classify rows by tx_hash');
+  const { server } = makeServer();
+  const handler = server.app.routes['get /api/trading/positions'];
+  const orig = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: true,
+    json: async () => [{
+      id: 'p1', tx_hash: null, direction: 'YES', usdc_amount: 9.97, status: 'open',
+      trading_simulations: { asset: 'btc', question: 'Will Bitcoin dip to $60,000 in August?' },
+    }],
+  });
+  try {
+    const res = fakeRes();
+    await handler({}, res);
+    const row = (res.body || [])[0] || {};
+    check('question flattened from the simulation embed',
+      row.question === 'Will Bitcoin dip to $60,000 in August?', JSON.stringify(row));
+    check('usdc_amount passed through unchanged', row.usdc_amount === 9.97, JSON.stringify(row));
+    check('no is_paper flag emitted', !('is_paper' in row), JSON.stringify(row));
+    check('embed object not leaked to the client', !('trading_simulations' in row), JSON.stringify(row));
+  } finally { globalThis.fetch = orig; }
+}
+
+{
+  // C1 (adversarial review, 2026-08-14). This route used to answer
+  //   res.json(rows[0] || { trading_enabled:false, max_position_usdc:25,
+  //                         min_edge_threshold:25, daily_loss_limit:50 })
+  // returning INVENTED limits as a clean 200 on every failure mode. The client
+  // could not distinguish that from a real read and would write 25/25/50 back,
+  // widening max position 10->25, edge floor 7->25 and daily loss 20->50.
+  // Every failure must now carry a non-2xx AND an explicit error field, and no
+  // response may ever contain a fabricated limit.
+  console.log('Route: GET /api/trading/config never fabricates limits');
+  const { server } = makeServer();
+  const handler = server.app.routes['get /api/trading/config'];
+  const orig = globalThis.fetch;
+  const FABRICATED = [25, 50];
+
+  const run = async (stub) => {
+    globalThis.fetch = stub;
+    const res = fakeRes();
+    await handler({}, res);
+    return res;
+  };
+
+  try {
+    let res = await run(async () => ({ ok: false, status: 401, json: async () => ({ message: 'JWT expired' }) }));
+    check('upstream 401 -> 502 config_unavailable',
+      res.statusCode === 502 && res.body?.error === 'config_unavailable', JSON.stringify(res.body));
+
+    res = await run(async () => ({ ok: false, status: 500, json: async () => ({ message: 'boom' }) }));
+    check('upstream 500 -> 502 config_unavailable',
+      res.statusCode === 502 && res.body?.error === 'config_unavailable', JSON.stringify(res.body));
+
+    // RLS rejections come back as a 200-with-error-object in some PostgREST
+    // configurations; rows[0] was undefined for these, which is what triggered
+    // the fabrication.
+    res = await run(async () => ({ ok: true, status: 200, json: async () => ({ code: '42501', message: 'permission denied' }) }));
+    check('RLS error object (non-array 200) -> 502',
+      res.statusCode === 502 && res.body?.error === 'config_unavailable', JSON.stringify(res.body));
+
+    res = await run(async () => ({ ok: true, status: 200, json: async () => [] }));
+    check('deleted/absent row -> 404 config_row_missing, not defaults',
+      res.statusCode === 404 && res.body?.error === 'config_row_missing', JSON.stringify(res.body));
+
+    res = await run(async () => ({ ok: true, status: 200, json: async () => [{ trading_enabled: true }] }));
+    check('row without a primary key -> 502 (not trusted as config)',
+      res.statusCode === 502 && res.body?.error === 'config_unavailable', JSON.stringify(res.body));
+
+    res = await run(async () => { throw new Error('ECONNRESET'); });
+    check('network throw -> 500 config_unavailable',
+      res.statusCode === 500 && res.body?.error === 'config_unavailable', JSON.stringify(res.body));
+    check('upstream error text not leaked',
+      !JSON.stringify(res.body).includes('ECONNRESET'), JSON.stringify(res.body));
+
+    // The genuine path still works.
+    const REAL = { id: 1, trading_enabled: true, max_position_usdc: 10, min_edge_threshold: 7, daily_loss_limit: 20 };
+    res = await run(async () => ({ ok: true, status: 200, json: async () => [REAL] }));
+    check('a genuine row is returned as 200 with no error field',
+      res.statusCode === 200 && !res.body?.error && res.body?.id === 1, JSON.stringify(res.body));
+    check('genuine row passes limits through unchanged',
+      res.body?.max_position_usdc === 10 && res.body?.min_edge_threshold === 7 && res.body?.daily_loss_limit === 20);
+
+    // Sweep: no failure mode may ever emit the old fabricated numbers.
+    for (const [label, stub] of [
+      ['401', async () => ({ ok: false, status: 401, json: async () => ({}) })],
+      ['non-array', async () => ({ ok: true, status: 200, json: async () => ({ code: '42501' }) })],
+      ['empty', async () => ({ ok: true, status: 200, json: async () => [] })],
+      ['throw', async () => { throw new Error('x'); }],
+    ]) {
+      const r = await run(stub);
+      const vals = Object.values(r.body || {});
+      check(`${label}: response contains no fabricated limit value`,
+        !FABRICATED.some(v => vals.includes(v)), JSON.stringify(r.body));
+      check(`${label}: response carries an explicit error field`, !!r.body?.error, JSON.stringify(r.body));
+      check(`${label}: status is non-2xx`, r.statusCode >= 400, String(r.statusCode));
+    }
   } finally { globalThis.fetch = orig; }
 }
 
