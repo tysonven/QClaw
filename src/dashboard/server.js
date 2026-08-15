@@ -1585,15 +1585,57 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
     });
 
     // ─── Trading: Config ────────────────────────────────────
+    // C1 (adversarial review): this route used to answer
+    //   res.json(rows[0] || { trading_enabled: false, max_position_usdc: 25,
+    //                         min_edge_threshold: 25, daily_loss_limit: 50 })
+    // which returned FABRICATED limits as a normal 200 with no error field on
+    // every failure mode, not just a missing row: an RLS or auth rejection, a
+    // 5xx with a body, or any PostgREST error object (all of which make
+    // `rows[0]` undefined, since an error body is an object, not an array).
+    //
+    // The client could not tell that from a real read, so it would populate the
+    // inputs with 25/25/50 and write them back on the next onchange, widening
+    // max position 10 -> 25, edge floor 7 -> 25 and daily loss 20 -> 50. That
+    // defeated the whole point of the client-side guard added in this PR.
+    //
+    // Every failure now carries a distinct non-2xx status AND an explicit error
+    // field. A genuinely absent row is its own narrow case (404
+    // config_row_missing), never conflated with an error, and it still does not
+    // invent limits. Never reintroduce a default-substituting fallback here.
     this.app.get('/api/trading/config', async (req, res) => {
       try {
         const sbKey = SB_SERVICE_ROLE_KEY; // service_role (server-side only) — was a hardcoded anon literal
-        const sbRes = await fetch('https://fdabygmromuqtysitodp.supabase.co/rest/v1/trading_config?id=eq.1&select=*', {
+        const sbRes = await fetch(`${SB_URL}/rest/v1/trading_config?id=eq.1&select=*`, {
           headers: { apikey: sbKey, Authorization: `Bearer ${sbKey}` }
         });
+        if (!sbRes.ok) {
+          log.error(`[trading/config] upstream HTTP ${sbRes.status}`);
+          return res.status(502).json({ error: 'config_unavailable' });
+        }
         const rows = await sbRes.json();
-        res.json(rows[0] || { trading_enabled: false, max_position_usdc: 25, min_edge_threshold: 25, daily_loss_limit: 50 });
-      } catch (err) { res.status(500).json({ error: err.message }); }
+        // A PostgREST error body is an object; only an array is a result set.
+        if (!Array.isArray(rows)) {
+          log.error('[trading/config] upstream returned a non-array body');
+          return res.status(502).json({ error: 'config_unavailable' });
+        }
+        if (!rows.length) {
+          // Narrow, explicit case: the query succeeded and row id=1 genuinely
+          // does not exist. Still no invented limits; the caller decides.
+          return res.status(404).json({ error: 'config_row_missing' });
+        }
+        const row = rows[0];
+        if (!row || typeof row !== 'object' || row.id === undefined) {
+          log.error('[trading/config] upstream row missing its primary key');
+          return res.status(502).json({ error: 'config_unavailable' });
+        }
+        // Returned as stored. Columns are nullable, so a NULL limit is a real
+        // database state and is passed through as null rather than defaulted;
+        // the client omits null fields from writes instead of inventing values.
+        res.json(row);
+      } catch (err) {
+        log.error(`[trading/config] read failed: ${err && err.message}`);
+        res.status(500).json({ error: 'config_unavailable' });
+      }
     });
 
     // Item 8 (redesigned): Telegram OTP as second factor.

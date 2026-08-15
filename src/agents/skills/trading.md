@@ -3,7 +3,7 @@ name: trading
 category: on-demand
 surface: prompt
 keywords: [trade, trading, scanner, position]
-description: Polymarket prediction-market trading system — three-agent architecture, safety rules, system health
+description: Polymarket prediction-market trading system: standalone trade engine, execution gates, safety rules, system health
 # tool-registration intentionally disabled — see Slice 2 audit T10 (uses "## Key API Endpoints" not "## Endpoints")
 ---
 
@@ -12,28 +12,32 @@ description: Polymarket prediction-market trading system — three-agent archite
 Charlie uses this skill to monitor, analyse, and manage the Polymarket
 prediction market trading system.
 
-## Cluster State & Guard
+## Armed State & Guard
 
-Before any trading action, confirm the relevant n8n workflow is **active**
-and the Monte Carlo worker is up. If a workflow (or the whole cluster) is
-**deactivated**, do NOT attempt to trigger it or call its endpoints —
-surface that the cluster is offline and stop. Never silently retry against a
-dead workflow.
+**Live execution is armed by the trade engine alone.** The condition is
+`trading_config.trading_enabled = true` AND the `trade-engine` process running
+with its scheduler up. n8n is NOT part of this condition any more: every n8n
+trading workflow is retired, and their inactive state says nothing about
+whether real money can move. Do not infer "not armed" from a dead n8n workflow.
 
-Live execution requires BOTH `trading_config.trading_enabled = true` AND the
-Trade Executor workflow active. Never enable either without explicit
+Before any trading action, check the engine, not n8n:
+`GET http://127.0.0.1:4003/health` (or the dashboard Engine Status panel).
+If the engine is down, say so and stop; never retry blindly.
+
+Never change `trading_enabled` in either direction without explicit
 confirmation from Tyson in the current conversation.
 
-Status snapshot (2026-08-14, verify via the n8n API before acting):
-- **ALL FOUR n8n trading workflows are now INACTIVE.** Market Scanner, Trade
-  Executor and Position Monitor were deactivated 2026-08-05; Weekly Analyst
-  2026-08-14. The n8n trading cluster is retired, not paused.
-- Scanning, analysis, approval, execution and position monitoring are now owned
-  by the standalone trade engine (PM2: trade-engine). See System Architecture.
-- `trading_config.trading_enabled` = **true**, and the engine's scheduler is
-  running, so live execution is ARMED through the engine (not through n8n).
-- `trading_positions` holds 2 rows, both with tx_hash NULL. See Supabase
-  Tables: neither is a confirmed on-chain fill.
+Status snapshot (verified live 2026-08-14, re-verify before acting):
+- `trading_config.trading_enabled` = **true**, engine scheduler running.
+  **Live execution is ARMED.**
+- **ALL FOUR n8n trading workflows are INACTIVE** (Market Scanner, Trade
+  Executor, Position Monitor 2026-08-05; Weekly Analyst 2026-08-14). Retired,
+  not paused. This does NOT mean trading is off. See above.
+- Scanning, analysis, approval, execution and position monitoring are owned by
+  the standalone trade engine (PM2: trade-engine). See System Architecture.
+- `trading_positions` holds 2 rows, both REAL money trades. Both have tx_hash
+  NULL, which does NOT mean paper. See Supabase Tables before drawing any
+  conclusion from that column.
 
 ## System Architecture
 
@@ -63,9 +67,9 @@ convenience — always verify active-state via the API before acting.
 
 Supabase table `trading_config` — a single-row table (id=1) with columns
 (NOT a key/value store):
-- trading_enabled (boolean): **true** as of 2026-07-28 — the live execution
-  gate, currently OPEN. ALWAYS confirm with Tyson before changing it in
-  either direction.
+- trading_enabled (boolean): **true**, verified live 2026-08-14. The execution
+  gate (executor.py GATE 1), currently OPEN. ALWAYS confirm with Tyson before
+  changing it in either direction.
 - max_position_usdc: 10
 - min_edge_threshold: 7, whole-number percent (7 = 7%). CORRECTION
   (2026-08-14): this is no longer reference-only. The trade engine enforces it
@@ -74,25 +78,29 @@ Supabase table `trading_config` — a single-row table (id=1) with columns
   actually trade. (Updated 2026-07-23 from the stale pre-April value 30.)
 - daily_loss_limit: 20 (USDC)
 
-## Scanner Calibration (live values, verified 2026-07-23)
+## Scanner Calibration
 
-Thresholds live in the **Build Run Summary** node of the Market Scanner
-workflow (3YahxqOguET3pifj) — NOT in trading_config:
-- Edge = simulated probability − market YES price (fraction).
-- High-edge: **+0.07** — sim probability ≥7 points above the market.
-- No-edge: **−0.20** — sim probability ≥20 points below the market.
-  (Raised from −0.10 on 2026-07-23: the fixed 90d GBM lookback was
-  systematically pessimistic on short-dated OTM crypto rungs and the
-  −0.10 band was mostly calibration noise, not alpha.)
-- Volume floors (two, both live): **20,000 USDC** pre-simulation filter in
-  the Analyse Edge node; **5,000 USDC** alert floor in Build Run Summary.
-- The scanner only considers markets resolving within **35 days**
-  (Analyse Edge horizon gate).
-- Monte Carlo lookback is horizon-adaptive (since 2026-07-23): the last
-  **21 trading days** of returns when horizon ≤35d (i.e. every scanner
-  market), the full 90-calendar-day window otherwise.
-- trading_config.min_edge_threshold mirrors the high-edge value (7) for
-  reference only.
+SOURCE CORRECTION (2026-08-14): these thresholds no longer live in the
+retired n8n Market Scanner's "Build Run Summary" node. They are now constants
+in **src/trade_engine/scanner.py** and settings in
+**src/trade_engine/config.py**. Several are environment-overridable, so read
+the running values rather than trusting the numbers below.
+
+Verified in code 2026-08-14:
+- Edge = simulated probability − market YES price (a raw fraction, so 0.07 is
+  7 percentage points).
+- High-edge floor: **0.07** (`scanner.AMOUNT_EDGE_FLOOR`).
+- Pre-simulation volume floor: **20,000 USDC** (`scanner.MIN_PRESIM_VOLUME`).
+- Horizon cap: **35 days** (`scanner.HORIZON_MAX_DAYS`).
+- No-edge band and the alert volume floor come from
+  `config.no_edge_threshold` and `config.min_alert_volume`, both read from the
+  environment. Historically −0.20 and 5,000 USDC, but these are NOT hardcoded:
+  check the live config before quoting them.
+- Monte Carlo lookback is horizon-adaptive: the last **21 trading days** of
+  returns when horizon ≤35d (i.e. every scanner market), the full
+  90-calendar-day window otherwise.
+- `trading_config.min_edge_threshold` is ENFORCED, not decorative. See
+  Current Trading Config and executor.py GATE 4.
 
 ## Key API Endpoints
 
@@ -102,8 +110,23 @@ Monte Carlo worker — http://localhost:4001 (PM2: trading-worker):
 
 Trade execution path (rewritten 2026-08-14): execution belongs entirely to the
 standalone trade engine, src/trade_engine/executor.py, which invokes
-src/trading/execute_trade.py as a subprocess behind six pre-flight gates
-(trading_enabled, position cap, daily loss, edge floor, size, conditionId).
+src/trading/execute_trade.py as a subprocess behind SIX pre-flight gates.
+Verified against the code 2026-08-14. Every one of these can refuse a trade
+the Analyst and Tyson have already approved, so check them before telling
+Tyson a trade "will" go through:
+
+| # | Gate | Refuses when | Limit |
+|---|------|--------------|-------|
+| 1 | trading_disabled | `trading_config.trading_enabled` is not true | — |
+| 2 | position_cap | too many positions already open | **MAX_CONCURRENT_POSITIONS = 2** (hardcoded in executor.py, NOT in trading_config) |
+| 3 | daily_loss_limit | today's realised loss meets the limit | `daily_loss_limit` (20 USDC) |
+| 4 | edge_below_threshold | `candidate.edge < min_edge_threshold / 100` | 7% |
+| 5 | invalid_amount | size ≤ 0, above config, or above a hard ceiling | `max_position_usdc` (10) AND **ABSOLUTE_MAX_POSITION_USDC = 25.0** (hardcoded ceiling that config cannot raise) |
+| 6 | invalid_market_identifier | no well-formed Polymarket conditionId | — |
+
+Gates 2 and 5's hard limits are code constants, not database config: raising
+`max_position_usdc` above 25 does NOT raise the real ceiling, and there is no
+config key for the 2-position cap.
 
 There is NO HTTP execution route any more. The dashboard's
 POST /api/trading/execute was removed on 2026-08-14. It bypassed the edge
@@ -156,15 +179,19 @@ Credentials: POLYMARKET_PRIVATE_KEY + POLYMARKET_FUNDER_ADDRESS
 
 1. NEVER enable trading (set trading_enabled: true) without explicit
    confirmation from Tyson in the current conversation.
-2. NEVER reactivate the Trade Executor workflow without explicit
-   confirmation from Tyson.
-3. If a trading workflow or the cluster is deactivated, do NOT attempt tool
-   calls against it — surface that it is offline instead of retrying.
-4. Max position is $10 USDC. Never suggest or execute trades above this
-   without config change approval.
+2. NEVER reactivate any retired n8n trading workflow (all four are inactive by
+   decision) without explicit confirmation from Tyson. The Trade Executor in
+   particular posts to an HTTP route that no longer exists.
+3. Judge armed state from the trade engine, never from n8n. If the engine is
+   down, surface that and stop; do not conclude trading is safe because an n8n
+   workflow is inactive.
+4. Max position is $10 USDC (`max_position_usdc`), with a hardcoded
+   $25 ceiling that config cannot exceed. Never suggest or execute trades
+   above the config value without approval.
 5. Daily loss limit is $20 USDC. If this is hit, trading must stop for the day.
-6. The high-edge bar is +7% edge (scanner Build Run Summary node — see
-   Scanner Calibration). Do not recommend markets below this edge.
+6. The high-edge bar is +7% edge (`scanner.AMOUNT_EDGE_FLOOR`, and enforced
+   again at executor.py GATE 4 via min_edge_threshold). Do not recommend
+   markets below this edge.
 7. There is no HTTP execution route and no TRADING_WEBHOOK_SECRET path any
    more (both retired 2026-08-14). Execution runs only through the trade
    engine's executor, behind its six gates plus the Telegram approval gate.

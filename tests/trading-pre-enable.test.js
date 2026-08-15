@@ -389,5 +389,82 @@ async function withSupabaseStub(fn) {
   } finally { globalThis.fetch = orig; }
 }
 
+{
+  // C1 (adversarial review, 2026-08-14). This route used to answer
+  //   res.json(rows[0] || { trading_enabled:false, max_position_usdc:25,
+  //                         min_edge_threshold:25, daily_loss_limit:50 })
+  // returning INVENTED limits as a clean 200 on every failure mode. The client
+  // could not distinguish that from a real read and would write 25/25/50 back,
+  // widening max position 10->25, edge floor 7->25 and daily loss 20->50.
+  // Every failure must now carry a non-2xx AND an explicit error field, and no
+  // response may ever contain a fabricated limit.
+  console.log('Route: GET /api/trading/config never fabricates limits');
+  const { server } = makeServer();
+  const handler = server.app.routes['get /api/trading/config'];
+  const orig = globalThis.fetch;
+  const FABRICATED = [25, 50];
+
+  const run = async (stub) => {
+    globalThis.fetch = stub;
+    const res = fakeRes();
+    await handler({}, res);
+    return res;
+  };
+
+  try {
+    let res = await run(async () => ({ ok: false, status: 401, json: async () => ({ message: 'JWT expired' }) }));
+    check('upstream 401 -> 502 config_unavailable',
+      res.statusCode === 502 && res.body?.error === 'config_unavailable', JSON.stringify(res.body));
+
+    res = await run(async () => ({ ok: false, status: 500, json: async () => ({ message: 'boom' }) }));
+    check('upstream 500 -> 502 config_unavailable',
+      res.statusCode === 502 && res.body?.error === 'config_unavailable', JSON.stringify(res.body));
+
+    // RLS rejections come back as a 200-with-error-object in some PostgREST
+    // configurations; rows[0] was undefined for these, which is what triggered
+    // the fabrication.
+    res = await run(async () => ({ ok: true, status: 200, json: async () => ({ code: '42501', message: 'permission denied' }) }));
+    check('RLS error object (non-array 200) -> 502',
+      res.statusCode === 502 && res.body?.error === 'config_unavailable', JSON.stringify(res.body));
+
+    res = await run(async () => ({ ok: true, status: 200, json: async () => [] }));
+    check('deleted/absent row -> 404 config_row_missing, not defaults',
+      res.statusCode === 404 && res.body?.error === 'config_row_missing', JSON.stringify(res.body));
+
+    res = await run(async () => ({ ok: true, status: 200, json: async () => [{ trading_enabled: true }] }));
+    check('row without a primary key -> 502 (not trusted as config)',
+      res.statusCode === 502 && res.body?.error === 'config_unavailable', JSON.stringify(res.body));
+
+    res = await run(async () => { throw new Error('ECONNRESET'); });
+    check('network throw -> 500 config_unavailable',
+      res.statusCode === 500 && res.body?.error === 'config_unavailable', JSON.stringify(res.body));
+    check('upstream error text not leaked',
+      !JSON.stringify(res.body).includes('ECONNRESET'), JSON.stringify(res.body));
+
+    // The genuine path still works.
+    const REAL = { id: 1, trading_enabled: true, max_position_usdc: 10, min_edge_threshold: 7, daily_loss_limit: 20 };
+    res = await run(async () => ({ ok: true, status: 200, json: async () => [REAL] }));
+    check('a genuine row is returned as 200 with no error field',
+      res.statusCode === 200 && !res.body?.error && res.body?.id === 1, JSON.stringify(res.body));
+    check('genuine row passes limits through unchanged',
+      res.body?.max_position_usdc === 10 && res.body?.min_edge_threshold === 7 && res.body?.daily_loss_limit === 20);
+
+    // Sweep: no failure mode may ever emit the old fabricated numbers.
+    for (const [label, stub] of [
+      ['401', async () => ({ ok: false, status: 401, json: async () => ({}) })],
+      ['non-array', async () => ({ ok: true, status: 200, json: async () => ({ code: '42501' }) })],
+      ['empty', async () => ({ ok: true, status: 200, json: async () => [] })],
+      ['throw', async () => { throw new Error('x'); }],
+    ]) {
+      const r = await run(stub);
+      const vals = Object.values(r.body || {});
+      check(`${label}: response contains no fabricated limit value`,
+        !FABRICATED.some(v => vals.includes(v)), JSON.stringify(r.body));
+      check(`${label}: response carries an explicit error field`, !!r.body?.error, JSON.stringify(r.body));
+      check(`${label}: status is non-2xx`, r.statusCode >= 400, String(r.statusCode));
+    }
+  } finally { globalThis.fetch = orig; }
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

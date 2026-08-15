@@ -851,15 +851,19 @@
           </div>
           <div style="display:flex;align-items:center;gap:6px">
             <span style="font-size:.75rem;color:var(--text-dim)">Max Position $</span>
-            <input class="input" id="tr-max-position" style="width:80px;font-size:.78rem" value="25" onchange="trSaveConfig()">
+            <!-- M1: no markup default. These carried value="25"/"25"/"50", which
+                 is what a failed config read used to write back to the database.
+                 Blank until a genuine row populates them, matching the null
+                 seeding of _trConfig. -->
+            <input class="input" id="tr-max-position" style="width:80px;font-size:.78rem" value="" placeholder="—" onchange="trSaveConfig()">
           </div>
           <div style="display:flex;align-items:center;gap:6px">
             <span style="font-size:.75rem;color:var(--text-dim)">Min Edge %</span>
-            <input class="input" id="tr-min-edge" style="width:60px;font-size:.78rem" value="25" onchange="trSaveConfig()">
+            <input class="input" id="tr-min-edge" style="width:60px;font-size:.78rem" value="" placeholder="—" onchange="trSaveConfig()">
           </div>
           <div style="display:flex;align-items:center;gap:6px">
             <span style="font-size:.75rem;color:var(--text-dim)">Daily Loss Limit $</span>
-            <input class="input" id="tr-loss-limit" style="width:80px;font-size:.78rem" value="50" onchange="trSaveConfig()">
+            <input class="input" id="tr-loss-limit" style="width:80px;font-size:.78rem" value="" placeholder="—" onchange="trSaveConfig()">
           </div>
           <!-- Item 8 (redesigned): shown after enable request returns 202 otp_sent -->
           <div id="tr-otp-row" style="display:none;align-items:center;gap:6px">
@@ -2252,10 +2256,17 @@ function trSetConfigError(msg) {
 async function trLoadConfig() {
   try {
     const res = await fetch(API('/api/trading/config'));
-    const cfg = await res.json();
+    const cfg = await res.json().catch(() => null);
     // A route-level {error} body used to fall through the old `if (cfg && !cfg.error)`
     // guard silently, leaving HTML defaults on screen. Treat it as failure.
     if (!res.ok || !cfg || cfg.error) throw new Error(cfg && cfg.error ? cfg.error : 'HTTP ' + res.status);
+    // C1 defence in depth: only a genuine database row is acceptable. The row's
+    // primary key proves it came from the table rather than from a
+    // default-substituting fallback. The server no longer fabricates one, and
+    // this makes sure a reintroduced fallback cannot be mistaken for real config.
+    if (typeof cfg !== 'object' || Array.isArray(cfg) || cfg.id === undefined || cfg.id === null) {
+      throw new Error('not_a_config_row');
+    }
     _trConfig = cfg;
     _trConfigLoaded = true;
     $('tr-max-position').value = cfg.max_position_usdc ?? '';
@@ -2292,17 +2303,34 @@ async function trPostConfig(extra) {
     toast('Config not loaded: refusing to write trading limits', 'err');
     throw new Error('config_not_loaded');
   }
-  // Fall back to last-known-good from the server, never to a hardcoded number.
-  const num = (id, lastGood) => {
-    const v = parseFloat($(id).value);
-    return Number.isFinite(v) ? v : lastGood;
+  // M2: build the body by explicit inclusion. Each limit is taken from the
+  // input, else from the last genuine server read, else OMITTED outright so the
+  // server leaves that column untouched. The previous version returned
+  // `undefined` and leaned on JSON.stringify dropping undefined keys, which
+  // happened to be safe but only incidentally: any change to how the body is
+  // serialised would have started writing nulls over live limits.
+  const body = {};
+  const putLimit = (key, id, lastGood) => {
+    const typed = parseFloat($(id).value);
+    if (Number.isFinite(typed)) { body[key] = typed; return; }
+    const known = Number(lastGood);
+    if (lastGood !== null && lastGood !== undefined && Number.isFinite(known)) { body[key] = known; return; }
+    // Neither a usable input nor a usable last-known-good: send nothing for
+    // this column rather than guessing a value for it.
   };
-  return trPostConfigRaw({
-    max_position_usdc: num('tr-max-position', _trConfig.max_position_usdc),
-    min_edge_threshold: num('tr-min-edge', _trConfig.min_edge_threshold),
-    daily_loss_limit: num('tr-loss-limit', _trConfig.daily_loss_limit),
-    ...extra,
-  });
+  putLimit('max_position_usdc', 'tr-max-position', _trConfig.max_position_usdc);
+  putLimit('min_edge_threshold', 'tr-min-edge', _trConfig.min_edge_threshold);
+  putLimit('daily_loss_limit', 'tr-loss-limit', _trConfig.daily_loss_limit);
+  return trPostConfigRaw({ ...body, ...extra });
+}
+
+// H1: a disable that did not succeed must never look like one. Leaves the
+// toggle where it was rather than showing OFF, says plainly that trading may
+// still be armed, and re-reads config so the button reflects real state.
+function trDisableFailed(res) {
+  trSetToggle(_trConfigLoaded && _trConfig.trading_enabled ? 'on' : 'unknown');
+  toast('Disable FAILED (HTTP ' + (res && res.status) + '): trading may still be ARMED', 'err');
+  trLoadConfig();
 }
 
 // Item 8 (redesigned): enabling is two-step — the server replies 202 otp_sent
@@ -2314,13 +2342,18 @@ async function trToggleTrading() {
   // the kill switch working even while the limit inputs are locked.
   if (!_trConfigLoaded) {
     try {
-      await trPostConfigRaw({ trading_enabled: false });
+      const res = await trPostConfigRaw({ trading_enabled: false });
+      // H1: fetch() only rejects on network failure. Without this check a 500,
+      // 401 or 403 still flipped the toggle to OFF and toasted success while
+      // trading stayed armed: a false all-clear during exactly the backend
+      // degradation that makes the kill switch matter.
+      if (!res.ok) { trDisableFailed(res); return; }
       _trPending = false;
       trShowOtpRow(false);
       trSetToggle('off');
       toast('Trading disabled', 'ok');
       trLoadConfig();
-    } catch { toast('Failed to disable trading', 'err'); }
+    } catch { toast('Failed to disable trading: trading may still be ARMED', 'err'); }
     return;
   }
   try {
@@ -2328,7 +2361,9 @@ async function trToggleTrading() {
       // Currently ON, or a pending enable awaiting OTP — turn OFF. Sending
       // trading_enabled:false also cancels any pending OTP on the server.
       const wasEnabled = _trConfig.trading_enabled;
-      await trPostConfig({ trading_enabled: false });
+      const res = await trPostConfig({ trading_enabled: false });
+      // H1: same check on the primary disable path.
+      if (!res.ok) { trDisableFailed(res); return; }
       _trPending = false;
       trShowOtpRow(false);
       trSetToggle('off');
