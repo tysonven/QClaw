@@ -20396,3 +20396,422 @@ longer outweighs its content; the dense paragraph split in two after
 the working-session sentence, wording untouched. Hierarchy against
 the pricing block's filled primary verified by screenshot at both
 widths before commit; live-verified post-deploy. Commit 45473be.
+
+## 2026-08-15 - Phase 5 Session 17 - Hedge consolidation (PR #89), reflex table + delegate_to retirement (PR #90), branch cleanup, Dashboard Trading Room rebuilt against the trade engine (PR #91)
+
+Four pieces of work. Three of them were trust failures of the same shape:
+something told Tyson a thing had happened, or was safe, when it had not or
+was not. The gate layer pasted an internal placeholder into a live Telegram
+reply; the reflex table answered confirmations without running anything; the
+delegation tool returned a success shape into a black hole; and the dashboard
+either hid the trading state or, once "fixed", was one server route away from
+silently widening every trading limit. PR #91 also produced two of the more
+useful corrections in this log: one where the fix was wrong, and one where the
+fix was defeated from the other side of the request.
+
+### PR #89 (`ef6b9c0`) - soft-hedge placeholder printed six times into a live reply
+
+Incident 2026-08-14 11:33:21Z. Charlie sent Tyson a Telegram reply in which
+the internal hedge placeholder printed six times inside a wrecked markdown
+table. The literal string that reached the user:
+
+```
+[Unverified — I don't have a confirmed tool result for that this turn; let me check and confirm before stating it.]
+```
+
+Root cause: `hedgeResponse` replaced every soft-failed sentence in place with
+one fixed bracketed template. Two assumptions behind that were false.
+
+1. **At most one sentence hedges per reply.** `gate.log` records
+   **7 x `gate:"state"` soft_fail** at that timestamp, all `attempt:1`. The
+   template was pasted seven times.
+2. **A "sentence" is prose.** `splitSentences` splits on `\n+`, so each
+   markdown table **row** is a sentence, and `STATE_RE` matches the bare word
+   `Live` in a Status cell. Six body rows were each swapped for the template,
+   leaving an orphaned header and `|---|---|` separator above six identical
+   bracketed lines.
+
+The 11:32:47Z turn shows the quieter variant: the template spliced
+mid-paragraph and glued onto the next sentence.
+
+**Not a PR #88 regression.** `git log -S` shows `SOFT_HEDGE` and
+`hedgeResponse` unchanged since PR #43 (`8698e06`, Slice 4). `gate.log` shows
+the same shape on 2026-07-08 (soft-failed table row) and 2026-07-09 (six soft
+state fires in one turn). PR #88 did add a second soft-severity producer
+(Gate 5 degrades an unsourced non-UUID id to a hedge), which widened exposure,
+but it did not fire on the incident turn.
+
+Fix is presentation only. Unbacked sentences are **deleted** rather than
+substituted, and a single caveat is stated **once**, in first person, at the
+end. A table left with no surviving body rows has its header and separator
+dropped too, so no empty grid renders. When every substantive line was
+unbacked, a **distinct fallback** answers instead of bare scaffolding plus a
+caveat. Both new strings are plain sentences rather than bracketed system
+tokens, and both are suppressed by `isSuppressed`, so the post-hedge re-check
+cannot fire on the caveat itself. No gate detection, severity or firing
+condition changed: the incident reply still `soft_fail`s on the same claims,
+and the raw claim text still never reaches the user.
+
+Verification: incident reply replayed through `runGates` + `hedgeResponse`,
+still `soft_fail`, output clean, re-check `pass`, no `[Unverified` anywhere.
+15 new assertions. `verification-gates.test.js` **231/231** (was 216).
+
+### `QCLAW_SPECIALIST_LIVE_IDS` - mitigated on the host, then made inert in code
+
+Immediate mitigation first: the host `.env` var was emptied and `quantumclaw`
+restarted. It was still populated with both specialist ids, contrary to the
+brief's premise that it had already been cleared. PR #90 then made it
+permanently inert rather than leaving a live config switch behind: the live
+path was deleted outright, so no allowlist read remains and the variable is no
+longer load-bearing. Pinned by test, which asserts the tool routes back even
+when the env var is populated.
+
+### PR #90 (`88d9dcb`) - reflex table swallowed every confirmation; `delegate_to` retired
+
+Two independent findings from the audit of the 2026-08-14 "Noted." incident
+(the follow-up to Session 16's BTC fabrication finding).
+
+**1. The reflex table intercepted every confirmation.** `REFLEX_RESPONSES` in
+`src/models/router.js` mapped `yes` -> "Noted.", `no` -> "Understood." and
+`ok` -> "Got it." as exact-match Tier 0 replies. The reflex branch at
+`registry.js:331` returns **before** `_processNonReflex`, which owns the LLM,
+the entire tool surface, and the `conversations` write.
+
+Net effect: any direct yes/no confirmation from Tyson never reached the model,
+could not trigger a tool, and left no trace in history. The incident that
+surfaced it: "have community-manager-fsc create a test post" -> Charlie offers
+to route it -> "yes" -> "Noted." and nothing happened. `delegate_to` was routed
+and active in that turn; it was simply never reached, because the agent never
+ran. **This was a general confirmation-handling bug, not a delegation bug, and
+it affected every confirmation, not only trading.**
+
+Fix: removed the three answer-shaped keys. Kept the eight social pleasantries
+(`hello`, `hi`, `hey`, `thanks`, `thank you`, `cheers`, `ta`, `bye`), which
+cannot answer a question. Added a comment explaining the constraint so the
+table is not repopulated. Classification itself was not at fault and is
+unchanged: `classify()` is an exact-match dictionary lookup, not a heuristic.
+The entries were the problem.
+
+**2. `delegate_to` was a complete producer with no consumer.** The live path
+inserted a `queued` row into `specialist_dispatches`; nothing ever claimed,
+executed or surfaced it. No claim RPC, no reap RPC, no worker process, no
+results-surfacing module. Contrast `claude-code-dispatcher.js` + `cc-results.js`,
+which have all three and work.
+
+Evidence at retirement:
+
+- **2 invocations in ~6 weeks**, both on 2026-07-01, same task
+- the one row written that day was still `status='queued', attempts=0,
+  surfaced_at=null` **44 days later**
+- **zero completed loops, ever**
+- meanwhile the skill pattern carried effectively all real traffic: 166 Stripe
+  calls, 227 GHL, 203 n8n-api
+
+The live path was actively harmful rather than merely dead: for allowlisted ids
+it returned a success-shaped `{status:'queued', routed_back:false}`, which reads
+as "the specialist has the task". That is a ready substrate for a fabricated
+completion claim, which is exactly the failure class Session 16 chased.
+
+Retired as a deprecation stub rather than deleted outright. The live path is
+gone (no allowlist read, no Supabase client, no INSERT), but **the tool stays
+registered deliberately**: `gates.js` keys its Gate 2 evidence predicate
+(`isSpecialistDispatch`) on a `delegate_to` event, so unregistering would
+weaken a security control as a side effect of retiring a feature. Return shape
+is byte-identical to the old stub path, so the typed loop-break in
+`_processNonReflex` and both Gate 2 predicates are untouched.
+
+Prompt layer corrected: five references across `lanes.md`, `delegation.md`
+(x2) and `verification-reflexes.md` all described a queued/surfaced flow that
+does not exist. Registry and specialist doc retained, not deleted, both marked
+deprecated **as an execution surface**: the dashboard Agents page renders from
+`specialist-registry.js`, and `delegate_to` still validates ids against it so a
+typo throws rather than silently succeeding. Per-entry `Status` fields left
+alone (the parser and its tests depend on them); a banner reframes
+`Status: live` as scope maturity, not runtime capability.
+
+Tests: new `tests/reflex-confirmation-safety.test.js` (34 checks) exercises the
+real `classify()` and the real `Agent.process()` reflex branch, and guards
+against re-adding answer-shaped keys. `tests/delegate-to.test.js` rewritten to
+pin that no false-success shape is reachable for any registered specialist, and
+to grep the module body asserting no Supabase/allowlist/fetch surface survives.
+Full suite green, 47 suites, zero failures.
+
+### Stale branch and worktree cleanup
+
+27 branches deleted: 23 Group A (merged, recoverable), 3 stale
+worktree-pinned, and 1 irreversible but confirmed safe. 4 worktrees removed.
+
+Three genuinely unmerged and unrecoverable branches were deliberately kept:
+
+- `cc/slice1-bootstrap-mechanism-20260506-1114`
+- `cc/brief-b-trading-rescue`
+- `cc/liveness-instrumentation-20260805`
+
+Verified after the fact: all three still present on origin, local branch list
+down to those three plus `main` plus the PR #91 branch, and
+`git worktree list` down to `/root/QClaw` alone.
+
+### PR #91 (`294fbb6`) - Dashboard Trading Room rebuilt against the trade engine
+
+Tyson reported the Trading Room was "pretty well dysfunctional" and "does not
+reflect any of what is coming in". The audit found the **data plane correct**
+(the dashboard reads the same `trading_*` tables the engine writes) and the
+**presentation layer genuinely broken**, plus zero visibility into the engine
+that now owns scanner, analyst, approval and monitor.
+
+#### Audit findings
+
+| Data point | Before | Cause |
+|---|---|---|
+| Live Positions, Market | always `—` | rendered `p.question`, not a column; fell back to `market_id`, a uuid FK to the empty `trading_markets`, always NULL |
+| Live Positions, Amount | always `—` | rendered `p.amount_usdc`; the column is **`usdc_amount`**, transposed |
+| Latest Simulations | four indistinguishable BTC rows | SELECT omitted `question`, `edge` and `implied_odds` |
+| Dashboard simulations | silently discarded | INSERT posted `question`, `target`, `macro_adjustment`, none of which are columns, so PostgREST answered 400 PGRST204 and the unchecked response plus a bare `.catch()` swallowed it |
+| `POST /api/trading/execute` | live | orphaned second door to real money, bypassing the engine's gate chain |
+| Config fetch failure | silently widened limits | `trLoadConfig` ended in a bare `catch {}`, leaving HTML defaults 25/25/50 on screen, which the next `onchange` wrote back |
+| Scanner/analyst/approval state | invisible | no reference to the engine anywhere in `server.js` or `ui.html` |
+
+The balance widget was **not** broken. `get_balance.py` no longer queries
+`data-api/value` as the April note recorded; it reads CLOB collateral plus
+on-chain USDC and returns
+`{"balance": 0.0, "clob": 0.0, "wallet": 0.0}`. The EOA derived from
+`POLYMARKET_PRIVATE_KEY` equals `POLYMARKET_FUNDER_ADDRESS`, so there is no
+second wallet, and `data-api` reports value 0 with no positions. The $0.00 is
+accurate.
+
+#### The 7 slices
+
+1. **Positions.** Market identity resolves over the real FK,
+   `simulation_id` -> `trading_simulations.raw_output.question`, embedded in
+   one round trip via `select=*,trading_simulations(asset,question:raw_output->>question)`
+   and projected down so the fat `raw_output` blob is not shipped.
+   `usdc_amount` fixed.
+2. **Simulations.** SELECT widened with `edge`, `implied_odds` and an aliased
+   jsonb projection `question:raw_output->>question`. The two XRP rows that
+   were previously identical now read "$1.20 in August" and "$1.40 in August".
+3. **Simulate persist removed, not fixed.** Fixing the INSERT would have been
+   worse: an ad-hoc row carries no `edge`, no `implied_odds` and no
+   `raw_output.polymarket_condition_id`, so it can never link to a market, but
+   it *would* occupy slots in `database.get_recent_simulations(limit=10)`, the
+   window the Charlie trading-api skill reads, displacing real scanner output.
+   `scanner.py` remains the only writer.
+4. **`/api/trading/execute` removed.** It enforced `trading_enabled`,
+   `max_position_usdc` and `daily_loss_limit`, but **not** the engine's edge
+   floor (GATE 4), conditionId validation (GATE 6), the Analyst, or the
+   approval gate. Anything holding the dashboard authToken could trade around
+   the whole decision chain. Its only caller, the n8n Trade Executor, was
+   deactivated 2026-08-05. Regression tests assert it stays gone and that no
+   proxy for the engine's mutating routes appears either.
+5. **Config safety.** Inputs lock on a failed read, fall back to
+   last-known-good rather than a hardcoded number, and show a visible error.
+   The toggle deliberately stays clickable offering **disable only**, so a
+   config outage never disables the kill switch.
+6. **Engine Status panel.** `GET /api/trading/engine` proxies the engine's
+   loopback-bound `/health` (the browser cannot reach `127.0.0.1:4003`),
+   inheriting the dashboard's `/api` auth. Read-only by design; the engine's
+   mutating routes are deliberately **not** proxied, which would rebuild the
+   bypass slice 4 removed. First time scanner, analyst and approval state have
+   been visible outside Telegram. It immediately surfaced a live
+   `pending_approvals: 1` that nothing on the dashboard could previously show.
+7. **n8n Weekly Analyst (`vjj2uBIPc07FpIxx`) deactivated**, the last live n8n
+   trading remnant, superseded by the engine's own Analyst. Backed up to
+   `n8n-workflows/backups/trading-weekly-analyst.PRE-DEACTIVATION-20260814.json`
+   first, then deactivated via the dedicated `/deactivate` endpoint rather than
+   a PUT, so nodes, connections, settings and `errorWorkflow`
+   (`7kpNnMtnuDWXgWcX`) are provably untouched, diffed before and after. All
+   four n8n trading workflows are now inactive.
+
+**XSS fixed beyond the brief.** Both tables built `innerHTML` by concatenation
+with no escaping, latent only because every interpolated field was null or
+numeric. Slices 1 and 2 inject Polymarket-controlled market titles into that
+path, so without a fix this PR would have introduced a stored-XSS sink on the
+page that holds the trading kill switch. All interpolated strings now go
+through a `trEsc` helper.
+
+#### Mid-implementation correction: `tx_hash IS NULL` is NOT a paper-trade signal
+
+The first implementation classified `tx_hash IS NULL` positions as "Paper" and
+excluded them from the headline Realised PnL, on the reasoning that a position
+with no on-chain hash was never confirmed. **That was wrong and dangerous.**
+
+`tx_hash` is written **only** by the automated `executor.py` path, and
+automated execution is currently blocked by the Polymarket maker-address
+restriction (Session 15). `POST /positions/manual` is therefore the only route
+a real trade takes into `trading_positions` right now, which means **every
+genuine real-money position in the table has `tx_hash` NULL by construction,
+not because it is fake**.
+
+Caught by Tyson cross-referencing against real Polymarket activity history
+(screenshots). Both rows are real executed trades: the XRP redeem `+$11.11` and
+the open BTC position. The exclusion zeroed out 100% of genuine trading history
+and displayed `$0.00` against actual profit, which is the exact opposite of the
+honesty the split was meant to buy.
+
+Reverted in full: `is_paper`, the Paper tile, the Paper badge and the PnL split
+are gone, and Realised PnL sums every closed position again. The revert was
+then **mutation tested** rather than merely read: reintroducing the exclusion,
+the split response fields, and the `is_paper` flag each produced exactly one
+targeted failure.
+
+```
+✗ realised_pnl includes tx_hash NULL rows — {"usdc_balance":0,"realised_pnl":2.5,"open_positions":2}
+✗ no paper/confirmed split is reported — {"usdc_balance":0,"realised_pnl":3.21,"realised_closed_count":1,"paper_pnl":0.71,"open_positions":2}
+✗ no is_paper flag emitted — {"id":"p1","tx_hash":null,...,"is_paper":true}
+```
+
+Follow-up queued, not built: once automated execution is unblocked, `tx_hash`
+will start populating for some rows and there will be no way to distinguish
+real-confirmed, real-pending and manually-logged positions. That needs an
+explicit status column **before** that day, not after.
+
+#### Data correction: BTC position logged the proposed trade, not the fill
+
+The BTC row held the figures from the Telegram scanner proposal rather than the
+actual fill. Corrected directly in Supabase, outside the PR:
+
+| Field | Was | Now |
+|---|---|---|
+| `entry_price` | 0.40 | **0.417** |
+| `usdc_amount` | 9.97 | **10.39** |
+| `shares` | 24.93 | 24.93, unchanged |
+
+Polymarket's two views look contradictory but are not. `shares = 24.93` is the
+only value that reconciles both: `10.39 / 24.93 = 0.4167` renders as the
+activity log's `41.7c`, and `24.93 x 0.40 = $9.97` is the position page's
+notional. The `$0.42` gap is a ~4.2% exchange fee, not a price error.
+Recomputing "precisely from the real numbers" therefore confirmed `shares` was
+already correct; moving it to 24.92 would have introduced error.
+
+Checked `monitor.py` before writing: `entry_price` drives only the stop-loss
+and weakening threshold bands (`> 0.20`, `> 0.50`), and 0.40 and 0.417 sit in
+the same band, so no monitor behaviour changed. `usdc_amount` is the PnL cost
+basis (`pnl = exit_usdc - usdc_amount`), which is what needed fixing.
+
+Root cause is the manual-logging flow itself: it records whatever price the
+user reports, which tends to be the proposed trade from the approval message
+rather than the confirmed fill. Recorded in `trading.md` as a standing caveat.
+
+#### Adversarial review round 1: CRITICAL + HIGH in the slice meant to fix a safety gap
+
+Independent review found two blocking issues, both in slice 5, the slice whose
+entire purpose was closing a safety gap.
+
+**C1 (CRITICAL).** `GET /api/trading/config` answered:
+
+```js
+res.json(rows[0] || { trading_enabled: false, max_position_usdc: 25, min_edge_threshold: 25, daily_loss_limit: 50 });
+```
+
+That returns **fabricated limits as a clean HTTP 200 with no error field on
+every failure mode**, not only a missing row. An RLS rejection, an expired JWT,
+a 5xx with a body and any PostgREST error object all leave `rows[0]` undefined,
+because an error body is an object rather than an array.
+
+This **defeated the client-side guard added earlier in the same PR**. The
+client had no way to distinguish a fabricated body from a real read, so it
+marked config loaded, populated the inputs with 25/25/50 and wrote them back on
+the next `onchange`, widening max position 10 -> 25, edge floor 7 -> 25 and
+daily loss 20 -> 50. The guard was correct in isolation and defeated from the
+server side, because only the client was examined when it was written.
+
+Fixed: every failure now returns a non-2xx **and** an explicit error field. A
+genuinely absent row is its own narrow case (`404 config_row_missing`) and
+still invents nothing. The client additionally requires a primary key on the
+body, so a reintroduced fallback cannot pass as real config. Server log lines
+now distinguish the modes:
+
+```
+✗ [trading/config] upstream HTTP 401
+✗ [trading/config] upstream returned a non-array body
+✗ [trading/config] upstream row missing its primary key
+✗ [trading/config] read failed: ECONNRESET
+```
+
+**H1 (HIGH).** Neither disable call site checked `res.ok`. `fetch()` rejects
+only on network failure, so a 500, 401 or 403 still flipped the toggle to OFF
+and toasted "Trading disabled" **while trading stayed armed**. That is a false
+all-clear during exactly the backend degradation that makes a kill switch
+matter. Both sites now check, hold the toggle where it was, and state that
+trading may still be ARMED.
+
+Author's self-reflection, recorded because it generalises beyond this PR:
+**when a fix touches one end of a request, read the other end in the same
+pass.** Prefer a positive validity marker (here, the row's primary key proves
+it came from the database) over absence-of-error, and never let an error path
+substitute plausible defaults into a 2xx.
+
+Also folded in: markup defaults `value="25"/"25"/"50"` removed; the POST body
+built by explicit inclusion rather than relying on `JSON.stringify` dropping
+`undefined`; and `tests/trading-room-ui.test.js`, the first coverage of any
+`ui.html` trading function. It extracts the shipped Trading Room block out of
+`ui.html` and evaluates it against stubbed globals so it drifts with the real
+code rather than a copy, with a guard that aborts if extraction grabs the wrong
+span. 43 assertions covering every C1 failure shape, H1 across 500/401/403/503
+on both disable sites, and `trEsc`.
+
+Dormancy Alerter checked, no change needed: the Weekly Analyst wrote heartbeats
+weekly (last 2026-08-10) but was **never in the alerter's expectations list**,
+so its retirement raises no false dormancy alerts. Only Market Scanner and
+LinkedIn Engagement carry `suppressed: true` there.
+
+#### `trading.md` needed a reconciling pass, not more patches
+
+Two rounds of targeted edits left the file self-contradicting, and it is the
+file Charlie reads to reason about live trading in real time. The most serious
+was a **false-safety claim**: "Live execution requires BOTH
+`trading_config.trading_enabled = true` AND the Trade Executor workflow
+active." Every n8n workflow is inactive, so that reads as "trading is not
+armed" while `trading_enabled: true` and the engine scheduler were both live.
+Elsewhere in the same file it said the opposite.
+
+Fixed in one reconciling pass rather than more patches: armed state judged from
+the engine and never from n8n; the top-of-file `tx_hash` line that still
+implied both positions were not real fills; the `min_edge_threshold`
+reference-only claim that contradicted the correction further down (it is
+enforced at GATE 4); the obsolete n8n cluster guard removed; scanner
+calibration re-attributed to `scanner.py` and `config.py` with a note that
+several thresholds are environment-overridable.
+
+Also documented two gate limits that appeared nowhere: **`MAX_CONCURRENT_POSITIONS = 2`**
+and the **`ABSOLUTE_MAX_POSITION_USDC = 25.0`** hard ceiling, neither settable
+from `trading_config`. Raising `max_position_usdc` above 25 does not raise the
+real ceiling. Gate count confirmed as **six**, not five: `trading_disabled`,
+`position_cap`, `daily_loss_limit`, `edge_below_threshold`, `invalid_amount`,
+`invalid_market_identifier`.
+
+`n8n-workflows/README.md` now records that `trading-executor.json` still POSTs
+to the removed route, so an import-and-activate would 404 on every trade. Left
+in the snapshot deliberately so it stays a faithful record, documented rather
+than edited out.
+
+#### Verification
+
+Full suite green: **1722 JS assertions passed, 0 failed**, 5 Python suites OK,
+`npm test` exit 0. Live after deploy: `balance`, `positions` and `engine` all
+200, `execute` **404**, config route returns the genuine row and no failure
+mode emits 25/25/50.
+
+Independent adversarial verdict: **PASS on all 7 original items** post-fixes,
+confirmed live post-merge and post-deploy via dashboard screenshot: accurate
+PnL (+$1.11), correct position display with real market question and dollar
+amount, and the new Engine Status panel showing real scanner, analyst,
+approval and monitor state for the first time outside Telegram.
+
+### Next session queue
+
+1. **Gamma closed-market monitor fix.** The position monitor cannot detect
+   resolution for closed markets (Session 16 Finding 6: `_fetch_market()`
+   passes only `condition_ids`, and the Gamma list endpoint hides closed
+   markets unless `closed=true`). Affects both manual and automated positions,
+   and such positions stick "unpriceable" while occupying
+   `MAX_CONCURRENT_POSITIONS` slots, of which there are only 2.
+2. **Full audit + doc update session**, still outstanding since 2026-08-06.
+3. **Charlie proactive mode.**
+4. **Polymarket support response**, still pending, and still the thing blocking
+   automated execution.
+5. **XRP entry-price reconciliation** against the real activity log, lower
+   priority. The stored entry is $10.00 at 0.90 and internally consistent, and
+   the exit side matches the +$11.11 redeem exactly, but if the same ~4% fee
+   applied on entry the true pnl is nearer +$0.69 than +$1.11.
+
+---
