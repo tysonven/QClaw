@@ -20815,3 +20815,236 @@ approval and monitor state for the first time outside Telegram.
    applied on entry the true pnl is nearer +$0.69 than +$1.11.
 
 ---
+
+## 2026-08-14 to 2026-08-18, ghl-support-bot: grounding rewrite, corpus 7.6% to complete, and six silent failures found
+
+Week-long block of work on the GHL Support Bot (Railway project
+wholesome-emotion, repo tysonven/ghl-support-bot). Started from a
+ten-question evaluation scoring 2/10 correct with 3 confident
+fabrications, ended at 7/10 with 0. Seven PRs merged, three branches
+still open for review. No README existed at the start, which is why the
+week opened with an audit to establish basic facts; one has now been
+written from the code.
+
+**Grounding prompt rewrite (PR #3).** The bot invented a
+Settings > Security > Password Protection toggle with eight steps for a
+feature GoHighLevel does not have, invented four tag rules including
+case sensitivity, and emitted merge fields that do not exist
+({{first_name}}, {{tags}}, {{body.firstName}}, {{contactId}}) where the
+real syntax is {{contact.first_name}}. Root cause was the system prompt
+itself, not the model: it carried a "Knowledge Priority Order" ranking
+"Your expert training knowledge" as the primary source above retrieved
+documentation, a "Never hedge" rule, a standing order that all
+configuration instructions MUST use numbered steps with bold UI labels,
+and an escalation block prescribing "That feature may not be enabled for
+your account" plus a plan-tier check as the response to a missing
+feature. All four removed. Replaced with rules that scope checkable
+details (navigation paths, button labels, merge field syntax) to what
+appears in retrieved context, and make uncertainty a valid answer.
+
+Two rounds of measurement were needed because the model complied with
+the letter of each rule while speculating around it. First residual:
+"it might be {{some.field}}, check with support" inside an otherwise
+correct refusal. Second: "contact support, they can confirm whether it
+is built in, available on your plan tier, or needs a workaround", which
+smuggles the plan-tier guess back in as a prediction about someone
+else's answer, measured at 1 in 5 runs. Both closed by covering the
+hedged and the handoff forms explicitly. 8 of 8 clean after.
+
+**Measurement that changed the plan: cosine similarity does not
+separate answerable from unanswerable questions.** Probed 16 queries
+against the live corpus. "How do I enable two-factor authentication on
+individual funnel pages", which is not a feature, scored 0.5811, higher
+than six of eight genuinely answerable questions, because 2FA and funnel
+pages are each well documented. No threshold, ratio or z-score separates
+the classes. So a relevance floor cannot be the fabrication gate; the
+0.32 floor shipped as an off-topic gate only, and the docblock says so
+in the code. Re-measured after the corpus grew: off-topic tops out at
+0.3338, weakest real question 0.3950, so the usable band is 0.061 wide,
+not the 0.241 an earlier thinner sample suggested. Floor stayed at 0.32
+on the asymmetry argument: refusing a real question is a visible
+failure, admitting an off-topic one degrades gracefully.
+
+**Corpus: 7.6% coverage to complete (PR #4).** The help centre sitemap
+lists 2,836 articles. The crawler had `urls.slice(0, 150)` hardcoded at
+crawler.ts:94, with no constant, no env var and no comment. 253 stored
+docs turned out to be 150 live plus 103 fossils from ten runs since
+March, 38 of which were no longer in the sitemap at all. The eval
+failure "an article titled Paid Courses inside Communities exists but
+its content was not in context" was traced to the mechanism: the
+sitemap path does no href parsing at all, and extractText strips <a>
+tags, so related-article link labels landed in stored content as prose
+while the articles themselves were never fetched. The fallback regex
+would have missed them too, requiring a relative href where the in-body
+links are absolute.
+
+Cap lifted behind HELP_CENTER_MAX_ARTICLES (unlimited default),
+contentHash wired up (written on every crawl since the table was created
+and never once compared), sitemap lastmod compared against lastCrawled
+to skip fetches entirely, fetch concurrency 5. Corpus went 754 to 3,337
+searchable docs; help_center 253 to 2,833. Composition inverted:
+changelog was 64% of the corpus and is now 15%.
+
+**Freshdesk enforces 200 requests/minute and publishes it in response
+headers.** The first uncapped crawl reported Success with 405 docs
+updated. The log line told the real story:
+
+    [crawler] help_center: discovered=2836 fetched=405 written=405 unchanged=0 skippedFresh=206 failed=2225 deactivated=38
+
+2,225 of 2,630 attempted fetches were rejected. help.gohighlevel.com is
+Freshworks-hosted and sends, on every response:
+
+    x-ratelimit-total:     200.0
+    x-ratelimit-remaining: 199.0
+    x-fw-ratelimiting-managed: true
+
+Measured the window directly: burned the bucket to 192, waited 65
+seconds, back to 199. 200 per 60 seconds. Five unpaced workers burn that
+in about 40 seconds, which predicts ~2.5 windows of successes across a
+147-second run, against 405 observed. robots.txt carries no Crawl-delay
+and a 12-request probe showed no throttling, which is why the earlier
+audit missed it and predicted a 5-minute full crawl; the real floor is
+about 16 minutes.
+
+Sliding-window RateLimiter at 180/min shared across workers, reading
+x-ratelimit-remaining back to brake pre-emptively, retrying 429 and 503
+with backoff honouring Retry-After. One subtlety: the header is sent
+twice (a 300 bucket and the binding 200 bucket) and fetch joins repeats
+as "299, 192.0", so the parser takes the minimum; reading the first
+value tracks the wrong bucket. Live-verified: 90 real fetches through
+the limiter returned 90x200 with zero rejections and remaining never
+below 110. The subsequent full crawl landed 2,222 of 2,225 with 3 404s
+and no 429s.
+
+**Eval progression.** 2/10 correct with 3 fabrications at the start.
+After the prompt rewrite: 3/10 correct, 0 fabrications, but 6 unhelpful
+refusals, which correctly identified the corpus as the bottleneck rather
+than the prompt. After the full crawl: 7/10 with 0 fabrications. Two
+questions that were previously unanswerable became answerable because
+the corpus now contains the facts: inboundWebhookRequest went from 0 to
+7 documents with real syntax, and contact.first_name from 9 to 36.
+
+**Curated docs working end to end (PRs #6, #7, and one branch open).**
+Three separate defects, each hiding the next. First: the entire
+curated-docs admin UI called trpc.admin.saveCorrection, .getCorrection,
+.listCurated, .deleteCurated and .bulkImport, but all five procedures
+live on the feedback router; `(trpc.admin as any)` casts suppressed the
+type error so every call failed at runtime. That is why curated docs
+were 0 and the learn-from-feedback loop had never closed once. Second:
+bulkImportCuratedDocs never called embeddingCache.invalidate(), so an
+imported doc was invisible to retrieval until the 10-minute TTL expired;
+a browser refresh does nothing to a server-side cache, which made it
+look permanent. Third, found by Tyson testing with a deliberately
+nonsense term: the Manage tab showed 0 while the doc answered correctly
+in chat.
+
+That third one was a superjson bug. listCuratedDocs used a bare
+db.select(), which drizzle expands to every schema column including the
+6144-byte embedding Buffer. Serialisation succeeded; deserialisation on
+the client threw:
+
+    Error: Trying to deserialize unknown typed array
+
+The query rejected, react-query yielded undefined, and the panel
+rendered "No curated corrections yet". Precise mechanism, because it is
+counter-intuitive: superjson round-trips a plain Uint8Array fine, but
+Buffer is a subclass whose constructor name is not in its typed-array
+registry, and a mysql2 BLOB column hands you a Buffer. The tell was that
+Recently Crawled Documents showed the same row, because
+getRecentKnowledgeDocs selects four explicit columns and no embedding.
+Fixed by giving the curated reads an explicit CLIENT_SAFE_DOC_FIELDS
+list: 19.4 KB failing to decode became 0.8 KB decoding cleanly.
+
+This one also corrected how verification is done here. The curated path
+had been reported as verified end to end using appRouter.createCaller,
+which runs in-process and never crosses the HTTP or superjson boundary,
+which is exactly where it failed. Verification now drives the real tRPC
+handler and decodes the real response body.
+
+**Access gate: a failed entitlement check rendered as a pay gate (branch
+open).** `if (!accessQuery.data?.hasAccess) return <GHLPayGate />` treats
+data === undefined as "not entitled", and a failed query produces
+undefined. So a transient network error told a paying customer to
+subscribe again with nothing on screen indicating a failure. Made
+permanent rather than transient by two global client defaults, retry:
+false and refetchOnWindowFocus: false, so a single blip was terminal
+until a manual reload. Verified react-query 5.90 semantics directly
+rather than assuming: a failed refetch retains the last successful data,
+a failed initial load yields undefined, so this is a cold-load bug,
+which is page open and hard refresh, the worst possible timing.
+
+Decision extracted into a pure function (shared/accessState.ts) so error
+is a variant of the return type rather than an if someone has to
+remember to write, with the error branch ordered before every data
+branch. Retry scoped to access.check only (retry: 2, backoff capped at
+4s), global defaults untouched.
+
+**Expired trial state.** A lapsed Founders trial returns hasAccess:
+false, level: "free", planLabel: null, byte for byte identical to
+someone who never subscribed. The one real user came off a three-month
+founders trial in August and did not return; the generic subscribe wall
+is plausibly what he saw. access.check now returns expired and
+expiresAt, and the gate says the trial has ended and the account,
+conversations and history are all still there, rather than implying he
+never had access. There is a test following the whole chain, server
+computes to wire survives to gate verdict, because a break anywhere in
+the middle silently reverts to the generic wall.
+
+**Six silent failures, three encoded invariants.** The recurring shape
+this week was work that reported success while doing nothing. In order
+found: the crawler reporting Success with 405 of 2,630 fetches rejected;
+curated embedding failures saving a NULL embedding, permanently
+invisible to search, while the admin saw "saved"; contentHash written
+and never compared; bulkImport writing rows the cache never picked up;
+listCurated rejecting on every load and rendering as an empty list; and
+25 of 26 client queries rendering any failure as empty because
+`data ?? []` yields [] and the empty state says "nothing here yet".
+
+Rather than patch each, three invariants are now enforced by tests that
+read the source. One: every function mutating knowledge_docs must
+invalidate the embedding cache or be listed as deferring to a caller
+that does, with a stated reason. Two: no db function reachable from a
+router may use a bare select() on knowledge_docs or name the embedding
+column. Three: a crawl run failing a material share of fetches reports
+partial, never success, with attempted/succeeded/failed and a status
+code breakdown persisted to crawler_state. The first two were verified
+by injecting the original defects and confirming they fail, including a
+function that did not exist when the test was written.
+
+**Secret rotation, closed.** OPENAI_API_KEY was printed in full to a
+Claude Code session on 2026-08-14 by a masking conditional written
+backwards (`repr(v[k]) if k in v else masked`, which masks only when the
+key is absent). Reported immediately in-session. Rotated by Tyson
+2026-08-14. Closed, no further action.
+
+**New known issues recorded.**
+
+No tenancy layer. There is no agency, org or tenant concept; brand is a
+two-value enum hardcoded across schema, routers and prompts. A new
+white-label deployment is a build, not a configuration flag.
+
+58% of articles exceed the 6,000-character embedding window, so long
+articles rank on their opening only. The ingestion cap was raised from
+12,000 to 32,000 characters, but that stores text the embedding still
+never sees; chunking long articles into multiple embedded rows is the
+next quality lever and is not implemented.
+
+changelog and marketplace_docs are client-rendered. Their index pages
+expose 10 and 0 links respectively in server HTML, against slice caps of
+100 and 60 that consequently never bound anything. The 489 changelog
+entries accumulated about 10 per run over months. Reaching those
+archives needs a headless browser or an API; lifting the caps changes
+nothing.
+
+25 of 26 client queries still render failure as empty. access.check and
+the two chat surfaces (getSessions, getMessages) are fixed on the open
+branch, plus the curated list. The remainder, including billing
+getProducts and the admin panels, still show an empty state on a cold
+load failure. A reusable QueryError component exists so each remaining
+site is a one-line change.
+
+Also worth recording: GoHighLevel has no contact tag management article.
+All 53 tag-slug articles in the sitemap are stored and none covers
+renaming, deleting or merging tags; the one promising title, "How to
+manage categories, types and tags", is about the Template Library. That
+makes it legitimate curated-doc territory rather than a retrieval gap.
