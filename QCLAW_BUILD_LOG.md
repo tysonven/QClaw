@@ -21888,3 +21888,51 @@ if the n8n API keys are excluded; "69 of 79" conflates the two.
 
 Build-log entry committed direct to main via an isolated git worktree at
 `origin/main`, keeping the live checkout untouched.
+
+## 2026-08-20: flow-coach-ai Slice 2d adversarial review round 1 fixes
+
+Review (posted to PR #4, full report at
+~/Projects/flow-coach-ai-audit/ADVERSARIAL-REVIEW-slice-2d.md) returned
+4 blocking findings + 7 non-blocking. Fixes pushed as d755502 on
+slice-2d-clerk-auth. PR remains DRAFT pending re-review. Not merged.
+
+**Fixed (Tyson's priority order):**
+- F3: Clerk scoped off the public path. Middleware mounted on /api/trpc
+  only, and only for Bearer-carrying requests (shared hasBearerToken
+  predicate between mount gate and tRPC context). Reviewer's repro
+  re-run: anonymous document GET / now 200 with zero clerk headers,
+  redirects, or cookies; anonymous chat.send clean. Also clears F9.
+- F1: real verification gate. Admin iff any verification.status ==
+  "verified" address equals ADMIN_EMAIL; positional emailAddresses[0]
+  fallback deleted; logic extracted to resolveRole() with a unit deny
+  matrix. The three false "verified" claims corrected in code + PR body.
+- F4: trim at the ENV boundary for all string vars; resolveRole trims
+  and lowercases both sides.
+- F2: boot-time getUserList check on ADMIN_EMAIL with loud warning when
+  unclaimed (advisory, 10s cap; verified live); denial root causes now
+  distinct in server logs (no_email_addresses / no_verified_email /
+  verified_email_not_admin / lookup failure with status+name / wrapper
+  middleware errors / boot unclaimed warning); denial UI splits
+  wrong-account from could-not-verify.
+
+**Regression caught in re-test, verbatim error:** scoping the
+middleware made getAuth throw on requests it did not see:
+`Clerk: The "clerkMiddleware" should be registered before using "getAuth".`
+which 500ed anonymous API calls with no server log. Fixed via the
+shared predicate; battery re-run green (anonymous document, anonymous
+API, garbage token 401, non-admin 403 + logged reason, admin 200,
+unclaimed-admin boot warning).
+
+**F7:** proposal posted on PR (session claims preferred, else cached +
+AbortSignal.timeout getUser), implementation deferred to 2e per Tyson.
+**Deferred:** F5/F6 before Slice 3; F8/F10/F11 at their slices.
+**Slice 4 checklist additions from review:** production Clerk instance
+restricted sign-up set + ADMIN_EMAIL claimed BEFORE DNS moves;
+authorizedParties pinned to production origin; confirm instance not
+shared with GHL Support Bot.
+
+30/30 tests, Node 22 + Node 20 builds clean. Audit numbers per review
+correction: main 72 (8/47/17), branch 43 (7/30/6).
+
+**Next:** adversarial re-review of d755502, then merge decision, then
+Slice 2e.
