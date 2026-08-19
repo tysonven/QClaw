@@ -21532,3 +21532,38 @@ subscriber.
 
 Build-log entry committed direct to main via an isolated git worktree at HEAD, keeping the
 live checkout untouched.
+
+## 2026-08-19 (later): flow-coach-ai Phase 2, Slice 2a (dead weight deletion)
+
+Branch `slice-2a-dead-weight`, commit e1d8c69, PR #1 (open, NOT merged).
+Pure deletion, no behaviour change. Live Manus app untouched; main untouched.
+
+**Removed:** vite-plugin-manus-runtime + its 367 KB inline runtime;
+Manus debug collector plugin + client/public/__manus__/ (was publicly
+served in production builds); Manus dev allowedHosts; wouter
+instrumentation patch + patchedDependencies; manus-runtime-user-info
+localStorage write in useAuth; dead components (ManusDialog,
+ComponentShowcase, AIChatBox, Map, DashboardLayout + Skeleton); dead
+server modules (dataApi, map, voiceTranscription, imageGeneration,
+storage, server/index.ts alternate entry); stale client/src/lib/
+systemPrompt.ts duplicate; empty drizzle/relations.ts and
+drizzle/migrations/.gitkeep; dead @assets alias (vite + vitest configs);
+orphaned deps @aws-sdk/client-s3, @aws-sdk/s3-request-presigner,
+@types/google.maps, add. shared/systemPrompt.ts untouched per brief.
+
+**Verified under Node 22 and Node 20 (.nvmrc, per Tyson instruction;
+nvm use silently kept node 22 on PATH, forced v20.20.2 bin dir and
+confirmed subprocess node --version):** pnpm check clean, 16/16 tests,
+build clean. dist/public/index.html now 1,085 bytes with zero manus
+references (was ~368 KB including the inline runtime). Remaining manus
+strings in bundles are later-slice scope: forge.manus.im default (2b),
+Manus OAuth comments + "Sign in with Manus" copy (2d).
+
+**Merge blocker surfaced:** repo README step 7 of the content-update
+procedure says the linked Manus project builds and deploys changes
+committed to main. Unconfirmed whether that is automatic on push. Under
+the Manus publish freeze, PR #1 must not merge until Tyson confirms the
+Manus-GitHub link cannot auto-deploy or the link is severed. All Phase 2
+slices will stack on branches until resolved.
+
+**Next:** Slice 2b (LLM to direct Anthropic) after Tyson reviews.
