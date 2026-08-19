@@ -21048,3 +21048,151 @@ All 53 tag-slug articles in the sitemap are stored and none covers
 renaming, deleting or merging tags; the one promising title, "How to
 manage categories, types and tags", is about the Template Library. That
 makes it legitimate curated-doc territory rather than a retrieval gap.
+
+
+## 2026-08-18 to 2026-08-19, n8n: error-cluster recon (2 passes) + mutation pass 1 (alert-storm suppression, changelog batch hardening)
+
+**Trigger.** 7 workflows alerting at high error rate via emails from sender
+"n8n Health Dashboard", an alerter absent from N8N_WORKFLOW_INDEX.md. No
+Telegram error alerts arriving. Two read-only recon passes (findings file:
+`~/n8n-error-cluster-recon-20260818.md` on Tyson's Mac), then this mutation
+pass. Recon-pass detail lives in the findings file; this entry records what
+is load-bearing for the repo.
+
+**The alerter.** A Manus WebDev app running in Manus's GCP workspace
+(Received hop 34.96.50.34), built 2026-03-16, exported to
+`github.com/tysonven/n8n-health-dashboard` (private) only on 2026-08-18
+14:47 UTC, ~2.5h AFTER the estate-wide repo sweep ran, which is why the
+sweep could not find it. Sends via Gmail app password ("n8n dashboard
+email", GMAIL_APP_PASSWORD env, Manus-side only, never committed), polls
+the n8n REST API every 5 min with the dedicated unscoped key "manus API"
+(`MYYZFn3DjtKQ43i4`). Default rule: error rate >= 10% over the last 10
+executions, 60-min cooldown, recipient tyson@flowos.tech. Because it reads
+the pruned executions API (EXECUTIONS_DATA_MAX_AGE=336h, ~10k rows), a
+weekly workflow's window is ~1 execution, so one failure = 100% error rate.
+That artefact, not a new outage, is most of the "storm". Decommission is
+BLOCKED until the heartbeat-based Telegram alerter is live and proven.
+
+**Cluster root causes (verbatim errors).**
+
+1. "HL refresh token to supabase DB" (`02Dob9FCEkXZFDAs`), failing every
+   12h since 2026-06-23:
+   `400 - "{\"error\":\"invalid_grant\",\"error_description\":\"Location is not active\"}"`
+   at node `Refresh Token Request` (NodeApiError). The location is
+   `JKgdyOKXN76dkoZRmoGM` = Kayla N.'s Morning Light sub-account, inactive
+   at GHL since her end-June churn (last successful refresh 2026-06-22
+   04:34 UTC in `highlevel_tokens id=1`). NOT an app uninstall and NOT the
+   Gutful path. Gutful depends on `shopify > hl refresh token DB`
+   (`b36b4MKe1p6wQbTQ`, location `biianjtJPDFAGcw79LdL`), which is green
+   (last success 2026-08-18 04:57, 6/6 retained runs OK). `02Dob` is
+   orphaned infrastructure for a churned client; deactivation deferred to
+   mutation pass 2 pending Tyson confirming the location is gone in GHL.
+
+2. Meta cluster (Meta Ads Optimisation Agent, Instagram Token Expiry
+   Monitor, Sync Instagram Performance Data):
+   `"Error validating access token: The session has been invalidated because the user changed their password or Facebook has changed the session for security reasons."`
+   (OAuthException, code 190, error_subcode 460). CLOSED with no fix per
+   Tyson: all ad accounts paused, IG reel engine unpublished. Workflows
+   deactivated by Tyson 2026-08-18.
+
+3. LinkedIn Lead Generation (Apify + Browserflow):
+   `Credentials not found` (NodeOperationError) at `Launch Apify LinkedIn
+   Scraper`; GHL Marketing: Weekly Report:
+   `Credential with ID "V9YcuDfp9lqydyDH" does not exist for type "httpHeaderAuth"`.
+   Both reference deleted credentials. LinkedIn cluster is PARKED.
+
+4. GHL Changelog Emails, run 1242022 (2026-08-17):
+   `400 - "{\"statusCode\":400,\"error\":\"Bad Request\",\"message\":\"Unable to send e-mail, contact's e-mail is invalid\",\"canonicalCode\":\"CONVERSATIONS_MSG_INVALID_EMAIL\",...}"`
+   at `Send Email to Client`, itemIndex 2 = contact `VLQ5i2DSictVy1jhmdLQ`
+   ("Dr.", `lucy@drlucyharveychiro.com`, domain has NO MX record, and the
+   contact carries GHL tag "bounced email"). One bad recipient aborted the
+   run. Correction to recon pass 2: because the HTTP node dispatches items
+   concurrently, the later items DID send before the abort (verified:
+   Nikki Harman received the 08-17 email at 06:00:11 UTC); the abort's real
+   damage is a red execution and no Heartbeat: Success, not lost sends.
+
+5. Sync Instagram Performance Data also had one transient Google Sheets
+   `503 - {"error":{"code":503,...,"status":"UNAVAILABLE"}}`.
+
+**Mutations applied (all via n8n REST API from qclaw, key never leaving the
+host; pre-mutation backups in
+`/root/n8n-artifacts/backups-20260819/<id>.pre-mutation.json` on the n8n
+droplet).**
+
+1. Workflow Dormancy Alerter (`O5ir2Mp0e2AXkUXZ`): `suppressed: true` +
+   reason + `suppressed_at: 2026-08-19` added to 5 entries in the Compute
+   Silent expectations map: GHL Marketing: Weekly Report, Meta Ads
+   Optimisation Agent, Instagram Trial Reels Auto-Publisher, LinkedIn
+   analytics and monitoring, Instagram Token Expiry Monitor. Now 7
+   suppressed / 7 monitored. Sync Instagram Performance Data and the other
+   4 LinkedIn workflows have no entry in the map (never dormancy-monitored,
+   nothing to suppress). Verified: PUT published directly (versionId ==
+   activeVersionId, publish event 2026-08-19 12:26:02), published history
+   row carries the edit, tail logic byte-identical, JS syntax checked.
+   Context: dormancy Telegram alerts for Trial Reels had fired EVERY HOUR
+   from 2026-08-18 22:00 to 2026-08-19 12:00 (delivered, ok:true, chat
+   1375806243), so the alerter is alive and loud, not silent.
+
+2. GHL Changelog Emails (`3XGcnolBQ7AXMubO`), publish event 2026-08-19
+   12:32:16: (a) `Send Email to Client` now `onError:
+   continueRegularOutput`, mirroring the prospect node which already had
+   it; (b) new pass-through Code node `Log Send Failures (Client)` spliced
+   before `Wait for Both Sends`, logging per-item
+   contactId/email/error via console.log without stopping the run; (c) both
+   contact-search nodes gained filter
+   `{"field":"tags","operator":"not_contains","value":"bounced email"}`.
+   Tag string verified live against GHL before editing (the failing Lucy
+   contact carries exactly "bounced email"). Workflow NOT re-fired; next
+   scheduled run Monday 09:00 Europe/Athens.
+
+   API quirk worth remembering: PUT /api/v1/workflows rejects settings keys
+   `availableInMCP` and `timeSavedMode`
+   (`"request/body/settings must NOT have additional properties"`). Fix:
+   PUT with those stripped, then restore them with a direct
+   `workflow_entity.settings` jsonb-merge UPDATE (settings live only on the
+   entity row; workflow_history has no settings column, so no publish-model
+   hazard). Timezone Europe/Athens preserved throughout.
+
+**Read-only findings from this pass.**
+
+- Deactivations of 2026-08-18 (all by tysonvenables@protonmail.com where
+  attributable): Trial Reels 11:08:05, Sync Instagram 15:06:18, Meta Ads
+  Optimisation 15:14:27 all have `deactivated` publish-history events.
+  Instagram Token Expiry Monitor (15:07:24) and Content Studio - Clipper
+  Watcher (15:18:00) changed state with NO publish-history event, meaning a
+  deactivation path that skips event logging; qclaw tool-call.log shows no
+  n8n activity in the window, so it was not Charlie. Actor unproven for
+  those two. Nothing reactivated, including Clipper Watcher, pending Tyson.
+- Nikki Harman (`edPmHF9U2F07fntrAQLz`, Thrive Collective): her entire GHL
+  conversation is outbound automation, zero inbound messages in the visible
+  window; dnd=false. Active senders: (1) GHL Changelog Emails weekly Monday
+  06:00 UTC (she is tagged "flowos client"); (2) an unidentified GHL-side
+  28-day-cadence sender, Mondays ~05:13 UTC ("Location Logo ..." emails on
+  05-25, 06-22, 07-20, 08-17), name-and-cadence match is published GHL
+  workflow "AI001 - ai automations updates emails" (`b8453e5b`) but GHL's
+  API cannot dump workflow definitions, so confirm in the UI; (3) one
+  campaign-source email 06-13. No n8n workflow references her, her email,
+  or the "robot reply" tag. The robot-reply loop is GHL-side; candidates
+  are the "02-Contact Replied <> Update Conversation AI Status" family.
+  Contact untouched.
+- Batch-send audit: after this pass, NO active workflow sends to a GHL
+  recipient list with abort-on-first-failure and no bounced filter.
+  intake-kylie sends to a single fixed internal contactId;
+  Flow Os Blog Post (inactive) already uses continueErrorOutput.
+- Morning Light / Kayla footprint (input to a FLOW_OS_STATE.md correction
+  once Tyson confirms churn): n8n workflows `TikJkWLzpreI6iTa` (sunset,
+  inactive) and `gCG5uP4sggi8MFob` (inactive), refresher `02Dob9FCEkXZFDAs`
+  (active, failing 2x daily), n8n env pair HL_LOCATION1_CLIENT_ID/SECRET,
+  Supabase `highlevel_tokens id=1` + `highlevel_tokens_backup id=1`,
+  INACTIVE Supabase projects "WellnessLiving OAuth" and
+  "wellness-living-fresh", repo docs (LOCATIONS.md, FLOW_OS_STATE.md,
+  lanes.md, HEARTBEAT_PATTERN.md, N8N_WORKFLOW_INDEX.md, build log,
+  n8n-workflows JSONs). No n8n credentials reference it; the n8n internal
+  Postgres has no WL/dedup tables despite the LOCATIONS.md note.
+
+**Deferred to mutation pass 2 (blocked on Tyson).** Deactivating the DEAD
+5 + parked LinkedIn cluster and `02Dob9FCEkXZFDAs`; deleting duplicate
+contact `VLQ5i2DSictVy1jhmdLQ`; Thrive email repopulation; the three
+timezone-lying schedule labels + empty-cron `N3VF1VKlekDdhxGU`; alerter
+decommission + "manus API" key revoke (only after the heartbeat Telegram
+alerter is proven); fb-retarget funnel-domain sweep.
