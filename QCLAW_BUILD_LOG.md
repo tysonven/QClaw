@@ -21567,3 +21567,38 @@ Manus-GitHub link cannot auto-deploy or the link is severed. All Phase 2
 slices will stack on branches until resolved.
 
 **Next:** Slice 2b (LLM to direct Anthropic) after Tyson reviews.
+
+## 2026-08-19 (later): flow-coach-ai Phase 2, Slice 2b (LLM to direct Anthropic)
+
+PR #1 (slice 2a) merged to main at 7819111 after Tyson confirmed the
+Manus GitHub link is severed. Slice 2b on branch
+`slice-2b-anthropic-direct`, PR #2 open.
+
+**Changes:** server/_core/llm.ts rewritten on the official
+@anthropic-ai/sdk (0.119.0), direct api.anthropic.com with
+ANTHROPIC_API_KEY. Forge branch and BUILT_IN_FORGE_API_URL/KEY env
+fields removed entirely. Model claude-3-5-haiku-20241022 replaced with
+claude-sonnet-5 (Tyson decision; ~$0.13/conversation intro pricing,
+~$0.20 after 2026-08-31; prompt caching enabled on the static system
+prompt). Misleading OPENAI_API_KEY error string fixed to name
+ANTHROPIC_API_KEY. Upstream error text no longer interpolated into
+client-visible messages; full detail logs server-side only.
+Scope note surfaced in PR: system.notifyOwner + notification.ts
+deleted. Zero client callers, Manus-only transport, last consumer of
+the Forge env vars.
+
+**Verified:** Node 22 + Node 20: check clean, 16/16 tests, build clean.
+Zero forge/manus references in llm.ts. Live e2e chat.send returned a
+grounded Day 1 reply from claude-sonnet-5.
+
+**Detour, verbatim error:** first e2e attempt failed with
+`AuthenticationError: 401 {"type":"error","error":{"type":"authentication_error","message":"API key is invalid."},"request_id":null}`
+Root cause: the .env key paste was truncated (~10 chars). Tyson
+re-pasted the full key; retry succeeded. Incidentally proved the
+error-hygiene path: client saw only "LLM request failed", 401 detail
+stayed in server logs, no stack trace under NODE_ENV=production.
+
+**Doc drift noted:** README env table still documents the Forge vars;
+README rewrite is deferred to docs close-out.
+
+**Next:** Slice 2c (MySQL to Supabase Postgres) after Tyson review.
