@@ -21602,3 +21602,39 @@ stayed in server logs, no stack trace under NODE_ENV=production.
 README rewrite is deferred to docs close-out.
 
 **Next:** Slice 2c (MySQL to Supabase Postgres) after Tyson review.
+
+## 2026-08-19 (later): flow-coach-ai Phase 2, Slice 2c (MySQL to Supabase Postgres)
+
+PR #2 (slice 2b) merged to main at 9055871. Slice 2c on branch
+`slice-2c-supabase-postgres`, PR #3 open.
+
+**Changes:** Drizzle dialect to postgresql on postgres-js
+(prepare:false for pooler compatibility); mysql2 removed. Fresh
+0000_init.sql replaces both MySQL migrations (target DB empty by
+decision, nothing ported). MySQL-isms fixed in db.ts:
+onDuplicateKeyUpdate -> onConflictDoUpdate, insert-then-select ->
+RETURNING. Enums became named pg types (user_role, message_role).
+chat_messages.day nullable int added (Tyson approved the P2-7
+proposal): day buttons pass day through chat.send, lastDay and admin
+day stats prefer the column, text regex retained as fallback.
+
+**RLS + grant lockdown (0001_rls_lockdown.sql), per Tyson's
+instruction that RLS is necessary but not sufficient:** RLS enabled on
+users/leads/chat_messages, service_role-only policies, REVOKE ALL from
+anon and authenticated on tables and sequences, ALTER DEFAULT
+PRIVILEGES so future objects get no anon/authenticated grants.
+
+**Verified:** list_tables rls_enabled=true x3; pg_policies = 3
+service_role policies; role_table_grants zero rows for
+anon/authenticated; REAL anon-key probes (GET x3 tables + POST leads)
+all `42501 permission denied`, HTTP 401, not RLS-empty 200s. Local e2e
+against live DB: lead registered, chat persisted with day=3 in column,
+lastDay served from column, history loads; probe rows deleted (DB back
+to 0 rows). 16/16 tests + clean builds on Node 22 and Node 20.
+
+**Detour:** DATABASE_URL was reported in .env but absent (file
+unchanged at 127 bytes); surfaced, Tyson added the session-pooler URI,
+then drizzle generate/migrate ran clean.
+
+**Next:** Slice 2d (Manus OAuth to Clerk, SECURITY-RELEVANT, needs
+adversarial review before merge) after Tyson review.
