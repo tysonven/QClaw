@@ -1,7 +1,7 @@
 /**
  * Probe: PM2 process roll-call.
  *
- * Wraps `pm2 jlist` and reports the five expected processes per the
+ * Wraps `pm2 jlist` and reports the six expected processes per the
  * Slice 1 design lock in CHARLIE_OVERHAUL.md. ok=true iff every
  * expected process is present AND status === 'online'.
  *
@@ -15,7 +15,12 @@ import { execSync } from 'child_process';
 const EXPECTED = [
   'agex-hub',          // @agexhq/hub-lite — AGEX identity/security hub (port 4891)
   'quantumclaw',
-  'trading-worker',
+  'trading-worker',   // src/trading/monte_carlo.py — Monte Carlo sim worker (:4001).
+                      // NOT the trade engine; trade-engine calls it for simulations.
+  'trade-engine',     // src/trade_engine/main.py — standalone trading system (:4003),
+                      // live since 2026-08-05. Was missing from this list until
+                      // 2026-08-19, so the probe reported the estate's most
+                      // consequential process as an unexpected extra on every run.
   'clipper-worker',
   // Slice 5: charlie-watcher decommissioned (insecure --dangerously-skip-permissions
   // predecessor); claude-code-dispatcher is the secure replacement. PM2 roster changes

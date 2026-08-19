@@ -53,8 +53,8 @@ async function main() {
   const r3 = await probePm2();
   assertShape('pm2_processes', r3);
   if (r3.ok) {
-    check('pm2: detail.expected has 5 entries',
-      Array.isArray(r3.detail?.expected) && r3.detail.expected.length === 5);
+    check('pm2: detail.expected has 6 entries',
+      Array.isArray(r3.detail?.expected) && r3.detail.expected.length === 6);
   }
 
   // ─── pm2 parse helper: tolerates leading non-JSON lines (regression for
