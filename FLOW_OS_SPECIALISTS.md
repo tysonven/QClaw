@@ -1,6 +1,6 @@
 # Flow OS Specialists
 
-This is the canonical specialist registry. Charlie reads this at session start to know who he can delegate to and what each specialist can and cannot do. The registry covers all five business contexts: Flow OS, Flow States Collective, SproutCode, Crete, and Personal — plus a Shared category for specialists that span multiple business units.
+This is the canonical specialist registry. Charlie reads this at session start to know what each domain's scope and boundaries are — not to find someone to hand work to; see the retirement notice below. The registry covers all six business contexts: Flow OS, Flow States Collective, SproutCode, Crete, Kairos Wines, and Personal — plus a Shared category for scopes that span multiple business units.
 
 This file is the fifth canonical doc Charlie reads at session start, after `CEO_OPERATING_MODEL.md`, `CHARLIE_ROLE.md`, `LOCATIONS.md`, and `FLOW_OS_STATE.md`.
 
@@ -21,8 +21,8 @@ Consequently, read the **Status** field below as a statement about how mature a 
 Every specialist entry has the same fields:
 
 - **Belongs to** — which business unit owns this specialist
-- **Runs on** — what infrastructure it executes on
-- **Status** — `live` (in operation), `scaffolded` (setup exists, not yet a formal specialist), or `deferred` (named but not built)
+- **Runs on** — the infrastructure this scope concerns. Descriptive, not a claim that anything runs: nothing in this file executes.
+- **Status** — how mature the scope definition is, NOT a runtime capability (see the retirement notice above): `live` (fully specified and reviewed), `scaffolded` (partially defined), or `deferred` (named but not scoped). A specialist marked `live` is fully specified; it is not a thing that can be handed a task. No status implies anything can be given work — that capability is retired.
 - **Domain** — what the specialist owns
 - **Scope** — what it does
 - **Out of scope** — what it explicitly does not do
@@ -360,8 +360,8 @@ Tyson's own setups, not part of any business unit.
 ### Trading Operator
 
 - **Belongs to:** Personal (Tyson's own setup)
-- **Runs on:** QClaw — monitoring scoped, no execution
-- **Status:** live — known reconciliation needed in Phase 4 Slice 2 skill audit (existing `trading.md` config values may be out of sync with live `trading_config` table after Apr 29 trading-fix commit)
+- **Runs on:** QClaw. **Scope note, corrected 2026-08-19:** this line previously read "monitoring scoped, no execution". That described the *specialist scope* but read as a claim about the trading domain, which is false and false in the dangerous direction. The standalone trade engine (PM2 `trade-engine`, `127.0.0.1:4003`) is LIVE and ARMED and moves real money on approved trades. This scope stays monitoring-and-reporting; the domain it monitors does execute.
+- **Status:** live (scope fully specified). The `trading.md` config drift flagged here previously was reconciled on 2026-08-15; that skill is now accurate and is the canonical source for trading detail.
 - **Domain:** Trading scanner monitoring and reporting.
 - **Scope:**
   - Reads trading scanner state
@@ -369,7 +369,7 @@ Tyson's own setups, not part of any business unit.
   - Surfaces alerts for unusual activity
   - Maintains trading-related n8n workflow heartbeats
 - **Out of scope:**
-  - Trade execution — never, hard-disabled at the tool level
+  - Trade execution — outside this scope. Note the previous wording "hard-disabled at the tool level" asserted a technical guarantee that does not exist: execution is not disabled anywhere, it is simply not part of this scope. The trade engine executes independently of anything in this file.
   - Position changes
   - Capital allocation decisions
   - Any financial action
@@ -464,6 +464,26 @@ Skills audit (Phase 4 Slice 2) will reconcile these registry entries against exi
 ## Maintenance log
 
 This section captures changes to the registry over time. New entries appended at top.
+
+- **2026-08-19 — Self-contradiction fixed; Kairos added; trading false-safety claims corrected.**
+  The "How to read this file" definition of `Status` still read "`live` (in
+  operation)", contradicting the retirement notice fifteen lines above it — a
+  reader reaching the second definition drew exactly the conclusion the notice
+  exists to prevent. Redefined to match the header: scope-definition maturity, not
+  runtime capability. Two further contradictions found in the same pass and fixed:
+  the file's opening sentence said Charlie reads it "to know who he can delegate
+  to" (nobody can be delegated to), and the `Runs on` field was defined as "what
+  infrastructure it executes on" (nothing here executes).
+  Intro updated from five business contexts to six with Kairos Wines added,
+  matching `CHARLIE_ROLE.md` and `FLOW_OS_STATE.md`.
+  **Trading Operator:** two false-safety claims corrected. `Runs on` said
+  "monitoring scoped, no execution" and Out of scope said trade execution was
+  "hard-disabled at the tool level". Both read as claims that trading cannot
+  execute. It can: the standalone trade engine is LIVE and ARMED. The specialist
+  scope is unchanged (monitoring and reporting); what changed is that the doc no
+  longer implies the domain is safe. This was the fourth instance of the same
+  claim, after `trading.md`, `CHARLIE_ROLE.md`, `FLOW_OS_STATE.md` and
+  `N8N_WORKFLOW_INDEX.md`.
 
 - **2026-07-01 — Slice 6d.** Content Studio Operator and Community Manager FSC enabled as live specialists via `QCLAW_SPECIALIST_LIVE_IDS` env var. `content-studio.md` flipped to specialist-scope. `community-manager-fsc.md` flipped to specialist-scope. `SPECIALIST_MENTION_RE` added to Gate 2 so specialist outcome claims are now gateable. `delegate_to` live path active for both specialists. Skill slug reconciliation for name-mismatched entries deferred to Phase 5.
 - **2026-06-24 — Slice 6c.** Specialists registered as lightweight agents in `qclaw.agents` at boot (dir-less `Agent.createSpecialist` — no SOUL.md/aid.json/workspace dir; new `AgentRegistry.register()`/`has()`). Dashboard surfaces all 18 with status badges (stub/live/deferred) and businessUnit labels (`/api/agents` + `/api/agex/status` extended with `status`/`businessUnit`/`isSpecialist`). Per-specialist skill tools registered under the specialist's own agentName off the SSOT (`specialist-loader.js`) — HTTP tools only; prompt skills contribute content. Typed read-only observation tools (`read_file`, `grep_repo`, `list_dir`, `git_status`) added as builtins via the new `specialist-observation` skill, scoped dynamically to the specialist roster — `shell_exec` stays Charlie's. Stale charlie symlink-dir defect (15 vs 25 skills, audit F10) noted, deferred to a follow-up micro-dispatch.
