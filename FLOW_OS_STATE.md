@@ -4,7 +4,7 @@ This is the canonical state doc. Charlie reads it at session start to know what'
 
 This file is the fourth canonical doc Charlie reads at session start, after `CEO_OPERATING_MODEL.md`, `CHARLIE_ROLE.md`, and `LOCATIONS.md`.
 
-**Last updated:** 2026-05-03
+**Last updated:** 2026-08-19
 
 ## Maintenance rules
 
@@ -27,19 +27,28 @@ This file is the fourth canonical doc Charlie reads at session start, after `CEO
 
 ### Flow OS
 
-**9 paid subscribers** (~$1,541/mth MRR):
+**6 paid subscribers.** MRR **$1,182/mth at list price** ($1,275.63 actually
+billed — 5 of 6 subscriptions carry a tax uplift). Verified against live Stripe
+2026-08-19.
 
 | Person | Plan | Started | Notes |
 |---|---|---|---|
 | Suze H. | $97 starter | Jul 2025 | |
 | Rachael B. | $97 starter | Apr 2025 | |
-| Lucy H. (acct 1) | $97 starter | Apr 2025 | Cross-dimensional VIP — see Cross-dimensional clients section |
+| Lucy H. (acct 1) | $297 unlimited | Apr 2025 (upgraded 2026-07-16) | Cross-dimensional VIP — see Cross-dimensional clients section. Upgraded $97 → $297 via cancel-and-replace, so Stripe shows a new subscription from 2026-07-16. |
 | Lucy H. (acct 2) | $97 starter | Jan 2026 | Cross-dimensional VIP — Lucy's personal brand account |
 | Michael Y. | $297 unlimited | Sep 2025 | Co-runs business with Eliza J. (cross-dimensional). Has Shopify n8n workflow integration. |
-| Georgia F. | $97 starter | Feb 2026 | Bundled with free GHL Support Bot |
-| Kayla N. | $297 unlimited | Dec 2025 | Has Morning Light WL→HL n8n workflow integration |
 | Wallis M.-M. | $297 unlimited | Nov 2025 | No workflow integrations yet |
-| Angela S. | $97 starter | Apr 2025 | |
+
+**Recently churned** (kept visible so the roster's history is legible, and so
+orphaned per-client infrastructure gets cleaned up rather than quietly left
+running):
+
+| Person | Plan | Churned | Notes |
+|---|---|---|---|
+| Georgia F. | $97 starter | 2026-05-20 | Also had the bundled free GHL Support Bot seat |
+| Kayla N. | $297 unlimited | 2026-06-22 | Morning Light. GHL location deactivated 2026-06-22 (canonical churn date; the Stripe cancellation timestamp is earlier). Orphaned n8n refresher `02Dob9FCEkXZFDAs` deactivated 2026-08-19. |
+| Angela S. | $97 starter | 2026-06-25 | |
 
 **4 internal/non-charged users:** Emma Maidment, Crete Projects, SproutCode, Flow States Collective.
 
@@ -73,8 +82,8 @@ Support AI trained on GoHighLevel documentation. $29/month.
 
 | Person | Status | Started | Notes |
 |---|---|---|---|
-| Bruce S. | Failing payment | Apr 2026 | Converted from trial 26 Apr. Payment bouncing; cancellation expected. |
-| Georgia F. | Free | bundled | Free with Flow OS sub |
+| Bruce S. | Churned | Apr 2026 | Converted from trial 26 Apr; payment bounced, canceled 2026-08-09. The predicted cancellation happened. |
+| Georgia F. | Ended | bundled | Was free with her Flow OS sub; ended when that churned 2026-05-20 |
 | Helena K. | Trial | — | Payment details completed, never used the platform |
 | Joemarie O. | Trial | — | Payment details completed, never used the platform |
 | Murray M. | Trial | — | Payment details completed, never used the platform |
@@ -210,9 +219,32 @@ card without restructuring.
 
 **Owner:** Tyson.
 
+### Kairos Wines
+
+**Waitlist stage / pre-revenue.**
+
+- Vineyard project: waitlist plus a sponsor-a-vine initiative
+- Kairos GHL sub-account is the canonical contact store for waitlist and sponsor leads
+- Site at `kairos-wines.com` (Astro + Vercel)
+- No paid subscribers yet; treat as pre-revenue like Crete
+- Charlie reaches it through the `ghl-kairos.md` skill. Note there is no GHL admin
+  user scoped only to this location, so the skill runs on Tyson's personal account —
+  be careful not to cross this brand with another.
+
+**Owner:** Tyson.
+
 ### Personal
 
-**Trading scanner monitoring only.** No other personal-business engagements.
+**The standalone trade engine is LIVE and ARMED** (`trading_enabled=true`, PM2
+`trade-engine`). It owns scanner, analyst, approval gate, executor and position
+monitor, and it moves real money on approved trades. This is not a
+monitoring-only surface and has not been one since 2026-08-05. Check live state
+at `GET http://127.0.0.1:4003/health` and `trading_config` rather than trusting
+any number written here, including in this doc; the n8n trading workflows are
+all retired, so their inactive state says nothing about whether money can move.
+Detail in the `trading` skill.
+
+No other personal-business engagements.
 
 ---
 
@@ -320,11 +352,12 @@ Per the architectural principle, leads live in GHL sub-accounts. Charlie pulls c
 
 This is a point-in-time snapshot. Charlie probes at session bootstrap (Layer 5 of bootstrap mechanism) and either confirms freshness or flags drift.
 
-**Last verified:** 2026-05-06
+**Last verified:** 2026-08-19
 
 | Component | Status | Location | Notes |
 |---|---|---|---|
-| QClaw server | Live | `138.68.138.214`, port 4000 | PM2 manages: quantumclaw, trading-worker, clipper-worker, charlie-watcher |
+| QClaw server | Live | `138.68.138.214`, port 4000 | PM2 manages 6 processes: quantumclaw, trade-engine, claude-code-dispatcher, agex-hub, trading-worker, clipper-worker. `charlie-watcher` was decommissioned with Slice 5. `trading-worker` (Monte Carlo, :4001) is still load-bearing — the trade engine calls it for simulations. |
+| Trade engine | Live, ARMED | `127.0.0.1:4003` | PM2 `trade-engine`. Scanner, analyst, approval gate, executor, position monitor. `trading_enabled=true` — real money. Check `/health`, never assume from n8n state. |
 | n8n server | Live | `157.230.216.158` | Docker Compose |
 | Dashboard | Live | `agentboardroom.flowos.tech` | Per Phase 2 audit, API layer healthy on localhost |
 | Supabase | Live | project `fdabygmromuqtysitodp` | "Supabase FSC" credential in n8n |
@@ -464,7 +497,29 @@ Stuff currently broken, suboptimal, or pending. Charlie reads this section to kn
 
 ## Section 8 — Recent significant changes
 
-Rolling list of last 30 days. Most recent at top.
+Rolling list of recent significant changes. Most recent at top. `QCLAW_BUILD_LOG.md`
+is the detailed record; entries here are pointers.
+
+### 2026-08-19
+
+- **Estate audit (Pass 1) + Kayla churn cleanup.** Full read-only sweep of n8n, canonical docs, secrets and business state; found doc/reality drift across most canonical docs. Orphaned Morning Light token refresher `02Dob9FCEkXZFDAs` deactivated after blast-radius verification (Gutful runs off a separate `highlevel_tokens` row, unaffected). `CHARLIE_ROLE.md` corrected. See `QCLAW_BUILD_LOG.md`.
+
+### 2026-08-15
+
+- **Dashboard Trading Room rebuilt against the trade engine** (PR #91), orphan execute route removed. See `QCLAW_BUILD_LOG.md`.
+
+### 2026-08-14
+
+- **Specialist framework retired** (PR #90). `delegate_to` was a producer with no consumer — 2 invocations in ~6 weeks, zero completed dispatches. Specialist-shaped work is now Charlie loading the matching skill and calling its tools directly. `FLOW_OS_SPECIALISTS.md` remains canonical for scope and boundaries, not for runtime capability.
+- **Charlie fabrication fixes** (PRs #88-89): identifier-provenance gate (Gate 5) and soft-hedge consolidation, closing incidents where Charlie produced confident unverified claims. See `QCLAW_BUILD_LOG.md`.
+
+### 2026-08-06
+
+- **Kairos Wines onboarded as a business unit.** GHL sub-account, per-brand secrets, and the `ghl-kairos.md` skill live — the fifth per-brand GHL skill alongside Flow OS, FSC, Crete and SproutCode.
+
+### 2026-08-05 to 2026-08-11
+
+- **Standalone trade engine LIVE** (Sessions 1-6, PRs #78-91). Python/FastAPI on `:4003`, PM2 `trade-engine`, owning scanner, analyst, approval gate, executor and position monitor. All four n8n trading workflows retired. First real-money positions placed 2026-08-11. Polymarket execution runs through an AMS3 relay because qclaw's LON1 IP is geoblocked. See `QCLAW_BUILD_LOG.md` and the `trading` skill.
 
 ### 2026-06-18
 
@@ -542,6 +597,33 @@ Things this v1 doc doesn't capture that should be filled in over time.
 ## Maintenance log
 
 This section captures changes to the state doc over time. New entries appended at top.
+
+- **2026-08-19 — Reconciliation pass against live systems.** Section 1 Flow OS
+  roster corrected against live Stripe: 9 documented subscribers reduced to the 6
+  actually active, with Georgia F. (2026-05-20), Kayla N. (2026-06-22 canonical)
+  and Angela S. (2026-06-25) moved to a new "Recently churned" table rather than
+  deleted, so orphaned per-client infrastructure stays discoverable. Lucy H.
+  (acct 1) recorded as upgraded $97 → $297 on 2026-07-16 (cancel-and-replace,
+  previously undocumented). MRR restated as $1,182 list / $1,275.63 billed, which
+  now reconciles with the table's own rows; the previous ~$1,541 figure did not
+  reconcile even before the churn corrections. Support Bot table: Bruce S. marked
+  churned (2026-08-09, the predicted cancellation happened), Georgia F.'s bundled
+  seat marked ended. Section 5 infrastructure snapshot re-verified against live
+  `pm2 status`: `charlie-watcher` removed (decommissioned with Slice 5),
+  `trade-engine`, `claude-code-dispatcher` and `agex-hub` added, trade engine given
+  its own row. Section 8 backfilled from 2026-06-18 through 2026-08-19 with
+  pointers, not a duplicate changelog. New `### Kairos Wines` business unit added
+  under Section 1. The `### Personal` section's "Trading scanner monitoring only"
+  claim was false in the dangerous direction (live execution is armed) and has been
+  corrected to point at `/health` rather than a hardcoded snapshot — the same fix
+  already applied to `trading.md` and `CHARLIE_ROLE.md`.
+
+  **Flagged, not actioned:** the private companion file
+  `~/.quantumclaw/flow_os_state_private.md`, referenced in this doc's own
+  maintenance rules and in `QCLAW_BUILD_LOG.md`, **does not exist** anywhere on
+  qclaw or Tyson's Mac. It was specified at design time (2026-05-03) and never
+  created, so the pseudonymisation scheme has no backing store. Whether it should
+  exist at all is a standing decision for Tyson.
 
 - **2026-08-05 — Flow OS product line section added.** New `### Flow OS
   product line` grouping under Section 1 covering GHL Support Bot, SMS Gateway,
