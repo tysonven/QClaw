@@ -43,6 +43,7 @@ console.log('write scope → awaiting_authorisation row + authorisation_required
   check('one row inserted', posts().length === 1);
   check('row status = awaiting_authorisation', body?.status === 'awaiting_authorisation', JSON.stringify(body));
   check('row authorisation_required = true', body?.authorisation_required === true);
+  check('write row defaults timeout_seconds = 1800', body?.timeout_seconds === 1800);
   check('returns status awaiting_authorisation', out.status === 'awaiting_authorisation');
   check('return does NOT claim queued/approved', out.authorisation_required === true && out.approval_pushed === true);
   check('Telegram push sent (approval message shape)',
@@ -94,6 +95,21 @@ console.log('infra scope also holds for approval:');
   const tool = createClaudeCodeDispatchTool({ env: {}, restClient: client, notify: async () => true });
   const out = JSON.parse(await tool.fn({ task: 'rotate nginx cert', mode: 'implement_with_audit_gate', scope: 'infra' }, toolCtx));
   check('infra → awaiting_authorisation', out.status === 'awaiting_authorisation' && posts()[0].body.status === 'awaiting_authorisation');
+  check('infra row defaults timeout_seconds = 1800', posts()[0].body.timeout_seconds === 1800);
+}
+
+console.log('timeout_seconds: explicit value respected, out-of-range clamped:');
+{
+  const { client, posts } = fakeRest();
+  const tool = createClaudeCodeDispatchTool({ env: {}, restClient: client, notify: async () => true });
+  await tool.fn({ task: 'x', mode: 'audit_then_implement', scope: 'write', expected_paths: ['a.js'], timeout_seconds: 900 }, toolCtx);
+  check('explicit 900 respected', posts()[0].body.timeout_seconds === 900);
+  await tool.fn({ task: 'x', mode: 'audit_then_implement', scope: 'write', expected_paths: ['a.js'], timeout_seconds: 99999 }, toolCtx);
+  check('over-cap clamped to 3600', posts()[1].body.timeout_seconds === 3600);
+  await tool.fn({ task: 'x', mode: 'audit_only', scope: 'audit', timeout_seconds: 5 }, toolCtx);
+  check('under-floor clamped to 60', posts()[2].body.timeout_seconds === 60);
+  await tool.fn({ task: 'x', mode: 'audit_only', scope: 'audit', timeout_seconds: 1.5 }, toolCtx);
+  check('non-integer ignored, scope default used', posts()[3].body.timeout_seconds === 600);
 }
 
 console.log('critical scope hard-blocks (throws, NO row written):');
@@ -115,6 +131,7 @@ console.log('audit/read_only unchanged (queued, no auth required, no Telegram pu
   const out = JSON.parse(await tool.fn({ task: 'audit the gate', mode: 'audit_only', scope: 'audit' }, toolCtx));
   check('audit → queued', out.status === 'queued' && posts()[0].body.status === 'queued');
   check('audit → authorisation_required false', posts()[0].body.authorisation_required === false);
+  check('audit row defaults timeout_seconds = 600', posts()[0].body.timeout_seconds === 600);
   check('no Telegram push for audit scope', pushed === false);
 }
 

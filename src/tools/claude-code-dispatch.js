@@ -53,6 +53,14 @@ const REPO_RE = /^[\w.-]+\/[\w.-]+$/;
 const DEFAULT_REPO = 'tysonven/QClaw';
 const ENQUEUE_CAP_PER_SESSION = 10; // max active (queued+in_progress) dispatches per session
 const PER_TASK_ESTIMATE_MS = 120_000;
+// Execution budget by scope: read-only audits finish in a few minutes, while
+// write/infra runs must clone, implement, and open a PR, so they get a larger
+// wall clock. Set here (not in the dispatcher) so the row carries the true
+// budget from creation and every reader (dashboard, SQL, approver) sees it.
+const DEFAULT_TIMEOUT_RUN_S = 600;
+const DEFAULT_TIMEOUT_WRITE_S = 1800;
+const TIMEOUT_MIN_S = 60;
+const TIMEOUT_MAX_S = 3600;
 
 export function createClaudeCodeDispatchTool({
   audit,
@@ -154,6 +162,7 @@ export function createClaudeCodeDispatchTool({
         fix: { type: 'string', description: 'One-line description of the fix (shown in the Telegram approval prompt). Defaults to the first line of task.' },
         risk: { type: 'string', enum: RISK_LEVELS, description: 'Risk level for the approval prompt (write/infra). Defaults to medium.' },
         action: { type: 'string', description: 'Exact summary of what CC will do (approval prompt). Defaults to deliverable or task.' },
+        timeout_seconds: { type: 'integer', description: `Wall-clock limit for the CC run in seconds (${TIMEOUT_MIN_S}-${TIMEOUT_MAX_S}; out-of-range values are clamped). Defaults by scope: ${DEFAULT_TIMEOUT_RUN_S} for audit/read_only, ${DEFAULT_TIMEOUT_WRITE_S} for write/infra. Only set this when the default is known to be wrong for the task.` },
       },
       required: ['task', 'mode', 'scope'],
     },
@@ -190,6 +199,10 @@ export function createClaudeCodeDispatchTool({
       if (!REPO_RE.test(repo)) throw new Error('repo must be of the form "owner/name".');
       let priority = Number.isInteger(args.priority) ? args.priority : 5;
       priority = Math.max(1, Math.min(10, priority));
+      let timeoutSeconds = isWrite ? DEFAULT_TIMEOUT_WRITE_S : DEFAULT_TIMEOUT_RUN_S;
+      if (Number.isInteger(args.timeout_seconds)) {
+        timeoutSeconds = Math.max(TIMEOUT_MIN_S, Math.min(TIMEOUT_MAX_S, args.timeout_seconds));
+      }
 
       // Server-derived session id — Charlie cannot set or spoof this.
       const session_id = `${ctx.channel || 'unknown'}:${ctx.userId ?? 'owner'}`;
@@ -229,6 +242,7 @@ export function createClaudeCodeDispatchTool({
             session_id,
             created_by: auditActor,
             authorisation_required: isWrite,
+            timeout_seconds: timeoutSeconds,
           },
         });
         row = Array.isArray(inserted) ? inserted[0] : inserted;
