@@ -21447,3 +21447,88 @@ no CLI/API path from this machine):**
 
 **Next:** Slice 2a (dead-weight deletion) only after Tyson reviews this
 slice report. One slice at a time per brief.
+
+---
+
+## 2026-08-19 (later 2): n8n `02Dob9FCEkXZFDAs` deactivated, orphaned Kayla/Morning Light token refresher
+
+Closes the pass-2 deferral from the 2026-08-18/19 error-cluster entry above, which
+held deactivation pending confirmation that the GHL location was gone. Churn is now
+confirmed (Stripe subscription for kayla nichols canceled 2026-06-03; `highlevel_tokens`
+id=1 last refreshed 2026-06-22), so the blocking condition is satisfied.
+
+**What it was.** `HL refresh token to supabase DB` (`02Dob9FCEkXZFDAs`), cron every 12h,
+11 nodes. Reads `SELECT refresh_token FROM highlevel_tokens WHERE id = 1`, refreshes via
+`POST https://services.leadconnectorhq.com/oauth/token` using `$env.HL_LOCATION1_CLIENT_ID`
+/ `HL_LOCATION1_CLIENT_SECRET`, upserts back to `highlevel_tokens` id=1, then emails
+`Support@flowos.tech` with SUCCESS/FAILED. `settings.errorWorkflow` unset, so failures
+never reached the Shared Error Handler and never reached Telegram.
+
+**Verbatim error, final two runs before deactivation** (execs `1246505` 2026-08-19T16:49:18Z
+and `1246408` 2026-08-19T04:49:18Z, both `status=error`):
+
+```
+lastNodeExecuted : Refresh Token Request
+error.name       : NodeApiError
+error.message    : Bad request - please check your parameters
+error.description: invalid_grant
+error.httpCode   : 400
+```
+
+Fuller upstream body already recorded in the 2026-08-18/19 entry above:
+`400 - "{\"error\":\"invalid_grant\",\"error_description\":\"Location is not active\"}"`.
+Zero successful runs in the entire 14d retention window (8 executions, 8 errors).
+
+**Blast radius verified before touching anything.** Swept all 81 workflows: 0 reference
+`02Dob9FCEkXZFDAs` by id, 0 `executeWorkflow`/`toolWorkflow` nodes exist instance-wide.
+Two ACTIVE workflows also read `highlevel_tokens`, both Gutful, and both key on a
+different row, which the table itself confirms:
+
+```
+id=1  location_id=JKgdyOKXN76dkoZRmoGM  updated 2026-06-22  <- Kayla/Morning Light (dead)
+id=2  location_id=biianjtJPDFAGcw79LdL  updated 2026-08-19  <- Gutful (fresh)
+```
+
+`shopify > hl refresh token DB` (`b36b4MKe1p6wQbTQ`) and `Gutful Shopify to Flow OS V3`
+(`9VqCAnczY5gFJcRE`) both select `WHERE location_id = 'biianjtJPDFAGcw79LdL'`, i.e. id=2.
+Separate rows, separate refreshers. Post-change both still `active=true` and id=2 still
+refreshed 2026-08-19T16:57Z. Gutful unaffected.
+
+**Executed.** Backup `n8n-workflows/backups/hl-refresh-token-supabase.PRE-DEACTIVATION-20260819.json`
+(commit `7bca194`), captured with `active: true` and the full `activeVersion` payload
+including `versionId 9e767311-2174-402e-aaa1-3a1982295a52`, so reactivation is recoverable.
+Then `POST /api/v1/workflows/02Dob9FCEkXZFDAs/deactivate` (HTTP 200). Used the dedicated
+deactivate endpoint, not a PUT, to stay clear of the n8n 2.4.8 draft-vs-published hazard.
+
+Post-change diff against the backup:
+
+```
+active   : True -> False
+nodes    : 11 -> 11   identical=True
+conns    : 11 -> 11   identical=True
+settings : identical=True  {"executionOrder":"v1","callerPolicy":"workflowsFromSameOwner","availableInMCP":false}
+name     : identical=True
+changed  : active, activeVersion, activeVersionId, versionCounter (95->96)
+```
+
+`activeVersionId` going null is the expected consequence of deactivation releasing the
+publish binding, not data loss. Active workflow count **38 to 37**.
+
+**Dormancy check (not in the brief, checked anyway).** `02Dob9FCEkXZFDAs` is NOT in the
+Workflow Dormancy Alerter (`O5ir2Mp0e2AXkUXZ`) expectations map, so no suppression edit
+was needed and no Telegram dormancy noise results. This is the trap the 2026-08-19
+mutation pass had to work around for five other workflows.
+
+**Not tracked in repo.** This workflow has no canonical JSON under `n8n-workflows/`, so
+there was nothing to update there. Its Morning Light siblings (`TikJkWLzpreI6iTa`) are
+tracked; this one never was.
+
+**Still open, untouched (Kayla footprint).** n8n env pair `HL_LOCATION1_CLIENT_ID` /
+`HL_LOCATION1_CLIENT_SECRET`; Supabase `highlevel_tokens` id=1 + `highlevel_tokens_backup`
+id=1; `N3VF1VKlekDdhxGU` (`HighLevel OAuth Token Refresh`) which is still active, still has
+an empty cron `{}` so it can never fire on schedule, and still reads the same now-orphaned
+`HL_LOCATION1_*` credentials. FLOW_OS_STATE.md still lists Kayla N. as an active $297
+subscriber.
+
+Build-log entry committed direct to main via an isolated git worktree at HEAD, keeping the
+live checkout untouched.
