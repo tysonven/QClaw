@@ -21638,3 +21638,46 @@ then drizzle generate/migrate ran clean.
 
 **Next:** Slice 2d (Manus OAuth to Clerk, SECURITY-RELEVANT, needs
 adversarial review before merge) after Tyson review.
+
+## 2026-08-19 (later): flow-coach-ai Phase 2, Slice 2d (Manus OAuth to Clerk)
+
+PR #3 (slice 2c) merged at 7ca8cef. Slice 2d on branch
+`slice-2d-clerk-auth`, PR #4 open as DRAFT. SECURITY-RELEVANT: must not
+merge before an adversarial review session against the branch.
+
+**Changes:** Manus auth deleted end to end (oauth.ts, sdk.ts,
+manusTypes.ts, cookies.ts, client login-URL builder, useAuth hook,
+auth.logout, OWNER_OPEN_ID auto-grant). axios/jose/cookie deps removed
+with their sole consumer. Clerk dev-instance auth in: clerkMiddleware
+wrapped so a Clerk failure degrades to unauthenticated instead of
+500ing the public chat (that failure mode was observed live with
+placeholder keys); context maps verified Clerk email to admin iff equal
+to ADMIN_EMAIL; admin routes on adminProcedure (401 vs 403 split).
+/admin ClerkProvider is route-scoped; public page never loads Clerk.
+Boot fail-fast assertRequiredEnv: missing, empty, whitespace, or
+format-malformed DATABASE_URL / ANTHROPIC_API_KEY / CLERK_SECRET_KEY /
+VITE_CLERK_PUBLISHABLE_KEY / ADMIN_EMAIL refuse start naming offenders
+(ADMIN_EMAIL explicitly per Tyson: unset admin looks like broken login).
+
+**DEVIATION surfaced:** JWT_SECRET removed rather than validated.
+Nothing signs local sessions after the deletion; Tyson's instruction
+said to include it in fail-fast, flagged in PR for his call.
+
+**Verified live (dev Clerk instance):** boot refusals for missing,
+empty, and placeholder values; 401 on unauthenticated and garbage
+Bearer; 403 on a real minted non-admin session (probe user created then
+deleted); 200 stats on a real minted session for the ADMIN_EMAIL
+account (session revoked, account untouched); public chat.send
+unaffected. 23/23 tests, Node 22 + Node 20, builds clean.
+pnpm audit --prod 76 -> 43 advisories (high 19 -> 6).
+
+**Detours, verbatim errors:** placeholder Clerk keys in .env produced
+per-request `Error: Publishable key not valid.` from clerkMiddleware
+and Express 500 HTML on every route including public chat; fixed with
+the degrade wrapper + boot format checks. Clerk BAPI
+`create user info@flowos.tech: HTTP 422 "That email address is taken.
+Please try another."` led to minting a session for the existing owner
+user instead (no account mutation).
+
+**Next:** adversarial review session against slice-2d-clerk-auth, then
+merge decision, then Slice 2e (hardening, also security-relevant).
