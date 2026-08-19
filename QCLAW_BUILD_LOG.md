@@ -21390,3 +21390,60 @@ contact `VLQ5i2DSictVy1jhmdLQ`; Thrive email repopulation; the three
 timezone-lying schedule labels + empty-cron `N3VF1VKlekDdhxGU`; alerter
 decommission + "manus API" key revoke (only after the heartbeat Telegram
 alerter is proven); fb-retarget funnel-domain sweep.
+
+## 2026-08-19 (later): flow-coach-ai Phase 2, Slice 1 (provision)
+
+Executed per BRIEF-flow-coach-ai-phase2-remediation.md, Slice 1 only. No
+application code, nothing deployed, live Manus app untouched (publish freeze
+in force).
+
+**Completed:**
+- Railway project `flow-coach-ai` created (workspace Tysonven's Projects,
+  project id `05c92d61-56c2-4f8d-94bf-c8db30de8b55`). No service, no deploy,
+  no custom domain. Local `~/Projects/flow-coach-ai` railway-linked (CLI
+  global config only; target repo working tree untouched, verified clean).
+- Supabase project `flow-coach-ai` created: ref `jizrujzjxwmiukpmljlk`,
+  org Flow Os Org, region ap-southeast-2, Postgres 17, empty. Dedicated
+  project per Tyson decision (isolates service_role blast radius from the
+  shared `fdabygmromuqtysitodp` canonical DB).
+- Supabase project `LinkedIn` (`zshmlgtvhdneekbfcyjc`) PAUSED per Tyson
+  decision, to free a free-plan active slot. Data retained (content_posts
+  82 rows, performance_insights 160 rows). Cluster was already parked per
+  the mutation-pass-2 deferral above.
+- Draft LOCATIONS entry written to
+  `~/Projects/flow-coach-ai-audit/DRAFT-LOCATIONS-flow-coach-ai.md`
+  (not committed to canonical docs; lands Slice 6).
+
+**Detours, verbatim errors:**
+- First create attempt blocked despite get_cost returning $0/monthly:
+  `BadRequestException: The following organization members have reached
+  their maximum limits for the number of active free projects within
+  organizations where they are an administrator or owner: tysonven
+  (2 project limit). To continue, these users will need to either delete,
+  pause or upgrade one or more of these projects.`
+- Tyson asked to repurpose whichever dormant wellness project was
+  superseded. Investigated: both `WellnessLiving OAuth`
+  (`xqefsqgefqxoeboelwdt`) and `wellness-living-fresh`
+  (`efzlcvemowoveoccrzyq`) are dormant since 2025, zero references in any
+  repo or doc, part of the churned Kayla/Morning Light footprint; the live
+  WL integration used n8n internal Postgres. Repurpose path dead-ended
+  anyway: restore of `efzlcvemowoveoccrzyq` failed with
+  `ForbiddenException: The following organization members have reached
+  their maximum limits for the number of active free projects within
+  organizations where they are an administrator or owner: tysonven
+  (2 project limit). To continue, these users will need to either delete,
+  pause or upgrade one or more of these projects.`
+  Tyson then chose: pause LinkedIn + create new project.
+
+**Pending (blocks Slice 1 close-out, both are Tyson dashboard actions with
+no CLI/API path from this machine):**
+- Clerk application "Flow Coach AI": sign-up mode Restricted (invite-only,
+  owner identity only). Store CLERK_PUBLISHABLE_KEY + CLERK_SECRET_KEY as
+  Railway shared variables on project flow-coach-ai.
+- Dedicated Anthropic API key: console.anthropic.com, recommend dedicated
+  workspace `flow-coach-ai` for spend attribution and isolated revocation.
+  Store as ANTHROPIC_API_KEY Railway shared variable. Not shared with QClaw
+  or Support Bot keys.
+
+**Next:** Slice 2a (dead-weight deletion) only after Tyson reviews this
+slice report. One slice at a time per brief.
