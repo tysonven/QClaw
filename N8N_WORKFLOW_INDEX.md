@@ -4,7 +4,7 @@ This is the canonical workflow registry for every active workflow on `webhook.fl
 
 This file is the sixth canonical doc Charlie reads at session start, after `CEO_OPERATING_MODEL.md`, `CHARLIE_ROLE.md`, `LOCATIONS.md`, `FLOW_OS_STATE.md`, and `FLOW_OS_SPECIALISTS.md`.
 
-**Last updated:** 2026-05-19
+**Last updated:** 2026-08-19
 
 ## Maintenance rules
 
@@ -17,18 +17,27 @@ This file is the sixth canonical doc Charlie reads at session start, after `CEO_
 
 - **Single file for v1.** The doc is structured by category internally. If the file grows beyond manageable (rough threshold: 100+ workflows or 5000+ lines), it splits into `n8n-workflows/<category>.md` files with this file becoming the index. Migration is locked via the Single Source of Location pattern (`LOCATIONS.md` updates point to the new structure; nothing else breaks).
 - **Workflow IDs are canonical.** Names can change; IDs cannot. Every reference to a workflow in this doc, in `FLOW_OS_SPECIALISTS.md`, and in code uses the workflow ID.
+- **Every entry carries an explicit `Status` field** (added 2026-08-19): `Active`, `Inactive (retired YYYY-MM-DD)` for a workflow replaced by a successor system, or `Inactive (deactivated YYYY-MM-DD)` for one simply switched off. Before this field existed, active state was implicit in the doc's scope, so a deactivation had nowhere to be recorded and 15 entries silently went stale. Dates come from n8n's `workflow_publish_history` `deactivated` events where present; where n8n recorded no event the entry says so and cites whatever secondary evidence exists.
+- **Scope is active workflows.** Inactive scratch and superseded legacy workflows are deliberately NOT given entries (see the scope note under Categories index). An entry that has gone inactive keeps its entry, marked via `Status`, so the history stays legible.
 - **Live data pulled from n8n at bootstrap.** This doc captures static structure (purpose, trigger, ownership). Execution stats are pulled live by Charlie from n8n's API at every bootstrap so the "Recent activity" fields are never more than one bootstrap stale.
 - **Cross-references are authoritative.** Ownership references `FLOW_OS_SPECIALISTS.md`. Operational state references `FLOW_OS_STATE.md`. Skill file references the relevant skill files. Charlie reads through cross-references rather than duplicating content.
+
+## Monitoring and alerting context
+
+Two things watch these workflows, and only one of them is an n8n workflow:
+
+- **Workflow Dormancy Alerter** (`O5ir2Mp0e2AXkUXZ`) — an n8n workflow, documented in this index.
+- **n8n Health Dashboard** — an *external* alerter running in a Manus GCP workspace. It is not an n8n workflow and so has no entry here by design; it polls the n8n REST API every 5 min with a dedicated key and emails on error-rate thresholds. It is documented in `LOCATIONS.md`, which is the registry for infrastructure. If you are wondering where "n8n Alert" emails come from, that is it. Decommission is pending a heartbeat-based Telegram replacement.
 
 ## Categories index
 
 12 categories identified in the discovery audit (2026-05-04). Status legend: `documented` = full entries written, `pending` = entries to come.
 
-| Category | Workflow count | Status |
+| Category | Entries | Status |
 |---|---|---|
-| Trading | 5 | documented |
+| Trading | 5 | **RETIRED** — 4 workflows retired 2026-08-05/08-14, superseded by the standalone trade engine. The 5th (Shared Error Handler) is live and cross-cutting. |
 | Crete | 4 | documented |
-| Flow OS GHL Marketing | 5 | documented |
+| Flow OS GHL Marketing | 6 | documented |
 | Ad Agency | 6 | documented |
 | Tyson personal brand — LinkedIn | 5 | documented |
 | Tyson personal brand — Instagram | 3 | documented |
@@ -36,22 +45,70 @@ This file is the sixth canonical doc Charlie reads at session start, after `CEO_
 | Cross-cutting + token refresh | 3 | documented |
 | Flow OS Blog | 1 | documented |
 | Flow OS Infographics | 1 | documented |
-| FSC Content Studio | 1 | documented |
-| Various utilities and standalone | 11 | documented |
+| FSC Content Studio | 3 | documented |
+| Various utilities and standalone | 13 | documented |
 
-Total: 47 active workflows.
+**Live instance totals, verified 2026-08-19:** 81 workflows exist on
+`webhook.flowos.tech` — **37 active, 44 inactive**.
+
+**Coverage:** this doc holds **52 entries** covering **all 37 active
+workflows** plus 15 entries whose workflows have since gone inactive (kept, and
+marked via `Status`, so the history stays legible).
+
+**Deliberately excluded (scope note, added 2026-08-19):** roughly 26 inactive
+workflows on the instance have no entry and should not get one. They are
+abandoned scratch (`My workflow`, `My workflow 2/3/5/6/7/8`, `test workflow`,
+`image creation canvas`) and superseded legacy (the Wellness Living family, the
+2025-era `Flow Os Content Generator`/`Distribution`, `FSC Content
+Generator`/`Distribution`, duplicate `Fetch GHL Contacts` pairs). A future audit
+comparing "81 workflows" against "52 entries" will read this as a 29-workflow
+coverage gap. It is not — the doc registers active workflows, and coverage of
+those is 37/37. Do not "fix" it by adding entries for dead scratch workflows.
+
+**Error-handler wiring, verified 2026-08-19:** only **10 of 81** workflows have
+`settings.errorWorkflow` set to the Shared Error Handler (`7kpNnMtnuDWXgWcX`),
+and only **4 of 37 active** ones do. The wired set is almost entirely retired or
+inactive workflows, while several that error daily (`02Dob9FCEkXZFDAs` before its
+deactivation, LinkedIn Lead Generation, GHL Marketing: Weekly Report, GHL
+Changelog Emails, Crete - Content Regenerate) have no handler at all. That is why
+the Shared Error Handler shows zero executions in the retention window: nothing
+that fails is pointed at it. **Fixing the wiring is a separate dispatch** — this
+doc records the gap, it does not close it.
 
 ---
 
-## Trading cluster
+## Trading cluster (RETIRED)
 
-5 workflows. All belong to **Personal** (Tyson's own setup) per `FLOW_OS_SPECIALISTS.md`. Specialist owner: **Trading Operator** (monitoring scoped, no execution). Skill file: `trading.md` (with known config drift flagged in the relevant entries below).
+> **This cluster is history, not current state.** All four trading workflows were
+> retired on 2026-08-05 (Weekly Analyst 2026-08-14) and replaced by the
+> **standalone trade engine**. Their entries are kept for provenance. Every
+> execution count, error-rate note and "follow-up dispatch needed" below describes
+> the n8n system as it was in May 2026 and must not be read as current.
+>
+> **The live trading system is the standalone trade engine:** PM2 process
+> `trade-engine`, FastAPI on `127.0.0.1:4003`, owning scanner, analyst, approval
+> gate, executor and position monitor in one process. Scanner crons are hourly
+> Mondays, 2-hourly Tue-Fri, 4-hourly weekends; the position monitor runs every 15
+> minutes. It is **LIVE and ARMED** (`trading_config.trading_enabled = true`) and
+> moves real money on approved trades.
+>
+> **Never infer trading state from this cluster.** These workflows being inactive
+> says nothing about whether money can move. Check `GET
+> http://127.0.0.1:4003/health` and `trading_config`. Full detail lives in the
+> `trading` skill file; it is deliberately not duplicated here.
+
+5 entries. The four trading workflows belong to **Personal** (Tyson's own setup)
+per `FLOW_OS_SPECIALISTS.md`. The fifth, the **Shared Error Handler**
+(`7kpNnMtnuDWXgWcX`), is live and cross-cutting — it was created during the Apr 29
+Market Scanner remediation and now serves Crete and Content Studio workflows, so it
+outlived the cluster it was named for. Skill file: `trading.md`.
 
 ### Trading - Market Scanner
 
 - **ID:** `3YahxqOguET3pifj`
+- **Status:** **Inactive (retired 2026-08-05)** — superseded by the standalone trade engine.
 - **Belongs to:** Personal (Tyson's own setup)
-- **Specialist owner:** Trading Operator (per `FLOW_OS_SPECIALISTS.md` — monitoring scoped, no execution)
+- **Specialist owner:** Trading Operator (per `FLOW_OS_SPECIALISTS.md`). Note the "monitoring scoped, no execution" description that stood here was already false by 2026-08-05 and has been corrected across `trading.md`, `CHARLIE_ROLE.md` and `FLOW_OS_STATE.md`: the standalone trade engine executes real trades.
 - **Trigger:** `scheduleTrigger` "Smart Schedule" with three asymmetric cron expressions: `0 */1 * * 1` (hourly on Mondays), `0 */2 * * 2-5` (every 2h Tue–Fri), `0 */4 * * 0,6` (every 4h weekends) — all UTC.
 - **Purpose:** Polymarket prediction-market edge scanner. Fetches four pages of Polymarket market data, merges them into a single feed, runs a `code` node (`Analyse Edge`) that filters markets by question type and minimum volume, then dispatches each candidate to the local Monte Carlo worker (`Run Market Simulations` → `http://localhost:4001/simulate` per `trading-api.md`) for probability simulation. The downstream `Build Run Summary` code node partitions sims into `highEdge / noEdge / neutral` buckets using **asymmetric thresholds (+0.07 high, −0.10 no, volume ≥ 5000)** — these were rewritten in the Apr 29 fix commit (`ca41c2c`) and now diverge from the `min_edge_threshold: 0.30` value documented in `trading.md` line 305 (Phase 2 audit flagged this drift). On `Has Edge?` true, fires `Notify Edge` Telegram alert; either way fires `Notify Heartbeat` and `Save Simulations` (Supabase) before terminating in `NoOp End`.
 - **Heartbeat:** Y (`Notify Heartbeat` httpRequest node).
@@ -65,6 +122,7 @@ Total: 47 active workflows.
 ### Trading - Position Monitor
 
 - **ID:** `UYA0JppH7eqyI7fQ`
+- **Status:** **Inactive (retired 2026-08-05)** — superseded by the standalone trade engine.
 - **Belongs to:** Personal (Tyson's own setup)
 - **Specialist owner:** Trading Operator
 - **Trigger:** `scheduleTrigger` "Every 15 Minutes" (`minutesInterval: 15`).
@@ -80,6 +138,7 @@ Total: 47 active workflows.
 ### Trading - Trade Executor
 
 - **ID:** `fq7spfyiNcpt8Mf7`
+- **Status:** **Inactive (retired 2026-08-05)** — superseded by the standalone trade engine.
 - **Belongs to:** Personal (Tyson's own setup)
 - **Specialist owner:** Trading Operator (read-only scope; this workflow executes trades but is gated)
 - **Trigger:** `webhook` POST `/webhook/trading-execute` (responseMode: `responseNode`).
@@ -95,6 +154,7 @@ Total: 47 active workflows.
 ### Trading - Weekly Analyst
 
 - **ID:** `vjj2uBIPc07FpIxx`
+- **Status:** **Inactive (retired 2026-08-14)** — superseded by the standalone trade engine. No publish-history `deactivated` event; date per the `trading.md` snapshot.
 - **Belongs to:** Personal (Tyson's own setup)
 - **Specialist owner:** Trading Operator
 - **Trigger:** `scheduleTrigger` "Monday 9am" with cron expression `0 9 * * 1` (Monday 09:00 UTC).
@@ -107,9 +167,10 @@ Total: 47 active workflows.
 - **Last verified:** 2026-05-04
 - **Notes:** Skill file `trading.md` line 81 says "Charlie can trigger manually via n8n workflow vjj2uBIPc07FpIxx" — that manual path may still work even though the schedule is dark. Worth probing as part of the fix. Probe report: `/tmp/trading_weekly_analyst_probe.md`.
 
-### Trading - Error Handler
+### Shared Error Handler (formerly "Trading - Error Handler")
 
 - **ID:** `7kpNnMtnuDWXgWcX`
+- **Status:** Active
 - **Belongs to:** Cross-cutting (despite the `Trading -` name prefix; **also serving Crete workflows** per Phase 2 audit and discovery report — see Notes)
 - **Specialist owner:** Trading Operator (current owner; rename + re-scope decided 2026-05-04 — see Known issues)
 - **Trigger:** `errorTrigger` (n8n's built-in error trigger node — fires when any other workflow with `settings.errorWorkflow` set to this ID raises an unhandled error).
@@ -135,6 +196,7 @@ Recent significant change: 2026-04-30 publishing pipeline hardening session per 
 ### Crete - Content Generator
 
 - **ID:** `tnvXFYvODL1PrhJa`
+- **Status:** Active
 - **Belongs to:** Crete
 - **Specialist owner:** Crete Marketing Operator (per `FLOW_OS_SPECIALISTS.md`)
 - **Trigger:** `scheduleTrigger` "Schedule 08:00 UTC" with cron expression `0 0 8 * * *` (6-field n8n format with leading second; fires daily at 08:00:00 UTC).
@@ -150,6 +212,7 @@ Recent significant change: 2026-04-30 publishing pipeline hardening session per 
 ### Crete - Content Publish
 
 - **ID:** `zXKBjp3yjW2oR2Mj`
+- **Status:** Active
 - **Belongs to:** Crete
 - **Specialist owner:** Crete Marketing Operator
 - **Trigger:** `webhook` POST `/webhook/crete-content-publish` (responseMode: `responseNode`).
@@ -171,6 +234,7 @@ Recent significant change: 2026-04-30 publishing pipeline hardening session per 
 ### Crete - Content Regenerate
 
 - **ID:** `KKjw893zwzHwv1o6`
+- **Status:** Active
 - **Belongs to:** Crete
 - **Specialist owner:** Crete Marketing Operator
 - **Trigger:** `webhook` POST `/webhook/crete-content-regenerate` (responseMode: `responseNode`).
@@ -186,6 +250,7 @@ Recent significant change: 2026-04-30 publishing pipeline hardening session per 
 ### Crete - Scheduled Publisher
 
 - **ID:** `9kTWhh9PlxMpyMlp`
+- **Status:** Active
 - **Belongs to:** Crete
 - **Specialist owner:** Crete Marketing Operator
 - **Trigger:** `scheduleTrigger` "Hourly Schedule" with cron expression `0 0 * * * *` (6-field n8n format with leading second; fires at the top of every hour, every day).
@@ -215,6 +280,7 @@ Cluster-level findings:
 ### GHL Marketing: Approval Handler
 
 - **ID:** `ptHK2TZq5XppKOOg`
+- **Status:** Active
 - **Belongs to:** Flow OS
 - **Specialist owner:** Flow OS GHL Marketing (per `FLOW_OS_SPECIALISTS.md`)
 - **Trigger:** Two triggers in one workflow — `telegramTrigger` "Telegram Trigger" (listens for `message` updates) and `webhook` POST `/webhook/ghl-marketing-regenerate` "Dashboard Regenerate Webhook" (responseMode: `onReceived`).
@@ -233,6 +299,7 @@ Cluster-level findings:
 ### GHL Marketing: Content Generator
 
 - **ID:** `Awo65rdSe5BvDHtC`
+- **Status:** Active
 - **Belongs to:** Flow OS
 - **Specialist owner:** Flow OS GHL Marketing
 - **Trigger:** `scheduleTrigger` "Cron MWF 07:00 UTC" with cron expression `0 7 * * 1,3,5` (Mon/Wed/Fri at minute 0, hour 7).
@@ -251,9 +318,26 @@ Cluster-level findings:
 - **Last verified:** 2026-05-04
 - **Notes:** `updatedAt: 2026-04-27T13:12 UTC`. Talks to: Anthropic API, Supabase (`marketing_drafts` table per probe), Telegram Bot API (via `flowstatesads_bot` credential). Cross-reference: `ghl-marketing.md` for ICA archetypes (line 530-535), tone rules (line 545-553), three core pain points (line 559-565), content calendar (line 656-660). Skill file: `ghl-marketing.md`.
 
+### GHL Marketing: Platform Retry
+
+- **ID:** `OnuJyXpNP488bXnH`
+- **Status:** Active
+- **Belongs to:** Flow OS GHL Marketing
+- **Specialist owner:** Flow OS GHL Marketing (per `FLOW_OS_SPECIALISTS.md`)
+- **Trigger:** `webhook` — invoked on demand rather than on a schedule, which is why it has no scheduled execution history.
+- **Purpose:** [needs Tyson input] — named as a per-platform retry path for the GHL Marketing publishing chain, and it sits alongside `fonuRTyqepxdyIdf` (Publisher) and `dHceOMijUOcnEowO` (Scheduled Publisher). Its node structure has not been read in this pass, so the retry semantics (which failures re-enter it, how many attempts, whether it re-enters the Publisher or posts directly) are not documented rather than guessed.
+- **Heartbeat:** [needs Tyson input]
+- **Error workflow:** none.
+- **Recent activity:** 0 executions in the 14-day retention window. Expected for a webhook-triggered workflow with no recent failures to retry; not evidence of breakage.
+- **Bucket:** [needs Tyson input] — likely S→M depending on whether a failed platform post is retried anywhere else.
+- **Known issues:** No heartbeat and no `errorWorkflow`, so a failure inside the retry path itself would be silent. Was entirely absent from this index until 2026-08-19 despite being active since at least 2026-07-14.
+- **Last verified:** 2026-08-19
+- **Notes:** `updatedAt: 2026-07-14`. Added to this index 2026-08-19 during the coverage reconciliation.
+
 ### GHL Marketing: Publisher
 
 - **ID:** `fonuRTyqepxdyIdf`
+- **Status:** Active
 - **Belongs to:** Flow OS
 - **Specialist owner:** Flow OS GHL Marketing
 - **Trigger:** `webhook` POST `/webhook/ghl-marketing-publish` (responseMode: `responseNode`).
@@ -269,6 +353,7 @@ Cluster-level findings:
 ### GHL Marketing: Scheduled Publisher
 
 - **ID:** `dHceOMijUOcnEowO`
+- **Status:** Active
 - **Belongs to:** Flow OS
 - **Specialist owner:** Flow OS GHL Marketing
 - **Trigger:** `scheduleTrigger` "Every 15 min" (`minutesInterval: 15`).
@@ -284,6 +369,7 @@ Cluster-level findings:
 ### GHL Marketing: Weekly Report
 
 - **ID:** `jRiiOsWneQAtfVPD`
+- **Status:** Active
 - **Belongs to:** Flow OS
 - **Specialist owner:** Flow OS GHL Marketing
 - **Trigger:** `scheduleTrigger` "Sunday 20:00 UTC" with cron expression `0 20 * * 0` (Sunday at minute 0, hour 20).
@@ -316,6 +402,7 @@ Cluster-level findings:
 (Scout sub-role per `FLOW_OS_SPECIALISTS.md`.)
 
 - **ID:** `QnCEES9T7WxW5vVR`
+- **Status:** Active
 - **Belongs to:** Shared
 - **Specialist owner:** Ad Agency Operator (per `FLOW_OS_SPECIALISTS.md`)
 - **Trigger:** `webhook` POST `/webhook/competitor-research` (responseMode: `responseNode`).
@@ -333,6 +420,7 @@ Cluster-level findings:
 (Ledger sub-role per `FLOW_OS_SPECIALISTS.md`.)
 
 - **ID:** `lrGcirtmOHb1xTq8`
+- **Status:** Active
 - **Belongs to:** Shared (account-hardcoded scope: EMB + Flow States Retreats)
 - **Specialist owner:** Ad Agency Operator
 - **Trigger:** `webhook` POST `/webhook/ad-creation-agent` (responseMode: `lastNode`).
@@ -350,6 +438,7 @@ Cluster-level findings:
 (Penny sub-role per `FLOW_OS_SPECIALISTS.md`.)
 
 - **ID:** `0sIugM5o5wTwpflq`
+- **Status:** Active
 - **Belongs to:** Shared
 - **Specialist owner:** Ad Agency Operator
 - **Trigger:** `webhook` POST `/webhook/meta-ads-copy-agent` (responseMode: `responseNode`).
@@ -367,6 +456,7 @@ Cluster-level findings:
 (Frame sub-role per `FLOW_OS_SPECIALISTS.md`.)
 
 - **ID:** `TtSUyKpvE5f9iQZg`
+- **Status:** Active
 - **Belongs to:** Shared
 - **Specialist owner:** Ad Agency Operator
 - **Trigger:** `webhook` POST `/webhook/meta-ads-creative-brief` (responseMode: `responseNode`).
@@ -384,6 +474,7 @@ Cluster-level findings:
 (Optimisation reporting sub-role per `FLOW_OS_SPECIALISTS.md`.)
 
 - **ID:** `lf955LDteJ512RQi`
+- **Status:** **Inactive (deactivated 2026-08-18)** — Meta OAuth session invalidated (code 190); all ad accounts paused. Closed with no fix per Tyson.
 - **Belongs to:** Shared (covers all 3 Meta accounts)
 - **Specialist owner:** Ad Agency Operator
 - **Trigger:** Two triggers — `scheduleTrigger` "Daily Schedule (9am)" with `hoursInterval: 24` (every 24 hours from activation, not cron-based), AND `webhook` POST `/webhook/meta-ads-optimisation-trigger` "Webhook Trigger (On-Demand)" (responseMode: `responseNode`) for on-demand pulls (e.g. from the Bot Router's "Show me the latest ad performance" intent route).
@@ -401,6 +492,7 @@ Cluster-level findings:
 (Conversational entry point — not a sub-role per `FLOW_OS_SPECIALISTS.md` but the unifying surface that Tyson + Em interact with.)
 
 - **ID:** `lu39mAN7epBRK3Kw`
+- **Status:** Active
 - **Belongs to:** Shared
 - **Specialist owner:** Ad Agency Operator
 - **Trigger:** `telegramTrigger` listening for `message` and `callback_query` updates on the **`flowstatesads_bot`** Telegram bot (inferred from the `Help Reply` node identifying itself as "*Flow States Ads Agent*"; credential ID not exposed in the API response but the node text confirms identity).
@@ -433,6 +525,7 @@ Cluster-level findings:
 ### linkedIn analytics and monitoring
 
 - **ID:** `yPt090tPv4FJtwAZ`
+- **Status:** Active
 - **Belongs to:** Personal (Tyson personal brand)
 - **Specialist owner:** None — Tyson directly.
 - **Trigger:** Three `scheduleTrigger` nodes — "Analytics Collection Trigger" `0 0 8 * * *` (daily 08:00 NY), "Weekly Report Trigger" `0 0 9 * * 1` (Mon 09:00 NY), "System Health Monitor" `0 0 * * * *` (every hour, top of hour).
@@ -450,6 +543,7 @@ Cluster-level findings:
 ### LinkedIn Content Generation
 
 - **ID:** `qszqid6NY51SoX95`
+- **Status:** Active
 - **Belongs to:** Personal (Tyson personal brand)
 - **Specialist owner:** None — Tyson directly (no agent specialist exists for personal brand LinkedIn).
 - **Trigger:** `scheduleTrigger` "Content Schedule Trigger" with cron expression `0 0 8 * * 1,3,5` (6-field; Mon/Wed/Fri 08:00 NY = 12:00 UTC per cluster-wide timezone observation), AND `chatTrigger` "When chat message received" (n8n's built-in chat-UI trigger, allows manual on-demand generation from the n8n editor).
@@ -465,6 +559,7 @@ Cluster-level findings:
 ### LinkedIn Engagement Automation
 
 - **ID:** `VMqrrhecG2hrpn4C`
+- **Status:** **Inactive (deactivated date [needs Tyson input])** — no publish-history `deactivated` event; `updatedAt` 2026-08-03 is the only signal. LinkedIn cluster is PARKED.
 - **Belongs to:** Personal (Tyson personal brand)
 - **Specialist owner:** None — Tyson directly.
 - **Trigger:** `scheduleTrigger` "Engagement Monitor Trigger" with cron expression `0 0 */4 * * *` (every 4 hours, top of hour) AND `webhook` POST `/webhook/linkedin-engagement-webhook` "LinkedIn Webhook Trigger" (responseMode: `responseNode`).
@@ -482,6 +577,7 @@ Cluster-level findings:
 ### LinkedIn Lead Generation (Apify + Browserflow)
 
 - **ID:** `jmIA9yKIJobsIC60`
+- **Status:** Active
 - **Belongs to:** Personal (Tyson personal brand)
 - **Specialist owner:** None — Tyson directly.
 - **Trigger:** Two `scheduleTrigger` nodes — "Lead Generation Trigger" with cron `0 0 9 * * 1-5` (weekdays 09:00 NY = 13:00 UTC) AND "Follow-up Trigger" with cron `0 0 11 * * 2,4` (Tue/Thu 11:00 NY = 15:00 UTC).
@@ -499,6 +595,7 @@ Cluster-level findings:
 ### Master avatar social media machine V1
 
 - **ID:** `NhTdMXeqliW6dPDr`
+- **Status:** **Inactive (deactivated 2026-08-06)**
 - **Belongs to:** Personal (Tyson personal brand)
 - **Specialist owner:** None — Tyson directly. (Note: workflow is structured to potentially distribute to Flow OS company page LinkedIn but that branch is currently disabled; see Known Issues.)
 - **Trigger:** `scheduleTrigger` "Schedule Trigger" — params truncated in API response; need a follow-up probe to confirm cadence.
@@ -528,6 +625,7 @@ Cluster-level findings:
 ### Instagram Token Expiry Monitor
 
 - **ID:** `cP5TjJ3DFle6r6FC`
+- **Status:** **Inactive (deactivated 2026-08-18)** — Tyson-directed, intentional. No publish-history event; date is the workflow state-change timestamp.
 - **Belongs to:** Personal (Tyson personal brand)
 - **Specialist owner:** None — Tyson directly.
 - **Trigger:** `scheduleTrigger` "Every Monday at 9am" with cron expression `0 0 9 * * 1` (6-field; Monday 09:00 NY = 13:00 UTC per cluster-wide timezone observation).
@@ -543,6 +641,7 @@ Cluster-level findings:
 ### Instagram Trial Reels Auto-Publisher
 
 - **ID:** `44g7cbGz5osQ1pcBVhIoz`
+- **Status:** **Inactive (deactivated 2026-08-18)** — IG reel engine unpublished; Meta OAuth session invalidated.
 - **Belongs to:** Personal (Tyson personal brand)
 - **Specialist owner:** None — Tyson directly.
 - **Trigger:** Two triggers — `errorTrigger` "Workflow Error Trigger" (handles in-workflow errors via Slack catch-all) AND `scheduleTrigger` "Every 5 Hours" with **four** cron expressions in one trigger node: `0 21 * * *` (21:00 NY = 01:00 UTC), `0 2 * * *` (02:00 NY = 06:00 UTC), `0 7 * * *` (07:00 NY = 11:00 UTC), `0 11 * * *` (11:00 NY = 15:00 UTC). Trigger named "Every 5 Hours" but the four windows are not exactly 5h apart (5h / 5h / 4h / 10h overnight gap). 4 fires/day matches `FLOW_OS_STATE.md` "4-5 reels per day" cadence.
@@ -562,6 +661,7 @@ Cluster-level findings:
 ### Sync Instagram Performance Data
 
 - **ID:** `EtJlwFvdpfpYoEfC`
+- **Status:** **Inactive (deactivated 2026-08-18)** — Meta OAuth session invalidated (code 190).
 - **Belongs to:** Personal (Tyson personal brand)
 - **Specialist owner:** None — Tyson directly.
 - **Trigger:** `scheduleTrigger` "Every Day at 10am" with cron expression `0 0 10 * * *` (6-field; Daily 10:00 NY = 14:00 UTC).
@@ -593,6 +693,7 @@ Cluster-level findings:
 ### 21/10/25 Morning Light WL to HL
 
 - **ID:** `TikJkWLzpreI6iTa`
+- **Status:** **Inactive (deactivated 2026-05-12)** — Morning Light sunset. Client churned 2026-06-22.
 - **Belongs to:** Flow OS (paying client integration — **Kayla N. / Morning Light Yoga & Pilates**, $297 unlimited per `FLOW_OS_STATE.md` Section 1)
 - **Specialist owner:** None — integration workflow. Tyson directly responsible. Cross-reference: `FLOW_OS_STATE.md` Section 1 for client status.
 - **Trigger:** `webhook` POST `/webhook/wl-production` (responseMode: `responseNode`).
@@ -608,6 +709,7 @@ Cluster-level findings:
 ### Gutful Shopify to Flow OS V3
 
 - **ID:** `9VqCAnczY5gFJcRE`
+- **Status:** Active
 - **Belongs to:** Flow OS (paying client integration — **Michael Y. / Gutful**, $297 unlimited per `FLOW_OS_STATE.md` Section 1; **cross-dimensional client** — Eliza J. co-runs Gutful operationally per `FLOW_OS_STATE.md` Section 2)
 - **Specialist owner:** None — integration workflow. Tyson directly responsible. Cross-reference: `FLOW_OS_STATE.md` Section 1 + Section 2 cross-dimensional clients (Eliza J. + Gutful linkage).
 - **Trigger:** **Two webhook triggers** in one workflow — `webhook` POST `/webhook/shopify-customer` (responseMode: `responseNode`) AND `webhook` POST `/webhook/shopify-order` (responseMode: `responseNode`).
@@ -639,6 +741,7 @@ Cluster-level findings:
 ### shopify > hl refresh token DB
 
 - **ID:** `b36b4MKe1p6wQbTQ`
+- **Status:** Active
 - **Belongs to:** Cross-cutting (infrastructure). Domain: **Gutful / Mikey** — supports the Gutful Shopify→FOS V3 workflow (`9VqCAnczY5gFJcRE`).
 - **Specialist owner:** None — infrastructure workflow. Supports paying client integrations. Tyson directly responsible.
 - **Trigger:** `cron` (legacy n8n cron node, not `scheduleTrigger`) with `triggerTimes: { mode: everyX, value: 12 }` — fires every 12 hours from activation.
@@ -654,6 +757,7 @@ Cluster-level findings:
 ### HL refresh token to supabase DB
 
 - **ID:** `02Dob9FCEkXZFDAs`
+- **Status:** **Inactive (deactivated 2026-08-19)** — orphaned by Kayla N./Morning Light churn (2026-06-22). See the 2026-08-19 cleanup in `QCLAW_BUILD_LOG.md`.
 - **Belongs to:** Cross-cutting (infrastructure). Domain: **Morning Light / Kayla N.** — supports the Morning Light WL→HL workflow (`TikJkWLzpreI6iTa`).
 - **Specialist owner:** None — infrastructure workflow. Supports paying client integrations. Tyson directly responsible.
 - **Trigger:** `cron` (legacy n8n cron node) with `triggerTimes: { mode: everyX, value: 12 }` — fires every 12 hours.
@@ -669,6 +773,7 @@ Cluster-level findings:
 ### HighLevel OAuth Token Refresh
 
 - **ID:** `N3VF1VKlekDdhxGU`
+- **Status:** Active
 - **Belongs to:** Cross-cutting (infrastructure) — but functionally orphaned.
 - **Specialist owner:** None.
 - **Trigger:** `cron` (legacy n8n cron node) with **empty parameters** (`{}`). Cron has no schedule configured — explains zero executions ever. Workflow is `active=true` in n8n DB but the trigger is structurally non-firing.
@@ -690,6 +795,7 @@ Cluster-level findings:
 ### Flow Os Blog Post
 
 - **ID:** `TOvwXSwlXasDgsXL`
+- **Status:** **Inactive (deactivated 2026-08-05)**
 - **Belongs to:** Flow OS (marketing — separate from Flow OS GHL Marketing cluster which targets the GHL Support Specialist product; this one is general Flow OS blog content per `FLOW_OS_STATE.md` Section 4)
 - **Specialist owner:** None — Tyson directly. (No agent specialist exists for Flow OS Blog. Cross-reference: `FLOW_OS_STATE.md` Section 4 — "Flow OS — Blog posting: Live (separate workflow from Support Bot and Infographics); Scope: Flow OS marketing only".)
 - **Trigger:** `scheduleTrigger` "Schedule Trigger1" with **interval-based** schedule `daysInterval: 3, triggerAtHour: 9, triggerAtMinute: 1` — fires every 3 days at 09:01. **Workflow has explicit `settings.timezone: "Europe/Athens"`** — fires at 09:01 Athens time = 06:01 UTC. **First per-workflow timezone override observed in the index** — see cluster-level finding below + work-list item 7 update.
@@ -711,6 +817,7 @@ Cluster-level findings:
 ### Infographic Social Media Machine V2 - Flow Os
 
 - **ID:** `kJ2EdkOeEAwVbMwU`
+- **Status:** Active
 - **Belongs to:** Flow OS (marketing — separate from Flow OS GHL Marketing cluster which targets the GHL Support Specialist product; this is the multi-platform infographic distribution engine for Flow OS general marketing per `FLOW_OS_STATE.md` Section 4)
 - **Specialist owner:** None — Tyson directly. (Cross-reference: `FLOW_OS_STATE.md` Section 4 — "Flow OS — Infographics: Live (separate automation from Support Bot); Scope: Flow OS marketing only".)
 - **Trigger:** `scheduleTrigger` "Schedule Trigger" with **interval-based** schedule `daysInterval: 3, triggerAtHour: 9` — fires every 3 days at 09:00. **No explicit `settings.timezone` override** — fires at 09:00 NY = 13:00 UTC per the cluster-wide NY-timezone observation. Joins cluster-sweep work-list item 7.
@@ -732,6 +839,7 @@ Cluster-level findings:
 ### Content Studio Pipeline
 
 - **ID:** `Qf39NEOEgz2W0uls`
+- **Status:** Active
 - **Belongs to:** Flow States Collective (Emma's podcast pipeline only per `FLOW_OS_SPECIALISTS.md`)
 - **Specialist owner:** **Content Studio Operator** (per `FLOW_OS_SPECIALISTS.md` — the only entry in this index whose specialist owner is named, not "None"). Cross-reference: `FLOW_OS_SPECIALISTS.md` Content Studio Operator entry + `FLOW_OS_STATE.md` Section 4 — "FSC — Emma's podcast pipeline (Content Studio): Status: Active; Last episode: Shipped via Claude Code direct upload (bypassed dashboard due to file size); Known issue: Large file upload fails through Content Studio dashboard. Workaround: Claude Code direct upload."
 - **Trigger:** `webhook` POST `/webhook/content-studio-pipeline` (responseMode: `responseNode`).
@@ -747,6 +855,7 @@ Cluster-level findings:
 ### Content Studio - Clipper Watcher
 
 - **ID:** `qeE2hCSFoB6fU926`
+- **Status:** **Inactive (deactivated 2026-08-18)** — Tyson-directed, deliberate: cron was firing excessively and podcast production is paused. Reactivate when Emma resumes. No publish-history event; date is the workflow state-change timestamp.
 - **Belongs to:** Flow States Collective (Workflow B of the A → B → C podcast pipeline split, built 2026-05-11)
 - **Specialist owner:** **Content Studio Operator** (shares ownership with Workflow A + C)
 - **Trigger:** `scheduleTrigger` "Schedule Every 30s" — polls every 30 seconds for csj rows that finished clipper processing
@@ -762,6 +871,7 @@ Cluster-level findings:
 ### Content Studio - Publish + Distribution
 
 - **ID:** `yu3gEaDsd6d1E9e8`
+- **Status:** Active
 - **Belongs to:** Flow States Collective (Workflow C of the A → B → C podcast pipeline split, built 2026-05-11, v2 landed 2026-05-13)
 - **Specialist owner:** **Content Studio Operator** (shares ownership with Workflow A + B)
 - **Trigger:** `webhook` POST `/webhook/content-studio-publish` (responseMode: `responseNode`). Authenticated via `X-Auth-Token` header against env `CONTENT_STUDIO_PUBLISH_TOKEN`. Body: `{csj_id: <uuid>}`.
@@ -793,6 +903,7 @@ Cluster-level findings:
 ### AIA002 - Emma AI Advisor Token Generator
 
 - **ID:** `1NPzjBVM7-T0wf3vju6p1`
+- **Status:** Active
 - **Belongs to:** FSC (Emma AI Advisor product revenue path)
 - **Specialist owner:** None — direct revenue-path infrastructure. Tyson responsible.
 - **Trigger:** `webhook` POST `/webhook/emma-ai-purchase` (no responseNode — fire-and-forget on Stripe purchase event).
@@ -808,6 +919,7 @@ Cluster-level findings:
 ### Charlie - Task Handler
 
 - **ID:** `dHoqL8Ph8kmFHwyx`
+- **Status:** Active
 - **Belongs to:** Flow OS (Charlie infrastructure)
 - **Specialist owner:** None — Charlie 1.0 era infrastructure. Tyson directly.
 - **Trigger:** `webhook` POST `/webhook/charlie-tasks` (responseMode: `responseNode`).
@@ -823,6 +935,7 @@ Cluster-level findings:
 ### Engagement Weighting Re-calibration (Weekly)
 
 - **ID:** `NxMfoQtQ2WxeAfhH`
+- **Status:** Active
 - **Belongs to:** Flow OS (LinkedIn engagement scoring infrastructure — functionally part of LinkedIn cluster despite discovery-audit categorisation here)
 - **Specialist owner:** None — LinkedIn-adjacent infrastructure. Cross-reference: LinkedIn cluster + secondary Supabase project (`zshmlgtvhdneekbfcyjc.supabase.co`) per `LOCATIONS.md`.
 - **Trigger:** `scheduleTrigger` "Weekly Weighting Trigger" cron `0 0 8 * * 1` — fires Monday 08:00 NY (= 13:00 UTC EDT). Joins cluster-sweep work-list item 7.
@@ -838,6 +951,7 @@ Cluster-level findings:
 ### FFC webhook from Emma to FOS
 
 - **ID:** `Dv0D5PzXmlAt6edA`
+- **Status:** Active
 - **Belongs to:** FSC → Flow OS (cross-account contact bridge)
 - **Specialist owner:** None — production cross-account integration infrastructure. Tyson directly.
 - **Trigger:** `webhook` POST `/webhook/bf033d33-4771-40b4-813d-50e2a2bebb9c` (UUID-pathed webhook — auto-generated identifier).
@@ -853,6 +967,7 @@ Cluster-level findings:
 ### Flow OS: Payment Update Link Generator
 
 - **ID:** `9d68YDe9m_gxddeSWeu07`
+- **Status:** Active
 - **Belongs to:** Flow OS (billing infrastructure)
 - **Specialist owner:** None — billing utility. Tyson directly.
 - **Trigger:** `webhook` POST `/webhook/flowos-non-payment` (no responseNode).
@@ -868,6 +983,7 @@ Cluster-level findings:
 ### FSC: Payment Update Link Generator
 
 - **ID:** `nbZ9wgADougBuUGQ`
+- **Status:** Active
 - **Belongs to:** FSC (billing infrastructure)
 - **Specialist owner:** None — billing utility. Tyson directly.
 - **Trigger:** `webhook` POST `/webhook/fsc-non-payment` (no responseNode).
@@ -883,6 +999,7 @@ Cluster-level findings:
 ### GHL Changelog Emails
 
 - **ID:** `3XGcnolBQ7AXMubO`
+- **Status:** Active
 - **Belongs to:** Flow OS (client-newsletter infrastructure)
 - **Specialist owner:** None — newsletter utility. Tyson directly.
 - **Trigger:** `scheduleTrigger` "Schedule Trigger" with **interval-based** schedule `weeksInterval: 2, triggerAtDay: [1] (Monday), triggerAtHour: 9` — fires every 2 weeks Monday 09:00 NY (= 13:00 UTC EDT). No `settings.timezone` override. Joins cluster-sweep work-list item 7.
@@ -898,6 +1015,7 @@ Cluster-level findings:
 ### intake-kylie-content-system
 
 - **ID:** `qOwJhClx5BnOeycf`
+- **Status:** Active
 - **Belongs to:** FSC (despite being initially miscategorised as Flow OS Client integration)
 - **Specialist owner:** None — integration workflow. Tyson directly responsible. Cross-reference: `FLOW_OS_STATE.md` Section 1 (Kylie F. = Tyson DFY content setup, $1,400 AUD one-off paid 2026-04-28) + Section 2 (cross-dimensional client — also FSC As Seen In $297 + potential Crete investor).
 - **Trigger:** `webhook` POST `/webhook/intake-kylie` with `allowedOrigins: https://intake.flowstatescollective.com` (CORS-restricted to FSC intake subdomain) (responseMode: `responseNode`).
@@ -913,6 +1031,7 @@ Cluster-level findings:
 ### Lead Score Re-calibration (Monthly)
 
 - **ID:** `iTwOGgizGWhBDWCM`
+- **Status:** Active
 - **Belongs to:** Flow OS (LinkedIn lead scoring infrastructure — functionally part of LinkedIn cluster despite discovery-audit categorisation here)
 - **Specialist owner:** None — LinkedIn-adjacent infrastructure. Cross-reference: LinkedIn cluster + secondary Supabase project (`zshmlgtvhdneekbfcyjc.supabase.co`) per `LOCATIONS.md`.
 - **Trigger:** `scheduleTrigger` "Monthly Calibration Trigger" cron `0 0 7 1 * *` — fires 1st-of-month 07:00 NY (= 12:00 UTC EDT). Joins cluster-sweep work-list item 7.
@@ -928,6 +1047,7 @@ Cluster-level findings:
 ### Qclaw router
 
 - **ID:** `ih2lNwkJvWfQMtzaI5zNX`
+- **Status:** Active
 - **Belongs to:** Flow OS (Charlie infrastructure)
 - **Specialist owner:** None — Charlie-era routing primitive. Tyson directly.
 - **Trigger:** `webhook` POST `/webhook/qclaw-router` (responseMode: `responseNode`).
@@ -940,9 +1060,42 @@ Cluster-level findings:
 - **Last verified:** 2026-05-05
 - **Notes:** `createdAt: 2026-03-26T09:01 UTC`, `updatedAt: 2026-03-26T09:44 UTC` — built and last touched same day late-March (stable scaffolding, never extended). 4 nodes total (most minimal workflow in the index). No external services detected. **No skill file**. **Phase 4 dependency:** Slice 5 (Claude Code dispatcher) target architecture decides this workflow's fate alongside Charlie - Task Handler.
 
+### Workflow Dormancy Alerter
+
+- **ID:** `O5ir2Mp0e2AXkUXZ`
+- **Status:** Active
+- **Belongs to:** Cross-cutting (monitoring infrastructure)
+- **Specialist owner:** None — infrastructure workflow. Tyson directly responsible.
+- **Trigger:** `scheduleTrigger` "Hourly Schedule", cron expression `0 0 * * * *` (6-field n8n format with leading second; fires hourly on the hour).
+- **Purpose:** The instance's own dormancy watchdog, and the second half of the monitoring picture alongside the external Manus alerter (see Monitoring and alerting context at the top of this doc). `Heartbeat: Start` records its own run, `Get Latest Heartbeats` reads the `workflow_heartbeats` Postgres table, and `Compute Silent` (code) compares each monitored workflow's last heartbeat against a hardcoded expectations map of cadence x slack multiplier. Entries carry a `suppressed: true` flag so a deliberately-parked workflow stops alerting without being removed from the map. `Any Silent?` (IF) gates `Telegram Alert`, then `Heartbeat: Success` records completion. Because `record_heartbeat` upserts, comparing started-vs-success rows gives a per-run success rate.
+- **Heartbeat:** Y (writes its own `Heartbeat: Start` / `Heartbeat: Success` rows — it is both producer and consumer of the heartbeat table).
+- **Error workflow:** none.
+- **Recent activity:** Runs hourly; healthy in the 14-day retention window.
+- **Bucket:** M (this is the only in-instance detector of silent workflow death. If it goes quiet, every other workflow's dormancy becomes invisible from inside n8n — only the external Manus alerter would still be watching, and that is decommission-pending.)
+- **Known issues:** The expectations map is **hardcoded in the `Compute Silent` node**, not derived from the workflow list, so a newly-created workflow is not monitored until someone edits the code node, and a deactivated workflow keeps alerting until someone adds `suppressed: true`. Five entries were suppressed on 2026-08-19 after the 2026-08-18 deactivations began firing hourly Telegram alerts (7 suppressed / 7 monitored after that pass). It also has no `errorWorkflow` of its own, so a failure inside the watchdog is itself silent — the watchdog cannot watch itself. `(DORMANT)` labels in the map are documentary only and have no effect on logic.
+- **Last verified:** 2026-08-19
+- **Notes:** Was absent from this index until 2026-08-19 despite being active and load-bearing — an omission worth noting given the doc's purpose is precisely to prevent reasoning about workflows from name alone. Writes Telegram alerts direct to Tyson's chat. See `QCLAW_BUILD_LOG.md` 2026-08-18/19 for the suppression pass.
+
+### SproutCode - Referrer Router
+
+- **ID:** `rpQDFn4HwuROtc1WqyQoc`
+- **Status:** Active
+- **Belongs to:** SproutCode
+- **Specialist owner:** SproutCode Operator (per `FLOW_OS_SPECIALISTS.md`)
+- **Trigger:** `webhook` — invoked on demand, so no scheduled execution history.
+- **Purpose:** [needs Tyson input] — named as a referrer-routing endpoint for SproutCode, presumably attributing inbound signups or leads to a referral source. Node structure not read in this pass; routing targets and payload shape are not documented rather than guessed. This is the only SproutCode workflow on the instance.
+- **Heartbeat:** [needs Tyson input]
+- **Error workflow:** none.
+- **Recent activity:** 0 executions in the 14-day retention window. Consistent with a webhook endpoint that is live but not currently receiving traffic; note SproutCode is pre-revenue beta per `FLOW_OS_STATE.md`, so low volume is expected.
+- **Bucket:** [needs Tyson input]
+- **Known issues:** No heartbeat and no `errorWorkflow`. Because it is webhook-driven with no traffic, an outage would be indistinguishable from idleness — there is currently no signal that would tell you it had broken. Was entirely absent from this index until 2026-08-19 despite being active since at least 2026-05-08.
+- **Last verified:** 2026-08-19
+- **Notes:** `updatedAt: 2026-05-08`. Added to this index 2026-08-19 during the coverage reconciliation. SproutCode has no dedicated cluster in this doc; filed under Various utilities and standalone pending a category decision.
+
 ### SMS Gateway Device Heartbeat Monitor
 
 - **ID:** `yIFBw3eLj9WOimWR`
+- **Status:** **Inactive (deactivated 2026-06-04)**
 - **Belongs to:** Cross-cutting (infrastructure). Probes two Termux/SMS Gateway phones — Device 1 (Flow OS brand) and Device 2 (Emma brand) — that serve as the SMS send/receive surface for both business units.
 - **Specialist owner:** None — infrastructure monitor. Tyson directly responsible.
 - **Trigger:** `scheduleTrigger` "Every 5 Minutes" (`minutesInterval: 5`) — fires at 5-minute intervals from activation.
@@ -959,6 +1112,41 @@ Cluster-level findings:
 ## Maintenance log
 
 This section captures changes to the workflow index over time. Most recent at top.
+
+- **2026-08-19 — Reconciliation against live n8n; `Status` field added.** Full
+  fresh pull of all 81 workflows (ids, active state, last execution,
+  `errorWorkflow`) cross-referenced against every entry.
+  **Structural:** every entry now carries an explicit `Status` field. Its absence
+  was the root cause of this drift — active state was implicit in the doc's scope,
+  so 15 deactivations had nowhere to be recorded and the doc kept describing dead
+  workflows as live.
+  **Trading cluster retired:** Market Scanner, Position Monitor and Trade Executor
+  (2026-08-05) and Weekly Analyst (2026-08-14) marked retired, with a warning block
+  stating that the standalone trade engine is the live system and that this
+  cluster's inactive state says nothing about whether money can move. Stale
+  execution counts and "follow-up dispatch needed" notes are now explicitly framed
+  as May 2026 history. The Shared Error Handler survives the cluster and its
+  shipped rename is reflected.
+  **11 further stale entries** marked inactive with dates from n8n
+  `workflow_publish_history`; four had no recorded event (a deactivation path that
+  skips event logging) and say so rather than inventing a date.
+  **Three missing active workflows added:** `OnuJyXpNP488bXnH` (GHL Marketing:
+  Platform Retry), `rpQDFn4HwuROtc1WqyQoc` (SproutCode - Referrer Router) and
+  `O5ir2Mp0e2AXkUXZ` (Workflow Dormancy Alerter), the last found only on the
+  verification recount — its ID appeared in prose, which masked it as covered under
+  a looser check, but it had no entry despite being the instance's only in-house
+  dormancy watchdog. The first two carry `[needs Tyson input]` on purpose and bucket
+  rather than synthesised descriptions.
+  **Coverage restated honestly:** all 37 active workflows now documented. The
+  apparent "81 vs 51" gap is 26 inactive scratch and legacy workflows that are
+  deliberately out of scope; a scope note now says so, so the next audit does not
+  re-raise it as a coverage failure.
+  **Error-handler wiring recorded as-is:** 10 of 81 wired, 4 of 37 active, wired
+  set almost entirely retired workflows while the daily-failing ones have no
+  handler. Recorded, not fixed — the wiring fix is a separate dispatch.
+  **Manus n8n Health Dashboard** given a short context note near the top rather
+  than an entry: it is an external alerter, not an n8n workflow, and belongs to
+  `LOCATIONS.md`.
 
 - **2026-05-19 — Added SMS Gateway Device Heartbeat Monitor (`yIFBw3eLj9WOimWR`) to Various utilities cluster.** New every-5-minute scheduleTrigger workflow that probes `device1.flowos.tech/health` + `device2.flowos.tech/health` and Telegrams Tyson on `status=fail`, `connection:status observedValue=0`, or network/timeout. Both HTTP probes use `onError: continueRegularOutput` + `alwaysOutputData: true` so the Code node sees both responses regardless of either device's failure. Silent-pass when both healthy. Created and activated 2026-05-19; first execution at 11:25 UTC succeeded with both devices `status=pass`. Various utilities count: 10 → 11. Total workflows: 46 → 47.
 
