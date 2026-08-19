@@ -108,6 +108,8 @@ files and are still mutable via the dashboard. Reconciliation TBD.
 - Cloudflare R2: used by Clipper, Content Studio, Crete Marketing, Flow OS GHL Marketing (each scoped to own bucket/folder)
 - n8n internal Postgres database — used by some n8n workflows for state/dedup logic (e.g. Morning Light WL→HL conflict resolution). Distinct from external Supabase. Hidden architectural dependency; access scope is internal-to-n8n only, not externally queryable from the Charlie or QClaw stack.
 
+- n8n Health Dashboard (email alerter): runs in a Manus GCP workspace (external platform, unaudited runtime); code exported 2026-08-18 to `github.com/tysonven/n8n-health-dashboard` (private). Sends "n8n Alert" emails via Gmail app password "n8n dashboard email" (created 2026-03-16, Manus-side env only); polls the n8n REST API every 5 min with the dedicated unscoped key "manus API" (`MYYZFn3DjtKQ43i4`). **DECOMMISSION-PENDING**: revoke the app password and the API key only after the heartbeat-based Telegram alerter is live and proven. Standing rule from this incident: platform-hosted builder workspaces (Manus and similar) get a LOCATIONS.md entry at creation, not at first commit; estate recon cannot enumerate them later.
+
 ## Secrets and credentials
 
 - QClaw-side secrets: `/root/.quantumclaw/.env` (root-owned, 600 permissions)
