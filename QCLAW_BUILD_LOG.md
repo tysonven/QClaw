@@ -21681,3 +21681,210 @@ user instead (no account mutation).
 
 **Next:** adversarial review session against slice-2d-clerk-auth, then
 merge decision, then Slice 2e (hardening, also security-relevant).
+---
+
+## 2026-08-19, Phase 5 Session 18: estate audit Pass 1, four canonical doc corrections, Kayla churn cleanup, and one unresolved money-path defect
+
+Long session. One theme runs through all of it: **the docs had drifted far enough
+from reality that several of them asserted safety guarantees that no longer
+existed**, and the drift was invisible because nothing measured docs against live
+systems. Everything below was verified against live n8n, live Stripe, live
+Supabase and live PM2, not against prior audit notes.
+
+### Git reconciliation (start of session)
+
+Local and remote had diverged. Two build log entries (Session 17 of 2026-08-15,
+and the GHL Support Bot entry of 2026-08-12) plus a LOCATIONS.md conflict were
+merged in correct chronological order by manual rebase resolution. Result:
+`HEAD == origin/main`, tree clean. Note the top two commits carry Aug-12 author
+dates with Aug-19 commit dates, which is a rebase artefact and not a sign of a
+stale checkout.
+
+### Write-scope dispatch timeout fix (`6815084`)
+
+`claude-code-dispatch.js` now sets `timeout_seconds` at row creation based on
+scope: **600s** for read/audit scopes, **1800s** for write/infra, with an explicit
+override clamped to 60-3600s. Root cause: `write` and `audit_then_implement`
+scope tasks (clone, audit, edit, open a PR) do not fit inside the old uniform
+600s default, so they were being reaped mid-flight.
+
+### Kayla / Morning Light orphaned refresher deactivated (`7bca194`, `aab9967`)
+
+`02Dob9FCEkXZFDAs` ("HL refresh token to supabase DB"), cron every 12h, had been
+failing twice daily since Kayla N.'s churn with **zero successes in the entire
+14-day retention window** (8 executions, 8 errors). Verbatim, final two runs
+(execs `1246505` 2026-08-19T16:49:18Z and `1246408` 2026-08-19T04:49:18Z):
+
+```
+lastNodeExecuted : Refresh Token Request
+error.name       : NodeApiError
+error.message    : Bad request - please check your parameters
+error.description: invalid_grant
+error.httpCode   : 400
+```
+
+Fuller upstream body, recorded in the 2026-08-18/19 entry above:
+`400 - "{\"error\":\"invalid_grant\",\"error_description\":\"Location is not active\"}"`.
+
+Blast radius verified before touching anything: 0 workflows reference it by id, 0
+`executeWorkflow` nodes exist instance-wide, and the two active workflows that
+also read `highlevel_tokens` are both Gutful and key on a **different row**:
+
+```
+id=1  location_id=JKgdyOKXN76dkoZRmoGM  updated 2026-06-22  <- Kayla (dead)
+id=2  location_id=biianjtJPDFAGcw79LdL  updated 2026-08-19  <- Gutful (fresh)
+```
+
+Backup at `n8n-workflows/backups/hl-refresh-token-supabase.PRE-DEACTIVATION-20260819.json`
+with `active: true` and the full `activeVersion` payload preserved, so
+reactivation is recoverable. Deactivated via `POST /workflows/{id}/deactivate`
+(not a PUT, avoiding the n8n 2.4.8 draft-vs-published hazard). Nodes,
+connections and settings byte-identical afterwards; only `active`,
+`activeVersion`, `activeVersionId` and `versionCounter` changed. Active workflow
+count **38 to 37**. Also checked and confirmed not in the Dormancy Alerter
+expectations map, so no Telegram noise resulted.
+
+### Full estate audit, Pass 1 (read-only)
+
+Cross-checked the n8n estate, all five canonical docs, both credential stores and
+business state against live systems. Headline findings:
+
+- **MRR overstated by roughly $266/mo.** Four documented-active clients had
+  churned: Kayla N., Angela S., Georgia F., Bruce S.
+- **`CHARLIE_ROLE.md` untouched since 2026-05-16**, still describing Trading
+  Operator as "monitoring scoped, no execution" while the trade engine was armed
+  and holding real-money positions. False in the dangerous direction.
+- **`N8N_WORKFLOW_INDEX.md`** still describing the retired n8n trading cluster as
+  live, with May-2026 execution counts and "follow-up dispatch needed" notes.
+- **Polymarket execution relay (`68.183.13.219:8000`) is an undocumented third
+  production host.** Live, returns HTTP 200, and is the sole path for CLOB order
+  execution because qclaw's LON1 IP is geoblocked. Appears in no canonical doc.
+- **Credential documentation is near-absent: 73 of 79 undocumented.** 25 of 26
+  encrypted-store keys, 44 of 48 `.env` keys, 4 of 5 n8n API keys. (Excluding the
+  n8n API keys, 69 of 74.)
+- **The private companion file `~/.quantumclaw/flow_os_state_private.md` does not
+  exist and never did.** It is referenced in `FLOW_OS_STATE.md`'s own maintenance
+  rules and at line 2867 of this log, but a filesystem-wide search on qclaw and on
+  Tyson's Mac finds nothing. The pseudonymisation scheme has no backing store.
+  Left absent pending a decision from Tyson.
+
+### Four canonical doc corrections
+
+- **`CHARLIE_ROLE.md` (`c7158b7`).** False-safety trading claim replaced with a
+  pointer to `GET :4003/health` rather than a hardcoded snapshot. Kairos Wines
+  added as a sixth business context. All five GHL skills named (previously two).
+  Retired `delegate_to` coordination claim removed.
+- **`FLOW_OS_STATE.md` (`ee593ac`).** Four churned clients moved to a new
+  "Recently churned" table rather than deleted, so orphaned per-client
+  infrastructure stays discoverable (the Kayla case is exactly why). **Lucy H.
+  acct 1 upgrade discovered**: `$97` to `$297` on 2026-07-16 via cancel-and-replace,
+  which is why it never surfaced as a modification and had gone unrecorded. MRR
+  restated as **$1,182 list / $1,275.63 billed**, now reconciling with the table's
+  own rows; the previous ~$1,541 did not reconcile even before the churn
+  corrections. Infrastructure snapshot re-verified against live `pm2`. Kairos
+  added. Section 8 backfilled from 2026-06-18 to 2026-08-19.
+- **`N8N_WORKFLOW_INDEX.md` (`3cd4268`, amended from `6f15829`).** Root cause found:
+  **the entry template had no `Status` field**, so a deactivation had nowhere to be
+  recorded, and **15 workflows** (not the 2 originally suspected) had silently gone
+  inactive while still documented as live, including the entire trading cluster.
+  Added `Status` as the structural fix, applied to all entries. Retired the trading
+  cluster with a warning block. Added **3** genuinely missing active workflows
+  (`OnuJyXpNP488bXnH`, `rpQDFn4HwuROtc1WqyQoc`, and `O5ir2Mp0e2AXkUXZ`, the last
+  found only on the verification recount because its id appeared in prose and
+  masked it under a looser check). Coverage **34 to 37 of 37 active**. Also
+  recorded that the apparent "81 workflows vs 52 entries" gap is 26 inactive
+  scratch and legacy workflows deliberately out of scope, so a future audit does
+  not re-raise it as a coverage failure.
+- **`FLOW_OS_SPECIALISTS.md` (`b56202d`).** The `Status` field definition still read
+  "`live` (in operation)", contradicting the retirement notice fifteen lines above
+  it. Fixed, plus **five** instances of false-safety trading language rather than
+  the one originally flagged, including **"hard-disabled at the tool level"**,
+  which asserted a technical guarantee that does not exist. Kairos added to the
+  context count.
+
+### PM2 probe fixed (`21c0723`)
+
+`trade-engine` added to `EXPECTED` in `src/agents/probes/pm2.js`, live since
+2026-08-05 and missing the whole time. `tests/probes.test.js` asserted
+`expected.length === 5` and had to move with it. Restart verified live:
+`ok: true`, `extras: []`, all six processes online.
+
+**Why this hid for two weeks:** `ok` is computed purely from
+expected-processes-present-and-online. Extras never affected it. So the probe
+reported green while listing the estate's most consequential process as
+unrecognised. Any future roster change must move three things together:
+`EXPECTED`, the docstring's process count, and the test assertion.
+
+### NEW CRITICAL, UNRESOLVED: the position monitor never executes real exits
+
+`monitor.py::_close()` writes `status: closed` to Supabase and **never places a
+sell order**. It calls no executor, no `execute_trade.py`, no relay. Confirmed by
+grep: `monitor.py` references none of them, while `executor.py:419` describes
+itself as "the single point where this process spends money". **Entries execute
+for real; exits are bookkeeping only.**
+
+Live consequence. Position `71f8a608-ae8d-4a57-9424-02dd0b2912aa`:
+
+```
+status closed | exit_reason stop_loss | entry_price 0.417 -> exit_price 0.045
+usdc_amount 10.39 -> exit_usdc 1.12 | pnl -9.27 | tx_hash null
+opened_at 2026-08-11T20:18:07Z | closed_at 2026-08-19T15:39:32Z
+market "Will Bitcoin dip to $60,000 in August?" (active, endDate 2026-09-01)
+```
+
+The database says closed. Polymarket says open, and Tyson is managing the exit
+manually. Both are accurate, because closing a position in this engine sells
+nothing. The -9.27 is a mark-to-market computed from the last observed price and
+written into `pnl` as though realised.
+
+**The correction is order-dependent, which is why nothing was changed.** Reverting
+the row to `open` would not hold: the monitor sweeps `status = eq.open` on a
+15-minute `IntervalTrigger`, and the stop-loss rule (`entry_price > 0.20 AND
+current_price < 0.08`) is still satisfied at a live YES price of 0.0615. The row
+would be re-closed within 15 minutes at `pnl` around -8.86, with a duplicate
+Telegram alert, repeating until the price recovers or the market resolves on
+2026-09-01. There is **no pause endpoint** on the trade engine (`/health`,
+`/config`, `/positions`, `/simulations`, `/positions/manual`, `/simulate`,
+`/scan`, `/analyse`, `/execute`, `/approval/callback`), so the only durable
+options were "stop the whole process" or "change code", neither of which belonged
+in a data-correction dispatch.
+
+Decision (Tyson, Option 4): **leave the row exactly as-is** and fold both the row
+reconciliation and the code fix into one dedicated session, rather than
+partial-correcting into a state that self-reverts.
+
+Standing exposure meanwhile: `daily_loss_limit` is 20 and **not breached**,
+roughly $10.73 of headroom left, but that headroom is being consumed by a loss
+that never happened. Gate 3 (`executor.py:233-242`) is genuinely wired and gates
+new entries, so it fails safe, for the wrong reason. The real open position is
+invisible to `/health` (`open_positions: 0`) and no longer swept by the monitor.
+
+### Next session queue, in priority order
+
+1. **Position monitor exit executor.** Own audit-then-implement-then-adversarial-review
+   session; real money implications. Needs a pause/skip mechanism for individual
+   positions as well as a real exit path. Fix the code before reconciling the row,
+   or the row correction self-reverts.
+2. **`LOCATIONS.md` correction.** Polymarket relay as a third production host, the
+   Kairos GHL sub-account (the doc still lists four), and a generated secrets table
+   covering the 73 undocumented credentials.
+3. **Error-handler wiring.** Only 10 of 81 workflows and 4 of 37 active ones are
+   wired to the Shared Error Handler, and the wired set is almost entirely retired
+   workflows. Five workflows fail regularly with zero Telegram visibility: HL
+   refresh token (now deactivated), LinkedIn Lead Generation, GHL Marketing Weekly
+   Report, GHL Changelog Emails, Crete Content Regenerate. That is why the handler
+   shows zero executions: nothing that fails points at it.
+4. **Drift detection.** Notify-only reconciliation of Stripe and GHL against
+   `FLOW_OS_STATE.md`. Today's session was a manual version of exactly this, and
+   the four-client / $266-per-month gap had been accumulating unnoticed for three
+   months.
+
+### Corrections to figures quoted mid-session
+
+Recorded because this session was about inaccurate numbers. Active workflow count
+after the deactivation is **37**, and stayed 37; there was no later correction to
+36. Undocumented credentials are **73 of 79** across all three stores, or 69 of 74
+if the n8n API keys are excluded; "69 of 79" conflates the two.
+
+Build-log entry committed direct to main via an isolated git worktree at
+`origin/main`, keeping the live checkout untouched.
