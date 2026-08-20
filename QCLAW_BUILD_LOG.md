@@ -21977,3 +21977,55 @@ validation so launch starts empty per decision.
 
 33/33 tests, Node 22 + Node 20 builds clean. PR #4 ready for Tyson's
 merge decision.
+
+## 2026-08-20: flow-coach-ai Phase 2, Slice 2e (hardening)
+
+PR #4 (slice 2d) merged at 4ef2164 after two adversarial review rounds.
+Slice 2e on branch `slice-2e-hardening`, PR #5 open as DRAFT.
+SECURITY-RELEVANT: must not merge before adversarial review.
+
+**Rate limiting (headline, per Tyson: the abuse exposure the Sonnet 5
+model choice deliberately did not solve):** in-process fixed-window
+limiter, per-session AND per-IP. chat.send 15/5min + 40/5min,
+leads.register 3/15min + 5/15min, chat.trackDay 10/15min + 30/15min
+(added: fires GHL webhook, same abuse class). Session key is
+client-supplied so per-IP is the adversarial bound; trust proxy 1.
+Payload caps 40 msgs / 4k chars each / 16k total; body limit 50mb ->
+100kb. Live: burst throttled at exactly request 16, HTTP 429, no stack,
+server logged dimension.
+
+**Also:** CSP + nosniff + Referrer-Policy + Permissions-Policy on all
+responses, x-powered-by off; real robots.txt (Disallow /admin);
+first-party og/twitter/canonical/favicon; logo self-hosted at
+/flowos-logo.webp (Manus CloudFront gone from source); umami
+placeholder removed with NO substitute processor (analytics = separate
+Tyson decision); .env.example; review F5 (bundle-key divergence boot
+warning) and F6 (sk_/pk_ test-live mismatch refuses boot).
+
+**F7 per Tyson carry-in:** interim cache (60s TTL) + 3s timeout shipped;
+resolveRole/hasBearerToken byte-identical to reviewed versions.
+Recommendation on PR: adopt Clerk session claims, BUT claim templates
+cannot express email verification status, so claims mean moving to
+metadata-carried role with assignment-time verification = small auth
+redesign needing its own review. Turnover flag: claim/cache changes
+mean admin revocation lags ~60s unless sessions are force-revoked;
+runbook must clear metadata AND revoke sessions.
+
+**Railway service mystery resolved:** service 04063159 auto-deploying
+from main was NOT created by Slice 1 (CLI created project only;
+"Service: None" recorded at the time) nor by any later CLI action.
+Dashboard-side creation presumed (likely during shared-variable entry).
+2d fail-fast caught the deploy exactly as designed (CRASHED, no env,
+no domain). CLI has no auto-deploy toggle; recommended Tyson disable
+via dashboard (service Settings -> Source -> Auto Deploy off) until
+Slice 3. Railway env vars deliberately NOT populated (Slice 3 scope).
+
+**Data baseline for the Slice 3 wipe (actual counts, per Tyson):**
+leads=1, chat_messages=4, users=1 (review-session probe rows + owner
+sign-in record). My own burst test wrote 30 rows under sessionId
+burst-live; deleted immediately, count re-verified back to baseline.
+
+45/45 tests, Node 22 + Node 20 builds clean, audit steady 43 (7/30/6).
+
+**Next:** adversarial review of slice-2e-hardening, then merge decision,
+then Slice 3 (Railway deploy + preview validation).
