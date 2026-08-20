@@ -176,11 +176,12 @@ already takes a third card without restructuring.
 
 ### Flow States Collective
 
-**10 active engagements** (~$4,502/mth recurring + one-offs):
+**9 confirmed active engagements** (~$4,152/mth recurring + one-offs), plus one
+unconfirmed row flagged under the table.
 
 | Client | Engagement | Started | Payment | Owner |
 |---|---|---|---|---|
-| Tracy R. | 1% Club payment plan | — | $350/mth (cancels 21 Jul) | Emma |
+| Tracy R. | 1% Club payment plan | not recorded | $350/mth, **status unconfirmed** | Emma |
 | Sarah H. | As Seen In (2-pay) | 1 May | 2 × $149 (1st paid) | Emma |
 | Kylie F. | DFY content setup | 28 Apr | $1,400 AUD one-off | Tyson |
 | Kylie F. | As Seen In | 22 Apr | $297 one-off | Emma |
@@ -191,9 +192,68 @@ already takes a third card without restructuring.
 | Natalie C. | 1:1 mentoring | 9 Apr | $1,125/mth × 5 | Emma |
 | Lucy H. | 1:1 mentoring | 12 Apr | $5,850 PIF (next 6mo) | Emma |
 
-**Offer ladder context:** FSC funnel works toward 1% Club as the volume layer, with 1:1 mentoring as the apex tier. Below 1% Club: lower-ticket entry products (As Seen In, AI PT Sessions, A2E sessions, soulful strategy sessions). Tyson does occasional 1:1 and contract builds.
+**Tracy R. needs confirmation before she is counted either way.** This row carried
+"cancels 21 Jul" from the May state; that date has now passed and the row was still
+being counted as active. It could not be resolved from the payer record: there is no
+Stripe customer under that name in the account the Flow OS subscriptions bill through
+(checked 2026-08-20), and FSC payment plans do not appear to run through that account,
+so the authoritative record sits with Emma. Confirm whether the plan completed,
+cancelled, or is still running, then either restore her to the count or move her to a
+churn note. The ~$4,152 recurring figure above **excludes** her $350 rather than
+assuming an answer in either direction.
 
-**Strategic note:** all 4 active 1:1 monthly clients started 9-18 Apr 2026. Next 5-6 months are loaded with delivery work for Emma. Watch for capacity strain.
+#### 1% Club: active, relaunched, taking leads
+
+**The 1% Club is active and taking leads again**, with the near-term goal of driving
+sales volume. The previous framing in this doc (winding down, with a payment-plan
+client cancelling) described a May 2026 state and is retired.
+
+- **Landing page:** `go.flowstatescollective.com/1-club-landing-page`
+- **Focus:** brand plus lead management.
+- **Delivery:** Emma.
+- **Lead volume:** Ashley (setter and closer), with Emma also setting at present.
+
+#### FSC team
+
+- **Emma** delivers the 1% Club and the 1:1 mentoring tier. She is **currently also
+  acting as a setter**, on top of delivery, while the team scales. Treat this as a
+  temporary doubling-up rather than a permanent role change, and read it together
+  with the capacity note below: the relaunch adds lead volume to the same person
+  already carrying the delivery load.
+- **Ashley** is the **setter and closer for the 1% Club**.
+  - **GHL access:** the FSC sub-account and Emma's account.
+  - **Access has been LIMITED, and the restriction is current.** Ashley made
+    unauthorised changes to landing pages and funnels, so permissions were cut back
+    to what the setting and closing role actually requires. Date of the restriction
+    is not recorded here; add it if it matters later. **Widening this access is a
+    Tyson decision, not a routine grant**, and any request to restore it should be
+    surfaced rather than actioned.
+  - Last initial not recorded. This doc's pseudonymisation convention is first name
+    plus last initial, so add it when known.
+
+**Offer ladder and funnel, current structure:**
+
+1. **Entry, Emma-led:** the **Magnetic Authority webinar** and **Soulful Strategy
+   Sessions**. Both feed into the 1% Club.
+2. **1% Club, the group offer and volume layer:** brand plus lead management. Emma
+   delivers. Ashley sets and closes, and Emma is setting as well at present.
+3. **Automate to Elevate, Tyson:** a **separate entry point**, not a rung on the
+   Emma-led ladder. Automation strategy guidance. **Tyson has deliberately pulled
+   back from presenting or pitching Flow OS setup during these sessions.** Where a
+   natural 1% Club fit surfaces he suggests it as a next step, as a soft suggestion
+   and not a hard sell. The restraint is deliberate and is the point: the session
+   stays about the client's automation problem.
+4. **Custom setup work, Tyson:** the downstream option for clients who want deeper
+   implementation. **Not the primary push.** Delivered by Tyson personally today,
+   "hopefully a team in the future".
+5. **1:1 mentoring, Emma:** remains the apex tier.
+
+Lower-ticket entry products (As Seen In, AI PT Sessions) sit below the 1% Club.
+
+**Strategic note:** all 4 active 1:1 monthly clients started 9 to 18 Apr 2026, so the
+next 5 to 6 months are loaded with delivery work for Emma. Watch for capacity strain.
+That risk is now higher than when this note was written, because Emma is also setting
+for the relaunched 1% Club on top of the same delivery load.
 
 ### SproutCode
 
@@ -501,6 +561,14 @@ is the detailed record; entries here are pointers.
 
 ### 2026-08-20
 
+- **FSC 1% Club relaunched and Ashley onboarded.** The 1% Club is active and taking
+  leads again (landing page `go.flowstatescollective.com/1-club-landing-page`), not
+  winding down as the May state recorded. Ashley joined as setter and closer; her GHL
+  access to the FSC and Emma accounts was subsequently **limited** after unauthorised
+  changes to landing pages and funnels. Emma is setting as well as delivering while
+  the team scales. Funnel restructured in Section 1: Magnetic Authority and Soulful
+  Strategy Sessions as entry, 1% Club as the volume layer, Automate to Elevate as a
+  separate Tyson-led entry point with a soft-suggest path in, custom builds downstream.
 - **Call Intel reframed from release-blocked product to active internal tool.** The
   `claude_parse_error` truncation bug is fixed (`max_tokens` 1500 to 4000 plus a
   field-truncation safety net) and a CRM adapter layer landed, so it is no longer
@@ -605,6 +673,19 @@ Things this v1 doc doesn't capture that should be filled in over time.
 ## Maintenance log
 
 This section captures changes to the state doc over time. New entries appended at top.
+
+- **2026-08-20 - FSC section corrected for the 1% Club relaunch.** The section
+  described a May 2026 state: 1% Club winding down, no team beyond Tyson and Emma,
+  and a funnel that no longer matched the offer structure. Rewritten to current
+  reality per Tyson: 1% Club active and taking leads, Ashley onboarded as setter and
+  closer with her GHL access limited after unauthorised landing-page and funnel
+  changes, Emma setting as well as delivering, and the funnel restructured around
+  Magnetic Authority plus Soulful Strategy Sessions as entry with Automate to Elevate
+  as a separate Tyson-led entry point. **Tracy R. flagged rather than resolved:** her
+  "cancels 21 Jul" note was a month stale and still counted as active, but the FSC
+  payer record is not in the Stripe account reachable from qclaw, so the row is marked
+  unconfirmed and excluded from the recurring total ($4,502 to $4,152, 10 engagements
+  to 9 confirmed) instead of being guessed either way. Confirmation owed from Emma.
 
 - **2026-08-20 - Call Intel corrected and documented.** The `#### Call Intel`
   entry described a release-blocked product with five open blockers, which had
