@@ -1,8 +1,11 @@
 # LOCATIONS
 
-Single source of location for everything in the QClaw / Flow OS / FSC / SproutCode / Crete / Personal stack. Anything that has a "where does this live" answer is recorded here. When something moves, this file is updated; everything else reads from here.
+Single source of location for everything in the QClaw / Flow OS / FSC / SproutCode / Crete / Kairos Wines / Personal stack. Anything that has a "where does this live" answer is recorded here. When something moves, this file is updated; everything else reads from here.
 
 This file is the second thing every agent reads at session start, after its identity layer.
+
+**Last updated: 2026-08-20.** Change history is in the maintenance log at the
+end of this file.
 
 ## Repository
 
@@ -108,6 +111,15 @@ files and are still mutable via the dashboard. Reconciliation TBD.
 - Cloudflare R2: used by Clipper, Content Studio, Crete Marketing, Flow OS GHL Marketing (each scoped to own bucket/folder)
 - n8n internal Postgres database — used by some n8n workflows for state/dedup logic (e.g. Morning Light WL→HL conflict resolution). Distinct from external Supabase. Hidden architectural dependency; access scope is internal-to-n8n only, not externally queryable from the Charlie or QClaw stack.
 
+- **Polymarket execution relay (`polymarket-relay`)**: `68.183.13.219:8000`, DigitalOcean AMS3, Ubuntu 24.04. **The third production host.** It owns 100% of the Polymarket CLOB interaction for every trade (`get_market`, price calculation, order build, `post_order`), because qclaw's LON1 IP is UK-geoblocked. The authoritative test is a differential CLOB probe, an empty-body `POST clob.polymarket.com/order`: **403 from qclaw**, **401 from Amsterdam**. The frontend `polymarket.com/api/geoblock` endpoint reports `blocked:true` for NL as well and is the wrong signal for API access.
+  - **No split-origin calls, deliberately.** One trade whose market lookup comes from one country and whose signature comes from another is indistinguishable from geoblock evasion and risks account action, so the relay is the sole Polymarket-facing side. Never "optimise" a lookup back onto qclaw.
+  - Runtime: FastAPI/uvicorn under **systemd** (`Restart=always`, verified by surviving a real reboot). Client library `py-clob-client-v2==1.1.0` in `venv2`; the v1 venv is kept as rollback, but v1's order format is now rejected by the CLOB (`invalid order version`).
+  - Network: **UFW default-deny inbound**, SSH open, port 8000 reachable **only from qclaw's IP `138.68.138.214`**. No public exposure. `GET /health` runs the differential geoblock self-check (the CLOB probe, not the frontend endpoint) and warns loudly if it ever reports `blocked`.
+  - **Holds `POLYMARKET_PRIVATE_KEY` (the authoritative signing copy) and `RELAY_SHARED_SECRET`.** Auth on `POST /execute` is a constant-time bearer compare that fails closed.
+  - Caller: `src/trading/execute_trade.py` on qclaw, a thin client since commit `44c905b`. Its CLI and stdout-JSON contract are byte-identical to the pre-relay version, so `src/trade_engine/executor.py` and the dashboard execute route flow through the relay transparently. **All six execution gates still run on qclaw before anything reaches the relay.**
+  - **Key duplication is intentional, not drift.** `POLYMARKET_PRIVATE_KEY` and `POLYMARKET_FUNDER_ADDRESS` remain in qclaw's `.env` because `src/trade_engine/config.py` hard-requires them in `REQUIRED_KEYS` and `src/trading/get_balance.py` uses them. Removing the qclaw copy is deferred to Slice 6. **Rotating the Polymarket key therefore means rotating both hosts**, and qclaw alone is not enough.
+  - Not decommission-pending: this host is load-bearing for as long as trading runs from a geoblocked region. It appears in no CI config and in no repo sweep, which is how it stayed undocumented until the 2026-08-19 audit.
+
 - n8n Health Dashboard (email alerter): runs in a Manus GCP workspace (external platform, unaudited runtime); code exported 2026-08-18 to `github.com/tysonven/n8n-health-dashboard` (private). Sends "n8n Alert" emails via Gmail app password "n8n dashboard email" (created 2026-03-16, Manus-side env only); polls the n8n REST API every 5 min with the dedicated unscoped key "manus API" (`MYYZFn3DjtKQ43i4`). **DECOMMISSION-PENDING**: revoke the app password and the API key only after the heartbeat-based Telegram alerter is live and proven. Standing rule from this incident: platform-hosted builder workspaces (Manus and similar) get a LOCATIONS.md entry at creation, not at first commit; estate recon cannot enumerate them later.
 ## Standalone applications (separate infrastructure, NOT on qclaw)
 
@@ -148,16 +160,138 @@ a database is on the qclaw droplet just because the product is Flow OS.
 ## Secrets and credentials
 
 - QClaw-side secrets: `/root/.quantumclaw/.env` (root-owned, 600 permissions)
+- QClaw encrypted store: `/root/.quantumclaw/.secrets.enc` (root-owned, 600). Flat JSON, one entry per credential, each an AES-GCM record of `{encrypted, iv, tag}`. Separate from `.env` and read by a different code path; a key can exist in one store and not the other, and the two are not kept in sync automatically.
 - Symlink for sudo flowos access: `/home/flowos/.quantumclaw/.env` (intentional, root-managed)
 - n8n-side secrets: `/home/n8nadmin/n8n-project/.env` (compose env_file)
+- n8n API keys: rows in the n8n Postgres table `user_api_keys` on `157.230.216.158`. Not files, and not visible to any qclaw-side sweep.
+- **Relay-side secrets: on the Amsterdam relay host, not on qclaw.** The authoritative `POLYMARKET_PRIVATE_KEY` signing copy and `RELAY_SHARED_SECRET` live there. See the relay entry under Infrastructure for the rotation consequence.
 - Supabase credentials in n8n: "Supabase FSC" credential
 - Never log secret values. Never commit secrets to repo.
+
+### Credential inventory
+
+<!-- BEGIN GENERATED: secrets-inventory -->
+
+Generated by `scripts/regen-secrets-inventory.js`. **Do not hand-edit** this
+section; edit the `PURPOSES` map in the script and re-run it. Names only, never
+values. A key not in the map renders as [needs Tyson input], so a newly added
+credential surfaces here automatically on the next run.
+
+**79 credentials across 3 stores. 55 fully documented, 24 carrying a [needs Tyson input] marker.**
+
+#### `.secrets.enc` (26)
+
+`/root/.quantumclaw/.secrets.enc` (qclaw, root 0600)
+
+| Key | Purpose |
+|---|---|
+| `agex_private_key` | AGEX action-signing key for `charlie`. Consumed by `src/tools/executor.js` gates. |
+| `anthropic_api_key` | Anthropic API key for Charlie's runtime. See `ANTHROPIC_API_SURFACE.md`. |
+| `ccdispatch_github_token` | GitHub token for the unprivileged `ccdispatch` user (Slice 5 dispatcher). |
+| `claude-code-ig-fix_agex_private_key` | AGEX signing key for sub-agent `claude-code-ig-fix`. |
+| `cloudflare_tunnel_token` | Cloudflare Tunnel credential. Tunnel target [needs Tyson input]. |
+| `dashboard_auth_token` | Dashboard bearer token. Source of truth is `~/.quantumclaw/config.json` `dashboard.authToken`; re-minted by `qclaw dashboard` on 24h expiry. |
+| `dispatch-zeta_agex_private_key` | AGEX signing key for sub-agent `dispatch-zeta`. |
+| `ghl_api_key` | Legacy unscoped GHL key, predates the per-brand split. Still-in-use status [needs Tyson input]. |
+| `ghl_crete_api_key` | GHL private integration token, Crete sub-account. Used by skill `ghl-crete.md`. |
+| `ghl_crete_location_id` | GHL location id, Crete sub-account. |
+| `ghl_flowos_api_key` | GHL private integration token, Flow OS sub-account. Used by skill `ghl-flowos.md`. |
+| `ghl_flowos_location_id` | GHL location id, Flow OS sub-account. |
+| `ghl_fsc_api_key` | GHL private integration token, FSC sub-account. Used by skill `ghl-fsc.md`. |
+| `ghl_fsc_location_id` | GHL location id, FSC sub-account. |
+| `ghl_kairos_api_key` | GHL private integration token, Kairos Wines sub-account. Used by skill `ghl-kairos.md`. |
+| `ghl_kairos_location_id` | GHL location id, Kairos Wines sub-account. |
+| `ghl_location_id` | Legacy unscoped GHL location id, pairs with `ghl_api_key`. Still-in-use status [needs Tyson input]. |
+| `ghl_sproutcode_api_key` | GHL private integration token, SproutCode sub-account. Used by skill `ghl-sproutcode.md`. |
+| `ghl_sproutcode_location_id` | GHL location id, SproutCode sub-account. |
+| `n8n_api_key` | n8n REST API key held in the encrypted store. Relationship to the `.env` `N8N_API_KEY` [needs Tyson input]. |
+| `n8n_router_token` | [needs Tyson input] |
+| `n8n-workflow-fixer_agex_private_key` | AGEX signing key for sub-agent `n8n-workflow-fixer`. |
+| `patcher_agex_private_key` | AGEX signing key for sub-agent `patcher`. |
+| `post-auditor_agex_private_key` | AGEX signing key for sub-agent `post-auditor`. |
+| `stripe_api_key` | Stripe API key. Account and live/test mode [needs Tyson input]. |
+| `telegram_bot_token` | Charlie's Telegram bot token (encrypted-store copy). |
+
+#### `.env` (48)
+
+`/root/.quantumclaw/.env` (qclaw, root 0600)
+
+| Key | Purpose |
+|---|---|
+| `ANTHROPIC_ADMIN_API_KEY` | Anthropic Admin Cost API, read by `src/observability/anthropic-spend-poller.js` (Slice 3g). Distinct from the runtime key. |
+| `ANTHROPIC_API_KEY` | Anthropic API key for Charlie's runtime. |
+| `ANTHROPIC_ORG_ID` | Anthropic org id, required alongside the admin key by the spend poller. |
+| `ASSEMBLYAI_API_KEY` | AssemblyAI transcription. Consumer [needs Tyson input] (no call site in this repo). |
+| `BUZZSPROUT_API_TOKEN` | Buzzsprout podcast API. Which show, and which workflow publishes [needs Tyson input]. |
+| `BUZZSPROUT_PODCAST_ID` | Buzzsprout show id, pairs with `BUZZSPROUT_API_TOKEN`. Which show [needs Tyson input]. |
+| `CCDISPATCH_GITHUB_TOKEN` | GitHub token for the `ccdispatch` dispatcher user (`.env` copy). |
+| `CONTENT_STUDIO_PUBLISH_TOKEN` | Content Studio publish auth. Consumer [needs Tyson input]. |
+| `CRETE_R2_BUCKET_NAME` | Cloudflare R2 bucket name, Crete Marketing. |
+| `CRETE_R2_PUBLIC_URL` | Cloudflare R2 public base URL, Crete Marketing. |
+| `DASHBOARD_SESSION_SECRET` | Session signing secret for the dashboard (`src/dashboard/server.js`). |
+| `FLOWOS_R2_ACCESS_KEY_ID` | Cloudflare R2 access key, Flow OS GHL Marketing bucket. |
+| `FLOWOS_R2_BUCKET_NAME` | Cloudflare R2 bucket name, Flow OS GHL Marketing. |
+| `FLOWOS_R2_PUBLIC_URL` | Cloudflare R2 public base URL, Flow OS GHL Marketing. |
+| `FLOWOS_R2_SECRET_ACCESS_KEY` | Cloudflare R2 secret key, Flow OS GHL Marketing bucket. |
+| `GHL_FLOWOS_NOTIFY_CONTACT_ID` | GHL contact id that Flow OS notifications are sent to. |
+| `GHL_FLOWOS_USER_ID` | GHL user id used as the actor on Flow OS sub-account writes. |
+| `GHL_FSC_API_KEY` | GHL private integration token, FSC sub-account (`.env` copy). |
+| `GHL_FSC_LOCATION_ID` | GHL location id, FSC sub-account (`.env` copy). |
+| `GHL_FSC_NOTIFY_CONTACT_ID` | GHL contact id that FSC notifications are sent to. |
+| `GHL_FSC_USER_ID` | GHL user id used as the actor on FSC sub-account writes. |
+| `META_IG_ACCOUNT_ID` | Instagram account id for Meta Graph publishing. Which brand account [needs Tyson input]. |
+| `META_PAGE_ACCESS_TOKEN` | Meta Page access token. Which page, and expiry policy [needs Tyson input]. |
+| `META_PAGE_ID` | Meta Page id. Which page [needs Tyson input]. |
+| `N8N_API_KEY` | n8n REST API key. Verified 2026-08-20 to be the key labelled "quantum claw api v2" in n8n (sha256 match). |
+| `N8N_BASE_URL` | n8n REST API base URL. |
+| `N8N_SSH_KEY` | SSH key path/material for reaching the n8n droplet from qclaw. |
+| `NOTIFY_EMAIL` | Destination address for email notifications. Which sender/workflow [needs Tyson input]. |
+| `OWNER_TELEGRAM_CHAT_ID` | Tyson's Telegram chat id. Alert destination for Charlie and the trade engine. |
+| `POLYMARKET_FUNDER_ADDRESS` | Polymarket funder (share-holding) address. Kept on qclaw after the relay migration because `config.py` `REQUIRED_KEYS` and `get_balance.py` still demand it. Order placement itself uses the relay copy. |
+| `POLYMARKET_PRIVATE_KEY` | Polymarket signer key. **Kept in parallel on qclaw, not used for order placement** since the relay migration (Slice-6 removal deferred). The authoritative signing copy lives on the Amsterdam relay. |
+| `QCLAW_GATES_ENABLED` | Master kill-switch for the Slice 4 verification gates. |
+| `QCLAW_SPECIALIST_LIVE_IDS` | Specialist live-id allowlist. Emptied 2026-08-14, so all `delegate_to` calls route to the stub. Host config, not in git. |
+| `R2_ACCESS_KEY_ID` | Cloudflare R2 access key, default/unprefixed bucket. Which bucket [needs Tyson input]. |
+| `R2_ACCOUNT_ID` | Cloudflare R2 account id. |
+| `R2_BUCKET_NAME` | Cloudflare R2 bucket name, default/unprefixed. Which consumer [needs Tyson input]. |
+| `R2_SECRET_ACCESS_KEY` | Cloudflare R2 secret key, default/unprefixed bucket. Which bucket [needs Tyson input]. |
+| `RELAY_SHARED_SECRET` | Bearer secret for `POST /execute` on the Amsterdam Polymarket relay. Constant-time compared relay-side, fails closed. |
+| `RELAY_URL` | Amsterdam relay base URL. Defaults to `http://68.183.13.219:8000` in `src/trading/execute_trade.py`. |
+| `SUPABASE_ANON_KEY` | Supabase anon key, project `fdabygmromuqtysitodp`. |
+| `SUPABASE_SERVICE_ROLE_KEY` | Supabase service-role key, project `fdabygmromuqtysitodp`. Required by every service-role-only table (spend, liveness, dispatch, trading). |
+| `SUPABASE_URL` | Supabase REST base URL, project `fdabygmromuqtysitodp`. |
+| `TELEGRAM_BOT_TOKEN` | Charlie's Telegram bot token. |
+| `TRADE_TELEGRAM_BOT_TOKEN` | Separate Telegram bot for trade-engine alerts (`src/trade_engine/monitor.py`). Deliberately not Charlie's bot. |
+| `TRADING_WEBHOOK_SECRET` | Shared secret on the trading webhook path. Which caller [needs Tyson input]. |
+| `WP_APP_PASSWORD` | WordPress application password. Which site [needs Tyson input]. |
+| `WP_SITE_URL` | WordPress site base URL. Which site [needs Tyson input]. |
+| `WP_USERNAME` | WordPress username. Which site [needs Tyson input]. |
+
+#### n8n API keys (5)
+
+n8n Postgres `user_api_keys` on `157.230.216.158`
+
+| Key | Purpose |
+|---|---|
+| `manus API` | Unscoped key polled every 5 min by the Manus-hosted n8n Health Dashboard. **DECOMMISSION-PENDING**: revoke once the heartbeat Telegram alerter is proven. Created 2026-03-16. |
+| `MCP Server API Key` | [needs Tyson input]. Created 2026-01-02. |
+| `n8n mcp` | [needs Tyson input]. Created 2025-07-15, the oldest key in the store. |
+| `n8n query key v2` | [needs Tyson input]. Created 2026-04-20. |
+| `quantum claw api v2` | QClaw's n8n REST access. Confirmed 2026-08-20 to be the same key as `.env` `N8N_API_KEY` (sha256 match). Created 2026-07-01. |
+
+<!-- END GENERATED: secrets-inventory -->
 
 ## Business unit portals and accounts
 
 - Flow OS community portal: `portal.flowos.tech`
 - FSC community portal: `https://fsc.app.clientclub.net/home`
-- GHL sub-accounts: Flow OS, FSC, SproutCode, Crete (one each)
+- GHL sub-accounts: Flow OS, FSC, SproutCode, Crete, Kairos Wines (one each).
+  Credentials are **split per brand and are not interchangeable**: each has its
+  own private integration token and location id in the encrypted store
+  (`ghl_<brand>_api_key` / `ghl_<brand>_location_id`) and its own skill at
+  `src/agents/skills/ghl-<brand>.md`. Never default to another brand's
+  location id. Kairos has no dedicated GHL user and runs under Tyson's
+  personal user.
 - Meta Ads accounts:
   - Flow OS: `act_414785961683125`
   - Emma Maidment Business: `act_1426936257455201`
@@ -170,3 +304,20 @@ When migrating any location (e.g. file-based log → Supabase table):
 2. Update any code or doc that references the old location
 3. Note the migration in the build log
 4. Verify all consumers pick up the new location before retiring the old
+
+## Maintenance log
+
+Append-only record of what changed in this file and why. A location that moved
+without an entry here is the failure mode this log exists to catch.
+
+- **2026-08-20** Added the Polymarket execution relay (`68.183.13.219`, AMS3) as
+  a documented third production host, added Kairos Wines to the GHL sub-account
+  list, and replaced the credential prose with a generated inventory covering
+  all 79 keys across the three stores. All three gaps were found by the
+  2026-08-19 estate audit, which reported 73 of 79 credentials undocumented and
+  the relay present in no canonical doc at all. The inventory is generated
+  rather than hand-written specifically so it cannot drift back into that state.
+- **2026-08-18** Added the Manus-hosted n8n Health Dashboard, with the standing
+  rule that platform-hosted builder workspaces (Manus and similar) get an entry
+  at creation rather than at first commit, because estate recon cannot enumerate
+  them later.
