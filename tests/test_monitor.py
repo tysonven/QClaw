@@ -642,6 +642,41 @@ class TestSettlementResolvesAlerts(MonitorTestCase):
         self.assertIn("resolved_loss", note)
         self.assertIsNotNone(row["resolved_at"])
 
+    def test_transport_error_in_resolve_does_not_block_settlement_notify(self):
+        """N1: tidying an alert must never cost the settlement message.
+
+        resolve_alerts_for_position previously only caught SupabaseError, so a
+        transport-level failure unwound past the Telegram send: a position that
+        really did settle closed silently and Tyson was never told it won or
+        lost.
+        """
+        self.positions = [make_position(entry_price=0.35)]
+        self.sim_rows["sim-1"] = sim_row()
+        self.gamma_by_cid[CID] = gamma_market(yes="0.05", no="0.95")
+        self.sweep()                      # raises the stop-loss alert
+        self.telegram_requests.clear()
+
+        tests = self
+
+        async def _boom(position_id, note):
+            # NOT a SupabaseError: a transport error, the case N1 is about.
+            raise httpx.ConnectError("connection reset")
+
+        monitor_mod.resolve_alerts_for_position = _boom
+
+        self.gamma_by_cid[CID] = gamma_market(
+            yes="0", no="1", active=False, closed=True
+        )
+        result = self.sweep()
+
+        self.assertEqual(result.positions_resolved, 1, "close must still count")
+        (_, updates), = self.update_calls
+        self.assertEqual(updates["status"], "closed")
+        self.assertTrue(
+            any("Trade lost" in r["text"] for r in self.telegram_requests),
+            "settlement notification was skipped because alert cleanup raised",
+        )
+
     def test_close_write_failure_leaves_alert_unresolved(self):
         """Resolve only after the close is durable.
 

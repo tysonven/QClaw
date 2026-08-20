@@ -120,6 +120,13 @@ Tyson a trade "will" go through:
 | 1 | trading_disabled | `trading_config.trading_enabled` is not true | — |
 | 2 | position_cap | too many positions already open | **MAX_CONCURRENT_POSITIONS = 2** (hardcoded in executor.py, NOT in trading_config) |
 | 3 | daily_loss_limit | today's realised loss meets the limit | `daily_loss_limit` (20 USDC) |
+| 4 | edge_below_threshold | `candidate.edge < min_edge_threshold / 100` | 7% |
+| 5 | invalid_amount | size ≤ 0, above config, or above a hard ceiling | `max_position_usdc` (10) AND **ABSOLUTE_MAX_POSITION_USDC = 25.0** (hardcoded ceiling that config cannot raise) |
+| 6 | invalid_market_identifier | no well-formed Polymarket conditionId | — |
+
+Gates 2 and 5's hard limits are code constants, not database config: raising
+`max_position_usdc` above 25 does NOT raise the real ceiling, and there is no
+config key for the 2-position cap.
 
 **Gate 3 depends on manual logging (changed 2026-08-20).** The Position Monitor
 no longer writes a close when a stop-loss or take-profit threshold fires: it
@@ -135,13 +142,7 @@ close that never happened, but it means logging a manual close promptly is now
 load-bearing for risk control, not just for the Analyst's learning loop.
 
 If Tyson mentions closing a position, log it the same session.
-| 4 | edge_below_threshold | `candidate.edge < min_edge_threshold / 100` | 7% |
-| 5 | invalid_amount | size ≤ 0, above config, or above a hard ceiling | `max_position_usdc` (10) AND **ABSOLUTE_MAX_POSITION_USDC = 25.0** (hardcoded ceiling that config cannot raise) |
-| 6 | invalid_market_identifier | no well-formed Polymarket conditionId | — |
 
-Gates 2 and 5's hard limits are code constants, not database config: raising
-`max_position_usdc` above 25 does NOT raise the real ceiling, and there is no
-config key for the 2-position cap.
 
 There is NO HTTP execution route any more. The dashboard's
 POST /api/trading/execute was removed on 2026-08-14. It bypassed the edge

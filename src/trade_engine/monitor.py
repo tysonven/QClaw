@@ -591,13 +591,19 @@ class PositionMonitor:
                     "monitor: resolved %d alert(s) on settled position %s",
                     len(cleared), position.id,
                 )
-        except SupabaseError as exc:
+        except Exception as exc:  # noqa: BLE001 - see below, deliberately broad
             # The close stands; only the alert cleanup failed. Surfaced rather
             # than swallowed because a stale alert is exactly the misleading
             # state this PR exists to remove.
+            #
+            # Deliberately broad, NOT just SupabaseError: a transient transport
+            # error (httpx timeout, connection reset) would otherwise unwind
+            # past the _notify below, so a position that really did settle would
+            # close silently and Tyson would never be told it won or lost.
+            # Failing to tidy an alert must never cost the settlement message.
             log.warning(
-                "monitor: position %s closed but alert resolution failed: %s",
-                position.id, exc,
+                "monitor: position %s closed but alert resolution failed (%s): %s",
+                position.id, type(exc).__name__, exc,
             )
         await self._notify(self._close_message(exit_reason, question, exit_price,
                                                exit_usdc, pnl))
