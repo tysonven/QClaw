@@ -22,6 +22,7 @@ sys.path.insert(
 import asyncio  # noqa: E402
 import logging  # noqa: E402
 from contextlib import asynccontextmanager  # noqa: E402
+from datetime import datetime, timezone  # noqa: E402
 from typing import Any, Optional  # noqa: E402
 
 import httpx  # noqa: E402
@@ -39,10 +40,15 @@ from src.trade_engine.database import (  # noqa: E402
     close_client,
     count_all_positions,
     count_open_positions,
+    get_alerts_for_position,
     get_daily_pnl,
     get_open_positions,
     get_recent_simulations,
     get_trading_config,
+    get_unresolved_alerts,
+    resolve_alerts_for_position,
+    set_manual_hold,
+    update_position,
 )
 from src.trade_engine.manual import (  # noqa: E402
     ManualPositionError,
@@ -54,6 +60,8 @@ from src.trade_engine.models import (  # noqa: E402
     ApprovalResult,
     ApprovalStatus,
     HealthResponse,
+    HoldRequest,
+    ManualCloseRequest,
     ManualPositionRequest,
     MonitorRunResult,
     ScannerCandidate,
@@ -298,14 +306,41 @@ async def positions() -> JSONResponse:
     """
     try:
         rows = await get_open_positions()
+        alerts = await get_unresolved_alerts()
     except SupabaseError as exc:
         log.error("/positions failed: %s", exc)
         return JSONResponse(
             status_code=503,
             content={"error": "could not read positions", "detail": str(exc)},
         )
+
+    # Embed live alerts on their position rather than making every caller do a
+    # second round-trip and a join. The dashboard renders straight off this.
+    by_position: dict[str, list] = {}
+    for a in alerts:
+        by_position.setdefault(str(a.get("position_id")), []).append(a)
+
+    enriched = []
+    for row in rows:
+        item = row.model_dump() if hasattr(row, "model_dump") else dict(row)
+        live = by_position.get(str(item.get("id")), [])
+        item["alerts"] = live
+        item["has_alert"] = bool(live)
+        # Most severe live alert, for a single badge in a table cell.
+        # stop_loss outranks take_profit outranks weakening.
+        rank = {"stop_loss": 3, "take_profit": 2, "weakening": 1}
+        item["top_alert"] = (
+            max(live, key=lambda a: rank.get(a.get("alert_type"), 0)).get("alert_type")
+            if live else None
+        )
+        enriched.append(item)
+
     return JSONResponse(
-        content=jsonable_encoder({"count": len(rows), "positions": rows})
+        content=jsonable_encoder({
+            "count": len(enriched),
+            "positions": enriched,
+            "unresolved_alert_count": len(alerts),
+        })
     )
 
 
@@ -370,6 +405,218 @@ async def positions_manual(request: Request) -> JSONResponse:
             content={"error": "could not write position", "detail": str(exc)},
         )
     return JSONResponse(content=jsonable_encoder(result))
+
+
+@app.get("/positions/alerts")
+async def positions_alerts() -> JSONResponse:
+    """Live (unresolved) threshold alerts, newest first.
+
+    An alert means the monitor saw a take-profit / stop-loss / weakening
+    threshold cross. It does NOT mean anything was closed: Polymarket exits are
+    manual while the signer/maker-address issue is open. This is the endpoint
+    Charlie reads to answer "does anything need my attention", which he
+    previously could not do at all because alerts only existed as Telegram
+    messages on a bot he cannot see.
+    """
+    try:
+        rows = await get_unresolved_alerts()
+    except SupabaseError as exc:
+        log.error("/positions/alerts failed: %s", exc)
+        return JSONResponse(
+            status_code=503,
+            content={"error": "could not read alerts", "detail": str(exc)},
+        )
+    return JSONResponse(content=jsonable_encoder({
+        "count": len(rows),
+        "alerts": rows,
+        "note": (
+            "An alert is a threshold crossing, not a close. Positions stay open "
+            "until a real close is logged via POST /positions/manual-close."
+        ),
+    }))
+
+
+@app.get("/positions/{position_id}/alerts")
+async def position_alert_history(position_id: str) -> JSONResponse:
+    """Full alert history for one position, resolved ones included."""
+    try:
+        rows = await get_alerts_for_position(position_id)
+    except SupabaseError as exc:
+        log.error("/positions/%s/alerts failed: %s", position_id, exc)
+        return JSONResponse(
+            status_code=503,
+            content={"error": "could not read alerts", "detail": str(exc)},
+        )
+    return JSONResponse(content=jsonable_encoder({
+        "position_id": position_id,
+        "count": len(rows),
+        "alerts": rows,
+        "unresolved": [r for r in rows if r.get("resolved_at") is None],
+    }))
+
+
+@app.post("/positions/{position_id}/hold")
+async def position_hold(position_id: str, request: Request) -> JSONResponse:
+    """Mark a position as manually managed (or clear the mark).
+
+    While held, the monitor still prices the position every sweep — the
+    dashboard and Analyst stay accurate — but emits no alerts for it. This is
+    the "I am already dealing with it, stop telling me" control that did not
+    exist on 2026-08-19 and would have prevented repeat alerting then.
+
+    Holding does NOT close anything and does not touch any money column.
+    """
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    try:
+        req = HoldRequest.model_validate(body or {})
+    except ValidationError as exc:
+        detail = "; ".join(
+            f"{'.'.join(str(loc) for loc in err['loc'])}: {err['msg']}"
+            for err in exc.errors()
+        )
+        return JSONResponse(status_code=400, content={"error": detail})
+
+    try:
+        row = await set_manual_hold(position_id, req.hold)
+    except SupabaseError as exc:
+        log.error("/positions/%s/hold failed: %s", position_id, exc)
+        return JSONResponse(
+            status_code=503,
+            content={"error": "could not set manual_hold", "detail": str(exc)},
+        )
+    log.info("position %s manual_hold set to %s", position_id, req.hold)
+    return JSONResponse(content=jsonable_encoder({
+        "position_id": position_id,
+        "manual_hold": req.hold,
+        "position": row,
+        "note": (
+            "Alerts suppressed; price tracking continues."
+            if req.hold else "Alerting resumed."
+        ),
+    }))
+
+
+@app.post("/positions/manual-close")
+async def positions_manual_close(request: Request) -> JSONResponse:
+    """Log a position that was closed BY HAND in the Polymarket UI.
+
+    This is the only path permitted to write exit_price / exit_usdc / pnl /
+    status onto trading_positions. The monitor cannot, because it never sells;
+    writing a close it had not performed is exactly the 2026-08-19 defect.
+
+    Any live alerts on the position are resolved here and returned, so the
+    caller can cross-reference ("this close answers the stop-loss alert from
+    15:39") instead of accepting an unverified assertion.
+
+    exit_usdc: supply the real proceeds. If omitted it is derived as
+    shares * exit_price and flagged `exit_usdc_estimated: true` — an
+    approximation labelled as one, never presented as the settled figure.
+    """
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        return JSONResponse(
+            status_code=400, content={"error": "body must be valid JSON"}
+        )
+    try:
+        req = ManualCloseRequest.model_validate(body)
+    except ValidationError as exc:
+        detail = "; ".join(
+            f"{'.'.join(str(loc) for loc in err['loc'])}: {err['msg']}"
+            for err in exc.errors()
+        )
+        return JSONResponse(status_code=400, content={"error": detail})
+
+    if not (0.0 <= req.exit_price <= 1.0):
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"exit_price must be between 0 and 1, got {req.exit_price}"},
+        )
+
+    # Read the position first: refuse to close what is not open, and derive
+    # exit_usdc from its shares when the caller did not supply proceeds.
+    try:
+        open_rows = await get_open_positions()
+    except SupabaseError as exc:
+        return JSONResponse(
+            status_code=503,
+            content={"error": "could not read positions", "detail": str(exc)},
+        )
+    match = next((p for p in open_rows if str(p.id) == req.position_id), None)
+    if match is None:
+        # Fail closed: an id that is not currently open is either already
+        # closed or wrong, and guessing which would risk a double-write.
+        return JSONResponse(status_code=404, content={
+            "error": f"no OPEN position with id {req.position_id}",
+            "hint": "check GET /positions; an already-closed position cannot be re-closed here",
+        })
+
+    exit_usdc = req.exit_usdc
+    estimated = False
+    if exit_usdc is None:
+        if match.shares is None:
+            return JSONResponse(status_code=400, content={
+                "error": "exit_usdc omitted and position has no shares to derive it from",
+                "hint": "supply exit_usdc (the USDC actually received)",
+            })
+        exit_usdc = round(float(match.shares) * req.exit_price, 6)
+        estimated = True
+
+    pnl = (
+        round(exit_usdc - float(match.usdc_amount), 6)
+        if match.usdc_amount is not None else None
+    )
+
+    updates = {
+        "status": "closed",
+        "exit_price": req.exit_price,
+        "exit_usdc": exit_usdc,
+        "pnl": pnl,
+        "exit_reason": req.exit_reason or "manual_close",
+        "closed_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        row = await update_position(req.position_id, updates)
+    except SupabaseError as exc:
+        log.error("/positions/manual-close write failed: %s", exc)
+        return JSONResponse(
+            status_code=503,
+            content={"error": "could not write close", "detail": str(exc)},
+        )
+
+    # Resolve alerts AFTER the close is durable: an alert cleared against a
+    # close that failed to write would hide a still-live threshold crossing.
+    note = req.note or f"closed manually at {req.exit_price}"
+    try:
+        resolved = await resolve_alerts_for_position(req.position_id, note)
+    except SupabaseError as exc:
+        log.warning(
+            "close recorded for %s but alert resolution failed: %s",
+            req.position_id, exc,
+        )
+        resolved = []
+
+    log.info(
+        "manual close recorded for %s: exit %.4f pnl %s (resolved %d alert(s))",
+        req.position_id, req.exit_price, pnl, len(resolved),
+    )
+    return JSONResponse(content=jsonable_encoder({
+        "success": True,
+        "position": row,
+        "exit_usdc_estimated": estimated,
+        "resolved_alerts": resolved,
+        "preceded_by_alert": [
+            {
+                "alert_type": a.get("alert_type"),
+                "triggered_at": a.get("triggered_at"),
+                "trigger_price": a.get("trigger_price"),
+            }
+            for a in resolved
+        ],
+    }))
 
 
 @app.post("/simulate")

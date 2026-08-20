@@ -59,6 +59,9 @@ class TradePosition(BaseModel):
     closed_at: Optional[datetime] = None
     tx_hash: Optional[str] = None
     created_at: Optional[datetime] = None
+    # 2026-08-20: true = Tyson is managing this exit by hand. The monitor keeps
+    # pricing the position but emits no alerts for it.
+    manual_hold: Optional[bool] = False
 
 
 class ManualPositionRequest(BaseModel):
@@ -79,6 +82,64 @@ class ManualPositionRequest(BaseModel):
     entry_price: float
     usdc_amount: float
     shares: Optional[float] = None
+
+
+class PositionAlert(BaseModel):
+    """public.trading_position_alerts — one unresolved threshold crossing.
+
+    An alert is NOT a close. The Position Monitor writes one when a take-profit,
+    stop-loss or weakening threshold fires; Polymarket exits are manual while the
+    signer/maker-address issue is open, so the human closes and then logs it.
+
+    unrealized_pnl_estimate is exactly that — an estimate marked to
+    trigger_price. It is never copied into trading_positions.pnl, which
+    get_daily_pnl() sums into the executor's daily-loss gate.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    id: Optional[str] = None
+    position_id: str
+    alert_type: str
+    triggered_at: Optional[datetime] = None
+    trigger_price: float
+    entry_price: Optional[float] = None
+    unrealized_pnl_estimate: Optional[float] = None
+    notified_at: Optional[datetime] = None
+    resolved_at: Optional[datetime] = None
+    resolution_note: Optional[str] = None
+
+
+class ManualCloseRequest(BaseModel):
+    """POST /positions/manual-close body — a position closed by hand.
+
+    This is the ONLY path that may write exit_price/exit_usdc/pnl/status onto
+    trading_positions. The monitor cannot, because it never sells anything.
+
+    extra="forbid" for the same reason as ManualPositionRequest: a typoed field
+    in a hand-built request must 400 rather than silently write a wrong close.
+
+    exit_usdc is what actually landed. Supply it when known; if omitted it is
+    computed as shares * exit_price, which is an approximation and is flagged as
+    such in the response rather than being presented as the real figure.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    position_id: str
+    exit_price: float
+    exit_usdc: Optional[float] = None
+    exit_reason: Optional[str] = "manual_close"
+    note: Optional[str] = None
+
+
+class HoldRequest(BaseModel):
+    """POST /positions/{id}/hold body. hold=false clears the flag."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    hold: bool = True
+    note: Optional[str] = None
 
 
 class SimulationResult(BaseModel):
@@ -290,9 +351,19 @@ class MonitorRunResult(BaseModel):
     """Result of one Position Monitor sweep.
 
     `positions_resolved` counts market-settlement closes (resolved_win /
-    resolved_loss) only; `positions_tp_sl` counts take_profit / stop_loss
-    closes, kept separate because settlement is ground truth for the learning
-    loop while a TP/SL exit is a rule firing on a live price.
+    resolved_loss) — the only closes this monitor writes, because settlement is
+    ground truth and Polymarket has actually paid out.
+
+    Since 2026-08-20 a take-profit / stop-loss / weakening crossing does NOT
+    close anything: it raises an alert and leaves the position open for a manual
+    exit. `alerts_raised` counts NEW alerts (a Telegram message was sent);
+    `alerts_deduped` counts crossings where an alert was already live, which is
+    the normal steady state while a condition persists across sweeps.
+    `positions_held` counts positions skipped for alerting via manual_hold.
+
+    `positions_tp_sl` is retained and now counts threshold crossings that
+    produced a NEW alert, so historical dashboards keep a meaningful series. It
+    no longer implies anything was closed.
     """
 
     run_at: datetime
@@ -301,6 +372,9 @@ class MonitorRunResult(BaseModel):
     positions_tp_sl: int = 0
     positions_unpriceable: int = 0
     alerts_sent: int = 0
+    alerts_raised: int = 0
+    alerts_deduped: int = 0
+    positions_held: int = 0
     errors: int = 0
 
 

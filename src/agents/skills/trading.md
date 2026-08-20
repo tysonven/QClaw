@@ -128,6 +128,22 @@ Gates 2 and 5's hard limits are code constants, not database config: raising
 `max_position_usdc` above 25 does NOT raise the real ceiling, and there is no
 config key for the 2-position cap.
 
+**Gate 3 depends on manual logging (changed 2026-08-20).** The Position Monitor
+no longer writes a close when a stop-loss or take-profit threshold fires: it
+cannot sell, so it raises an alert and leaves the position open. `get_daily_pnl`
+sums `pnl` over positions closed since UTC midnight, and only a real close
+logged via `POST /positions/manual-close` populates that field.
+
+The tradeoff, stated plainly: **a real loss on a position closed by hand and not
+yet logged is invisible to the daily-loss brake.** Gate 3 will under-count and
+may allow an entry it would otherwise have blocked. This is deliberate and is
+better than the previous behaviour, which fed the gate a *phantom* loss from a
+close that never happened, but it means logging a manual close promptly is now
+load-bearing for risk control, not just for the Analyst's learning loop.
+
+If Tyson mentions closing a position, log it the same session.
+
+
 There is NO HTTP execution route any more. The dashboard's
 POST /api/trading/execute was removed on 2026-08-14. It bypassed the edge
 floor, conditionId validation, the Analyst and the approval gate. Its only
