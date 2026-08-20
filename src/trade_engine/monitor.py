@@ -15,10 +15,34 @@ Rule order per position — first match wins:
    resolved-YES market trips take_profit at 1.0) but mislabelled the exit and
    missed one case entirely: a position entered at <= 0.20 that resolves
    against us fails the stop-loss entry_price guard and stays open forever.
-2. TAKE PROFIT / STOP LOSS (verbatim port): currentPrice > 0.85 exits as
-   take_profit; entry_price > 0.20 and currentPrice < 0.08 exits as stop_loss.
-3. WEAKENING ALERT (verbatim port): entry_price > 0.50 and currentPrice < 0.30
-   sends a Telegram warning, no DB write.
+2. TAKE PROFIT / STOP LOSS: currentPrice > 0.85 flags take_profit;
+   entry_price > 0.20 and currentPrice < 0.08 flags stop_loss. **These no
+   longer close the position** — see EXIT MODEL below.
+3. WEAKENING ALERT: entry_price > 0.50 and currentPrice < 0.30 flags weakening.
+
+EXIT MODEL (changed 2026-08-20 — read this before touching _flag_for_exit)
+--------------------------------------------------------------------------
+This monitor CANNOT sell. It never could: _close() only ever wrote to Supabase,
+and Polymarket execution (BUY and SELL alike) is blocked by an unresolved
+signer/maker-address issue, so exits are performed by hand in the Polymarket UI.
+
+Until 2026-08-20 a TP/SL crossing wrote status='closed' with a computed pnl
+anyway. On 2026-08-19 that produced a real incident: a BTC stop loss fired, the
+DB recorded a closed position at -9.27, and the actual Polymarket position
+stayed open for another 17 hours. The database and reality diverged silently.
+
+So a threshold crossing now FLAGS, it does not close:
+  * an alert row goes into trading_position_alerts (deduped by a partial unique
+    index, so a re-detection on the next 15-minute sweep does not re-notify),
+  * Telegram tells Tyson to close it himself,
+  * trading_positions is NOT touched. status stays 'open', and pnl stays NULL
+    until a real close is logged via POST /positions/manual-close.
+
+RESOLUTION IS DIFFERENT AND IS UNCHANGED. A settled market (active=false and
+closed=true, or a finalised 1.0/0.0 price) really has closed and really does pay
+out, so _close() still writes status='closed' for resolved_win / resolved_loss.
+Do not route those through the alert path: they are real closes, not requests
+for a human to act.
 
 Prices are DIRECTION-SIDE throughout, matching the n8n `priceFor(conditionId,
 direction)` helper: for a NO position, currentPrice is outcomePrices[1] and a
@@ -55,6 +79,8 @@ from src.trade_engine.database import (
     SupabaseError,
     get_open_positions,
     get_simulations_by_ids,
+    insert_alert,
+    mark_alert_notified,
     update_position,
 )
 from src.trade_engine.models import MonitorRunResult, TradePosition
@@ -143,7 +169,10 @@ class PositionMonitor:
             record_monitor_run(result)
             return result
 
-        counts = {"resolved": 0, "tp_sl": 0, "alert": 0, "unpriceable": 0, "error": 0}
+        counts = {
+            "resolved": 0, "tp_sl": 0, "alert": 0, "unpriceable": 0, "error": 0,
+            "alert_dup": 0, "held": 0,
+        }
         for position in positions:
             try:
                 outcome = await self._check_one(position)
@@ -157,9 +186,15 @@ class PositionMonitor:
             run_at=run_at,
             positions_checked=len(positions),
             positions_resolved=counts["resolved"],
-            positions_tp_sl=counts["tp_sl"],
+            positions_tp_sl=counts["alert"],
             positions_unpriceable=counts["unpriceable"],
+            # alerts_sent counts NEW alerts only: a deduped crossing sends no
+            # Telegram message, so counting it here would misreport notification
+            # volume and hide whether the anti-spam path is working.
             alerts_sent=counts["alert"],
+            alerts_raised=counts["alert"],
+            alerts_deduped=counts["alert_dup"],
+            positions_held=counts["held"],
             errors=counts["error"],
         )
         log.info(
@@ -235,12 +270,26 @@ class PositionMonitor:
 
         entry_price = None if position.entry_price is None else float(position.entry_price)
 
+        # Rules 2 and 3 below are ALERTS, not closes (see EXIT MODEL). They are
+        # evaluated in the same first-match-wins order as before so behaviour is
+        # unchanged apart from what happens on a match.
+
+        # manual_hold suppresses alerting only. Pricing above still ran, so the
+        # dashboard and Analyst keep seeing a live, correctly-priced position;
+        # Tyson simply stops being told about something he is already handling.
+        if getattr(position, "manual_hold", False):
+            log.info(
+                "monitor: position %s is manual_hold — priced, alerts suppressed "
+                "(price %.4f)", position.id, current_price,
+            )
+            return "held"
+
         # 2. TAKE PROFIT — independent of entry price, so it still fires when
         # entry_price is NULL.
         if current_price > TAKE_PROFIT_PRICE:
-            return await self._close(
-                position, exit_price=current_price, exit_reason="take_profit",
-                question=question,
+            return await self._flag_for_exit(
+                position, alert_type="take_profit", trigger_price=current_price,
+                entry_price=entry_price, question=question,
             )
 
         # 2b. STOP LOSS — requires a real entry price.
@@ -249,23 +298,23 @@ class PositionMonitor:
             and current_price < STOP_LOSS_PRICE
             and entry_price > STOP_LOSS_MIN_ENTRY
         ):
-            return await self._close(
-                position, exit_price=current_price, exit_reason="stop_loss",
-                question=question,
+            return await self._flag_for_exit(
+                position, alert_type="stop_loss", trigger_price=current_price,
+                entry_price=entry_price, question=question,
             )
 
-        # 3. WEAKENING ALERT — notify only, no DB write.
+        # 3. WEAKENING — now deduped like the others. Previously this notified
+        # on EVERY sweep for as long as the condition held, which is why a
+        # weakening position produced a Telegram message every 15 minutes.
         if (
             entry_price is not None
             and current_price < WEAKENING_PRICE
             and entry_price > WEAKENING_MIN_ENTRY
         ):
-            await self._notify(
-                f"⚠️ Weakening: {question}\n"
-                f"now {current_price * 100:.0f}%"
-                f" (entered {entry_price * 100:.0f}%)"
+            return await self._flag_for_exit(
+                position, alert_type="weakening", trigger_price=current_price,
+                entry_price=entry_price, question=question,
             )
-            return "alert"
 
         if entry_price is None:
             log.warning(
@@ -277,7 +326,138 @@ class PositionMonitor:
         log.debug("Position %s still open (price %.4f)", position.id, current_price)
         return "open"
 
-    # --- close + notify ---------------------------------------------------
+    # --- flag for exit (TP / SL / weakening) ------------------------------
+
+    async def _flag_for_exit(
+        self,
+        position: TradePosition,
+        *,
+        alert_type: str,
+        trigger_price: float,
+        entry_price: Optional[float],
+        question: str,
+    ) -> str:
+        """Record a threshold crossing and tell Tyson. NEVER closes the position.
+
+        Order is deliberate: the alert row is written FIRST, then Telegram. A
+        notification failure therefore loses a message, not the alert — the row
+        is still there for the dashboard, for Charlie, and for the next sweep to
+        see as already-alerted. The inverse order would let a Telegram outage
+        produce silent, unrecorded threshold crossings.
+
+        Returns 'alert' when a new alert was raised, 'alert_dup' when one was
+        already live (deduped by the DB), 'error' when the write failed.
+        """
+        estimate = self._unrealized_estimate(position, trigger_price)
+
+        row = {
+            "position_id": position.id,
+            "alert_type": alert_type,
+            "trigger_price": trigger_price,
+            "entry_price": entry_price,
+            "unrealized_pnl_estimate": estimate,
+        }
+
+        try:
+            created = await insert_alert(row)
+        except (SupabaseError, ValueError) as exc:
+            # Do NOT notify: an alert Tyson can see but the system has no record
+            # of is worse than a missed sweep, because the next sweep would
+            # notify again with no dedup. Retry happens naturally in 15 minutes.
+            log.error(
+                "monitor: failed to record %s alert for position %s: %s",
+                alert_type, position.id, exc,
+            )
+            return "error"
+
+        if created is None:
+            # Live alert already exists for this (position, type). Silent by
+            # design — this is the anti-spam path, hit on every sweep for as
+            # long as the condition holds.
+            log.debug(
+                "monitor: %s alert already live for position %s — silent",
+                alert_type, position.id,
+            )
+            return "alert_dup"
+
+        log.info(
+            "monitor: %s ALERT raised for position %s at %.4f (estimate %s) — "
+            "position left OPEN, manual close required",
+            alert_type, position.id, trigger_price, estimate,
+        )
+
+        await self._notify(
+            self._alert_message(alert_type, question, trigger_price, entry_price, estimate)
+        )
+        try:
+            await mark_alert_notified(created["id"])
+        except (SupabaseError, KeyError, TypeError) as exc:
+            # Cosmetic only: the alert stands, notified_at is just unset.
+            log.warning(
+                "monitor: could not stamp notified_at on alert %s: %s",
+                created.get("id") if isinstance(created, dict) else "?", exc,
+            )
+        return "alert"
+
+    @staticmethod
+    def _unrealized_estimate(
+        position: TradePosition, trigger_price: float
+    ) -> Optional[float]:
+        """Mark-to-market ESTIMATE at trigger_price. Never a realised pnl.
+
+        NULL when shares or usdc_amount are missing, matching _close()'s rule
+        that a pnl is never guessed. This value is written only to
+        trading_position_alerts.unrealized_pnl_estimate and must never reach
+        trading_positions.pnl, which feeds the executor's daily-loss gate.
+        """
+        if position.shares is None or position.usdc_amount is None:
+            return None
+        return round(float(position.shares) * trigger_price - float(position.usdc_amount), 6)
+
+    @staticmethod
+    def _alert_message(
+        alert_type: str,
+        question: str,
+        trigger_price: float,
+        entry_price: Optional[float],
+        estimate: Optional[float],
+    ) -> str:
+        """Two tiers. Every tier states explicitly that nothing was closed.
+
+        The wording is load-bearing: the 2026-08-19 incident happened partly
+        because a message that reads like a completed action gets remembered as
+        one. These say what is true (a threshold was crossed) and what is
+        required (a human closes it).
+        """
+        entered = f" (entered {entry_price * 100:.0f}%)" if entry_price is not None else ""
+
+        if alert_type == "weakening":
+            return (
+                f"⚠️ Position weakening: {question}\n"
+                f"now {trigger_price * 100:.0f}%{entered}\n"
+                f"Nothing has been closed. Consider your exit."
+            )
+
+        est = ""
+        if estimate is not None:
+            est = f"\nEstimated unrealized: {'+' if estimate >= 0 else '-'}${abs(estimate):.2f} USDC"
+
+        if alert_type == "take_profit":
+            return (
+                f"💰 TAKE-PROFIT THRESHOLD HIT: {question}\n"
+                f"now {trigger_price * 100:.0f}%{entered}{est}\n"
+                f"This is NOT closed. Polymarket execution is manual-only right now — "
+                f"close it yourself on Polymarket, then tell Charlie so it is logged correctly."
+            )
+
+        return (
+            f"🔴 STOP-LOSS THRESHOLD HIT: {question}\n"
+            f"now {trigger_price * 100:.0f}%{entered}{est}\n"
+            f"This is NOT closed. Polymarket execution is manual-only right now — "
+            f"close it yourself on Polymarket, then tell Charlie so it is logged correctly."
+        )
+
+    # --- close + notify (RESOLUTION ONLY — see EXIT MODEL) ------------------
 
     async def _close(
         self,
@@ -287,7 +467,17 @@ class PositionMonitor:
         exit_reason: str,
         question: str,
     ) -> str:
-        """Write the close, then notify. Returns the sweep outcome tag."""
+        """Write a REAL close, then notify. Returns the sweep outcome tag.
+
+        Since 2026-08-20 this is reached only from the RESOLUTION branch, where
+        the market has settled and Polymarket has actually paid out, so
+        status='closed' with a computed pnl is correct and no human action is
+        pending. TP/SL/weakening go through _flag_for_exit instead and never
+        touch trading_positions.
+
+        Do not re-point TP/SL at this method without a working sell path: that
+        is precisely the defect fixed on 2026-08-20.
+        """
         exit_usdc = (
             round(float(position.shares) * exit_price, 6)
             if position.shares is not None else None

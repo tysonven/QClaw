@@ -947,8 +947,8 @@
           <div class="section-title" style="font-size:.9rem">Live Positions</div>
           <div class="table-wrap">
             <table>
-              <thead><tr><th>Market</th><th>Direction</th><th>Entry Price</th><th>Amount</th><th>Status</th></tr></thead>
-              <tbody id="tr-positions-body"><tr><td colspan="5" style="color:var(--text-dim)">Loading...</td></tr></tbody>
+              <thead><tr><th>Market</th><th>Direction</th><th>Entry Price</th><th>Amount</th><th>Status</th><th>Alert</th></tr></thead>
+              <tbody id="tr-positions-body"><tr><td colspan="6" style="color:var(--text-dim)">Loading...</td></tr></tbody>
             </table>
           </div>
         </div>
@@ -2522,13 +2522,28 @@ async function trLoadPositions() {
   try {
     const positions = await (await fetch(API('/api/trading/positions'))).json();
     if (!Array.isArray(positions) || !positions.length) {
-      $('tr-positions-body').innerHTML = '<tr><td colspan="5" style="color:var(--text-dim)">No open positions</td></tr>';
+      $('tr-positions-body').innerHTML = '<tr><td colspan="6" style="color:var(--text-dim)">No open positions</td></tr>';
       return;
     }
     $('tr-positions-body').innerHTML = positions.map(p => {
       const statusBadge = p.status === 'open' ? '<span class="badge badge-green">open</span>'
         : p.status === 'closed' ? '<span class="badge">closed</span>'
         : '<span class="badge badge-yellow">' + trEsc(p.status || '—') + '</span>';
+      // Alert badge. A flagged position is STILL OPEN and awaiting a manual
+      // exit — the monitor cannot sell, so this is a call to action, never a
+      // record that something was closed.
+      const est = p.top_alert_estimate != null
+        ? ' ' + (Number(p.top_alert_estimate) >= 0 ? '+' : '-') + '$' + Math.abs(Number(p.top_alert_estimate)).toFixed(2)
+        : '';
+      const alertCell = p.manual_hold
+        ? '<span class="badge" title="Manually managed: alerts suppressed, price tracking continues">held</span>'
+        : p.top_alert === 'stop_loss'
+          ? '<span class="badge badge-red" title="Stop-loss threshold hit. NOT closed — close on Polymarket, then log it.">stop-loss' + est + '</span>'
+        : p.top_alert === 'take_profit'
+          ? '<span class="badge badge-green" title="Take-profit threshold hit. NOT closed — close on Polymarket, then log it.">take-profit' + est + '</span>'
+        : p.top_alert === 'weakening'
+          ? '<span class="badge badge-yellow" title="Position weakening. Nothing closed.">weakening</span>'
+          : '<span style="color:var(--text-dim)">—</span>';
       // question resolves via simulation_id -> trading_simulations.raw_output.
       // Positions carry no market name of their own.
       const market = p.question || (p.asset ? p.asset.toUpperCase() + ' (unnamed market)' : null);
@@ -2537,9 +2552,10 @@ async function trLoadPositions() {
         + '<td><span class="badge ' + (p.direction === 'YES' ? 'badge-green' : 'badge-red') + '">' + trEsc(p.direction || '—') + '</span></td>'
         + '<td style="font-size:.78rem">' + (p.entry_price != null ? '$' + Number(p.entry_price).toFixed(2) : '—') + '</td>'
         + '<td style="font-size:.78rem">' + (p.usdc_amount != null ? '$' + Number(p.usdc_amount).toFixed(2) : '—') + '</td>'
-        + '<td style="white-space:nowrap">' + statusBadge + '</td></tr>';
+        + '<td style="white-space:nowrap">' + statusBadge + '</td>'
+        + '<td style="white-space:nowrap">' + alertCell + '</td></tr>';
     }).join('');
-  } catch { $('tr-positions-body').innerHTML = '<tr><td colspan="5" style="color:var(--text-dim)">Failed to load</td></tr>'; }
+  } catch { $('tr-positions-body').innerHTML = '<tr><td colspan="6" style="color:var(--text-dim)">Failed to load</td></tr>'; }
 }
 
 async function trLoadSimulations() {

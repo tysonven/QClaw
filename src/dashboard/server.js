@@ -1532,11 +1532,43 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
         // No is_paper flag: see the note on /api/trading/balance. tx_hash is
         // NULL on every real position right now, so it says nothing about
         // whether a trade happened.
-        res.json(rows.map(({ trading_simulations: sim, ...p }) => ({
-          ...p,
-          question: sim?.question ?? null,
-          asset: sim?.asset ?? null
-        })));
+        // Live (unresolved) threshold alerts, joined in so the table can show
+        // "this position needs attention" without a second client round-trip.
+        // An alert is NOT a close: the monitor cannot sell, so a flagged
+        // position is still open and awaiting a manual exit.
+        let alertsByPosition = {};
+        try {
+          const aRes = await fetch(
+            `${SB_URL}/rest/v1/trading_position_alerts?resolved_at=is.null&select=position_id,alert_type,trigger_price,triggered_at,unrealized_pnl_estimate&order=triggered_at.desc`,
+            { headers: { apikey: sbKey, Authorization: `Bearer ${sbKey}` } }
+          );
+          const aRows = await aRes.json();
+          if (Array.isArray(aRows)) {
+            for (const a of aRows) {
+              (alertsByPosition[a.position_id] ||= []).push(a);
+            }
+          }
+        } catch {
+          // Alert lookup is additive: positions still render without it. The
+          // table shows no badge rather than failing the whole panel.
+        }
+        const RANK = { stop_loss: 3, take_profit: 2, weakening: 1 };
+        res.json(rows.map(({ trading_simulations: sim, ...p }) => {
+          const live = alertsByPosition[p.id] || [];
+          const top = live.length
+            ? live.reduce((a, b) => ((RANK[b.alert_type] || 0) > (RANK[a.alert_type] || 0) ? b : a))
+            : null;
+          return {
+            ...p,
+            question: sim?.question ?? null,
+            asset: sim?.asset ?? null,
+            alerts: live,
+            has_alert: live.length > 0,
+            top_alert: top?.alert_type ?? null,
+            top_alert_at: top?.triggered_at ?? null,
+            top_alert_estimate: top?.unrealized_pnl_estimate ?? null
+          };
+        }));
       } catch (err) { res.status(500).json({ error: err.message }); }
     });
 

@@ -313,3 +313,119 @@ async def _count_positions(params: dict[str, Any]) -> int:
             f"unparseable content-range: {content_range!r}",
         )
     return int(total)
+
+
+# ---------------------------------------------------------------------------
+# Position alerts (2026-08-20 exit-side fix)
+# ---------------------------------------------------------------------------
+# An alert records that the monitor detected a take-profit / stop-loss /
+# weakening threshold crossing. It is NOT a close: Polymarket exits are manual
+# while the signer/maker-address issue is open, so the monitor flags and the
+# human closes. Nothing here writes to trading_positions' money columns.
+
+
+class AlertExistsError(Exception):
+    """A live (unresolved) alert of this type already exists for the position.
+
+    Raised on the partial-unique-index conflict. This is the DEDUP signal, not a
+    failure: the monitor treats it as "already alerted, stay quiet" so a
+    15-minute sweep that re-detects the same condition does not re-notify.
+    """
+
+
+async def insert_alert(alert: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """Insert one alert. Returns the row, or None if one is already live.
+
+    Dedup is enforced by `trading_position_alerts_live_uniq`, a partial unique
+    index on (position_id, alert_type) WHERE resolved_at IS NULL. Enforcing it
+    in Postgres rather than in monitor logic means it survives process restarts
+    and concurrent sweeps, which an in-memory guard would not.
+
+    PostgREST surfaces a unique violation as HTTP 409 with SQLSTATE 23505.
+    """
+    try:
+        rows = await _request(
+            "POST", "/trading_position_alerts", json_body=alert, write=True
+        )
+    except SupabaseError as exc:
+        if exc.status_code == 409 or "23505" in str(exc):
+            log.info(
+                "alert already live for position %s type %s — not re-alerting",
+                alert.get("position_id"), alert.get("alert_type"),
+            )
+            return None
+        raise
+    return rows[0] if rows else None
+
+
+async def mark_alert_notified(alert_id: str) -> None:
+    """Stamp notified_at after a successful Telegram send.
+
+    Best effort: the alert row is written BEFORE the send, so a failure here
+    loses the timestamp, never the alert.
+    """
+    await _request(
+        "PATCH",
+        "/trading_position_alerts",
+        params={"id": f"eq.{alert_id}"},
+        json_body={"notified_at": datetime.now(timezone.utc).isoformat()},
+        write=True,
+    )
+
+
+async def get_unresolved_alerts(
+    position_id: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    """Live alerts, newest first. Optionally scoped to one position."""
+    params: dict[str, Any] = {
+        "resolved_at": "is.null",
+        "order": "triggered_at.desc",
+    }
+    if position_id:
+        params["position_id"] = f"eq.{position_id}"
+    rows = await _request("GET", "/trading_position_alerts", params=params)
+    return rows or []
+
+
+async def get_alerts_for_position(position_id: str) -> list[dict[str, Any]]:
+    """Full alert history for one position, newest first (resolved included)."""
+    rows = await _request(
+        "GET",
+        "/trading_position_alerts",
+        params={
+            "position_id": f"eq.{position_id}",
+            "order": "triggered_at.desc",
+        },
+    )
+    return rows or []
+
+
+async def resolve_alerts_for_position(
+    position_id: str, note: str
+) -> list[dict[str, Any]]:
+    """Resolve every live alert on a position. Returns the rows resolved.
+
+    Called when a real close is logged, so the caller can report which alerts
+    the close answered ("this followed the stop-loss alert from 15:39") instead
+    of taking the operator's word with no cross-reference.
+    """
+    rows = await _request(
+        "PATCH",
+        "/trading_position_alerts",
+        params={"position_id": f"eq.{position_id}", "resolved_at": "is.null"},
+        json_body={
+            "resolved_at": datetime.now(timezone.utc).isoformat(),
+            "resolution_note": note,
+        },
+        write=True,
+    )
+    return rows or []
+
+
+async def set_manual_hold(position_id: str, hold: bool) -> dict[str, Any]:
+    """Set/clear manual_hold on a position.
+
+    manual_hold suppresses alerting only. The monitor still prices the position
+    every sweep so the dashboard and Analyst stay accurate.
+    """
+    return await update_position(position_id, {"manual_hold": bool(hold)})
