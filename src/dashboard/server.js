@@ -1537,6 +1537,7 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
         // An alert is NOT a close: the monitor cannot sell, so a flagged
         // position is still open and awaiting a manual exit.
         let alertsByPosition = {};
+        let alertsFetchOk = true;
         try {
           const aRes = await fetch(
             `${SB_URL}/rest/v1/trading_position_alerts?resolved_at=is.null&select=position_id,alert_type,trigger_price,triggered_at,unrealized_pnl_estimate&order=triggered_at.desc`,
@@ -1547,10 +1548,17 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
             for (const a of aRows) {
               (alertsByPosition[a.position_id] ||= []).push(a);
             }
+          } else {
+            // PostgREST error bodies are objects, not arrays. Without this
+            // branch a permissions or schema error rendered as "no alerts",
+            // which is indistinguishable from genuinely-nothing-wrong on the
+            // one panel built to surface what needs attention.
+            alertsFetchOk = false;
+            console.error('[trading] alert fetch returned non-array:', JSON.stringify(aRows).slice(0, 300));
           }
-        } catch {
-          // Alert lookup is additive: positions still render without it. The
-          // table shows no badge rather than failing the whole panel.
+        } catch (e) {
+          alertsFetchOk = false;
+          console.error('[trading] alert fetch failed:', e.message);
         }
         const RANK = { stop_loss: 3, take_profit: 2, weakening: 1 };
         res.json(rows.map(({ trading_simulations: sim, ...p }) => {
@@ -1566,7 +1574,10 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
             has_alert: live.length > 0,
             top_alert: top?.alert_type ?? null,
             top_alert_at: top?.triggered_at ?? null,
-            top_alert_estimate: top?.unrealized_pnl_estimate ?? null
+            top_alert_estimate: top?.unrealized_pnl_estimate ?? null,
+            // false = the alert lookup failed, so absence of a badge means
+            // "unknown", not "clear". The UI renders this distinctly.
+            alerts_fetch_ok: alertsFetchOk
           };
         }));
       } catch (err) { res.status(500).json({ error: err.message }); }

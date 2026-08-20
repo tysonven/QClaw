@@ -2535,15 +2535,26 @@ async function trLoadPositions() {
       const est = p.top_alert_estimate != null
         ? ' ' + (Number(p.top_alert_estimate) >= 0 ? '+' : '-') + '$' + Math.abs(Number(p.top_alert_estimate)).toFixed(2)
         : '';
-      const alertCell = p.manual_hold
-        ? '<span class="badge" title="Manually managed: alerts suppressed, price tracking continues">held</span>'
-        : p.top_alert === 'stop_loss'
-          ? '<span class="badge badge-red" title="Stop-loss threshold hit. NOT closed — close on Polymarket, then log it.">stop-loss' + est + '</span>'
+      // held and a live alert are INDEPENDENT states. A position can be both:
+      // Tyson marked it manually-managed AND the stop loss has since fired.
+      // Showing only one would hide live state, which is the exact trap this
+      // panel exists to close, so both badges render when both are true.
+      const alertBadge = p.top_alert === 'stop_loss'
+        ? '<span class="badge badge-red" title="Stop-loss threshold hit. NOT closed — close on Polymarket, then log it.">stop-loss' + est + '</span>'
         : p.top_alert === 'take_profit'
           ? '<span class="badge badge-green" title="Take-profit threshold hit. NOT closed — close on Polymarket, then log it.">take-profit' + est + '</span>'
         : p.top_alert === 'weakening'
           ? '<span class="badge badge-yellow" title="Position weakening. Nothing closed.">weakening</span>'
-          : '<span style="color:var(--text-dim)">—</span>';
+          : '';
+      const heldBadge = p.manual_hold
+        ? '<span class="badge" title="Manually managed: alerts suppressed, price tracking continues">held</span>'
+        : '';
+      // An alert lookup failure must not read as "no alerts".
+      const unknownBadge = (p.alerts_fetch_ok === false && !alertBadge)
+        ? '<span class="badge badge-yellow" title="Alert lookup failed — alert state is UNKNOWN, not clear. Check dashboard logs.">alerts ?</span>'
+        : '';
+      const badges = [heldBadge, alertBadge, unknownBadge].filter(Boolean).join(' ');
+      const alertCell = badges || '<span style="color:var(--text-dim)">—</span>';
       // question resolves via simulation_id -> trading_simulations.raw_output.
       // Positions carry no market name of their own.
       const market = p.question || (p.asset ? p.asset.toUpperCase() + ' (unnamed market)' : null);

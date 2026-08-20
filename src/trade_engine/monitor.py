@@ -79,8 +79,10 @@ from src.trade_engine.database import (
     SupabaseError,
     get_open_positions,
     get_simulations_by_ids,
+    get_unresolved_alerts,
     insert_alert,
     mark_alert_notified,
+    resolve_alerts_for_position,
     update_position,
 )
 from src.trade_engine.models import MonitorRunResult, TradePosition
@@ -371,13 +373,34 @@ class PositionMonitor:
             return "error"
 
         if created is None:
-            # Live alert already exists for this (position, type). Silent by
-            # design — this is the anti-spam path, hit on every sweep for as
+            # A live alert already exists for this (position, type). Normally
+            # silent — this is the anti-spam path, hit on every sweep for as
             # long as the condition holds.
-            log.debug(
-                "monitor: %s alert already live for position %s — silent",
+            #
+            # H1: unless that alert was never actually delivered. notified_at is
+            # NULL when the Telegram send failed, and without this retry the
+            # dedup index would guarantee Tyson is never told again about a
+            # threshold that is still live. Delivery failure must not be
+            # permanent silence, so re-attempt while the condition persists.
+            undelivered = await self._undelivered_alert(position.id, alert_type)
+            if undelivered is None:
+                log.debug(
+                    "monitor: %s alert already live and delivered for position "
+                    "%s — silent", alert_type, position.id,
+                )
+                return "alert_dup"
+
+            log.info(
+                "monitor: %s alert for position %s exists but was never "
+                "delivered — retrying notification",
                 alert_type, position.id,
             )
+            if await self._notify(
+                self._alert_message(
+                    alert_type, question, trigger_price, entry_price, estimate
+                )
+            ):
+                await self._stamp_notified(undelivered.get("id"))
             return "alert_dup"
 
         log.info(
@@ -386,18 +409,58 @@ class PositionMonitor:
             alert_type, position.id, trigger_price, estimate,
         )
 
-        await self._notify(
+        # H1: notified_at must mean "Telegram accepted this message", not
+        # "we called _notify". Only stamp on a genuine 200; otherwise the row
+        # stays NULL and the dedup path above retries on the next sweep.
+        if await self._notify(
             self._alert_message(alert_type, question, trigger_price, entry_price, estimate)
-        )
-        try:
-            await mark_alert_notified(created["id"])
-        except (SupabaseError, KeyError, TypeError) as exc:
-            # Cosmetic only: the alert stands, notified_at is just unset.
+        ):
+            await self._stamp_notified(created.get("id"))
+        else:
             log.warning(
-                "monitor: could not stamp notified_at on alert %s: %s",
-                created.get("id") if isinstance(created, dict) else "?", exc,
+                "monitor: %s alert %s recorded but NOT delivered — notified_at "
+                "left NULL, next sweep will retry",
+                alert_type, created.get("id"),
             )
         return "alert"
+
+    async def _undelivered_alert(
+        self, position_id: str, alert_type: str
+    ) -> Optional[dict[str, Any]]:
+        """The live alert of this type IF it was never delivered, else None.
+
+        Reuses get_unresolved_alerts rather than adding a query: the set of live
+        alerts for one position is tiny, so filtering in Python is cheaper than
+        another round trip and keeps the DB surface unchanged.
+
+        A lookup failure returns None (stay silent) rather than raising: the
+        alert is already recorded, and a retry storm on a flaky read would be
+        worse than a delayed notification.
+        """
+        try:
+            live = await get_unresolved_alerts(position_id)
+        except SupabaseError as exc:
+            log.warning(
+                "monitor: could not check delivery state for position %s: %s",
+                position_id, exc,
+            )
+            return None
+        for a in live:
+            if a.get("alert_type") == alert_type and a.get("notified_at") is None:
+                return a
+        return None
+
+    async def _stamp_notified(self, alert_id: Optional[str]) -> None:
+        """Best-effort notified_at stamp. Cosmetic: the alert itself stands."""
+        if not alert_id:
+            return
+        try:
+            await mark_alert_notified(alert_id)
+        except (SupabaseError, KeyError, TypeError) as exc:
+            log.warning(
+                "monitor: could not stamp notified_at on alert %s: %s",
+                alert_id, exc,
+            )
 
     @staticmethod
     def _unrealized_estimate(
@@ -510,6 +573,32 @@ class PositionMonitor:
             "monitor: closed position %s %s exit_price=%.4f exit_usdc=%s pnl=%s",
             position.id, exit_reason, exit_price, exit_usdc, pnl,
         )
+
+        # H2: a settled position may carry a live TP/SL/weakening alert raised
+        # before the market resolved. Clear it, or it sits unresolved forever on
+        # GET /positions/alerts — the endpoint whose entire job is telling
+        # Charlie what still needs attention.
+        #
+        # Ordering mirrors POST /positions/manual-close: resolve only AFTER the
+        # close is durable. Clearing an alert against a close that failed to
+        # write would hide a threshold crossing that is still live.
+        try:
+            cleared = await resolve_alerts_for_position(
+                position.id, f"market settled ({exit_reason})"
+            )
+            if cleared:
+                log.info(
+                    "monitor: resolved %d alert(s) on settled position %s",
+                    len(cleared), position.id,
+                )
+        except SupabaseError as exc:
+            # The close stands; only the alert cleanup failed. Surfaced rather
+            # than swallowed because a stale alert is exactly the misleading
+            # state this PR exists to remove.
+            log.warning(
+                "monitor: position %s closed but alert resolution failed: %s",
+                position.id, exc,
+            )
         await self._notify(self._close_message(exit_reason, question, exit_price,
                                                exit_usdc, pnl))
         return "resolved" if exit_reason.startswith("resolved") else "tp_sl"
@@ -605,11 +694,19 @@ class PositionMonitor:
 
     # --- telegram ---------------------------------------------------------
 
-    async def _notify(self, text: str) -> None:
-        """Best-effort Telegram send. A notification failure never fails a close."""
+    async def _notify(self, text: str) -> bool:
+        """Best-effort Telegram send. Returns True ONLY on a genuine 200.
+
+        The return value is load-bearing: it gates whether notified_at is
+        stamped on an alert. False on an unconfigured token, a non-200, or any
+        exception, so a row is never marked delivered when it was not — that
+        would combine with the dedup index to silence a live threshold forever.
+
+        A notification failure still never fails a close.
+        """
         if not self._token or not self._chat_id:
             log.error("monitor: telegram notification skipped: not configured")
-            return
+            return False
         url = f"{TELEGRAM_API_BASE}/bot{self._token}/sendMessage"
         try:
             response = await self._get_client().post(url, json={
@@ -622,7 +719,10 @@ class PositionMonitor:
                     "monitor: telegram sendMessage returned HTTP %d",
                     response.status_code,
                 )
+                return False
+            return True
         except Exception as exc:  # noqa: BLE001
             log.error(
                 "monitor: telegram sendMessage failed: %s", type(exc).__name__
             )
+            return False

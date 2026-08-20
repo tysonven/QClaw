@@ -120,6 +120,21 @@ Tyson a trade "will" go through:
 | 1 | trading_disabled | `trading_config.trading_enabled` is not true | — |
 | 2 | position_cap | too many positions already open | **MAX_CONCURRENT_POSITIONS = 2** (hardcoded in executor.py, NOT in trading_config) |
 | 3 | daily_loss_limit | today's realised loss meets the limit | `daily_loss_limit` (20 USDC) |
+
+**Gate 3 depends on manual logging (changed 2026-08-20).** The Position Monitor
+no longer writes a close when a stop-loss or take-profit threshold fires: it
+cannot sell, so it raises an alert and leaves the position open. `get_daily_pnl`
+sums `pnl` over positions closed since UTC midnight, and only a real close
+logged via `POST /positions/manual-close` populates that field.
+
+The tradeoff, stated plainly: **a real loss on a position closed by hand and not
+yet logged is invisible to the daily-loss brake.** Gate 3 will under-count and
+may allow an entry it would otherwise have blocked. This is deliberate and is
+better than the previous behaviour, which fed the gate a *phantom* loss from a
+close that never happened, but it means logging a manual close promptly is now
+load-bearing for risk control, not just for the Analyst's learning loop.
+
+If Tyson mentions closing a position, log it the same session.
 | 4 | edge_below_threshold | `candidate.edge < min_edge_threshold / 100` | 7% |
 | 5 | invalid_amount | size ≤ 0, above config, or above a hard ceiling | `max_position_usdc` (10) AND **ABSOLUTE_MAX_POSITION_USDC = 25.0** (hardcoded ceiling that config cannot raise) |
 | 6 | invalid_market_identifier | no well-formed Polymarket conditionId | — |

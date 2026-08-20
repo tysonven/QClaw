@@ -86,6 +86,8 @@ class MonitorTestCase(unittest.TestCase):
             "update_position": monitor_mod.update_position,
             "insert_alert": monitor_mod.insert_alert,
             "mark_alert_notified": monitor_mod.mark_alert_notified,
+            "get_unresolved_alerts": monitor_mod.get_unresolved_alerts,
+            "resolve_alerts_for_position": monitor_mod.resolve_alerts_for_position,
         }
         monitor_mod._last_monitor.update({"at": None, "resolved_total": 0})
 
@@ -103,6 +105,10 @@ class MonitorTestCase(unittest.TestCase):
         self.live_alerts = set()    # {(position_id, alert_type)}
         self.alert_insert_exc = None
         self.notified_alert_ids = []
+        # Full alert rows, keyed by id, so notified_at and resolved_at can be
+        # asserted the way the real table behaves.
+        self.alert_rows = {}        # alert_id -> row dict
+        self.resolve_calls = []     # (position_id, note)
 
         self.gamma_by_cid = {}      # condition_id -> list payload or Exception
         self.gamma_requests = []
@@ -137,16 +143,45 @@ class MonitorTestCase(unittest.TestCase):
             if key in tests.live_alerts:
                 return None          # partial unique index conflict -> deduped
             tests.live_alerts.add(key)
-            return {"id": f"alert-{len(tests.live_alerts)}", **alert}
+            row = {
+                "id": f"alert-{len(tests.live_alerts)}",
+                "notified_at": None,
+                "resolved_at": None,
+                **alert,
+            }
+            tests.alert_rows[row["id"]] = row
+            return row
 
         async def _mark_notified(alert_id):
             tests.notified_alert_ids.append(alert_id)
+            if alert_id in tests.alert_rows:
+                tests.alert_rows[alert_id]["notified_at"] = "2026-08-20T00:00:00Z"
+
+        async def _get_unresolved(position_id=None):
+            return [
+                r for r in tests.alert_rows.values()
+                if r.get("resolved_at") is None
+                and (position_id is None or r.get("position_id") == position_id)
+            ]
+
+        async def _resolve_for_position(position_id, note):
+            tests.resolve_calls.append((position_id, note))
+            out = []
+            for r in tests.alert_rows.values():
+                if r.get("position_id") == position_id and r.get("resolved_at") is None:
+                    r["resolved_at"] = "2026-08-20T00:00:00Z"
+                    r["resolution_note"] = note
+                    tests.live_alerts.discard((position_id, r["alert_type"]))
+                    out.append(r)
+            return out
 
         monitor_mod.get_open_positions = _get_open
         monitor_mod.get_simulations_by_ids = _get_sims
         monitor_mod.update_position = _update
         monitor_mod.insert_alert = _insert_alert
         monitor_mod.mark_alert_notified = _mark_notified
+        monitor_mod.get_unresolved_alerts = _get_unresolved
+        monitor_mod.resolve_alerts_for_position = _resolve_for_position
 
         def handler(request: httpx.Request) -> httpx.Response:
             if request.url.host == "api.telegram.org":
@@ -498,6 +533,138 @@ class TestTakeProfitStopLoss(MonitorTestCase):
         text = " ".join(r["text"] for r in self.telegram_requests)
         self.assertIn("weakening", text.lower())
         self.assertIn("Nothing has been closed", text)
+
+
+class TestAlertDeliveryTruthfulness(MonitorTestCase):
+    """H1: notified_at must mean Telegram accepted the message.
+
+    Stamping it unconditionally combines with the dedup index to silence a live
+    threshold forever: the row looks delivered, so no sweep ever retries.
+    """
+
+    def _sl_position(self):
+        self.positions = [make_position(entry_price=0.35)]
+        self.sim_rows["sim-1"] = sim_row()
+        self.gamma_by_cid[CID] = gamma_market(yes="0.05", no="0.95")
+
+    def test_notified_at_stamped_on_successful_send(self):
+        self._sl_position()
+        result = self.sweep()
+        self.assertEqual(result.alerts_raised, 1)
+        self.assertEqual(len(self.notified_alert_ids), 1)
+        (row,) = self.alert_rows.values()
+        self.assertIsNotNone(row["notified_at"])
+
+    def test_notified_at_not_stamped_when_telegram_fails(self):
+        self._sl_position()
+        self.telegram_status = 500          # Telegram rejects the send
+        result = self.sweep()
+
+        self.assertEqual(result.alerts_raised, 1, "alert must still be recorded")
+        self.assertEqual(
+            self.notified_alert_ids, [],
+            "notified_at stamped despite a failed send — the row would claim a "
+            "delivery that never happened",
+        )
+        (row,) = self.alert_rows.values()
+        self.assertIsNone(row["notified_at"])
+
+    def test_undelivered_alert_is_retried_on_next_sweep(self):
+        """Delivery failure must not become permanent silence."""
+        self._sl_position()
+        self.telegram_status = 500
+        self.sweep()
+        self.assertEqual(self.notified_alert_ids, [])
+        first_attempts = len(self.telegram_requests)
+        self.assertEqual(first_attempts, 1)
+
+        # Telegram recovers. The dedup index still blocks a second INSERT, so
+        # the retry has to come from the dedup branch.
+        self.telegram_status = 200
+        second = self.sweep()
+        self.assertEqual(second.alerts_deduped, 1)
+        self.assertEqual(
+            len(self.telegram_requests), 2,
+            "undelivered alert was not retried once Telegram recovered",
+        )
+        self.assertEqual(len(self.notified_alert_ids), 1)
+        (row,) = self.alert_rows.values()
+        self.assertIsNotNone(row["notified_at"])
+
+    def test_delivered_alert_is_not_retried(self):
+        """The anti-spam guarantee still holds once delivery succeeded."""
+        self._sl_position()
+        self.sweep()
+        self.assertEqual(len(self.telegram_requests), 1)
+        second = self.sweep()
+        self.assertEqual(second.alerts_deduped, 1)
+        self.assertEqual(
+            len(self.telegram_requests), 1,
+            "a delivered alert was re-sent — dedup broken",
+        )
+
+
+class TestSettlementResolvesAlerts(MonitorTestCase):
+    """H2: settlement must clear alerts raised before the market resolved.
+
+    Otherwise a stale stop-loss alert sits unresolved forever on
+    GET /positions/alerts, the endpoint whose whole job is telling Charlie what
+    still needs attention.
+    """
+
+    def test_resolution_clears_a_pre_existing_alert(self):
+        # Sweep 1: price collapses, stop loss alerts, position stays open.
+        self.positions = [make_position(entry_price=0.35)]
+        self.sim_rows["sim-1"] = sim_row()
+        self.gamma_by_cid[CID] = gamma_market(yes="0.05", no="0.95")
+        first = self.sweep()
+        self.assertEqual(first.alerts_raised, 1)
+        self.assertEqual(self.update_calls, [])
+        (row,) = self.alert_rows.values()
+        self.assertIsNone(row["resolved_at"])
+
+        # Sweep 2: the market settles against us.
+        self.gamma_by_cid[CID] = gamma_market(
+            yes="0", no="1", active=False, closed=True
+        )
+        second = self.sweep()
+        self.assertEqual(second.positions_resolved, 1)
+
+        # The close was written...
+        (pos_id, updates), = self.update_calls
+        self.assertEqual(updates["status"], "closed")
+        self.assertEqual(updates["exit_reason"], "resolved_loss")
+
+        # ...and the stale alert was cleared, after the write.
+        self.assertEqual(len(self.resolve_calls), 1)
+        called_pid, note = self.resolve_calls[0]
+        self.assertEqual(called_pid, pos_id)
+        self.assertIn("resolved_loss", note)
+        self.assertIsNotNone(row["resolved_at"])
+
+    def test_close_write_failure_leaves_alert_unresolved(self):
+        """Resolve only after the close is durable.
+
+        Clearing an alert against a close that failed to write would hide a
+        threshold crossing that is still live.
+        """
+        self.positions = [make_position(entry_price=0.35)]
+        self.sim_rows["sim-1"] = sim_row()
+        self.gamma_by_cid[CID] = gamma_market(yes="0.05", no="0.95")
+        self.sweep()
+        (row,) = self.alert_rows.values()
+
+        self.update_exc_for["pos-1"] = RuntimeError("supabase down")
+        self.gamma_by_cid[CID] = gamma_market(
+            yes="0", no="1", active=False, closed=True
+        )
+        self.sweep()
+
+        self.assertEqual(
+            self.resolve_calls, [],
+            "alerts resolved even though the close write failed",
+        )
+        self.assertIsNone(row["resolved_at"])
 
 
 class TestNotifications(MonitorTestCase):
