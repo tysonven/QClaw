@@ -22415,6 +22415,46 @@ someone went looking for something else.
 6. **Repo and README audit.**
 7. **Periodic drift-check design.**
 
+### Addendum: first real automated trade, confirmed end-to-end
+
+Item 3 above landed the same day it was written. Read-only confirmation at
+**2026-08-20 18:02:11 UTC**: the first automated trade since the 2026-08-10 UK
+geoblock discovery, and the first ever to complete the full pipeline without a
+manual leg.
+
+**Market:** "Will Ethereum reach $2,600 in August?" — BUY YES, $10.00, entry
+0.2790, 35.84 shares.
+
+**Full pipeline exercised for the first time:** scanner → analyst (PROCEED, 62%
+confidence) → Telegram approval gate → executor → Amsterdam relay → Polymarket
+CLOB → real on-chain fill. Every hop upstream of the relay had run before; this
+is the first run where the order actually landed on-chain rather than dying at
+the maker-address rejection.
+
+Position `f4be9ee8-15e5-4793-908f-0968944a1cec`, `tx_hash`:
+
+```
+0x1938e3c75f7bbf7ed59525d618a326baba284a377d2e8d3d5bbc5f3578d83878
+```
+
+**First non-null `tx_hash` the executor has ever written.** Every prior row,
+manual-logged or phantom-closed, carries `tx_hash: null` by construction. A
+populated hash here is the `signature_type=3` fix (proven on-chain by `eth_call`
+against `isValidSignature` earlier this session) now proven in production, not
+just in simulation.
+
+Verified independently three ways — Telegram confirmation, the Polymarket UI
+(real position, real shares), and a direct database query — all consistent on
+entry price, size and direction.
+
+This closes the loop opened 2026-08-10: the UK geoblock discovery, the
+`py-clob-client` v2 migration, three signature types ruled out in turn, and
+today's signer proof, ending in a fill the executor placed and recorded itself.
+
+`/health` immediately after: 1 open position, `daily_pnl` -9.74 (carried from
+the earlier manual BTC close, unrelated to this trade), `trading_enabled: true`.
+Clean state, nothing to reconcile.
+
 ## 2026-08-20: flow-coach-ai Slice 2e review round 4 fix
 
 Round 4 confirmed both round-3 fixes closed but proved the hash
