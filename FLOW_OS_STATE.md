@@ -4,7 +4,7 @@ This is the canonical state doc. Charlie reads it at session start to know what'
 
 This file is the fourth canonical doc Charlie reads at session start, after `CEO_OPERATING_MODEL.md`, `CHARLIE_ROLE.md`, and `LOCATIONS.md`.
 
-**Last updated:** 2026-08-19
+**Last updated:** 2026-08-20
 
 ## Maintenance rules
 
@@ -120,58 +120,57 @@ line. Positioned broadly rather than GHL-agency-specific.
 
 **Owner:** Tyson.
 
-#### Call Intel — work in progress
+#### Call Intel (internal use, not a product)
 
-**Not a product. Not on any public surface.** Deliberately excluded from
-`flowos.tech/products` as of 2026-08-05 and stays excluded until the blockers
-below clear. No page, no card, no mention on the site.
+**In active internal use. Not a product, and not on any public surface.**
+Deliberately excluded from `flowos.tech/products` and it stays excluded. No page,
+no card, no mention on the site. This entry's 2026-08-05 framing as a
+release-blocked product was overtaken by events: it is a tool Tyson runs, and it
+works.
 
-Call transcription and summarisation. Zoom → transcript → Claude summary →
-GoHighLevel task + email to the agent who ran the call. Self-hosted; the buyer
-knows where the data sits.
+Zoom (or GHL LC Phone) call → transcript → Claude analysis → CRM note, task, and
+a follow-up email draft for the rep who ran the call. Every call is logged to
+Supabase `call_intel_log`, success or failure, so nothing fails silently.
 
-- **Repo:** `tysonven/call-intel` — private. Confirmed not publicly reachable
-  (unauthenticated fetch returns 404) as of 2026-08-05. No live exposure.
-- **Price:** not decided. Three models scoped 2026-08-03 (DFY setup;
-  source-available with paid support; hosted SaaS) and explicitly left open.
-  No figure is canonical.
-- **Delivery model:** undecided, and deferred with the rest. It determines
-  whether a multi-product purchase-to-delivery pipeline is needed at all — DFY
-  setup requires none.
+- **Repo:** `tysonven/call-intel`, private, confirmed not publicly reachable.
+- **Runs on:** Vercel serverless. Nothing on qclaw. See `LOCATIONS.md`.
+- **Real usage (read from `call_intel_log`, 2026-08-20):** 13 calls logged since
+  2026-07-21. 8 success, 2 transport/API errors, 2 `claude_parse_error`, 1
+  `contact_not_found`. 12 Zoom, 1 GHL LC Phone.
 
-**Soak data (as of 2026-08-03):** 5 calls logged — 3 successful (Jul 22 test,
-Jul 31 Ashley's call, Aug 3 Tyson's call; all contact-matched, tasks created),
-2 failed. Both failures are `claude_parse_error`: Claude returns good-quality
-JSON that gets truncated by `max_tokens: 1500`. One failing call ran 169
-minutes. A fixed output ceiling cannot hold summaries from calls of arbitrary
-length — the fix is length-aware output budgeting or transcript chunking, not
-a larger constant.
+**Status of the five 2026-08-03 release blockers:**
 
-**Blockers to release:**
+1. **Call volume: progressed.** 6 calls since the soak test, 5 of them
+   successful. Still short of the "2 to 4 weeks of production calls" bar, but no
+   longer an empty dataset.
+2. **`claude_parse_error` truncation: FIXED** (commit `9ef2411`). `max_tokens`
+   raised 1500 to 4000, plus a field-truncation safety net. Both parse failures
+   sit on 2026-08-03; every call since has parsed cleanly. **Caveat worth
+   keeping:** the longest post-fix call is 83 minutes, and the 169-minute
+   outlier that originally broke it has not recurred. So the raised ceiling is
+   unproven at that length, and this entry's original objection (a fixed output
+   ceiling cannot hold summaries from calls of arbitrary length) is not retired,
+   only unexercised.
+3. **GHL hardwiring: substantially progressed** (commit `3379383`). A CRM
+   adapter layer now exists at `src/integrations/crm/`. `CRM_ADAPTER=ghl` is the
+   default; `CRM_ADAPTER=webhook` POSTs the full structured analysis to any
+   endpoint. Real movement toward CRM-agnostic, not a complete abstraction.
+4. **Setup complexity: progressed.** `scripts/setup.js` is an interactive setup
+   with live credential verification, replacing the manual checklist.
+5. **Leak audit: still open**, and it only matters if the expansion direction
+   below is ever actioned. Internal use carries no such requirement.
 
-1. Insufficient real-call volume. 2–4 weeks of production calls needed before
-   output quality, contact matching, and edge-case handling can be trusted.
-2. `claude_parse_error` truncation bug — open as of 2026-08-03.
-3. GoHighLevel is hardwired. No CRM abstraction layer; non-GHL users cannot
-   run it.
-4. Setup complexity — Zoom Marketplace app creation, Vercel deploy, Supabase
-   migration, env vars, manual `users.js` edits. Too many steps for
-   non-technical buyers.
-5. Repo not leak-audited. Template is `flowos-sms-gateway` PR #6: buyer-facing
-   README with internals replaced by placeholders, `.env.example` regrouped
-   with Flow OS client IDs blanked, commercial `LICENSE`, `.releaseignore`,
-   genericised migrations with real values moved to a release-ignored internal
-   file, full de-leak of `tests/`. That pass took two review rounds; residuals
-   found on the second were test phone numbers, a migration filename, and a
-   client name.
+**Expansion intent, stated direction and not a committed plan.** Tyson has said
+open-source or a paid offer is a real direction, "soon, once early soak bugs are
+ironed out". There is no date, no committed scope, and no roadmap entry, so treat
+this as intent rather than a plan. If it is actioned, the leak audit above is the
+gating step and `flowos-sms-gateway` PR #6 is the template.
 
-**Recommended next step (from 2026-08-03, unactioned):** private beta with 2–3
-trusted people rather than public release. Repo access only, feedback on setup
-experience and output quality, no public promises.
-
-**On completion:** revisit delivery model → pricing → leak audit → then add to
-`flowos.tech/products`. The Astro `/products` layout is built to take a third
-card without restructuring.
+**No price has ever been set**, and that is deliberate. Three models were scoped
+on 2026-08-03 (DFY setup; source-available with paid support; hosted SaaS) and
+left open, so no figure is canonical and none should be quoted. Delivery model is
+undecided for the same reason. If it ever does ship, the Astro `/products` layout
+already takes a third card without restructuring.
 
 **Owner:** Tyson.
 
@@ -500,6 +499,15 @@ Stuff currently broken, suboptimal, or pending. Charlie reads this section to kn
 Rolling list of recent significant changes. Most recent at top. `QCLAW_BUILD_LOG.md`
 is the detailed record; entries here are pointers.
 
+### 2026-08-20
+
+- **Call Intel reframed from release-blocked product to active internal tool.** The
+  `claude_parse_error` truncation bug is fixed (`max_tokens` 1500 to 4000 plus a
+  field-truncation safety net) and a CRM adapter layer landed, so it is no longer
+  GHL-only. 6 calls processed since the soak test, 5 successful. Open-source or
+  paid-offer expansion remains stated intent with no date attached. Detail lives in
+  the call-intel repo's own README and history, not here.
+
 ### 2026-08-19
 
 - **Estate audit (Pass 1) + Kayla churn cleanup.** Full read-only sweep of n8n, canonical docs, secrets and business state; found doc/reality drift across most canonical docs. Orphaned Morning Light token refresher `02Dob9FCEkXZFDAs` deactivated after blast-radius verification (Gutful runs off a separate `highlevel_tokens` row, unaffected). `CHARLIE_ROLE.md` corrected. See `QCLAW_BUILD_LOG.md`.
@@ -597,6 +605,20 @@ Things this v1 doc doesn't capture that should be filled in over time.
 ## Maintenance log
 
 This section captures changes to the state doc over time. New entries appended at top.
+
+- **2026-08-20 - Call Intel corrected and documented.** The `#### Call Intel`
+  entry described a release-blocked product with five open blockers, which had
+  been true on 2026-08-03 and was stale by three weeks. Reframed as what it
+  actually is: a tool in active internal use, deliberately not a product. Two of
+  the five blockers are closed or substantially closed (the `claude_parse_error`
+  truncation fix `9ef2411`, and the CRM adapter layer `3379383` that ends GHL
+  hardwiring), and two more have progressed. Usage restated from the live
+  `call_intel_log` table rather than from the 2026-08-03 soak snapshot: 13 calls
+  since 2026-07-21, 8 successful. The parse fix is recorded **with** its caveat,
+  that no call near the original 169-minute failure has run since, so the raised
+  ceiling is untested at that length. Expansion is recorded as stated intent, not
+  as a roadmap item, because no date or scope exists. Call Intel was also added to
+  `LOCATIONS.md`, where it had never appeared.
 
 - **2026-08-19 — Reconciliation pass against live systems.** Section 1 Flow OS
   roster corrected against live Stripe: 9 documented subscribers reduced to the 6

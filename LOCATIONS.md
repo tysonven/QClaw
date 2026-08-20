@@ -157,6 +157,37 @@ a database is on the qclaw droplet just because the product is Flow OS.
     customer email addresses, which is a problem if the repo is ever shared
     with a white-label partner
 
+- **call-intel** (Call Intel: call transcription and analysis)
+  - Repo: `github.com/tysonven/call-intel` (private, confirmed not publicly
+    reachable). Local checkout: `~/Projects/call-intel` on Tyson's Mac
+  - Host: **Vercel serverless. Nothing runs on qclaw.** Two function entry
+    points, `api/zoom-webhook.js` (Zoom recording completed) and
+    `api/ghl-webhook.js` (GHL LC Phone call). No server to operate, no PM2
+    process, no cron
+  - **Data store: the SHARED main Supabase project `fdabygmromuqtysitodp`**,
+    table `call_intel_log`. The migration lives at
+    `supabase/migrations/001_call_intel_log.sql` **in the call-intel repo**, not
+    in QClaw's `n8n-workflows/migrations/`. This is the exception to this
+    section's "own database" rule and it matters twice over: an RLS or schema
+    change on the main project reaches Call Intel, and two separate repos now
+    hold migrations for the same database. Anon reads of `call_intel_log` return
+    zero rows (RLS enforced, verified 2026-08-20)
+  - Flow: call ends, transcript is fetched, Claude analyses it, and the result
+    lands as a CRM note plus a task plus a follow-up email draft for the rep who
+    ran the call. Every call is written to `call_intel_log` whether it succeeded
+    or failed, which is the only reason its failure modes are diagnosable at all
+  - **CRM is pluggable, no longer GHL-only.** `CRM_ADAPTER` selects `ghl`
+    (default) or `webhook`; `webhook` POSTs the full structured analysis to
+    `CRM_WEBHOOK_URL`. Adapters live at `src/integrations/crm/`
+  - **Its credentials are in Vercel env, not in `/root/.quantumclaw/.env`**, so
+    they do not appear in the credential inventory above and no qclaw-side sweep
+    will ever find them. The `SUPABASE_URL` / `SUPABASE_SERVICE_KEY` held there
+    point at the main project named above
+  - Status: **active internal use, not a public product.** Setup is scripted
+    (`scripts/setup.js`, with live credential verification). Not leak-audited;
+    that only becomes a requirement if the open-source or paid-offer direction is
+    ever actioned. Current state and blocker status live in `FLOW_OS_STATE.md`
+
 ## Secrets and credentials
 
 - QClaw-side secrets: `/root/.quantumclaw/.env` (root-owned, 600 permissions)
@@ -310,6 +341,13 @@ When migrating any location (e.g. file-based log → Supabase table):
 Append-only record of what changed in this file and why. A location that moved
 without an entry here is the failure mode this log exists to catch.
 
+- **2026-08-20** Documented **Call Intel** (`tysonven/call-intel`) under
+  standalone applications. It had never appeared in this file at all. Vercel
+  serverless, and the one standalone app that does **not** have its own
+  database: it writes to the shared main Supabase project, so two repos hold
+  migrations for one database. Its credentials live in Vercel env and are
+  therefore outside the credential inventory above, which is a real coverage
+  boundary of that generated table rather than an omission from it.
 - **2026-08-20** Added the Polymarket execution relay (`68.183.13.219`, AMS3) as
   a documented third production host, added Kairos Wines to the GHL sub-account
   list, and replaced the credential prose with a generated inventory covering
