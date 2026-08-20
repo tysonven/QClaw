@@ -22029,3 +22029,43 @@ burst-live; deleted immediately, count re-verified back to baseline.
 
 **Next:** adversarial review of slice-2e-hardening, then merge decision,
 then Slice 3 (Railway deploy + preview validation).
+
+## 2026-08-20: flow-coach-ai Slice 2e adversarial review round 3 fixes
+
+Review on PR #5 found the limiter itself was a memory amplifier: 88.1KB
+retained heap per REJECTED request (unit-measured; 2000 rejected calls
+retained 172MB), attacker-cost zero via the empty-messages 500 path.
+Fixes as e554069 on slice-2e-hardening; goes to a FOURTH pass because
+the limiter changed.
+
+- H1: enforceRateLimit short-circuits (ip refusal never touches the
+  session map, unit-proven); sessionId bounded to .max(64) at every
+  input (matches varchar(64)); all limiter maps capped at 10k entries
+  with oldest-bucket eviction.
+- H2: trust proxy stays numeric 1, documented as UNVERIFIED on Railway.
+  Slice 3 HARD GATE: curl with spoofed X-Forwarded-For at the Railway
+  URL and read ip= in the [RateLimit] line; also confirm real visitors
+  do not collapse into one proxy bucket. IPv6 /64 limitation noted in
+  code (per-address keying underbounds v6; prefix keying is follow-up).
+- H4: chat.lastDay + leads.getBySession rate limited (+ chat.history,
+  same class, flagged); getMessagesBySession LIMIT 200 newest.
+- H5: CSP Clerk origin now derived from the publishable key, so prod
+  keys pin clerk.<domain> automatically. Slice 4 checklist: verify the
+  derived origin on prod keys; clerk-telemetry.com stays blocked.
+- H8: messages .min(1) in schema; the 500-class manual throw removed
+  (it was what made H1 free to drive).
+
+**H3 recorded, no code change (per Tyson):** fixed-window admits 2x the
+stated limit across a boundary. Real worst-case bounds: chat.send 80
+calls/IP burst (~452k input + ~82k output tokens on Sonnet 5),
+leads.register 10/IP, reads 120/IP. Read the configured maxima as
+half the burst ceiling.
+**H6/H7/H9 notes (no action):** F7 cache evicts oldest-inserted (admin
+first) at 1000 entries, unreachable on a restricted instance;
+banned/locked never checked so revoke-now = clear metadata + revoke
+sessions + restart; limiter state is per-process (resets on deploy,
+multiplies per replica) and 429s carry no Retry-After.
+
+Verified live: CSP pins verified-swift-7763.clerk.accounts.dev exactly;
+oversized sessionId and empty messages both 400; read route throttled
+at request 61; chat + admin probes green. 54/54 tests, Node 22 + 20.
