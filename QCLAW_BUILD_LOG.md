@@ -21936,3 +21936,44 @@ correction: main 72 (8/47/17), branch 43 (7/30/6).
 
 **Next:** adversarial re-review of d755502, then merge decision, then
 Slice 2e.
+
+## 2026-08-20: flow-coach-ai Slice 2d review round 2 fixes (R1-R3)
+
+Round 2 confirmed all four round-1 blockers closed (re-ran original
+repros, dev + production bundle). Three new items fixed as 5e7775c on
+slice-2d-clerk-auth; hasBearerToken and resolveRole byte-identical to
+d755502 (diff-verified) so no third review pass per the contract.
+
+- R2 (worst first per Tyson): boot check now applies the SAME predicate
+  as the request path by passing getUserList results through
+  resolveRole. New distinct warning for address-held-but-unverified
+  (would deny every login with no_verified_email); success line
+  reworded to assert what it now actually proves.
+- R1: boot check no longer awaited before listen(); fires in the listen
+  callback. Verified live: "Server running" logs before the admin
+  diagnostics line. Race timer cleared; abandoned fetch documented as
+  F7 territory.
+- R3: hasBearerToken unit-tested across the round-2 probe matrix plus a
+  source-pinning test (shared predicate at both call sites, no inline
+  startsWith duplicate, two /api/trpc mounts, one getAuth call site).
+
+**R4/R5/R6 noted, no action (per Tyson):** R4 = Clerk's 307 exit
+survives on the API path only for validly-signed expired tokens on
+HTML-accepting GETs (unreachable in practice: forged tokens fail
+signature first, tRPC client sends Accept: */*; invariant is "Clerk
+cannot end a response for an anonymous request"). R5 = gate is
+deliberately stricter than Clerk's parser (lowercase/tab/bare-token
+variants become anonymous, fail-closed). R6 = a future gate/context
+divergence logs as infrastructure error rather than config error;
+mitigated by the R3 pinning test.
+
+**Round-1 leftovers on schedule:** F5/F6 before Slice 3, F7 with 2e,
+F8/F10 at cleanup, F11 + restricted-signup + claim-address +
+authorizedParties on the Slice 4 checklist.
+
+**Data note:** Supabase flow-coach-ai DB holds 1 probe lead + 4
+messages from review-session testing; wipe scheduled into Slice 3
+validation so launch starts empty per decision.
+
+33/33 tests, Node 22 + Node 20 builds clean. PR #4 ready for Tyson's
+merge decision.
