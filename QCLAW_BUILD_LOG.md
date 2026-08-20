@@ -22126,3 +22126,291 @@ Postgres and 2d gate functions still byte-identical.
 **Next:** re-review of 8b63eea; merge on clear per Tyson, then Slice 3
 (Railway deploy: env vars, probe-row wipe with count, XFF hard gate,
 browser CSP check on /admin, preview test matrix).
+
+## 2026-08-20, Phase 5 Session 19: position monitor phantom-close fixed and deployed, Polymarket signer root-caused, docs sweep closed
+
+One theme runs through the whole session: **several things that looked settled had
+only ever been checked in a direction that could not reveal the problem.** The
+monitor "closed" positions and nobody asked whether it could sell. The docs were
+maintained and therefore looked current. The Polymarket blocker was filed as an
+unsolvable platform issue after testing three of the four signature types. In each
+case the fix arrived the moment someone probed along the axis that had been skipped.
+
+### Position monitor phantom-close defect (PR #93, merged `fb87325`)
+
+**Root cause.** `monitor.py::_close()` wrote `status='closed'`, `exit_price`,
+`exit_usdc` and `pnl` whenever a take-profit, stop-loss or weakening threshold
+fired. It has no path to `executor.py`, `execute_trade.py` or the relay, so it
+cannot place a sell order. Every threshold crossing therefore produced a
+**bookkeeping close against a position still open on Polymarket**, and because the
+row then read `closed`, no later sweep looked at it again.
+
+**Fix, shipped as slices 1-3 and 5-6** (slice 4, the SELL scaffolding, deliberately
+split into its own PR):
+
+- New Supabase table `trading_position_alerts`, migration
+  `n8n-workflows/migrations/2026_08_20_trading_position_alerts.sql`. Dedup is a
+  **database-level partial unique index**, not application logic:
+  ```sql
+  CREATE UNIQUE INDEX IF NOT EXISTS trading_position_alerts_live_uniq
+    ON public.trading_position_alerts (position_id, alert_type)
+    WHERE resolved_at IS NULL;
+  ```
+  A second insert for a live (position, type) pair returns HTTP 409 / SQLSTATE
+  23505, which `insert_alert` catches and turns into `None`. The anti-spam
+  guarantee is enforced by Postgres, so it holds even if the monitor is restarted
+  or run concurrently.
+- TP / SL / weakening now route to `_flag_for_exit`, which raises an alert and
+  **leaves the position open**. `manual_hold` on `trading_positions` suppresses
+  alerts while keeping price tracking.
+- Four endpoints: `GET /positions/alerts`, `GET /positions/{id}/alerts`,
+  `POST /positions/{id}/hold`, `POST /positions/manual-close`. The last is the only
+  writer of exit fields and fails closed with 404 if the position is not open.
+- **The resolution path was left completely unchanged.** `resolved_win` /
+  `resolved_loss` still close the position, because a settled market really has
+  paid out. The defect was never "the monitor closes things", it was "the monitor
+  closes things it cannot sell".
+
+**Two rounds of adversarial review.** No CRITICAL. Round 1 returned two HIGH:
+
+- **H1: `notified_at` lied about delivery.** It was stamped unconditionally after
+  calling `_notify`, whether or not Telegram accepted the message. Combined with the
+  dedup index that is worse than a cosmetic bug: the row looks delivered, so no
+  later sweep retries, and a live stop-loss goes **permanently silent**. `_notify`
+  now returns `bool` (True only on a genuine 200), the stamp is gated on it, and the
+  dedup branch retries when it finds a live alert with `notified_at IS NULL`.
+- **H2: settled positions left stale alerts dangling.** A position that resolved
+  after an alert was raised kept that alert unresolved forever, on
+  `GET /positions/alerts`, the exact endpoint built to tell Charlie what still needs
+  attention. `_close()` now calls `resolve_alerts_for_position` **after** the
+  position write is durable, mirroring `manual-close`, so a failed close never
+  clears an alert that is still live.
+
+Round 2 passed both and folded in N1 and N3. **N1 was more than a nit:** the
+`except SupabaseError` around the alert cleanup let a transport error (httpx
+timeout, connection reset) unwind past the settlement `_notify` below it, so a
+position that genuinely settled would close **silently**. Broadened to
+`except Exception` with a comment saying why, plus a regression test raising
+`httpx.ConnectError`.
+
+**All fixes mutation-tested.** Each fix was reverted in isolation to prove the new
+tests actually bind rather than merely passing:
+
+| Reverted fix | Test failures |
+|---|---|
+| H1 (unconditional stamp) | 2 |
+| H2 (drop the resolve call) | 1 |
+| N1 (narrow the except) | 1 |
+
+39 tests green, full suite green (analyst, approval, executor, manual_position,
+monitor, `probes.test.js`), re-run after the rebase as well. Deployed: live checkout
+fast-forwarded `3f3fdc1` to `fb87325`, `pm2 restart trade-engine quantumclaw
+--update-env`, all 6 processes online, `/positions/alerts` and `/health` confirmed
+200 on the running process.
+
+### Data reconciliation: the BTC position
+
+The phantom close of the previous session recorded **-$9.27**. Tyson closed the
+position by hand on Polymarket: 24.9 shares sold at 2.6c, proceeds +$0.65 against a
+$10.39 entry. Real PnL **-$9.74**. Row `71f8a608` corrected to the real closing
+trade. Order mattered: reverting the row before the code fix would have been undone
+within 15 minutes, because the stop-loss condition was still satisfied at YES 0.0615
+and the old `_close()` would simply have rewritten it.
+
+### Polymarket: root cause found and resolved
+
+The standing blocker, unchanged since 2026-08-10 and filed as a platform-side issue:
+
+```
+PolyApiException[status_code=400, error_message={'error': 'maker address not
+allowed, please use the deposit wallet flow'}]
+```
+
+**Root cause found using Polymarket support's own diagnostic method:** read the
+proxy wallet's creation transaction on Polygonscan and take the `From` field. That
+identifies the authorised signer directly. It pointed at `SIGNATURE_TYPE=3`
+(POLY_1271, the deposit wallet flow). **Signature type 3 had never been tested.**
+The prior investigation tried types 0, 1 and 2 and concluded the platform was at
+fault; the one remaining type was the answer.
+
+**Proven on-chain before any code changed.** A read-only `eth_call` to the proxy's
+`isValidSignature` confirmed that `0x8f35...8431` is the authorised signer. That is
+the **original relay key**, which had been swapped out during the 2026-08-10 detour;
+the Magic Link key adopted then was the wrong swap. Verifying by `eth_call` rather
+than by attempting an order meant the diagnosis cost nothing and risked nothing.
+
+Relay reconfigured: key swapped back to `0x8f35...8431`, `signature_type` 1 to 3.
+All safe-probe checks pass against the deployed build, including the live on-chain
+`isValidSignature` confirmation. **$23.04 pUSD funded and ready.**
+
+**First real test is pending the next natural scanner signal.** That is Tyson's
+deliberate choice: exercise the full pipeline end to end rather than prove one
+narrow leg with a rushed manual trigger.
+
+### Docs sweep closed
+
+Carried over from Session 18 and confirmed complete today: `trading.md`,
+`CHARLIE_ROLE.md`, `FLOW_OS_STATE.md`, `N8N_WORKFLOW_INDEX.md`,
+`FLOW_OS_SPECIALISTS.md` and `LOCATIONS.md` all now reconcile against live systems.
+
+`LOCATIONS.md` (`138eb8d`) took the last three gaps: the **Polymarket execution
+relay** documented as the third production host (previously in no canonical doc at
+all), **Kairos Wines** added to the GHL sub-account list, and the credential prose
+replaced with a **generated inventory of all 79 keys** across `.secrets.enc` (26),
+`.env` (48) and n8n `user_api_keys` (5). The inventory is produced by
+`scripts/regen-secrets-inventory.js`, names only and never values; a key missing
+from its `PURPOSES` map renders as `[needs Tyson input]`, so a newly added
+credential surfaces automatically instead of quietly going undocumented. 55
+documented, 24 flagged. Verified 79 rendered against 79 live, zero missing, zero
+extra, and zero secret values in the output.
+
+One fact the fingerprinting settled: qclaw's `.env` `N8N_API_KEY` **is** the n8n key
+labelled "quantum claw api v2" (sha256 `7e4f1e5a20ea` on both sides). Previously
+unknown and previously unknowable without guessing.
+
+### Call Intel: a stale entry, not a missing one
+
+Expected to be undocumented. It was **already in `FLOW_OS_STATE.md`**, added
+2026-08-05 and three weeks out of date, describing a release-blocked product with
+five open blockers. That is why the Session 18 sweep missed it: the sweep corrected
+what was documented and wrong, and this entry was documented, maintained, and
+therefore invisible. It was genuinely absent from `LOCATIONS.md`.
+
+Restated from **live production data** in `call_intel_log` rather than from the
+2026-08-03 soak snapshot: 13 calls since 2026-07-21, 8 success, 2 transport/API
+errors, 2 `claude_parse_error`, 1 `contact_not_found`; 12 Zoom, 1 GHL LC Phone.
+
+**The parse fix is proven against real data.** `max_tokens` 1500 to 4000 plus a
+field-truncation safety net (`9ef2411`). Both parse failures sit on 2026-08-03,
+pre-fix. Five of the six post-fix calls succeeded (the sixth was
+`contact_not_found`, a contact-matching miss on the first ever GHL LC Phone call,
+not a parse failure).
+
+Forensic detail confirming the truncation diagnosis: **both failing `error_detail`
+values are exactly 3521 characters**, the same ceiling, cutting off mid-`summary`
+in both cases. The payloads themselves are **deliberately not reproduced here**:
+they are raw Claude output containing real client names and personal circumstances,
+and a build log is the wrong place for it. Structure only:
+
+```
+Raw Claude response: {
+  "processing_status": "processed",
+  "contact": { "name": "[redacted]", "email": null, "phone": null },
+  "summary": "[redacted, truncated mid-sentence at the 3521-char ceiling]
+```
+
+The other two failures are clean technical errors and are recorded verbatim:
+
+```
+2026-07-21  Zoom transcript download failed: 401 {"status":false,"errorCode":300,"errorMessage":"Forbidden"}
+2026-07-29  GHL API POST /contacts/ failed: 400 {"statusCode":422,"message":"Contacts without email, phone, firstName and lastName are not allowed.","traceId":"3adfa824-7cf5-4307-86e1-2008809291e8"}
+```
+
+**Caveat recorded rather than resolved:** the longest post-fix call is 83 minutes.
+The 169-minute outlier that originally broke it has not recurred, so the raised
+ceiling is **unproven at the length that caused the failure**. The entry's original
+objection (a fixed output ceiling cannot hold summaries from calls of arbitrary
+length) is not retired, only unexercised.
+
+Also discovered: `call_intel_log` **lives in the shared main Supabase project**
+`fdabygmromuqtysitodp`, not its own. That makes Call Intel the one standalone app
+without its own database, means **two repos hold migrations for the same database**
+(`call-intel/supabase/migrations/` and QClaw's `n8n-workflows/migrations/`), and it
+**was never part of the 2026-07-15 RLS remediation** that locked 9 tables to
+`service_role`. Anon reads confirmed locked (`200` with `[]`, `content-range: */0`).
+**Write-side policy unaudited**, flagged as follow-up rather than guessed.
+
+A near-miss worth recording. The first anon probe appeared to return data, a
+9329-byte body that was actually stale content in a reused `/tmp` file from an
+earlier command. Re-running with `mktemp -d` gave the real answer. A plausible-looking
+2xx from a path that never ran is exactly the failure mode that would have put a
+false security claim into a canonical doc.
+
+Its credentials live in **Vercel env**, so they sit outside the new credential
+inventory by construction. Recorded as a coverage boundary of that table, not an
+omission from it.
+
+### FSC section corrected (`0707f7f`)
+
+The section described a May 2026 state. Corrected per Tyson:
+
+- **1% Club is active and taking leads again**, not winding down. Landing page
+  `go.flowstatescollective.com/1-club-landing-page`.
+- **Ashley onboarded** as setter and closer, with GHL access to the FSC sub-account
+  and Emma's account. **That access was deliberately restricted** after unauthorised
+  changes to landing pages and funnels. Written as a **standing decision** rather
+  than an incident note: widening it is a Tyson decision, not a routine grant, and
+  requests should be surfaced rather than actioned.
+- **Emma is now setting as well as delivering** during scale-up. Connected
+  explicitly to the pre-existing capacity-strain flag on her 1:1 load, since the
+  relaunch puts lead volume on the same person already carrying delivery.
+- Funnel restructured: Magnetic Authority webinar plus Soulful Strategy Sessions as
+  entry, 1% Club as the volume layer with two-person setting, Automate to Elevate as
+  a **separate** Tyson-led entry point (with Flow OS setup deliberately not pitched
+  during those sessions, and a soft suggest into 1% Club where a natural fit
+  appears), custom builds downstream and not the primary push.
+
+**Tracy R. left unconfirmed rather than guessed.** Her row carried "cancels 21 Jul",
+a month stale, and was still being counted as active. There is no Stripe customer
+under that name in the account reachable from qclaw, which looks like churn evidence
+and is not: that account is **Flow OS's**, proven by reconciling its 6 active
+subscriptions to **$1,182/mo**, matching yesterday's audited Flow OS figure exactly.
+FSC payment plans do not run through it, so the authoritative record sits with Emma.
+Row marked unconfirmed and excluded from the total: **10 engagements to 9 confirmed,
+~$4,502 to ~$4,152/mo**, reversible in one edit once Emma confirms.
+
+That reconciliation also surfaced a bug in the throwaway probe itself: five of the
+six subscriptions use `interval: day` with a multiplier, so a naive
+`interval === 'month'` sum reported **$97/mo**. Believing that number would have
+manufactured a Flow OS MRR crisis out of a scripting error.
+
+Side finding: `stripe_api_key` is a **restricted live key**, not a full secret key.
+Verbatim, on `GET /v1/account`:
+
+```
+HTTP 403
+Permission denied. The provided key 'rk_live_***tgtIWt' does not have the required
+permissions for this endpoint on account 'acct_1QzyWNLvLUufBXfq'. Enabling "Basic
+Business Contact Information Read" ('accounts_kyc_basic_read') permissions on this
+key would allow this request to continue.
+```
+
+It reads charges, invoices, products and subscriptions normally, so prior
+reconciliations stand. Its purpose is now determinable for the generated secrets
+table: live, restricted, Flow OS account `acct_1QzyWNLvLUufBXfq`.
+
+### New standing rule (memory #23)
+
+**New repos and products get a `LOCATIONS.md` assessment at creation, not on
+discovery.** Every repo requires a README, checked at creation and audited
+periodically. This generalises the rule added after the Manus incident on 2026-08-18
+and is the direct lesson of Call Intel and the Polymarket relay: both were
+load-bearing, both were invisible to repo sweeps, and both were found only because
+someone went looking for something else.
+
+### Queue items identified this session
+
+- **n8n Health Dashboard (Manus) decommission or migration.** Credentials are still
+  live. Gated on proving the heartbeat alerter first.
+- **Repo and README audit** across the estate.
+- **Periodic deterministic drift-check job**, with its own dedicated Telegram
+  channel. **Explicitly not a new spawned agent**: same lesson as the `delegate_to`
+  retirement, a scheduled deterministic check beats an agent that has to be asked.
+- **`call_intel_log` RLS write-side audit.**
+- **Stripe key purpose** now determinable in the generated secrets table.
+
+### Next session, priority order
+
+1. **Error-handler wiring.** 5 workflows failing daily with zero visibility. Highest
+   value per unit of effort in the queue.
+2. **SELL scaffolding (slice 4).** Now well motivated: `signature_type=3` is proven,
+   so the exit path is no longer blocked on an unknown. Thread `side` through
+   `execute_trade.py`, the relay payload and `relay.py`, fix the shares-vs-USDC unit
+   bug (SELL `amount` is SHARES from `trading_positions.shares`, not `usdc_amount`),
+   wire `calculate_sell_market_price`, gate behind `sell_execution_enabled`
+   defaulting false.
+3. **Watch for the first real trade** on the next natural scanner signal.
+4. **Tracy R. status confirmation** with Emma.
+5. **n8n Health Dashboard Manus migration.**
+6. **Repo and README audit.**
+7. **Periodic drift-check design.**
