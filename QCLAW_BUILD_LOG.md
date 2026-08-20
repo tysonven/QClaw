@@ -22414,3 +22414,31 @@ someone went looking for something else.
 5. **n8n Health Dashboard Manus migration.**
 6. **Repo and README audit.**
 7. **Periodic drift-check design.**
+
+## 2026-08-20: flow-coach-ai Slice 2e review round 4 fix
+
+Round 4 confirmed both round-3 fixes closed but proved the hash
+un-pooling reopened the adversarial bound: 150 distinct-garbage XFF
+requests all passed, and distinct-garbage floods could churn the 10k
+map to evict/reset buckets. Fixed as 55fa8ce per the reviewer-named
+shape: a separate GLOBAL budget on creation of new invalid buckets
+(50/5min), checked before allocation, on top of per-value budgets.
+
+Four constraints held simultaneously (each live-verified):
+- H1 memory: creation-bounded, map growth stops (unit: size <= 51
+  under 200-value churn).
+- N1 fairness: distinct buckets per value; established garbage value
+  200 during exhaustion.
+- No eviction/self-reset: budget two orders below map cap; exhausted
+  value stays 429 through a 200-value eviction attempt.
+- Distinct-garbage volume: reviewer repro now passes exactly 50 then
+  429 dimension=invalid_bucket_budget at request 51.
+Explicit collateral: NEW invalid values fail closed for the window
+while the budget is spent; address-shaped clients unaffected.
+
+CSP mismatch warning now names the expected hosts
+("expected *.clerk.accounts.dev or clerk.flowcoach.flowos.tech").
+
+65/65 tests, Node 22 + Node 20 builds clean.
+
+**Next:** re-review of 55fa8ce; merge on clear, then Slice 3.
