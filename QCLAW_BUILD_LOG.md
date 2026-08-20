@@ -22069,3 +22069,34 @@ multiplies per replica) and 429s carry no Retry-After.
 Verified live: CSP pins verified-swift-7763.clerk.accounts.dev exactly;
 oversized sessionId and empty messages both 400; read route throttled
 at request 61; chat + admin probes green. 54/54 tests, Node 22 + 20.
+
+## 2026-08-20: flow-coach-ai Slice 2e review round 2 fixes
+
+Round 2 on PR #5 confirmed H1 fixed (88.1KB -> 1.78KB retained per
+rejected request). Three items fixed as 7548810 on slice-2e-hardening;
+goes back for re-review (CSP + limiter touched).
+
+- CSP inversion (first, per Tyson): the derivation previously took any
+  shape-valid host verbatim into script-src while only the harmless
+  decode failure warned. Now: discriminated result, host accepted only
+  if *.clerk.accounts.dev or clerk.<domain>; non-Clerk host warns
+  LOUDLY naming the host; every failure path falls back NARROW (no
+  Clerk origin at all, /admin breaks visibly). Wildcard fallback
+  removed. Live-verified: evil.example.com key -> SECURITY warning +
+  script-src 'self' only; valid dev key -> exact origin pinned.
+  Test matrix includes clerk-accounts.dev.evil.io lookalike.
+- N1 (shares H2 root cause, taken now per Tyson): sanitizeIpKey caps
+  the ip key at 64 chars, restricts charset, collapses garbage into one
+  shared "invalid" bucket; denies log-line injection via crafted XFF.
+  Unit matrix incl. newline injection and 500-char lever.
+- Truncation flag: getMessagesBySession reads LIMIT+1 (exact flag, not
+  a length heuristic) and returns {messages, truncated}. Admin
+  conversation viewer shows a partial-history banner + "(partial)"
+  count; chat.history carries the flag. Cap stays 200 per instruction.
+- Eviction: note only per Tyson (reviewer analysis accepted: not a new
+  bypass). H2/H3 remain documented-not-code as agreed.
+
+58/58 tests, Node 22 + Node 20 builds clean. DB re-verified at wipe
+baseline (1 lead / 4 msgs / 1 user) after probe cleanup.
+
+**Next:** re-review of 7548810, then merge decision, then Slice 3.
