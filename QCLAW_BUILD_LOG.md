@@ -22100,3 +22100,29 @@ goes back for re-review (CSP + limiter touched).
 baseline (1 lead / 4 msgs / 1 user) after probe cleanup.
 
 **Next:** re-review of 7548810, then merge decision, then Slice 3.
+
+## 2026-08-20: flow-coach-ai Slice 2e review round 3 fixes
+
+Round 3 on PR #5: two items, fixed as 8b63eea on slice-2e-hardening.
+Reviewer confirmed the truncation flag exact at 200/201 against real
+Postgres and 2d gate functions still byte-identical.
+
+- Clerk domain check: production arm is now an EXACT match against
+  exported PRODUCTION_CLERK_FAPI_HOST (clerk.flowcoach.flowos.tech)
+  instead of startsWith("clerk."), which accepted clerk.evil.com. Test
+  matrix gains the previously-PASSING lookalikes (clerk.evil.com,
+  clerk.accounts.dev.evil.io, uppercase, and the
+  clerk.flowcoach.flowos.tech.evil.io suffix attack); uppercase
+  legitimate host still accepted. Constant carries a cutover note.
+- sanitizeIpKey pooling DoS: invalid values now key on
+  invalid:<sha256-16hex-of-raw> so distinct garbage gets distinct
+  buckets. Reviewer had proven a fresh visitor denied on FIRST request
+  because one garbage-XFF client exhausted the shared bucket. Fix
+  proven live: client A throttled at 61, different-garbage fresh
+  client got 200; log lines hash-keyed (no injection).
+
+60/60 tests, Node 22 + Node 20 builds clean, dev-key CSP pin unchanged.
+
+**Next:** re-review of 8b63eea; merge on clear per Tyson, then Slice 3
+(Railway deploy: env vars, probe-row wipe with count, XFF hard gate,
+browser CSP check on /admin, preview test matrix).
