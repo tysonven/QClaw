@@ -22803,3 +22803,49 @@ DNS at handoff time still: flowcoach.flowos.tech CNAME cname.manus.space
    *.up.railway.app origin.
 
 GHL webhooks deliberately NOT touched (step 4). Manus stays as rollback.
+
+## 2026-08-21: flow-coach-ai Slice 4 STEP 3 (cutover live + hop gate PASSED)
+
+DNS cutover done by Tyson: flowcoach CNAME -> v2ou8xmf.up.railway.app,
+DNS-only grey cloud (was briefly proxied, corrected). TXT verify record
+had a single railway-verify= prefix; the doubled prefix was a CLI
+display bug as suspected. NOTE Tyson's framing now in force: the apex no
+longer points at Manus, so ROLLBACK = restore the Cloudflare CNAME to
+cname.manus.space, not merely "Manus is still up".
+
+**Site live on https://flowcoach.flowos.tech:** HTTP 200, cert
+CN=flowcoach.flowos.tech (Google Trust Services; the July notBefore is
+GTS backdating plus Railway pre-issuance, and the serving stack was
+confirmed by content, not cert dates: our CSP pinning
+clerk.flowcoach.flowos.tech, zero manus in the page).
+
+**HOP GATE, treated as blocking and it nearly was:** first measurement
+on the custom domain showed cf-ray PRESENT and trust-proxy-2 returning a
+ROTATING CLOUDFLARE EDGE IP (162.158.210.66 then 104.22.177.25): the
+original rotating-edge bug reproduced through the initially-proxied
+record. After the grey-cloud correction propagated (~2 min), 6/6 samples
+showed cfRay=null, chain length 2, req.ip = true client. Behavioural
+confirmation on the custom domain: per-IP burst throttled at exactly 61
+and the log line reads ip=150.228.63.157 (true client). trust proxy 2
+CONFIRMED on the serving path that matters. Lesson recorded: the gate
+would have silently passed a proxied record straight into production if
+run only once; propagation-tail sampling matters.
+**New never-do recorded:** CF-Connecting-IP passes through Railway
+VERBATIM (client-forgeable on this path). Nothing reads it today;
+nothing ever should without revisiting this measurement.
+
+Diagnostic reverted, clean main@c17c404 redeployed, /__hops now returns
+the SPA fallback. Zero manus on the live page, chat healthy.
+
+**STEP 4 CHANGED by Tyson mid-step:** do NOT regenerate GHL webhooks at
+cutover. Rotating now would break the Manus rollback path (that build
+has the URLs hardcoded), giving a rollback that appears to work while
+silently dropping leads. Step 4 = verify EXISTING webhooks deliver from
+Railway on the custom domain, GHL-side. Regeneration moves to the
+DECOMMISSION checklist: regenerate both triggers, update Railway env,
+re-verify GHL-side.
+
+**Handed to Tyson:** browser login on https://flowcoach.flowos.tech/admin,
+the first origin production Clerk will authenticate. Expect: Clerk
+widget loads (CSP already pins the production FAPI), sign in as
+info@flowos.tech, dashboard renders, console clean.
