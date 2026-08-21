@@ -22482,3 +22482,63 @@ CSP mismatch warning now names the expected hosts
 65/65 tests, Node 22 + Node 20 builds clean.
 
 **Next:** re-review of 55fa8ce; merge on clear, then Slice 3.
+
+## 2026-08-21: flow-coach-ai Slice 3 (Railway deploy + preview validation)
+
+PR #5 (2e) merged. Round-5 fold-ins landed as PR #6 (a778da6): invalid-
+bucket creation budget scoped PER-ROUTE (grinding a cheap read no longer
+denies new visitors on chat.send) and an aggregate [ALERT] line once per
+minute with per-route refusal counts. 67/67 tests.
+
+**LIVE PREVIEW:** https://flow-coach-ai-production.up.railway.app
+(Railway project 05c92d61, service flow-coach-ai, generated domain only.
+flowcoach.flowos.tech DNS UNTOUCHED, still CNAME to cname.manus.space.)
+
+**Hard gates:**
+1. ENV POPULATION: all 7 vars set via `railway variables
+   --set-from-stdin` (no secret ever in command text or output):
+   DATABASE_URL, ANTHROPIC_API_KEY, CLERK_SECRET_KEY,
+   VITE_CLERK_PUBLISHABLE_KEY, ADMIN_EMAIL, GHL_LEAD_WEBHOOK_URL,
+   GHL_DAY_PROGRESS_WEBHOOK_URL (webhook values recovered from git
+   history 709a263). Rebuild done, so the VITE var is baked: pk_test_
+   confirmed present in the served bundle. STALE `CLERK_PUBLISHABLE_KEY`
+   still on the service (CLI has no unset) - Tyson to delete in the
+   dashboard; nothing reads it.
+2. PROBE-ROW WIPE: verified by count, 1 lead / 4 msgs / 1 user -> 0/0/0.
+3. XFF EMPIRICAL CHECK (H2) - RESOLVED, AND IT FOUND A REAL BUG:
+   Railway REPLACES client-supplied XFF and X-Real-IP (spoofs stripped;
+   spoofing impossible). XFF arrives as "<true client>, <edge node>" and
+   the edge node ROTATES per request. So `trust proxy: 1` keyed the
+   limiter on a rotating address = both failure modes at once. Proven:
+   70 requests never throttled per-IP, while the session dimension
+   throttled at exactly 31, isolating the fault. Fixed to `trust proxy: 2`
+   (leftmost = true client); per-IP now throttles at exactly 61 and the
+   log line shows the real client IP. Fix is on branch slice-3-deploy,
+   PR #7, NOT merged (limiter-keying change -> review contract).
+   DRIFT: preview runs the fix, main does not.
+4. BROWSER CSP CLICK-THROUGH: NOT DONE. No browser tooling in this
+   session. API-level admin auth verified (401 unauth, 200 with a real
+   minted session). Handed to Tyson with steps.
+
+**Functional matrix on preview, all pass:** lead capture (row written,
+GHL lead webhook fired), day selection (GHL day-progress webhook fired),
+chat.send with day=7 (real Sonnet reply, knowledge-base grounded),
+returning-visitor lastDay=7 from the day column, history 2 msgs
+truncated=false, admin stats 200 via real Clerk session.
+**Zero manus references** in served HTML, main bundle, and response
+headers. CSP + nosniff + referrer + permissions headers present,
+x-powered-by absent, robots.txt correct, logo self-hosted 200.
+
+**GHL:** zero GHL warning/error lines in runtime logs = both webhooks
+configured and accepted (2xx). GHL-SIDE CONFIRMATION STILL OWED per
+brief: test contact slice3-test@flowos.tech ("Slice3 Test"), expect
+source "Flow Coach AI", tags flow-coach-ai + 7-day-challenge, plus a
+day_started event for Day 7.
+
+**Runtime log visibility confirmed:** RateLimit lines surface in
+`railway logs`, so the new [ALERT] aggregate signal will be visible.
+
+**Owed before Slice 4:** GHL-side webhook confirmation; browser CSP
+click-through; PR #7 review/merge decision; delete stale
+CLERK_PUBLISHABLE_KEY; re-wipe the DB (currently 1 test lead + 2 msgs
+from validation) once GHL checks are done.
