@@ -22542,3 +22542,59 @@ day_started event for Day 7.
 click-through; PR #7 review/merge decision; delete stale
 CLERK_PUBLISHABLE_KEY; re-wipe the DB (currently 1 test lead + 2 msgs
 from validation) once GHL checks are done.
+
+## 2026-08-21 (later): flow-coach-ai Slice 3 browser findings + git repair
+
+Tyson's browser pass closed the remaining Slice 3 gates: GHL contact
+created with source "Flow Coach AI" and tags flow-coach-ai,
+7-day-challenge, flow-coach-day-7 (BOTH webhooks confirmed landing
+GHL-side); Clerk widget loads and /admin renders; stale
+CLERK_PUBLISHABLE_KEY deleted from Railway.
+
+**CSP font-src defect, found only in a browser console:** KaTeX (via
+Streamdown) ships base64 woff2 faces that Vite inlines into the
+stylesheet; font-src lacked data: so the browser refused the font on the
+public page AND /admin. Fixed (PR #8, branch slice-3b-csp-font-fix):
+font-src now 'self' data: https://fonts.gstatic.com. data: on font-src
+cannot introduce executable code, unlike script-src.
+CSP construction extracted to server/_core/csp.ts so it is testable;
+server/csp.test.ts adds a SCHEME AUDIT walking built CSS for referenced
+schemes vs the governing directive. Falsification-verified both ways.
+Worth recording: the audit's FIRST version silently matched nothing (its
+regex stopped at the media type, never saw ";base64,..."), i.e. exactly
+the vacuous pass it exists to prevent; only the deliberate falsification
+run caught that. Lesson repeated from round 2's byte-identity check.
+docs/validation-matrix.md added: four tiers, browser tier REQUIRED
+before cutover, incl. a network-tab check for the 2d
+no-Clerk-on-public-page property that curl cannot see. Known gap
+recorded: no headless browser in CI; Playwright would close it.
+
+**MY GIT ERROR, corrected:** the trust-proxy commit was made on local
+main (not a branch), and `git push -u origin slice-3-deploy` then pushed
+a STALE local branch, so PR #7 never actually contained the fix, while
+PR #8 (branched off local main) silently contained BOTH changes,
+contradicting its own description. Repaired: PR #8 rebased onto
+origin/main (font fix only, verified 0 trust-proxy references), PR #7
+rebuilt from origin/main + cherry-picked trust-proxy commit (verified
+present). Local main reset to match origin/main. Both PRs now match
+their descriptions; neither merged.
+Also: an earlier `railway up` deployed a tree WITHOUT the font fix
+because HEAD was on the trust-proxy commit at upload time, not the
+merged tree. Re-deployed from a tree carrying both, with pre-upload
+grep verification of the actual working tree. Preview now verified:
+font-src includes data:, per-IP throttles at exactly 61, zero manus,
+chat healthy.
+
+**Recorded for docs close-out, no code action:** a FOURTH tag,
+`fb-retarget`, is added GHL-side on contact creation and feeds a Meta
+retargeting audience. Meta is therefore a processor receiving challenge
+signup data and must appear in the privacy policy alongside the open
+Clarity consent item. Second undisclosed processor found on this asset
+(first was Manus umami, removed in 2e). NOT a removal request; Meta
+tracking stays per Tyson. Full note:
+~/Projects/flow-coach-ai-audit/DOCS-CLOSEOUT-NOTES.md
+
+**State:** PR #7 (trust proxy) and PR #8 (CSP font + audit + matrix) both
+open, both in review, neither merged. main = origin/main = a778da6.
+Preview runs both fixes. flowcoach.flowos.tech DNS UNTOUCHED.
+Slice 4 NOT started per instruction.
