@@ -22849,3 +22849,36 @@ re-verify GHL-side.
 the first origin production Clerk will authenticate. Expect: Clerk
 widget loads (CSP already pins the production FAPI), sign in as
 info@flowos.tech, dashboard renders, console clean.
+
+## 2026-08-21: flow-coach-ai Slice 4 STEP 3 close + STEP 4 (webhooks, as amended)
+
+**Browser login confirmed by Tyson on flowcoach.flowos.tech/admin:**
+signed in as info@flowos.tech via email verification code, dashboard
+rendered, zero console errors, no CSP violations. Production Clerk
+authenticates on the custom domain. Step 3 fully closed.
+
+**Clerk production auth-method note (per Tyson, for the record):**
+production Clerk instances do NOT inherit Clerk's shared Google OAuth
+credentials; Google sign-in showed "Setup required" and failed with a
+missing client_id. Resolved by email code instead of configuring Google
+Cloud credentials. Password sign-in is off, so ADMIN LOGIN IS
+PASSWORDLESS EMAIL CODE. Google remains unconfigured and unused: if
+anyone later enables it, it needs real Google Cloud OAuth credentials.
+
+**STEP 4 (amended: verify existing webhooks, NO regeneration):**
+Fired both webhooks from the live custom domain:
+- leads.register: contact "Slice4 Cutover" slice4-cutover-test@flowos.tech
+  (lead row id 5)
+- chat.trackDay day=2 (chosen so the expected tag flow-coach-day-2 is
+  distinct from the slice-3 day-7 test, making post-cutover delivery
+  unambiguous GHL-side)
+Server-side: ZERO GHL log lines. The code warns on unconfigured and
+errors on failed delivery, so silence = both env vars present and both
+POSTs accepted 2xx by services.leadconnectorhq.com.
+GHL-SIDE CONFIRMATION HANDED TO TYSON: expect contact
+slice4-cutover-test@flowos.tech, source "Flow Coach AI", tags
+flow-coach-ai + 7-day-challenge (+ the GHL-side fb-retarget), and a
+day_started event applying flow-coach-day-2.
+
+Test rows (lead id 5 + related) left in place deliberately; step 6 is
+the final count-verified wipe.
