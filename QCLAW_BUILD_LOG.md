@@ -22942,3 +22942,51 @@ revoke the "manus API" key (existing item); retire the Manus project
 after the rollback window. Remaining otherwise: invalid-bucket
 simplification PR (own PR, post-Slice-4), Slice 5 activation, Slice 6
 docs close-out.
+
+## 2026-08-21: flow-coach-ai Slices 5 + 6 + simplification PR
+
+**Slice 5 (scoped to two proposals, NOTHING shipped):** delivered at
+~/Projects/flow-coach-ai-audit/SLICE5-LANDING-PROPOSALS.md
+1. customGPT bullet: current exact text captured from the live page;
+   two replacement options drafted (option A mirrors the FAQ voice, no
+   product-class claim so the copy cannot rot again). FAQ verified to
+   need NO change: "personal assistant inside the hub" matches reality.
+2. Canonical tag: DIAGNOSIS DIFFERS FROM THE EARLIER FRAMING and is
+   recorded honestly. The canonical target
+   flowos.tech/7-day-automation-challenge-page no longer 301s to the
+   homepage: measured live, it 301s in one hop to
+   go.flowos.tech/7-day-automation-challenge itself (the Astro redirect
+   map gained a specific rule since the earlier observation). Failure
+   mode today: canonical points at a cross-domain REDIRECTING URL,
+   which Google treats as a weak hint, and it silently depends on the
+   flowos-web redirect map. Proposed fix: self-referential canonical
+   via the GHL page SEO settings (fix the field, not the tag, so GHL
+   does not regenerate the stale value). Keep the flowos-web 301 as-is.
+Correction also recorded per Tyson: the app was never unlinked; the
+access link ships in the first challenge email and the community
+challenge channel. Low volume was deliberate; 3 leads is not a signal.
+
+**Slice 6 (docs close-out) LANDED as QClaw f508f7f:**
+- LOCATIONS.md: standalone-applications entry (post-cutover reality,
+  manual-deploy warning, grey-cloud DNS requirement, rollback = restore
+  CNAME).
+- FLOW_OS_STATE.md: product-line entry incl. trust gradient Level 1
+  (per CEO_OPERATING_MODEL registry convention), decommission
+  checklist, Meta/Clarity privacy disclosure gap, distribution reality.
+- N8N_WORKFLOW_INDEX.md: FFC entry amended with the naming
+  reconciliation (canonical name: 7 Day Automation Challenge, formerly
+  FFC) and the flow-coach-ai boundary note (touches no n8n workflow).
+- Residual audit recorded: 43 advisories (7/30/6) at 2026-08-21.
+
+**Invalid-bucket simplification: PR #10 open (Tyson decision, round-5
+Q3).** Removed: per-route creation budget, per-value sha256 bucketing,
+refusal counters, [ALERT] timer, has() probe. Kept: single static
+"invalid" bucket (bounded, log-safe, 64-char cap + charset gate), H1
+short-circuit, 10k map cap. Rationale + residual trade + revisit note
+in the code comment. 68/68 tests (8 budget/hashing property tests
+retired with the machinery), Node 22 + 20. NOT deployed; deploy follows
+merge per the manual-deploy model.
+
+**Phase 2 remaining:** Tyson review of the two Slice 5 proposals (GHL
+edits, his to ship), PR #10 merge + deploy, and the decommission
+checklist when the rollback window closes.
