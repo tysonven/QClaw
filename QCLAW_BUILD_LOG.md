@@ -22769,3 +22769,37 @@ before the limiter is trusted there. Recorded as a step 3 gate.
 
 Verdict: trust proxy 2 is correct and stays. No code change needed.
 DNS still UNTOUCHED. Manus untouched (rollback).
+
+## 2026-08-21: flow-coach-ai Slice 4 STEP 3 (cutover) - HANDOFF, awaiting DNS
+
+Custom domain flowcoach.flowos.tech added to the Railway service.
+Railway-side registration done; DNS is Tyson's (no Cloudflare creds here).
+
+**Records Railway returned:**
+- CNAME  flowcoach  ->  v2ou8xmf.up.railway.app   (target resolves,
+  69.46.46.33). Replaces the existing cname.manus.space. DNS-only /
+  grey cloud, per the step 2 gate: proxying would insert a Cloudflare hop,
+  making the XFF chain 3 long, and trust proxy 2 would then key the
+  limiter on the Cloudflare edge IP.
+- TXT  _railway-verify.flowcoach  ->  value flagged: the CLI printed a
+  DOUBLED prefix, "railway-verify=railway-verify=3104cf1b...". Almost
+  certainly a CLI display bug. Tyson advised to copy the canonical value
+  from the Railway dashboard (Settings -> Networking) rather than paste
+  the CLI string, since a wrong TXT silently blocks verification.
+
+DNS at handoff time still: flowcoach.flowos.tech CNAME cname.manus.space
+(untouched by this session).
+
+**Remaining step 3 work once DNS is set, in order:**
+1. Wait for Railway cert issuance; verify the site live on the custom
+   domain.
+2. GATE: re-measure the hop count ON THE CUSTOM DOMAIN via the
+   short-lived diagnostic before the limiter is trusted there. Expect
+   chain length 2 if grey-cloud; a length of 3 means Cloudflare is
+   proxying and trust proxy must be reconsidered.
+3. Browser login verification on flowcoach.flowos.tech (Tyson): this is
+   the first host where production Clerk can actually authenticate,
+   since production Clerk is domain-locked and rejects the
+   *.up.railway.app origin.
+
+GHL webhooks deliberately NOT touched (step 4). Manus stays as rollback.
