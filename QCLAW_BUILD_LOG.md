@@ -22990,3 +22990,27 @@ merge per the manual-deploy model.
 **Phase 2 remaining:** Tyson review of the two Slice 5 proposals (GHL
 edits, his to ship), PR #10 merge + deploy, and the decommission
 checklist when the rollback window closes.
+
+## 2026-08-22: flow-coach-ai PR #10 deployed; Phase 2 engineering complete
+
+Both Slice 5 proposals APPROVED by Tyson (copy option A; canonical
+self-referential via GHL SEO settings; flowos-web 301 stays). Tyson
+makes both GHL edits himself.
+
+PR #10 merged (main db490ae). Deployed to production via manual
+railway up from verified main (pre-upload checks: machinery gone,
+single invalid bucket, trust proxy 2, telemetry opt-out, 68/68 tests).
+
+**Live confirmation on flowcoach.flowos.tech, as gated by Tyson:**
+site 200; per-IP burst throttled at EXACTLY request 61 with log line
+ip=150.228.63.157 (true client); chat healthy; zero manus on the page.
+The simplified limiter behaves identically on the serving path.
+
+**Phase 2 status: engineering DONE.** Deployed = main = db490ae.
+Remaining, all non-engineering or time-gated:
+- Tyson: the two GHL landing edits (approved, his to ship).
+- Privacy policy: add Meta (fb-retarget) + resolve Clarity consent item.
+- Decommission (after the rollback window): regenerate both GHL webhook
+  triggers + update Railway env + re-verify GHL-side; revoke the
+  "manus API" key; retire the Manus project; then remove the
+  cname.manus.space rollback note from LOCATIONS.md.
