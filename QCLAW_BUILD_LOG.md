@@ -22598,3 +22598,43 @@ tracking stays per Tyson. Full note:
 open, both in review, neither merged. main = origin/main = a778da6.
 Preview runs both fixes. flowcoach.flowos.tech DNS UNTOUCHED.
 Slice 4 NOT started per instruction.
+
+## 2026-08-21 (later): flow-coach-ai PRs #7 and #8 merged; Clerk telemetry disabled
+
+Tyson's browser re-check confirmed the font fix: data:font/woff2 error
+gone on both the public page and /admin, public console clean.
+
+**Merged in the instructed order:** PR #7 (trust proxy hop count, cleared
+adversarial review) then PR #8 (CSP font-src data:, scheme audit,
+validation matrix). main now 15edae9; both fixes verified present on
+main, 73/73 tests.
+
+**Third processor: Clerk telemetry (PR #9 open, branch
+slice-3c-clerk-telemetry).** /admin console showed the CSP refusing
+`https://clerk-telemetry.com/v1/event`. Per Tyson, NOT added to
+connect-src; disabled at source instead so the call is never made:
+`telemetry={{ disabled: true }}` on ClerkProvider, and the documented
+`CLERK_TELEMETRY_DISABLED` env var set in-process at boot for the server
+(clerkMiddleware exposes NO telemetry option, established by writing it
+and letting tsc reject it, not by assumption). CSP block kept as
+backstop. server/telemetry.test.ts pins both ends incl. ordering (env
+var set before middleware construction, or an early event escapes).
+From the Clerk source: the collector short-circuits unless
+instanceType === "development", so production keys would not have sent
+these anyway; opt-out still belongs in code rather than depending on
+which key is loaded. 76/76 tests.
+
+**Significance recorded for the wider docs audit:** this is the FIRST
+processor on this asset surfaced automatically by a control rather than
+by an audit pass (Manus umami and the GHL fb-retarget tag were both
+found by humans reading). A correctly scoped connect-src is an enforced
+live inventory of who a page talks to. Worth applying across the other
+Flow OS assets. Full note in
+~/Projects/flow-coach-ai-audit/DOCS-CLOSEOUT-NOTES.md
+
+**Preview re-verified after deploy:** font-src carries data:,
+clerk-telemetry absent from CSP, zero manus, admin 401 unauth / 200 with
+real session, chat healthy.
+
+**State:** PR #9 open (telemetry), awaiting review/merge. main = 15edae9.
+flowcoach.flowos.tech DNS UNTOUCHED. Slice 4 NOT started per instruction.
