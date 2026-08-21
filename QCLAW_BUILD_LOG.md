@@ -22672,3 +22672,55 @@ exactly flowcoach.flowos.tech, or PRODUCTION_CLERK_FAPI_HOST must change
 in the same PR.
 
 Nothing executed. DNS UNTOUCHED. Manus untouched (stays as rollback).
+
+## 2026-08-21: flow-coach-ai Slice 4 STEP 1 (Clerk production swap)
+
+PR #9 verified merged this time (main c17c404, both telemetry ends
+present). Clerk production instance verified by Tyson: 5 DNS records
+green, SSL issued, invite-only, owner info@flowos.tech invited+accepted.
+
+**Done by me:**
+- Pre-flight: decoded the live pk through the shipped
+  clerkFrontendApiOrigin BEFORE sending it anywhere. It decodes to
+  https://clerk.flowcoach.flowos.tech, exactly the pinned constant, and
+  pk/sk are a matched live pair (so the F6 boot check will not refuse).
+- Set VITE_CLERK_PUBLISHABLE_KEY and CLERK_SECRET_KEY to the live values
+  on Railway via --set-from-stdin (no secret in command text or output).
+- Deployed main@c17c404 with pre-upload verification of the actual
+  working tree (telemetry both ends, trust proxy 2, font data:).
+  Deploy SUCCESS.
+
+**Verified live on the preview:**
+- CSP now pins `script-src 'self' https://clerk.flowcoach.flowos.tech`
+  AUTOMATICALLY from the key. Step 1's explicit ask: confirmed.
+- pk_live_ is baked into the served bundle, and the F5 bundle-key
+  divergence warning is ABSENT, so frontend and backend hold the same key.
+- Boot log: "ADMIN_EMAIL resolves to a Clerk account with a verified
+  matching address; admin login will pass." This ran resolveRole against
+  the PRODUCTION instance, so the owner exists there with a verified
+  matching email and will be granted admin.
+- Unauthenticated admin 401; public chat unaffected by the key swap.
+
+**Blocked by Clerk's own design, deferred to step 3:** the API-level
+admin probe cannot run against a production instance. Clerk Backend API
+`POST /sessions` returns `400 "Invalid request for environment"` -
+programmatic session minting is development-only. Production sessions
+must come from a real sign-in. Additionally, production Clerk is
+domain-locked to flowcoach.flowos.tech, so a browser sign-in attempted
+at the *.up.railway.app preview URL is expected to FAIL on origin, not
+because anything is broken. Browser login verification therefore belongs
+immediately after the DNS cutover (step 3), not before it.
+
+**Housekeeping:** the stale `CLERK_PUBLISHABLE_KEY` (pk_test_ value) is
+present on the Railway service again despite being reported deleted.
+Nothing reads it; flagged for dashboard deletion.
+
+**Recorded, NOT executed (Tyson, this session):** simplify the
+invalid-bucket machinery per adversarial round 5 Q3. Keep a bounded
+non-address path so odd edge output cannot allocate unbounded memory;
+DROP the creation budget, the per-value hashing, and the alert timer.
+Rationale: that shape was sized for an attacker Railway's edge makes
+unreachable (edge replaces client XFF), and its only remaining effect is
+fail-closed collateral against genuine new visitors. Own PR AFTER Slice 4.
+
+DNS still UNTOUCHED. Manus untouched (rollback).
