@@ -22882,3 +22882,63 @@ day_started event applying flow-coach-day-2.
 
 Test rows (lead id 5 + related) left in place deliberately; step 6 is
 the final count-verified wipe.
+
+## 2026-08-21: flow-coach-ai Slice 4 STEPS 5 + 6 (Manus-zero sweep, final wipe)
+
+GHL-side confirmed by Tyson first: slice4-cutover-test@flowos.tech
+present with source "Flow Coach AI", tags flow-coach-ai, 7-day-challenge,
+flow-coach-day-2, fb-retarget. Day-2 tag = post-cutover delivery proven.
+
+**STEP 5, Manus-zero on the live domain (flowcoach.flowos.tech):**
+- Served HTML: 0 hits for manus, umami, spaceEditor, manuscdn,
+  cloudfront, manus-analytics, data-manus, manusImportantProperties,
+  __manus, plausible, GTM-. og:image and canonical both self-hosted/own
+  domain. Only same-origin assets + Google Fonts referenced.
+- Response headers: 0 manus; server: railway-hikari (direct Railway, no
+  Cloudflare in path, consistent with the grey-cloud hop gate).
+- Bundles: main JS + CSS + ALL 97 lazily-referenced chunks fetched from
+  the live domain (5.5MB swept): 0 hits for manus / manuscdn /
+  d2xsxph8kpxj0f / butterfly-effect / umami / manus-analytics /
+  spaceEditor / forge. / OWNER_OPEN_ID.
+- Manus paths /__manus__/debug-collector.js, /__manus/pwa/
+  manifest.webmanifest, /__manus__/version.json all return the SPA
+  fallback (no real files). robots.txt real, Disallow /admin.
+
+**STEP 6, final wipe verified by count:** before 3 leads / 4 msgs /
+2 users (all test-era: slice3+slice4 test leads, a browser click-through,
+dev-probe + production sign-in user rows) -> after 0 / 0 / 0.
+The app starts its real life empty, per the Phase 2 decision.
+
+**7 Pillars re-scored against the LIVE deployment (not local):**
+1 Frontend PASS: CSP live on the domain pinning production Clerk FAPI,
+  data: fonts fixed, Tyson's browser session: zero console errors, zero
+  CSP violations; no secrets in 5.5MB of swept bundles (pk_live is
+  public by design).
+2 Backend PASS: on the custom domain: per-IP 429 at exactly 61, session
+  429 at 31 (measured on this host), 413 oversized body, 400 (not 500)
+  for empty/oversized input, no stack in error responses, upstream error
+  text never surfaced.
+3 Databases PASS: live anon-key probes vs all three tables: HTTP 401
+  code 42501 permission denied (re-run post-cutover); RLS +
+  revoked grants holding; service access via Railway env only.
+4 Auth PASS: production Clerk on the custom domain, browser-verified
+  passwordless email-code login by the owner; 401 unauth / 403 wrong
+  role verified live; boot fail-fast + admin-resolves check green on the
+  production instance.
+5 Payments N/A: unchanged, no payment surface.
+6 Security PASS with two recorded acceptances: GHL capability URLs
+  remain in git history until decommission-time regeneration (Tyson
+  decision, rollback preservation); audit advisories at 43 (7/30/6)
+  pending the post-cleanup re-run at docs close-out.
+7 Infrastructure PASS with notes: Railway hosting live on the custom
+  domain, DNS grey-cloud verified, trust proxy empirically gated on the
+  serving path, deploys are manual railway up from verified main (no CI
+  yet, recorded gap), Manus retained as rollback = restore Cloudflare
+  CNAME to cname.manus.space.
+
+Manus NOT decommissioned. Remaining on the decommission checklist:
+regenerate both GHL triggers + update Railway env + re-verify GHL-side;
+revoke the "manus API" key (existing item); retire the Manus project
+after the rollback window. Remaining otherwise: invalid-bucket
+simplification PR (own PR, post-Slice-4), Slice 5 activation, Slice 6
+docs close-out.
