@@ -188,6 +188,38 @@ a database is on the qclaw droplet just because the product is Flow OS.
     that only becomes a requirement if the open-source or paid-offer direction is
     ever actioned. Current state and blocker status live in `FLOW_OS_STATE.md`
 
+- **flow-coach-ai** (Flow Coach AI, 7-Day Challenge assistant)
+  - Repo: `github.com/tysonven/flow-coach-ai` (private). Local checkout:
+    `~/Projects/flow-coach-ai`
+  - Default branch: `main`. NO auto-deploy: deploys are a manual
+    `railway up` from a verified checkout of main (auto-deploy was
+    disabled deliberately; a merge is NOT a production deploy here,
+    unlike ghl-support-bot)
+  - Host: Railway project `flow-coach-ai`
+    (05c92d61-56c2-4f8d-94bf-c8db30de8b55), single `production`
+    environment, service `flow-coach-ai`
+  - Domain: `flowcoach.flowos.tech` (Cloudflare CNAME ->
+    v2ou8xmf.up.railway.app, DNS-only grey cloud REQUIRED: proxying
+    inserts a Cloudflare hop and breaks the rate limiter's
+    trust-proxy-2 keying). Admin at `/admin`
+  - Database: dedicated Supabase project `flow-coach-ai`
+    (ref `jizrujzjxwmiukpmljlk`, ap-southeast-2, Postgres 17). Tables
+    users / leads / chat_messages, RLS enabled, anon and authenticated
+    grants revoked; server connects via DATABASE_URL (session pooler)
+  - Auth: Clerk production instance, domain-locked to
+    flowcoach.flowos.tech, invite-only, passwordless email code (Google
+    OAuth unconfigured). Admin = verified email match against
+    ADMIN_EMAIL
+  - LLM: direct Anthropic, dedicated key, model claude-sonnet-5
+  - Env: 7 required vars on the Railway service (see repo
+    `.env.example`); local dev `.env` at mode 600. VITE_ vars are
+    BUILD-time baked: changing VITE_CLERK_PUBLISHABLE_KEY needs a
+    rebuild, not just a variable edit
+  - GHL: posts to two Flow OS sub-account (2NszMTudEJyVXCzQjNTo)
+    workflow webhooks (lead + day progress). Touches NO n8n workflow
+  - Rollback: restore the Cloudflare CNAME for `flowcoach` to
+    `cname.manus.space` (Manus deployment retained until decommission)
+
 ## Secrets and credentials
 
 - QClaw-side secrets: `/root/.quantumclaw/.env` (root-owned, 600 permissions)

@@ -174,6 +174,54 @@ already takes a third card without restructuring.
 
 **Owner:** Tyson.
 
+#### Flow Coach AI - 7-Day Challenge assistant
+
+Self-hosted Claude chat assistant for the 7 Day Automation Challenge
+(the asset formerly also called the Freedom and Flow Challenge; one
+funnel, two names, reconciled in N8N_WORKFLOW_INDEX.md). Free product
+inside the challenge funnel; the challenge trial auto-converts to the
+$97/month Starter Plan, but this app touches no billing or entitlement.
+
+- **Status:** LIVE on Railway at `flowcoach.flowos.tech` since the
+  2026-08-21 DNS cutover. Fully Manus-free (verified zero vendor
+  artefacts on the live page, bundles, and headers). Manus deployment
+  retained purely as DNS rollback until decommission.
+- **Owner:** Tyson.
+- **Distribution:** the access link goes out in the first challenge
+  email and sits in the challenge channel in the community hub. Volume
+  deliberately low to date while bugs were ironed out; lead counts so
+  far are not a conversion signal.
+- **Stack:** React/Express/tRPC on Railway, dedicated Supabase Postgres
+  (RLS, locked to service access), Clerk production auth (owner-only,
+  passwordless email code), direct Anthropic (claude-sonnet-5), GHL
+  lead + day-progress webhooks into the Flow OS sub-account. Full
+  locations in LOCATIONS.md.
+- **Trust gradient:** Level 1 for all flow-coach-ai task types (code,
+  prompt/knowledge-base edits, deploys). Reasoning: no CI gate, manual
+  deploys, customer-facing copy about pricing, and CRM writes.
+  Revisit once CI and preview deploys exist.
+- **Known issues / owed:**
+  1. Decommission checklist (blocks retiring Manus): regenerate both
+     GHL webhook triggers, update Railway env, re-verify delivery
+     GHL-side; revoke the "manus API" key; then retire the Manus
+     project. Regeneration deferred to decommission deliberately so the
+     DNS rollback path keeps working webhooks.
+  2. Privacy disclosure gap: Meta receives challenge signup data via
+     the GHL-side fb-retarget tag, and needs to appear in the privacy
+     policy alongside the open Clarity consent item. Meta tracking
+     itself stays per Tyson.
+  3. No CI / no headless browser tier: deploys are manual railway up;
+     validation matrix at repo docs/validation-matrix.md, browser tier
+     manual. Playwright is the recorded fix.
+  4. Landing page corrections proposed, not shipped (customGPT bullet,
+     canonical tag): ~/Projects/flow-coach-ai-audit/SLICE5-LANDING-PROPOSALS.md
+  5. Residual dependency advisories: 43 (7 low / 30 moderate / 6 high)
+     as of 2026-08-21, concentrated in transitive UI deps.
+- **History:** built on Manus 2026-03-17, existed undocumented in every
+  canonical doc until the 2026-08-19 audit; decoupled and cut over
+  across Phase 2 slices 1-4 (five adversarial review rounds on the
+  security slices). Full trail in QCLAW_BUILD_LOG.md.
+
 ### Flow States Collective
 
 **9 confirmed active engagements** (~$4,152/mth recurring + one-offs), plus one
