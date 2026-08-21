@@ -22638,3 +22638,37 @@ real session, chat healthy.
 
 **State:** PR #9 open (telemetry), awaiting review/merge. main = 15edae9.
 flowcoach.flowos.tech DNS UNTOUCHED. Slice 4 NOT started per instruction.
+
+## 2026-08-21 (later): flow-coach-ai Slice 4 step 1 BLOCKED at start
+
+**Discrepancy surfaced, not worked around:** Slice 4 was dispatched on the
+premise "PR #9 merged". GitHub reports PR #9 (slice-3c-clerk-telemetry)
+`state=OPEN, mergedAt=null`; origin/main is 15edae9 (PR #8) and does NOT
+contain the Clerk telemetry opt-out. The commit (ae8df31) exists only on
+origin/slice-3c-clerk-telemetry. NOT merged unilaterally: main-branch
+state, and the false premise means something unexpected happened that
+Tyson should see. DRIFT WARNING: the Railway preview currently RUNS the
+telemetry fix (deployed from the branch), so a cutover deploy sourced
+from main would silently drop it. Same class as the earlier deployed-tree
+drift.
+
+**Also blocked regardless:** Slice 4 step 1 needs Clerk dashboard actions
+(create production instance, verify domain, invite owner, browser login)
+and Cloudflare DNS records. flowos.tech DNS is on Cloudflare
+(dale/venus.ns.cloudflare.com) and this session holds NO Cloudflare
+credentials, so every DNS record in steps 1 and 3 is Tyson's to make.
+Railway CLI can register the custom domain and print the required record
+when step 3 arrives.
+
+**Prepared and verified in advance (no state changed):** simulated the
+production-key CSP derivation through the shipped functions.
+- Clerk app domain `flowcoach.flowos.tech` -> FAPI
+  clerk.flowcoach.flowos.tech -> derives, script-src pins it. CORRECT.
+- Clerk app domain `flowos.tech` -> FAPI clerk.flowos.tech -> REJECTED by
+  the pinned constant, script-src falls back to 'self' only and /admin
+  sign-in dies with the loud SECURITY warning.
+So the Clerk application domain choice is load-bearing and must be
+exactly flowcoach.flowos.tech, or PRODUCTION_CLERK_FAPI_HOST must change
+in the same PR.
+
+Nothing executed. DNS UNTOUCHED. Manus untouched (stays as rollback).
