@@ -22724,3 +22724,48 @@ unreachable (edge replaces client XFF), and its only remaining effect is
 fail-closed collateral against genuine new visitors. Own PR AFTER Slice 4.
 
 DNS still UNTOUCHED. Manus untouched (rollback).
+
+## 2026-08-21: flow-coach-ai Slice 4 STEP 2 (trust proxy hop count, production)
+
+Re-verified against the production service AFTER Tyson's clean redeploy
+(7 vars, stale CLERK_PUBLISHABLE_KEY gone), not carried forward from the
+preview measurement. Method: one short-lived diagnostic that computed
+what EVERY hop count would yield from a single measurement, so both
+failure directions were visible without multiple config redeploys.
+Diagnostic echoed only the caller's own forwarding headers; removed and
+clean main redeployed immediately after, verified gone.
+
+**Measured (host flow-coach-ai-production.up.railway.app):**
+- X-Forwarded-For: "<true client>, <edge node>"; chain length exactly 2.
+- X-Real-IP: true client, stable across requests.
+- Configured trust proxy 2 -> req.ip = 150.228.63.157 = TRUE CLIENT.
+- trust_1 would yield the edge node, and the edge node ROTATED between
+  two requests taken seconds apart (152.233.68.97 then 212.102.36.193),
+  so too-few provably reproduces the original bug. CONFIRMED.
+- trust_3 / trust_4: chain is only 2 long, so Express can walk no
+  further and returns the same leftmost value. Harmless HERE, but only
+  because the chain is exactly 2 AND Railway strips client input. It
+  buys nothing and removes the safety margin the moment a path is
+  shorter or client-influenced (e.g. an internal-network request
+  carrying a single client-supplied XFF entry would be taken verbatim).
+  2 is the correct floor-and-ceiling for this topology.
+- Injection resistance re-confirmed on production: sending
+  "X-Forwarded-For: 1.1.1.1, 2.2.2.2, 3.3.3.3" plus "X-Real-IP: 4.4.4.4"
+  produced a chain with NONE of those values. Railway REPLACES both
+  headers. A client cannot lengthen or poison the chain.
+
+**Behavioural confirmation after clean redeploy:** per-IP burst throttled
+at exactly request 61 (limit 60) and the log line reads
+`ip=150.228.63.157`, the true client, not an edge node.
+
+**STEP 3 GATE RAISED (important):** this hop count is verified for the
+*.up.railway.app host. flowcoach.flowos.tech is on CLOUDFLARE. If the
+cutover record is PROXIED (orange cloud), Cloudflare inserts itself and
+the chain becomes 3 entries [client, cf-edge, railway-edge], so trust
+proxy 2 would return the CLOUDFLARE edge IP and reproduce the rotating-
+edge bug in a new form. The record should be DNS-only (grey cloud), and
+the hop count MUST be re-measured on the custom domain after cutover
+before the limiter is trusted there. Recorded as a step 3 gate.
+
+Verdict: trust proxy 2 is correct and stays. No code change needed.
+DNS still UNTOUCHED. Manus untouched (rollback).
