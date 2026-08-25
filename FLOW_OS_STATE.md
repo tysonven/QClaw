@@ -4,7 +4,7 @@ This is the canonical state doc. Charlie reads it at session start to know what'
 
 This file is the fourth canonical doc Charlie reads at session start, after `CEO_OPERATING_MODEL.md`, `CHARLIE_ROLE.md`, and `LOCATIONS.md`.
 
-**Last updated:** 2026-08-20
+**Last updated:** 2026-08-25
 
 ## Maintenance rules
 
@@ -80,20 +80,75 @@ Support AI trained on GoHighLevel documentation. $29/month.
 - `support.flowos.tech` — Flow OS sub-account users
 - `support.flowos.tech/ghl` — non-Flow OS GHL accounts (broader market entry point)
 
+**Revenue: zero. Nobody has ever paid for this product.** Verified against
+live Stripe and the production DB 2026-08-25. The engineering position changed
+materially in the week of 2026-08-12 to 2026-08-18 (below); the commercial
+position did not. Do not let the build progress imply traction.
+
 | Person | Status | Started | Notes |
 |---|---|---|---|
-| Bruce S. | Churned | Apr 2026 | Converted from trial 26 Apr; payment bounced, canceled 2026-08-09. The predicted cancellation happened. |
-| Georgia F. | Ended | bundled | Was free with her Flow OS sub; ended when that churned 2026-05-20 |
-| Helena K. | Trial | — | Payment details completed, never used the platform |
-| Joemarie O. | Trial | — | Payment details completed, never used the platform |
-| Murray M. | Trial | — | Payment details completed, never used the platform |
-| Nexus Admin | Trial | — | Payment details completed, never used the platform |
+| Bruce S. | Churned 2026-08-09 | 2026-04-26 | GHLPOWER50 founders code at Stripe checkout: 100% off for three months (three $0 invoices). The first real $29 invoice, 2026-07-26, failed all 9 payment attempts; subscription canceled 2026-08-09. He never paid anything. |
+| Georgia F. | Ended 2026-05-20 | bundled | Free with her Flow OS sub; ended when that churned. No Stripe record for this product. |
+| Helena K. | Signup only | never | Never a customer. No Stripe record of any kind, no access row. See correction below. |
+| Joemarie O. | Signup only | never | Same. |
+| Murray M. | Signup only | never | Same. |
+| Nexus Admin | Signup only | never | Same. |
 
-**Effective paid subscribers: 0.** The single paid account is in payment
-failure and expected to cancel. Four trials converted payment details but
-never activated — a zero-activation rate across every trial taken. Treat this
-as a product with no revenue and no demonstrated engagement, not as a $29/mth
-line item.
+**Correction (2026-08-25):** this entry previously claimed four trials
+"converted payment details but never activated". That was false. Verified
+directly against Stripe and the production MySQL rather than inferred: the
+$29 monthly price has exactly four subscription records ever, Bruce S. plus
+three same-day test subscriptions on Tyson's own account (2026-04-09), and
+the GHLPOWER50 promo shows exactly four redemptions, matching those. Nobody
+else ever reached Stripe checkout; the annual price has zero subscriptions
+ever. The accounts that appeared to hold GHL paid access in the admin panel
+were founders-code redemptions (paid level granted with no card, by design)
+plus rows hard-deleted by the old `revokeUserAccess`, surfacing through
+`admin.listUsers`, whose LEFT JOIN lists all 16 signups whether or not an
+access row exists. The only GHL paid access row in the production DB is
+Tyson's own founders-code test, expired 2026-07-21.
+
+**Engineering week 2026-08-12 to 2026-08-18** (detail in
+`QCLAW_BUILD_LOG.md`; the product went from largely broken to working):
+
+- Corpus went from 253 docs (7.6% of the help centre, and 103 of those were
+  fossils) to 3,337 searchable docs. The cause was a hardcoded
+  `urls.slice(0, 150)` in the crawler. 3,397 active as of 2026-08-25.
+- Freshdesk rate limit found at 200 requests/min after a crawl reported
+  success while 2,225 of 2,630 fetches were refused. Shared limiter, 429
+  retry with backoff, and honest partial-run status added.
+- System prompt rewritten. It had instructed the model to treat its own
+  training as the primary source and never to hedge, which produced invented
+  UI paths, invented merge fields and invented features. Checkable details
+  are now scoped to retrieved context, and uncertainty is a valid answer.
+- Ten-question eval: 2/10 correct with 3 fabrications, to 3/10 with 0
+  fabrications and 6 refusals (the corpus was the bottleneck, not the
+  prompt), to 7/10 correct with 0 fabrications after the full crawl.
+- Curated docs work end to end for the first time (three stacked defects
+  fixed). First real curated doc is live: tag rename, which GoHighLevel has
+  never documented.
+- Security: the `selfGrant` privilege escalation closed (any authenticated
+  caller could self-grant admin, and verification failed open), the image
+  upload endpoint authenticated, `grantSource`/`grantedByUserId` audit
+  columns added. No evidence of exploitation in the data.
+- The access gate no longer renders the pay gate on a failed entitlement
+  check, and a lapsed founders trial now gets its own copy instead of the
+  generic subscribe wall (plausibly what Bruce S. saw). Merged and deployed
+  2026-08-18 (PRs #9 and #10).
+- Six silent report-success-while-doing-nothing failures found; three closed
+  by invariants enforced in tests that read the source.
+
+**Open items:**
+
+- No tenancy layer. Brand is a hardcoded two-value enum, so a white-label
+  deployment is a build, not a configuration flag.
+- 58% of articles exceed the 6,000-character embedding window and rank on
+  their opening only. Chunking long articles into multiple embedded rows is
+  the next quality lever.
+- The changelog and marketplace crawl sources are client-rendered; reaching
+  their archives needs a headless browser or an API.
+- `GHL_AGENCY_API_KEY` is load-bearing for Flow OS onboarding and fails
+  silently. Needs a heartbeat.
 
 **Owner:** Tyson.
 
@@ -607,6 +662,20 @@ Stuff currently broken, suboptimal, or pending. Charlie reads this section to kn
 Rolling list of recent significant changes. Most recent at top. `QCLAW_BUILD_LOG.md`
 is the detailed record; entries here are pointers.
 
+### 2026-08-25
+
+- **GHL Support Bot section corrected and brought current.** The "four trials
+  converted payment details but never activated" claim was false: verified
+  against live Stripe and the production DB, only Bruce S. (GHLPOWER50
+  founders code, 100% off for three months, no payment ever succeeded) and
+  Tyson's own test account ever reached Stripe checkout, and the apparent
+  trial accounts were signups surfacing through the `admin.listUsers` LEFT
+  JOIN over hard-deleted access rows. The 2026-08-12 to 2026-08-18 build week
+  recorded: corpus 253 to 3,337 docs, grounding prompt rewrite, eval 2/10
+  with 3 fabrications to 7/10 with 0, curated docs live, `selfGrant`
+  privilege escalation closed. Revenue remains zero; nobody has ever paid.
+  See `QCLAW_BUILD_LOG.md`.
+
 ### 2026-08-20
 
 - **FSC 1% Club relaunched and Ashley onboarded.** The 1% Club is active and taking
@@ -666,7 +735,10 @@ is the detailed record; entries here are pointers.
 
 ### 2026-04-26
 
-- Bruce S. converted GHL Support Bot trial → paid ($29/mth).
+- Bruce S. converted GHL Support Bot trial → paid ($29/mth). [Corrected
+  2026-08-25: this was a GHLPOWER50 founders-code redemption, 100% off for
+  three months. No payment ever succeeded; the first real invoice failed and
+  the subscription canceled 2026-08-09.]
 
 ### 2026-04 — FSC 1:1 cohort onboarding wave
 
@@ -721,6 +793,28 @@ Things this v1 doc doesn't capture that should be filled in over time.
 ## Maintenance log
 
 This section captures changes to the state doc over time. New entries appended at top.
+
+- **2026-08-25 - GHL Support Bot section rewritten; false trials claim
+  corrected.** The section described the 2026-08-05 state, and its central
+  commercial claim, four trials that "converted payment details but never
+  activated", was false. Verified against live Stripe (via the app's own
+  production key) and the production Railway MySQL rather than taken on
+  trust: the $29 monthly price has exactly four subscription records ever
+  (Bruce S., plus three same-day test subscriptions on Tyson's own account,
+  2026-04-09); the GHLPOWER50 promo shows exactly four redemptions, matching
+  those; the annual price has zero. Bruce's invoices are three at $0 under
+  the code, then the first real $29 invoice (2026-07-26) unpaid after 9
+  attempts, canceled 2026-08-09, so no payment ever succeeded on this
+  product. The production `user_access` table holds a single GHL row,
+  Tyson's founders-code test expired 2026-07-21; the four "trial" users are
+  `users` rows with no access row and no Stripe record, surfaced by the
+  `admin.listUsers` LEFT JOIN. Roster table rewritten accordingly, the
+  2026-08-12 to 2026-08-18 engineering week summarised from
+  `QCLAW_BUILD_LOG.md` with its open items (no tenancy layer, embedding
+  window chunking, client-rendered crawl sources, silent
+  `GHL_AGENCY_API_KEY` failure), and the stale 2026-04-26 Section 8 entry
+  corrected in place. Revenue framing stays at zero with no paying history
+  ever.
 
 - **2026-08-20 - FSC section corrected for the 1% Club relaunch.** The section
   described a May 2026 state: 1% Club winding down, no team beyond Tyson and Emma,
