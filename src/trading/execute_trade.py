@@ -30,9 +30,13 @@ load_dotenv(env_path)
 RELAY_URL = os.getenv("RELAY_URL", "http://68.183.13.219:8000").rstrip("/")
 RELAY_SHARED_SECRET = os.getenv("RELAY_SHARED_SECRET")
 
-# 30s leaves headroom under executor.py's 60s subprocess timeout, so a slow
-# relay surfaces here as a clean error rather than a killed subprocess.
-RELAY_TIMEOUT_SECONDS = 30
+# 45s leaves headroom under executor.py's 60s subprocess timeout, so a slow
+# relay surfaces here as a clean error rather than a killed subprocess. Raised
+# from 30s on 2026-08-25: after placing the order the relay now also decodes
+# the settlement transaction for the true cash cost (its own budget is capped
+# at RECEIPT_TIME_BUDGET_SECONDS = 15 on the relay side), so a slow-but-alive
+# relay call can legitimately run well past the old ceiling.
+RELAY_TIMEOUT_SECONDS = 45
 
 
 def execute_trade(market_id, direction, amount_usdc, price=None):

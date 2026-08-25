@@ -91,6 +91,15 @@ class StubGate(ApprovalGate):
         self.calls: list[tuple[str, dict]] = []
         self.fail_methods: set[str] = set()
         self._message_id = 4200
+        # Live-price check stub: None = "check failed", matching the default
+        # for tests written before the Market-now line existed. No test ever
+        # talks to Gamma.
+        self.live_price = None
+        self.price_checks = 0
+
+    async def _fetch_current_price(self, candidate):
+        self.price_checks += 1
+        return self.live_price
 
     async def _api(self, method, payload):
         self.calls.append((method, payload))
@@ -212,6 +221,94 @@ class SendApprovalRequestTest(unittest.TestCase):
             make_candidate(edge=-0.05), make_recommendation()
         ))
         self.assertIn("Edge: -5.0%", gate.calls_to("sendMessage")[0]["text"])
+
+    def test_live_price_line_present_when_check_succeeds(self):
+        """2026-08-25: the prompt shows what the market says NOW, so Tyson can
+        sanity-check a scan-time edge against reality before tapping."""
+        gate = StubGate()
+        gate.live_price = 0.284
+        pending = run(gate.send_approval_request(make_candidate(), make_recommendation()))
+        text = gate.calls_to("sendMessage")[0]["text"]
+        self.assertIn("Market now: 28.4%", text)
+        self.assertEqual(gate.price_checks, 1)
+        # Stored so the outcome edit re-renders the body Tyson decided against.
+        self.assertEqual(pending.current_price, 0.284)
+
+    def test_live_price_failure_sends_prompt_without_the_line(self):
+        gate = StubGate()
+        gate.live_price = None
+        run(gate.send_approval_request(make_candidate(), make_recommendation()))
+        text = gate.calls_to("sendMessage")[0]["text"]
+        self.assertNotIn("Market now", text)
+        self.assertIn("Edge: +18.0%", text)  # everything else intact
+
+    def test_outcome_edit_reuses_the_price_shown_at_send_time(self):
+        gate = StubGate()
+        gate.live_price = 0.31
+        pending = run(gate.send_approval_request(make_candidate(), make_recommendation()))
+        run(gate.handle_callback(callback(f"approve:{pending.approval_id}")))
+        edits = gate.calls_to("editMessageText")
+        self.assertEqual(len(edits), 1)
+        self.assertIn("Market now: 31.0%", edits[0]["text"])
+        # One check at send time, never a second at edit time.
+        self.assertEqual(gate.price_checks, 1)
+
+
+class FetchCurrentPriceTest(unittest.TestCase):
+    """The Gamma parse itself, through a fake httpx client."""
+
+    class FakeResponse:
+        def __init__(self, payload, status_code=200):
+            self._payload = payload
+            self.status_code = status_code
+
+        def json(self):
+            return self._payload
+
+    class FakeClient:
+        def __init__(self, response):
+            self._response = response
+
+        async def get(self, url, params=None, timeout=None):
+            return self._response
+
+    def gate_with(self, payload, status_code=200):
+        gate = ApprovalGate(chat_id=OWNER_CHAT_ID, token="test-token")
+        gate._client = self.FakeClient(self.FakeResponse(payload, status_code))
+        return gate
+
+    CID = "0x" + "ab" * 32  # make_candidate leaves condition_id None
+
+    def test_direction_side_price_yes_and_no(self):
+        payload = [{"outcomePrices": '["0.505", "0.495"]'}]
+        yes = run(self.gate_with(payload)._fetch_current_price(
+            make_candidate(direction="YES", condition_id=self.CID)))
+        no = run(self.gate_with(payload)._fetch_current_price(
+            make_candidate(direction="NO", condition_id=self.CID)))
+        self.assertEqual(yes, 0.505)
+        self.assertEqual(no, 0.495)
+
+    def test_http_error_status_returns_none(self):
+        gate = self.gate_with([], status_code=500)
+        self.assertIsNone(run(gate._fetch_current_price(
+            make_candidate(condition_id=self.CID))))
+
+    def test_unparseable_prices_return_none(self):
+        gate = self.gate_with([{"outcomePrices": "not json"}])
+        self.assertIsNone(run(gate._fetch_current_price(
+            make_candidate(condition_id=self.CID))))
+
+    def test_finalised_price_returns_none(self):
+        """A 0.0/1.0 price means the market settled and there is nothing to sanity-check;
+        and the executor's gates are the ones that must refuse it."""
+        gate = self.gate_with([{"outcomePrices": '["1", "0"]'}])
+        self.assertIsNone(run(gate._fetch_current_price(
+            make_candidate(condition_id=self.CID))))
+
+    def test_missing_condition_id_skips_the_call(self):
+        gate = ApprovalGate(chat_id=OWNER_CHAT_ID, token="test-token")
+        self.assertIsNone(run(gate._fetch_current_price(
+            make_candidate(condition_id=None))))
 
     def test_failed_delivery_clears_the_gate(self):
         gate = StubGate()

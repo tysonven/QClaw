@@ -349,7 +349,7 @@ class TradeExecutor:
 
         # Succeeded. From here the money is spent — a failure to persist is
         # reported loudly but must NOT be reported as a failed trade.
-        entry_price, shares = self._derive_fill(candidate, payload)
+        entry_price, shares, entry_cost = self._derive_entry(candidate, payload)
         tx_hash = self._extract_tx_hash(payload)
 
         position_id: Optional[str] = None
@@ -367,7 +367,10 @@ class TradeExecutor:
                 # exits (Session 5 audit, F4).
                 "simulation_id": candidate.simulation_id,
                 "direction": candidate.direction.upper(),
-                "usdc_amount": candidate.amount_usdc,
+                # Real cash out of the wallet when observable (relay cash_out,
+                # fee included), NEVER the pre-approval proposal: pnl on close
+                # is exit_usdc minus this, and exit_usdc is real net proceeds.
+                "usdc_amount": entry_cost,
                 "entry_price": entry_price,
                 "shares": shares,
                 "entry_edge": candidate.edge,
@@ -461,65 +464,159 @@ class TradeExecutor:
         return parsed if isinstance(parsed, dict) else {}
 
     @staticmethod
-    def _derive_fill(
-        candidate: ScannerCandidate, payload: dict[str, Any]
-    ) -> tuple[Optional[float], Optional[float]]:
-        """Best-effort real fill price, falling back to the scan-time price.
+    def _as_float(raw: Any) -> Optional[float]:
+        """float(raw) or None. The CLOB serialises amounts as strings."""
+        try:
+            if raw is None or isinstance(raw, bool):
+                return None
+            return float(raw)
+        except (TypeError, ValueError):
+            return None
 
-        Without entry_price and shares the Position Monitor cannot compute pnl
-        on close, so writing nothing is not an option. The CLOB response shape
-        is not contractual, so every lookup is defensive and a parse failure
-        degrades to the scan price rather than blocking a trade that has
-        already been placed.
+    @classmethod
+    def _derive_entry(
+        cls, candidate: ScannerCandidate, payload: dict[str, Any]
+    ) -> tuple[Optional[float], Optional[float], Optional[float]]:
+        """(entry_price, shares, usdc_amount) for the position row.
+
+        Preference order, best real data first (audit 2026-08-25: position
+        f4be9ee8 recorded the scan-time proposal while the real fill was
+        0.284 x 35.211266 shares with a $0.50 fee on top):
+
+        entry_price / shares:
+          1. The order response's matched amounts: for a market BUY,
+             makingAmount is the real USDC notional and takingAmount the real
+             shares, so price = making/taking. Only trusted when the order
+             reports status "matched".
+          2. Legacy price keys (price/avgPrice/...) kept from the pre-audit
+             code. No current CLOB response carries them, but a shape change
+             should degrade gracefully, not silently.
+          3. Scan-time price, shares = proposed amount / price.
+          NULL, never 0.0, when nothing is usable: a zero entry_price reads
+          as a real price downstream (it disables the stop-loss rule and
+          poisons pnl, which feeds Gate 3's daily-loss sum).
+
+        usdc_amount (the figure every pnl is computed against):
+          1. The relay's `cash_out`: true wallet debit including the fee the
+             CLOB API never reports, decoded from the settlement tx. Refused
+             (with a log) if it is somehow below the matched notional, since a
+             negative fee is not a thing.
+          2. The matched notional (makingAmount).
+          3. The proposed amount, exactly the pre-audit behaviour.
         """
-        fallback = float(candidate.market_probability or 0) or None
-        price: Optional[float] = None
-
         response = payload.get("response")
-        if isinstance(response, dict):
-            for key in ("price", "avgPrice", "average_price", "fillPrice", "matchedPrice"):
-                raw = response.get(key)
-                try:
-                    if raw is not None:
-                        value = float(raw)
-                        if 0 < value <= 1:
-                            price = value
-                            break
-                except (TypeError, ValueError):
-                    continue
 
+        price: Optional[float] = None
+        shares: Optional[float] = None
+        notional: Optional[float] = None
+
+        # 1. Real matched amounts.
+        if isinstance(response, dict):
+            status = str(response.get("status") or "").lower()
+            taking = cls._as_float(response.get("takingAmount"))
+            making = cls._as_float(response.get("makingAmount"))
+            if status == "matched" and taking and taking > 0 and making and making > 0:
+                implied = making / taking
+                if 0 < implied <= 1:
+                    price = round(implied, 6)
+                    shares = round(taking, 6)
+                    notional = round(making, 6)
+                else:
+                    log.error(
+                        "matched amounts imply price %.6f outside (0,1], "
+                        "ignoring fill amounts", implied,
+                    )
+
+        # 2. Legacy price keys.
+        if price is None and isinstance(response, dict):
+            for key in ("price", "avgPrice", "average_price", "fillPrice", "matchedPrice"):
+                value = cls._as_float(response.get(key))
+                if value is not None and 0 < value <= 1:
+                    price = value
+                    break
+
+        # 3. Scan-time fallback.
         if price is None:
-            price = fallback
+            price = float(candidate.market_probability or 0) or None
             if price is not None:
                 log.info(
-                    "no fill price in CLOB response, recording scan-time price %.4f",
+                    "no fill data in CLOB response, recording scan-time price %.4f",
                     price,
                 )
 
-        if not price or price <= 0:
-            # NULL, never 0.0. A zero entry_price reads as a real price
-            # downstream: it disables the stop-loss rule (which requires
-            # entry_price > 0.20) and makes any pnl computed from it wrong,
-            # which would then feed Gate 3's daily-loss sum. NULL is the honest
-            # signal that the fill price is unknown.
-            log.error("no usable entry price — recording NULL entry_price/shares")
-            return None, None
+        requested = cls._as_float(candidate.amount_usdc)
 
-        try:
-            amount = float(candidate.amount_usdc)
-        except (TypeError, ValueError):
-            return price, None
-        return price, round(amount / price, 6)
+        if not price or price <= 0:
+            log.error("no usable entry price — recording NULL entry_price/shares")
+            price, shares = None, None
+        elif shares is None and requested is not None:
+            shares = round(requested / price, 6)
+
+        # usdc_amount: real cash out > matched notional > proposed amount.
+        cash_out = cls._as_float(payload.get("cash_out"))
+        if cash_out is not None and cash_out > 0:
+            if notional is not None and cash_out < notional:
+                log.error(
+                    "relay cash_out %.6f is below matched notional %.6f, "
+                    "distrusting it and recording the notional", cash_out, notional,
+                )
+                usdc_amount = notional
+            else:
+                usdc_amount = cash_out
+                log.info(
+                    "recording real cash out %.6f USDC (notional %s)",
+                    cash_out, notional,
+                )
+        elif notional is not None:
+            log.warning(
+                "no usable cash_out from relay (%s), recording notional %.6f, "
+                "which EXCLUDES any fee",
+                str(payload.get("cash_out_error") or "absent")[:200], notional,
+            )
+            usdc_amount = notional
+        else:
+            usdc_amount = requested
+
+        return price, shares, usdc_amount
 
     @staticmethod
     def _extract_tx_hash(payload: dict[str, Any]) -> Optional[str]:
-        """Pull an order/transaction identifier out of the CLOB response."""
+        """The settlement transaction hash, or a labelled fallback identifier.
+
+        The CLOB response carries settlement hashes under `transactionsHashes`
+        (plural, a list). The pre-audit code looked for `transactionHash`
+        singular, never matched, and fell through to orderID, which is why
+        every automated position before 2026-08-25 stores the ORDER id in
+        tx_hash, not a real transaction hash. Order of preference:
+
+          1. transactionsHashes[0], the real settlement tx.
+          2. Legacy singular keys, in case the response shape changes back.
+          3. orderID, still stored (NULL tx_hash is the manual-entry marker,
+             see manual.py) but logged loudly as a fallback so it is never
+             again mistaken for an on-chain hash.
+        """
         response = payload.get("response")
         if not isinstance(response, dict):
             return None
-        for key in ("transactionHash", "transaction_hash", "txHash", "orderID", "orderId", "id"):
+
+        hashes = response.get("transactionsHashes")
+        if isinstance(hashes, list):
+            for value in hashes:
+                if isinstance(value, str) and value:
+                    return value[:200]
+
+        for key in ("transactionHash", "transaction_hash", "txHash"):
             value = response.get(key)
             if isinstance(value, str) and value:
+                return value[:200]
+
+        for key in ("orderID", "orderId", "id"):
+            value = response.get(key)
+            if isinstance(value, str) and value:
+                log.warning(
+                    "no settlement hash in CLOB response, storing order id "
+                    "%s… in tx_hash as fallback", value[:12],
+                )
                 return value[:200]
         return None
 

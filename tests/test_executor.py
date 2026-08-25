@@ -401,12 +401,14 @@ class EntryPriceNullTest(unittest.TestCase):
         self.assertIsNone(row["entry_price"], "0.0 would disable the stop-loss rule")
         self.assertIsNone(row["shares"])
 
-    def test_derive_fill_returns_none_pair_when_unusable(self):
-        price, shares = TradeExecutor._derive_fill(
+    def test_derive_entry_returns_none_prices_when_unusable(self):
+        price, shares, usdc = TradeExecutor._derive_entry(
             make_candidate(market_probability=0), {"response": {}}
         )
         self.assertIsNone(price)
         self.assertIsNone(shares)
+        # The proposal is still the best available cost figure.
+        self.assertEqual(usdc, 5.0)
 
 
 class HappyPathTest(unittest.TestCase):
@@ -476,6 +478,129 @@ class HappyPathTest(unittest.TestCase):
         with DBStub() as db:
             run(ex.execute(make_approval()))
         self.assertAlmostEqual(db.written[0]["entry_price"], 0.0875)
+
+
+class RealFillRecordingTest(unittest.TestCase):
+    """2026-08-25 audit: record the FILL, not the proposal.
+
+    The reference numbers are position f4be9ee8's real order (0x1938e3c7):
+    requested $10, matched 35.211266 shares for a $10.00 notional (avg
+    0.284), with a $0.501190 fee visible only in the settlement tx, so the
+    true wallet debit was $10.501189.
+    """
+
+    @staticmethod
+    def real_payload(**overrides):
+        payload = {
+            "success": True,
+            "market_id": VALID_CONDITION_ID,
+            "direction": "YES",
+            "amount_usdc": 10.0,
+            "token_id": "87205176363338",
+            "cash_out": 10.501189,
+            "cash_out_source": "onchain_receipt",
+            "cash_out_error": None,
+            "response": {
+                "success": True,
+                "errorMsg": "",
+                "orderID": "0x" + "19" * 32,
+                "status": "matched",
+                "makingAmount": "10",
+                "takingAmount": "35.211266",
+                "transactionsHashes": ["0x" + "ae" * 32],
+            },
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_matched_amounts_beat_scan_price(self):
+        price, shares, usdc = TradeExecutor._derive_entry(
+            make_candidate(amount_usdc=10.0, market_probability=0.279),
+            self.real_payload(),
+        )
+        self.assertAlmostEqual(price, 0.284, places=6)
+        self.assertAlmostEqual(shares, 35.211266)
+        self.assertAlmostEqual(usdc, 10.501189)
+
+    def test_without_cash_out_the_notional_is_recorded(self):
+        payload = self.real_payload(cash_out=None, cash_out_error="receipt not available")
+        price, shares, usdc = TradeExecutor._derive_entry(
+            make_candidate(amount_usdc=10.0, market_probability=0.279), payload
+        )
+        self.assertAlmostEqual(price, 0.284, places=6)
+        self.assertAlmostEqual(usdc, 10.0)
+
+    def test_cash_out_below_notional_is_distrusted(self):
+        """A negative fee is not a thing: a cash_out under the matched
+        notional means the decode broke, and the notional is the safer lie."""
+        payload = self.real_payload(cash_out=4.0)
+        _, _, usdc = TradeExecutor._derive_entry(
+            make_candidate(amount_usdc=10.0), payload
+        )
+        self.assertAlmostEqual(usdc, 10.0)
+
+    def test_cash_out_used_even_when_amounts_unparseable(self):
+        """Chain truth beats the proposal even if the response shape broke."""
+        payload = self.real_payload()
+        payload["response"] = {"orderID": "0xo", "status": "matched"}
+        price, shares, usdc = TradeExecutor._derive_entry(
+            make_candidate(amount_usdc=10.0, market_probability=0.279), payload
+        )
+        self.assertAlmostEqual(price, 0.279)  # scan fallback
+        self.assertAlmostEqual(usdc, 10.501189)
+
+    def test_unmatched_status_never_uses_amounts(self):
+        payload = self.real_payload(cash_out=None)
+        payload["response"]["status"] = "unmatched"
+        price, shares, usdc = TradeExecutor._derive_entry(
+            make_candidate(amount_usdc=10.0, market_probability=0.279), payload
+        )
+        self.assertAlmostEqual(price, 0.279)
+        self.assertAlmostEqual(shares, round(10.0 / 0.279, 6))
+        self.assertAlmostEqual(usdc, 10.0)
+
+    def test_amounts_implying_impossible_price_are_ignored(self):
+        payload = self.real_payload(cash_out=None)
+        payload["response"]["makingAmount"] = "50"  # price 50/35.21 > 1
+        price, _, usdc = TradeExecutor._derive_entry(
+            make_candidate(amount_usdc=10.0, market_probability=0.279), payload
+        )
+        self.assertAlmostEqual(price, 0.279)
+        self.assertAlmostEqual(usdc, 10.0)
+
+    def test_end_to_end_row_records_fill_and_settlement_hash(self):
+        ex = StubExecutor(stdout=json.dumps(self.real_payload()))
+        with DBStub() as db:
+            result = run(ex.execute(make_approval(
+                amount_usdc=10.0, market_probability=0.279,
+            )))
+        self.assertTrue(result.success)
+        row = db.written[0]
+        self.assertAlmostEqual(row["entry_price"], 0.284, places=6)
+        self.assertAlmostEqual(row["shares"], 35.211266)
+        self.assertAlmostEqual(row["usdc_amount"], 10.501189)
+        # The settlement tx, NOT the order id.
+        self.assertEqual(row["tx_hash"], "0x" + "ae" * 32)
+
+
+class TxHashPreferenceTest(unittest.TestCase):
+    def test_settlement_hash_preferred_over_order_id(self):
+        got = TradeExecutor._extract_tx_hash({"response": {
+            "orderID": "0xorder", "transactionsHashes": ["0xsettle1", "0xsettle2"],
+        }})
+        self.assertEqual(got, "0xsettle1")
+
+    def test_order_id_fallback_when_no_hashes(self):
+        got = TradeExecutor._extract_tx_hash({"response": {
+            "orderID": "0xorder", "transactionsHashes": [],
+        }})
+        self.assertEqual(got, "0xorder")
+
+    def test_non_string_hash_entries_are_skipped(self):
+        got = TradeExecutor._extract_tx_hash({"response": {
+            "orderID": "0xorder", "transactionsHashes": [None, 7, "0xsettle"],
+        }})
+        self.assertEqual(got, "0xsettle")
 
 
 class FailurePathTest(unittest.TestCase):

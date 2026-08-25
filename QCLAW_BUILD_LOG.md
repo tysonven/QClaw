@@ -23014,3 +23014,75 @@ Remaining, all non-engineering or time-gated:
   triggers + update Railway env + re-verify GHL-side; revoke the
   "manus API" key; retire the Manus project; then remove the
   cname.manus.space rollback note from LOCATIONS.md.
+
+## 2026-08-25: entry-cost recording fixed (real fill + real cash out, not the proposal)
+
+Audit trigger: position f4be9ee8 closed today; Tyson's Polymarket Activity
+said the entry cost $10.50 but trading_positions said usdc_amount 10.00.
+
+**Root cause, verified on-chain (not the approval-lag hypothesis).** The
+settlement tx for order 0x1938e3c7 (entry, 2026-08-20) shows TWO funder
+outflows: 9.999999 USDC notional to the maker plus a 0.501190 USDC fee to
+Polymarket's fee recipient, total 10.501189. The fee exists NOWHERE in the
+CLOB API: the order response reports only makingAmount/takingAmount, and
+get_trades reports fee_rate_bps "0" for this very order. Exit tx decoded the
+same way: 20.492220 gross minus 0.599600 fee = 19.892620 net, which matches
+the manually logged exit_usdc 19.89 exactly. True pnl 9.39, DB said 9.89.
+
+On top of that the executor never read the fill data it was already
+receiving: `_derive_fill` searched the response for keys (price/avgPrice/
+fillPrice/...) that a real CLOB response does not contain, so entry_price
+fell back to the scan-time price (0.2790 recorded vs 0.284 real) and shares
+were derived from the proposal (35.84 recorded vs 35.211266 real). Also
+`_extract_tx_hash` checked `transactionHash` singular while the response
+carries `transactionsHashes` plural, so every automated position's tx_hash
+column has been storing the ORDER id, not a settlement hash.
+
+**Changes (branch fix/entry-fill-recording, draft PR; adversarial review
+required before un-drafting):**
+- relay: after a fill, decode the settlement tx receipt(s) via public
+  Polygon RPCs and return `cash_out`, the true USDC out of the funder wallet
+  (notional + fee). Fails observable-or-nothing: any decode failure returns
+  None with a reason, never a guess. 15s time budget so a slow RPC cannot
+  starve the qclaw call. Relay also now logs the full CLOB order response
+  (it carries no secret) so the next fill-shape question is answerable from
+  the journal.
+- relay source committed to the repo (relay/polymarket-relay/), imported
+  verbatim from the droplet first (sha256 84db873d, droplet backup
+  relay.py.deployed-backup-2026-08-25) so the diff against deployed is
+  exact. Same lesson as the emma-credits out-of-band deploy incident.
+- executor: `_derive_entry` replaces `_derive_fill`. Preference order:
+  matched takingAmount/makingAmount (real shares, real avg price) then
+  legacy keys then scan price; usdc_amount = relay cash_out, else matched
+  notional, else the proposal. cash_out below notional is distrusted
+  (negative fee is not a thing). tx_hash now prefers transactionsHashes[0];
+  orderID fallback is logged loudly.
+- execute_trade.py relay timeout 30s -> 45s (still under the 60s subprocess
+  ceiling) to cover the receipt decode.
+- approval prompt now fetches the LIVE direction-side price at send time and
+  renders "Market now: X%" so Tyson can sanity-check a scan-time edge before
+  tapping Execute. Best-effort: fetch failure sends the prompt without the
+  line; the price shown is stored on the pending approval so the outcome
+  edit re-renders the exact body he decided against.
+- data correction on f4be9ee8 (backup in the PR description): entry_price
+  0.2790 -> 0.2840, shares 35.84 -> 35.21, usdc_amount 10.00 -> 10.50,
+  pnl 9.89 -> 9.39. Exit fields verified correct as real net proceeds and
+  left untouched.
+
+**Alert-table verification (closed as non-issue):** trading_position_alerts
+zero rows is CORRECT. 1204 monitor sweeps since 2026-08-11 with zero alert
+writes and zero write failures; the only position open since the table went
+live (f4be9ee8) ranged 0.2105 to 0.7650, never crossing take_profit (>0.85)
+or stop_loss (<0.08), and weakening cannot fire below a 0.50 entry.
+Observation for threshold tuning, not a bug: the price peaked at 0.765 on
+Aug 21, close to but under the TP line, so nothing nudged an exit near the
+top.
+
+Tests: 192 passed + 3 subtests (explicit-file pytest run; `pytest tests/`
+dir collection fails identically on untouched main, pre-existing quirk).
+31 new tests: real-fill derivation against the f4be9ee8 reference numbers,
+tx-hash preference, live-price prompt behaviour, and the relay settlement
+decode driven by the real receipt shape. No JS files touched.
+
+NOT deployed: relay change needs the scp + restart from relay/README.md and
+qclaw needs a trade-engine restart after merge, both post-review.

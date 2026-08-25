@@ -278,6 +278,10 @@ class PendingApproval(BaseModel):
     created_at: datetime
     expires_at: datetime  # created_at + APPROVAL_TIMEOUT_SECONDS (default 30m)
     message_id: Optional[int] = None  # Telegram message id, for editing in place
+    # Live direction-side price fetched at prompt-send time, so the outcome
+    # edit re-renders the exact body Tyson decided against. None when the
+    # live check failed (the prompt then carried no "Market now" line).
+    current_price: Optional[float] = None
 
 
 class ApprovalResult(BaseModel):

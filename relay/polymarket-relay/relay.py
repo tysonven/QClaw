@@ -26,6 +26,7 @@ import hmac
 import json
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 
 import requests
@@ -43,6 +44,42 @@ RELAY_SHARED_SECRET = os.getenv("RELAY_SHARED_SECRET")
 
 CLOB_HOST = "https://clob.polymarket.com"
 CHAIN_ID = 137  # Polygon mainnet
+
+# --- settlement decode: the REAL wallet debit --------------------------------
+# The CLOB order response reports only the matched NOTIONAL (makingAmount).
+# Polymarket's fee appears nowhere in the CLOB API: get_trades even reports
+# fee_rate_bps=0 for orders that were charged one (verified on order
+# 0x1938e3c7, 2026-08-25: $10.00 notional to the maker PLUS a $0.501190 fee
+# transfer in the same settlement tx). The only observable source of the true
+# cash cost is the settlement transaction itself, so after a fill this relay
+# reads the receipt(s) and sums the USDC that left the funder wallet.
+TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+
+# 6-decimal USDC-equivalent contracts seen in Polymarket settlements. The
+# wrapped collateral (0xc011...) is what the CTF exchange actually moves;
+# its amounts are 1:1 with USDC.
+USDC_EQUIVALENT_CONTRACTS = {
+    "0x2791bca1f2de4661ed88a30c99a7a9449aa84174",  # USDC.e (bridged)
+    "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",  # USDC (native)
+    "0xc011a7e12a19f7b1f670d46f03b03f3342e82dfb",  # Polymarket wrapped collateral
+}
+
+POLYGON_RPC_URLS = [
+    u.strip()
+    for u in os.getenv(
+        "POLYGON_RPC_URLS",
+        # polygon-rpc.com is NOT in the default list: it pruned the receipt for
+        # the 2026-08-20 settlement while these two still served it.
+        "https://polygon-bor-rpc.publicnode.com,https://1rpc.io/matic",
+    ).split(",")
+    if u.strip()
+]
+RPC_TIMEOUT_SECONDS = 5
+RECEIPT_RETRY_SLEEP_SECONDS = 1.5
+# Hard cap on total receipt-chasing time. qclaw's execute_trade.py gives the
+# whole relay call 45s; order placement itself needs a few, so the decode must
+# never be allowed to chase a slow RPC past this budget.
+RECEIPT_TIME_BUDGET_SECONDS = 15
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
@@ -130,6 +167,96 @@ def _require_auth(authorization: str | None) -> None:
         raise HTTPException(status_code=401, detail="unauthorized")
 
 
+def _sum_funder_outflows(receipt: dict, funder: str) -> float:
+    """Total USDC (6dp tokens) leaving `funder` in one settlement receipt.
+
+    Counts ERC-20 Transfer events on the known USDC-equivalent contracts whose
+    `from` topic is the funder wallet: for a BUY that is the notional paid to
+    the maker plus any fee transfer. Shares arrive as ERC-1155 events, which
+    have a different topic0 and are never counted. Malformed log entries are
+    skipped rather than fatal: one bad log must not zero a real cost.
+    """
+    funder_word = "0x" + "0" * 24 + funder.lower().removeprefix("0x")
+    total_raw = 0
+    for entry in receipt.get("logs", []):
+        try:
+            topics = entry.get("topics") or []
+            if len(topics) < 3:
+                continue
+            if str(topics[0]).lower() != TRANSFER_TOPIC:
+                continue
+            if str(entry.get("address", "")).lower() not in USDC_EQUIVALENT_CONTRACTS:
+                continue
+            if str(topics[1]).lower() != funder_word:
+                continue
+            total_raw += int(str(entry.get("data", "0x0")), 16)
+        except (TypeError, ValueError):
+            continue
+    return total_raw / 1e6
+
+
+def _fetch_receipt(tx_hash: str):
+    """eth_getTransactionReceipt via the configured public RPCs, first hit wins.
+
+    Read-only. Returns the receipt dict, or None on any failure: an RPC being
+    down or the tx not yet indexed are both "not observable right now", never
+    an error that should surface into the money path.
+    """
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "eth_getTransactionReceipt",
+        "params": [tx_hash],
+    }
+    for rpc in POLYGON_RPC_URLS:
+        try:
+            response = requests.post(rpc, json=payload, timeout=RPC_TIMEOUT_SECONDS)
+            body = response.json()
+        except Exception as e:  # noqa: BLE001 - try the next RPC
+            log.warning("receipt fetch via %s failed: %s", rpc, type(e).__name__)
+            continue
+        receipt = body.get("result") if isinstance(body, dict) else None
+        if isinstance(receipt, dict):
+            return receipt
+    return None
+
+
+def _settlement_cash_out(tx_hashes, funder):
+    """(true USDC out of the funder wallet, error reason) for a filled order.
+
+    Sums funder outflows across every settlement transaction of the order.
+    Returns (None, reason) whenever the truth is not observable: missing
+    hashes, receipts not yet indexed within the time budget, a failed tx, or
+    a receipt whose shape defeats the decode. The caller then records the
+    notional instead; this function never guesses.
+    """
+    hashes = [h for h in (tx_hashes or []) if isinstance(h, str) and h.startswith("0x")]
+    if not hashes:
+        return None, "no settlement hashes in order response"
+    if not funder:
+        return None, "funder address not configured"
+
+    deadline = time.monotonic() + RECEIPT_TIME_BUDGET_SECONDS
+    total = 0.0
+    for tx_hash in dict.fromkeys(hashes):
+        receipt = _fetch_receipt(tx_hash)
+        while receipt is None:
+            if time.monotonic() + RECEIPT_RETRY_SLEEP_SECONDS >= deadline:
+                return None, f"receipt not available for {tx_hash[:12]} within time budget"
+            time.sleep(RECEIPT_RETRY_SLEEP_SECONDS)
+            receipt = _fetch_receipt(tx_hash)
+        if str(receipt.get("status", "")).lower() != "0x1":
+            return None, f"settlement tx {tx_hash[:12]} did not succeed"
+        total += _sum_funder_outflows(receipt, funder)
+
+    if total <= 0:
+        # A confirmed settlement with no funder outflow means the decode
+        # assumptions broke (new collateral contract, changed event shape).
+        # Say so instead of reporting a $0 trade.
+        return None, "no funder outflows found in settlement receipts"
+    return round(total, 6), None
+
+
 def execute_trade(market_id, direction, amount_usdc, price=None) -> dict:
     """Place one market order on Polymarket via py-clob-client-v2.
 
@@ -209,12 +336,40 @@ def execute_trade(market_id, direction, amount_usdc, price=None) -> dict:
         )
         resp = client.create_and_post_market_order(order_args, order_type=OrderType.FOK)
 
+        # The response carries no secret (order id, matched amounts, settlement
+        # hashes), and until 2026-08-25 it was never logged anywhere: the
+        # entry-cost audit had to reconstruct a fill from on-chain forensics.
+        # Logged in full so the next fill-shape question is answerable from the
+        # journal.
+        log.info(
+            "CLOB order response: %s",
+            json.dumps(resp, default=str)[:2000]
+            if isinstance(resp, dict) else str(resp)[:2000],
+        )
+
+        if isinstance(resp, dict):
+            cash_out, cash_out_error = _settlement_cash_out(
+                resp.get("transactionsHashes"), FUNDER_ADDRESS
+            )
+        else:
+            cash_out, cash_out_error = None, "order response is not a dict"
+        if cash_out is None:
+            log.warning("settlement cash_out unavailable: %s", cash_out_error)
+        else:
+            log.info("settlement cash_out: %.6f USDC", cash_out)
+
         return {
             "success": True,
             "market_id": market_id,
             "direction": direction.upper(),
             "amount_usdc": amount_usdc,
             "token_id": token_id,
+            # True wallet debit for this order (notional plus fees), decoded
+            # from the settlement transaction(s). None whenever that is not
+            # yet observable; the qclaw executor then records the notional.
+            "cash_out": cash_out,
+            "cash_out_source": "onchain_receipt" if cash_out is not None else None,
+            "cash_out_error": cash_out_error,
             "response": resp,
         }
 
