@@ -539,6 +539,39 @@ class RealFillRecordingTest(unittest.TestCase):
         )
         self.assertAlmostEqual(usdc, 10.0)
 
+    def test_cash_out_far_above_notional_is_distrusted(self):
+        """M1 (PR #94 review): the guard is symmetric. A decode over-count
+        (batched settlement, double-transfer chain) must not poison pnl."""
+        payload = self.real_payload(cash_out=25.0)  # 2.5x the 10.00 notional
+        _, _, usdc = TradeExecutor._derive_entry(
+            make_candidate(amount_usdc=10.0), payload
+        )
+        self.assertAlmostEqual(usdc, 10.0)
+
+    def test_cash_out_just_inside_the_upper_bound_is_accepted(self):
+        payload = self.real_payload(cash_out=14.99)  # 1.499x < 1.5x
+        _, _, usdc = TradeExecutor._derive_entry(
+            make_candidate(amount_usdc=10.0), payload
+        )
+        self.assertAlmostEqual(usdc, 14.99)
+
+    def test_real_fee_ratio_does_not_trip_the_upper_bound(self):
+        """The real f4be9ee8 numbers: 10.501189 vs 10.00 notional is 1.05x,
+        comfortably inside the 1.5x ceiling. The bound must never reject a
+        genuine fee."""
+        _, _, usdc = TradeExecutor._derive_entry(
+            make_candidate(amount_usdc=10.0), self.real_payload()
+        )
+        self.assertAlmostEqual(usdc, 10.501189)
+
+    def test_upper_bound_uses_proposal_anchor_when_amounts_unparseable(self):
+        payload = self.real_payload(cash_out=25.0)
+        payload["response"] = {"orderID": "0xo", "status": "matched"}
+        _, _, usdc = TradeExecutor._derive_entry(
+            make_candidate(amount_usdc=10.0, market_probability=0.279), payload
+        )
+        self.assertAlmostEqual(usdc, 10.0)
+
     def test_cash_out_used_even_when_amounts_unparseable(self):
         """Chain truth beats the proposal even if the response shape broke."""
         payload = self.real_payload()
@@ -601,6 +634,38 @@ class TxHashPreferenceTest(unittest.TestCase):
             "orderID": "0xorder", "transactionsHashes": [None, 7, "0xsettle"],
         }})
         self.assertEqual(got, "0xsettle")
+
+
+class RelayTimeoutTest(unittest.TestCase):
+    """H1 (PR #94 review): a relay READ timeout correlates with the order
+    having ALREADY been placed (the relay decodes the settlement after the
+    fill), so it must surface as ORDER STATUS UNKNOWN, never 'Trade failed'."""
+
+    def test_relay_read_timeout_reports_status_unknown_not_failed(self):
+        stdout = json.dumps(
+            {"error": "relay_timeout_order_status_unknown: ReadTimeout"}
+        )
+        ex = StubExecutor(stdout=stdout, returncode=1)
+        with DBStub() as db:
+            result = run(ex.execute(make_approval()))
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.error, "relay_timeout_status_unknown")
+        self.assertEqual(db.written, [], "an unknown-status order writes no row")
+
+        notes = "\n".join(ex.notifications)
+        self.assertIn("UNKNOWN", notes)
+        self.assertIn("reconcile", notes)
+        self.assertNotIn("Trade failed", notes)
+
+    def test_plain_relay_unreachable_still_reports_failed(self):
+        stdout = json.dumps({"error": "relay_unreachable: ConnectTimeout"})
+        ex = StubExecutor(stdout=stdout, returncode=1)
+        with DBStub() as db:
+            result = run(ex.execute(make_approval()))
+        self.assertEqual(result.error, "execution_failed")
+        self.assertEqual(db.written, [])
+        self.assertIn("Trade failed", "\n".join(ex.notifications))
 
 
 class FailurePathTest(unittest.TestCase):

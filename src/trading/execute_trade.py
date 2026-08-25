@@ -68,9 +68,21 @@ def execute_trade(market_id, direction, amount_usdc, price=None):
             headers=headers,
             timeout=RELAY_TIMEOUT_SECONDS,
         )
+    except requests.exceptions.ConnectTimeout:
+        # The connection was never established, so the request never reached
+        # the relay and no order can have been placed. Safe to call failed.
+        return {"error": "relay_unreachable: ConnectTimeout"}
+    except requests.exceptions.Timeout as e:
+        # H1 (PR #94 review): a READ timeout means the request DID reach the
+        # relay and the response never came back. The relay decodes the
+        # settlement AFTER placing the order, so this timeout specifically
+        # correlates with the order having already been placed and filled.
+        # The executor maps this sentinel to its ORDER STATUS UNKNOWN path;
+        # it must never be reported as a plain failed trade.
+        return {"error": f"relay_timeout_order_status_unknown: {type(e).__name__}"}
     except requests.exceptions.RequestException as e:
-        # Connection refused, timeout, DNS failure — the relay never confirmed
-        # an order. Treated as execution failure, never as a placed trade.
+        # Connection refused, DNS failure: the relay never confirmed an
+        # order. Treated as execution failure, never as a placed trade.
         return {"error": f"relay_unreachable: {type(e).__name__}"}
 
     if resp.status_code != 200:

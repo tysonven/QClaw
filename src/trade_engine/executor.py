@@ -71,6 +71,15 @@ SUBPROCESS_TIMEOUT_SECONDS = 60
 # something absurd, this still refuses. Defence in depth against a bad write.
 ABSOLUTE_MAX_POSITION_USDC = 25.0
 
+# M1 (PR #94 review): the relay's cash_out is sanity-bounded on BOTH sides.
+# Below the matched notional means a negative fee (impossible); above it by
+# more than this factor means the decode over-counted (a batched settlement,
+# a double-transfer chain, a new event shape) and would silently poison pnl
+# and Gate 3. The real 2026-08-20 fee was 5% of notional (10.501189 vs 10.00,
+# a 1.05x ratio), so 1.5x accepts any plausible fee with wide margin while
+# refusing anything that looks like double-counting.
+MAX_CASH_OUT_NOTIONAL_FACTOR = 1.5
+
 MAX_CONCURRENT_POSITIONS = 2
 
 # An approval is consent to trade AT A PRICE. The approval gate allows 30
@@ -338,6 +347,29 @@ class TradeExecutor:
                     "execute_trade.py stderr: %s",
                     _scrub(completed.stderr[:500], config.polymarket_private_key),
                 )
+            if detail.startswith("relay_timeout_order_status_unknown"):
+                # H1 (PR #94 review): a relay READ timeout arrives after the
+                # request reached the relay, and the relay decodes the
+                # settlement only AFTER placing the order, so this error
+                # specifically correlates with a REAL fill that has no
+                # position row. Same treatment as the subprocess-timeout
+                # path: status unknown and a human reconciles, never "Trade
+                # failed" (which reads as "no money moved").
+                log.error(
+                    "relay call timed out after the order may have been "
+                    "placed: ORDER STATUS UNKNOWN, reconcile against "
+                    "Polymarket by hand",
+                )
+                await self._notify(
+                    f"⚠️ Trade status UNKNOWN: {candidate.question}\n"
+                    "The relay timed out after the order may have been placed. "
+                    "Check Polymarket and reconcile by hand; nothing was recorded."
+                )
+                return TradeExecutionResult(
+                    success=False,
+                    error="relay_timeout_status_unknown",
+                    executed_at=datetime.now(timezone.utc),
+                )
             await self._notify(
                 f"❌ Trade failed: {candidate.question}\nError: execution_failed (check logs)"
             )
@@ -553,7 +585,12 @@ class TradeExecutor:
             shares = round(requested / price, 6)
 
         # usdc_amount: real cash out > matched notional > proposed amount.
+        # cash_out is bounded on BOTH sides against the best anchor we have
+        # (matched notional, else the proposed amount): below it is a negative
+        # fee, above it by more than MAX_CASH_OUT_NOTIONAL_FACTOR is a decode
+        # over-count. Either way the anchor is the safer figure (M1).
         cash_out = cls._as_float(payload.get("cash_out"))
+        anchor = notional if notional is not None else requested
         if cash_out is not None and cash_out > 0:
             if notional is not None and cash_out < notional:
                 log.error(
@@ -561,6 +598,15 @@ class TradeExecutor:
                     "distrusting it and recording the notional", cash_out, notional,
                 )
                 usdc_amount = notional
+            elif anchor is not None and cash_out > anchor * MAX_CASH_OUT_NOTIONAL_FACTOR:
+                log.error(
+                    "relay cash_out %.6f exceeds %.1fx the %s %.6f, "
+                    "distrusting it and recording that instead",
+                    cash_out, MAX_CASH_OUT_NOTIONAL_FACTOR,
+                    "matched notional" if notional is not None else "proposed amount",
+                    anchor,
+                )
+                usdc_amount = anchor
             else:
                 usdc_amount = cash_out
                 log.info(

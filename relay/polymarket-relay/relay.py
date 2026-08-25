@@ -195,12 +195,17 @@ def _sum_funder_outflows(receipt: dict, funder: str) -> float:
     return total_raw / 1e6
 
 
-def _fetch_receipt(tx_hash: str):
+def _fetch_receipt(tx_hash: str, deadline: float | None = None):
     """eth_getTransactionReceipt via the configured public RPCs, first hit wins.
 
     Read-only. Returns the receipt dict, or None on any failure: an RPC being
     down or the tx not yet indexed are both "not observable right now", never
     an error that should surface into the money path.
+
+    `deadline` is a time.monotonic() value; every RPC call's timeout is
+    clamped to the remaining budget (H1, PR #94 review: without the clamp a
+    slow-but-alive RPC holds the line for its full timeout no matter how
+    little budget remains, and M of those stack past the budget).
     """
     payload = {
         "jsonrpc": "2.0",
@@ -209,8 +214,16 @@ def _fetch_receipt(tx_hash: str):
         "params": [tx_hash],
     }
     for rpc in POLYGON_RPC_URLS:
+        timeout = RPC_TIMEOUT_SECONDS
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0.25:
+                # Not enough budget for a meaningful request; the caller's
+                # deadline checks turn this into the degradation path.
+                return None
+            timeout = min(RPC_TIMEOUT_SECONDS, remaining)
         try:
-            response = requests.post(rpc, json=payload, timeout=RPC_TIMEOUT_SECONDS)
+            response = requests.post(rpc, json=payload, timeout=timeout)
             body = response.json()
         except Exception as e:  # noqa: BLE001 - try the next RPC
             log.warning("receipt fetch via %s failed: %s", rpc, type(e).__name__)
@@ -239,12 +252,19 @@ def _settlement_cash_out(tx_hashes, funder):
     deadline = time.monotonic() + RECEIPT_TIME_BUDGET_SECONDS
     total = 0.0
     for tx_hash in dict.fromkeys(hashes):
-        receipt = _fetch_receipt(tx_hash)
+        # H1 (PR #94 review): the budget is enforced HERE, once per hash, not
+        # only between retries. M slow-but-successful fetches must not stack
+        # past the budget: blowing it here blows execute_trade.py's HTTP
+        # timeout AFTER a real fill, which used to surface as "Trade failed"
+        # with no position row at all.
+        if time.monotonic() >= deadline:
+            return None, f"time budget exhausted before {tx_hash[:12]}"
+        receipt = _fetch_receipt(tx_hash, deadline)
         while receipt is None:
             if time.monotonic() + RECEIPT_RETRY_SLEEP_SECONDS >= deadline:
                 return None, f"receipt not available for {tx_hash[:12]} within time budget"
             time.sleep(RECEIPT_RETRY_SLEEP_SECONDS)
-            receipt = _fetch_receipt(tx_hash)
+            receipt = _fetch_receipt(tx_hash, deadline)
         if str(receipt.get("status", "")).lower() != "0x1":
             return None, f"settlement tx {tx_hash[:12]} did not succeed"
         total += _sum_funder_outflows(receipt, funder)

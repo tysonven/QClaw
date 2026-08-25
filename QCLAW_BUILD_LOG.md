@@ -23086,3 +23086,49 @@ decode driven by the real receipt shape. No JS files touched.
 
 NOT deployed: relay change needs the scp + restart from relay/README.md and
 qclaw needs a trade-engine restart after merge, both post-review.
+
+## 2026-08-25: PR #94 adversarial review fixes (H1 hard budget, M1 upper bound, L2 tx_hash)
+
+Review verdict on c8782c1: decode + degradation chain PASS against the real
+on-chain receipts, but two blockers before un-draft.
+
+H1 (HIGH): the 15s decode budget was soft. The deadline was only checked
+inside the receipt-None retry loop, never at the top of the per-hash loop,
+and each RPC call always got its full timeout, so M slow-but-successful
+fetches stacked unbounded. Worst case that pushes the relay call past
+execute_trade.py's 45s AFTER a real fill: the executor's exit-1 path fired
+and Telegram said "Trade failed" with no position row, an untracked real
+position behind a misleading alert. Fixed on both sides:
+- relay: deadline checked once per hash before fetching; every RPC call's
+  timeout clamped to the remaining budget; a fetch with under 0.25s left is
+  refused without a call.
+- qclaw: execute_trade.py now separates ConnectTimeout (nothing reached the
+  relay, still relay_unreachable) from ReadTimeout/Timeout (request reached
+  the relay, order likely placed) which returns the
+  relay_timeout_order_status_unknown sentinel; executor maps that sentinel
+  to the same ORDER STATUS UNKNOWN / reconcile-by-hand messaging as the 60s
+  subprocess-timeout path. Except ordering is load-bearing: ConnectTimeout
+  subclasses Timeout.
+
+M1 (MEDIUM): cash_out was only distrusted below the notional. Added the
+symmetric bound: cash_out above MAX_CASH_OUT_NOTIONAL_FACTOR (1.5x) times
+the anchor (matched notional, else proposed amount) is distrusted, ERROR
+logged, anchor recorded. Real f4be9ee8 ratio is 1.05x, nowhere near the
+ceiling. Same one-sided-guard class as PR #91's C1.
+
+L2 folded in: f4be9ee8's tx_hash updated from the order id (resolves to no
+tx on any RPC) to the real settlement hash 0xaef3004a... in the same
+guarded-update pattern as the earlier correction.
+
+Accepted as documented follow-ups, no action: L1 (shares column numeric(10,2)
+truncates the 6dp the code computes; sub-cent effect at current sizes), L3
+(_fetch_current_price's enumerated except; broaden when convenient).
+
+New tests: budget-stacking scenario with a fake clock (2 fetches at 8s each,
+third hash refused at t=16 over a 15s budget), per-call timeout clamp,
+no-call-with-no-budget, multi-hash within budget still sums; executor
+sentinel mapping (UNKNOWN + reconcile, no row, and relay_unreachable still
+reports failed); execute_trade client classification (ReadTimeout/Timeout
+to sentinel, ConnectTimeout/ConnectionError stay unreachable); M1 both
+bounds, boundary 1.499x accepted, real-ratio no-false-positive, proposal
+anchor when amounts unparseable.
