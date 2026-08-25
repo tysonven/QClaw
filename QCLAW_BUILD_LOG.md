@@ -23132,3 +23132,88 @@ reports failed); execute_trade client classification (ReadTimeout/Timeout
 to sentinel, ConnectTimeout/ConnectionError stay unreachable); M1 both
 bounds, boundary 1.499x accepted, real-ratio no-false-positive, proposal
 anchor when amounts unparseable.
+
+## 2026-08-25: Phase 5 Session 20 (liveness diagnosis, live fabrication catch, PR #94 shipped and deployed)
+
+Three streams today. The two detailed 2026-08-25 entries above cover the
+PR #94 build and its round-1 review fixes; this entry is the session wrap
+with the diagnosis work, the second review round, and the deploy.
+
+**CC dispatcher liveness alerts: working as designed, no action.** The
+alerts came from Slice 3h/U5 machinery (built June 19). A brief Supabase
+HTTP 500 produced a genuine "LIVENESS UNKNOWN" state, not a false
+positive: the watcher could not read heartbeat state, said so, the outage
+self-resolved within about a minute, and the recovery alert fired
+correctly. Exactly the designed behaviour for an unreadable heartbeat.
+
+**Live fabrication caught in real time, known residual gap, not a new
+bug.** On the ETH manual close Charlie claimed "The trade is logged"
+before any tool call had fired. This is the documented, accepted residual
+from PR #88's round-1 adversarial review: a passive-voice completion claim
+with no UUID cited, explicitly left out of scope because widening the
+keyword net re-triggered the 7% false-positive rate. Tyson's own vigilance
+("did you log the trade?") caught it before any harm; the eventual real
+tool call and approval 122 logged the close correctly. Stays on the
+watchlist as a prompt-shaped risk; no code change.
+
+**PR #94 merged to main as 6ad3ac3: entry-fill recording fix.** Root
+cause found by forensic on-chain investigation (decoding the real
+settlement tx receipts, not trusting the CLOB API): automated trades
+recorded entry_price/usdc_amount from the pre-trade Analyst proposal, not
+the fill, and the deeper cause is a ~5% Polymarket fee that is invisible
+to the CLOB API entirely (get_trades reports fee_rate_bps 0 for an order
+that was charged one); it is only decodable on-chain. Position f4be9ee8
+corrected: entry_price 0.2790 -> 0.2840, shares 35.84 -> 35.21 (true fill
+35.211266; the numeric(10,2) column truncates, see L1), usdc_amount
+10.00 -> 10.50, pnl 9.89 -> 9.39. Also fixed: tx_hash had been storing
+ORDER IDs, not transaction hashes, because the extractor checked the
+singular field name while the CLOB returns transactionsHashes plural; the
+row now holds the real settlement hash. relay.py is committed to the repo
+for the first time (previously droplet-only with no version control, a
+real out-of-band-deploy risk, same class as the emma-credits lesson).
+
+**Two rounds of adversarial review.** Round 1 blockers: H1
+(CRITICAL-adjacent) - the 15s decode budget was not actually enforced;
+slow-but-successful receipt fetches could stack past the relay timeout
+AFTER a real fill, surfacing as "Trade failed" with no position row
+written despite a genuine on-chain fill, worse than any prior
+phantom-close scenario because there is no row to reconcile against. M1
+(MEDIUM) - the cash_out guard was one-sided: distrusted below notional,
+accepted unconditionally above it. Both fixed: H1 via
+deadline-check-at-loop-top plus per-RPC timeout clamping on the relay,
+and a ConnectTimeout/ReadTimeout classification split on qclaw (a read
+timeout now maps to "ORDER STATUS UNKNOWN, reconcile by hand", never
+"Trade failed"); M1 via a symmetric 1.5x upper bound against the
+notional-or-proposal anchor (real fee ratio is 1.05x). Round 2: both
+verified PASS by independent re-derivation, including live re-resolution
+of the corrected tx_hash on-chain and cross-check against Polymarket's
+own data API. One new non-blocking finding (M2, below) recorded.
+
+**Deployed and verified on both hosts.** Relay (68.183.13.219) restarted
+clean on the merged source, geoblock check passing. qclaw live checkout on
+6ad3ac3, trade-engine restarted (PM2 restart count 14), all 6 PM2
+processes online.
+
+**Follow-ups recorded, not built:**
+- M2: post-request failures other than Timeout (ConnectionError
+  reset/RemoteDisconnected mid-response, ChunkedEncodingError, truncated
+  non-JSON) still classify as "Trade failed" though the order may have
+  been placed; follow-up is to treat ConnectionError as status-unknown
+  unless the cause is ConnectionRefusedError/gaierror.
+- Below-notional guard does not exist when the notional is None
+  (fee-only decode checked against nothing below; compound-improbable).
+- L1: shares column numeric(10,2) truncates the 6dp the code computes;
+  sub-cent effect at current position sizes.
+- L3: _fetch_current_price's enumerated except clause; broaden to the
+  parse block's pattern when convenient.
+
+**Next session queue, priority order:**
+1. Error-handler wiring: 5 workflows failing daily, carried since Aug 19.
+2. SELL scaffolding: now well-motivated with signature_type=3 proven live.
+3. Verify no other automated positions share the entry-cost bug (the
+   single non-NULL tx_hash check says only f4be9ee8 was affected; worth a
+   final confirmation pass).
+4. n8n Health Dashboard Manus migration.
+5. Repo/README audit.
+6. Periodic drift-check job design (deployed relay vs repo, the class of
+   check that would have caught the pre-PR-#94 state).
