@@ -22,6 +22,7 @@ nothing else. No execution path exists yet.
 """
 
 import asyncio
+import json
 import logging
 import time
 import uuid
@@ -48,6 +49,14 @@ log = logging.getLogger("trade_engine.approval")
 install_bot_token_redaction()
 
 TELEGRAM_API_BASE = "https://api.telegram.org"
+
+# Live-price check for the approval prompt. Same query-param form the Position
+# Monitor uses: the path form resolves Gamma's numeric ids and 404s for a
+# conditionId.
+GAMMA_MARKETS_URL = "https://gamma-api.polymarket.com/markets"
+# A slow Gamma must delay a money prompt by at most this long; the prompt then
+# goes out without the live line rather than not at all.
+PRICE_CHECK_TIMEOUT_SECONDS = 5.0
 
 # Long-poll for 30s server-side; the client must outlive that or every poll
 # ends in a spurious ReadTimeout.
@@ -202,7 +211,9 @@ class ApprovalGate:
 
     @staticmethod
     def build_message(
-        candidate: ScannerCandidate, recommendation: AnalystRecommendation
+        candidate: ScannerCandidate,
+        recommendation: AnalystRecommendation,
+        current_price: Optional[float] = None,
     ) -> str:
         """The approval message body.
 
@@ -214,8 +225,18 @@ class ApprovalGate:
         `edge` is signed rather than hardcoded '+' — best_trade only ever
         comes from the high_edge bucket today, but a '+-5.0%' render on any
         future caller would be worse than a correct '-5.0%'.
+
+        `current_price` is the LIVE direction-side market price fetched at
+        send time, distinct from `market_probability` which is the scan-time
+        price the edge was computed against: the market moves between scan,
+        prompt and tap, and Tyson sanity-checks the opportunity against what
+        the market says NOW. When the live check failed the line is absent:
+        a stale number presented as live would be worse than no number.
         """
         verdict = recommendation.recommendation.upper()
+        market_now = (
+            f"Market now: {current_price:.1%}\n" if current_price is not None else ""
+        )
         return (
             "🎯 Trade Opportunity\n"
             "\n"
@@ -224,6 +245,7 @@ class ApprovalGate:
             f"Edge: {candidate.edge:+.1%} "
             f"(Sim: {candidate.sim_probability:.1%} vs "
             f"Market: {candidate.market_probability:.1%})\n"
+            f"{market_now}"
             f"Volume: ${candidate.volume:,.0f} | "
             f"Horizon: {candidate.horizon_days}d\n"
             f"Position: ${candidate.amount_usdc:.2f}\n"
@@ -233,6 +255,54 @@ class ApprovalGate:
             "\n"
             f"{candidate.market_url}"
         )
+
+    async def _fetch_current_price(
+        self, candidate: ScannerCandidate
+    ) -> Optional[float]:
+        """Live direction-side price for the approval prompt, or None.
+
+        Best-effort by design: every failure path returns None and the prompt
+        goes out without the live line. A price check must never delay a money
+        decision beyond its own short timeout, and must never block one.
+        """
+        condition_id = getattr(candidate, "condition_id", None)
+        if not condition_id:
+            return None
+        try:
+            response = await self._get_client().get(
+                GAMMA_MARKETS_URL,
+                params={"condition_ids": condition_id},
+                timeout=PRICE_CHECK_TIMEOUT_SECONDS,
+            )
+            if response.status_code >= 300:
+                log.warning(
+                    "live price check: gamma HTTP %s for %s…",
+                    response.status_code, condition_id[:12],
+                )
+                return None
+            payload = response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            log.warning(
+                "live price check failed for %s…: %s",
+                condition_id[:12], type(exc).__name__,
+            )
+            return None
+
+        market = payload[0] if isinstance(payload, list) and payload else payload
+        if not isinstance(market, dict):
+            return None
+        # outcomePrices arrives as a JSON *string* like '["0.505", "0.495"]';
+        # [0] is YES, [1] is NO, the same shape the Position Monitor parses.
+        raw = market.get("outcomePrices")
+        try:
+            prices = json.loads(raw) if isinstance(raw, str) else raw
+            if not prices or len(prices) < 2:
+                return None
+            index = 0 if (candidate.direction or "").upper() == "YES" else 1
+            value = float(prices[index])
+        except Exception:  # noqa: BLE001 - unparseable price == no price
+            return None
+        return value if 0 < value < 1 else None
 
     @staticmethod
     def build_keyboard(approval_id: str) -> dict[str, Any]:
@@ -280,9 +350,16 @@ class ApprovalGate:
             )
             self._pending[approval_id] = pending
 
+        # Live price AFTER registration (a callback racing the send must still
+        # find its approval) and BEFORE the send (it goes in the message).
+        # Stored on the pending approval so the outcome edit re-renders the
+        # same body Tyson decided against, not a silently different one.
+        current_price = await self._fetch_current_price(candidate)
+        pending.current_price = current_price
+
         result = await self._api("sendMessage", {
             "chat_id": self._chat_id,
-            "text": self.build_message(candidate, recommendation),
+            "text": self.build_message(candidate, recommendation, current_price),
             "reply_markup": self.build_keyboard(approval_id),
             "disable_web_page_preview": True,
         })
@@ -413,7 +490,7 @@ class ApprovalGate:
             "chat_id": self._chat_id,
             "message_id": pending.message_id,
             "text": (
-                f"{self.build_message(pending.candidate, pending.recommendation)}"
+                f"{self.build_message(pending.candidate, pending.recommendation, pending.current_price)}"
                 f"\n\n{outcome}"
             ),
             "disable_web_page_preview": True,

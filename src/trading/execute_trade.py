@@ -30,9 +30,13 @@ load_dotenv(env_path)
 RELAY_URL = os.getenv("RELAY_URL", "http://68.183.13.219:8000").rstrip("/")
 RELAY_SHARED_SECRET = os.getenv("RELAY_SHARED_SECRET")
 
-# 30s leaves headroom under executor.py's 60s subprocess timeout, so a slow
-# relay surfaces here as a clean error rather than a killed subprocess.
-RELAY_TIMEOUT_SECONDS = 30
+# 45s leaves headroom under executor.py's 60s subprocess timeout, so a slow
+# relay surfaces here as a clean error rather than a killed subprocess. Raised
+# from 30s on 2026-08-25: after placing the order the relay now also decodes
+# the settlement transaction for the true cash cost (its own budget is capped
+# at RECEIPT_TIME_BUDGET_SECONDS = 15 on the relay side), so a slow-but-alive
+# relay call can legitimately run well past the old ceiling.
+RELAY_TIMEOUT_SECONDS = 45
 
 
 def execute_trade(market_id, direction, amount_usdc, price=None):
@@ -64,9 +68,21 @@ def execute_trade(market_id, direction, amount_usdc, price=None):
             headers=headers,
             timeout=RELAY_TIMEOUT_SECONDS,
         )
+    except requests.exceptions.ConnectTimeout:
+        # The connection was never established, so the request never reached
+        # the relay and no order can have been placed. Safe to call failed.
+        return {"error": "relay_unreachable: ConnectTimeout"}
+    except requests.exceptions.Timeout as e:
+        # H1 (PR #94 review): a READ timeout means the request DID reach the
+        # relay and the response never came back. The relay decodes the
+        # settlement AFTER placing the order, so this timeout specifically
+        # correlates with the order having already been placed and filled.
+        # The executor maps this sentinel to its ORDER STATUS UNKNOWN path;
+        # it must never be reported as a plain failed trade.
+        return {"error": f"relay_timeout_order_status_unknown: {type(e).__name__}"}
     except requests.exceptions.RequestException as e:
-        # Connection refused, timeout, DNS failure — the relay never confirmed
-        # an order. Treated as execution failure, never as a placed trade.
+        # Connection refused, DNS failure: the relay never confirmed an
+        # order. Treated as execution failure, never as a placed trade.
         return {"error": f"relay_unreachable: {type(e).__name__}"}
 
     if resp.status_code != 200:

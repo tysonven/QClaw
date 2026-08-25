@@ -23014,3 +23014,121 @@ Remaining, all non-engineering or time-gated:
   triggers + update Railway env + re-verify GHL-side; revoke the
   "manus API" key; retire the Manus project; then remove the
   cname.manus.space rollback note from LOCATIONS.md.
+
+## 2026-08-25: entry-cost recording fixed (real fill + real cash out, not the proposal)
+
+Audit trigger: position f4be9ee8 closed today; Tyson's Polymarket Activity
+said the entry cost $10.50 but trading_positions said usdc_amount 10.00.
+
+**Root cause, verified on-chain (not the approval-lag hypothesis).** The
+settlement tx for order 0x1938e3c7 (entry, 2026-08-20) shows TWO funder
+outflows: 9.999999 USDC notional to the maker plus a 0.501190 USDC fee to
+Polymarket's fee recipient, total 10.501189. The fee exists NOWHERE in the
+CLOB API: the order response reports only makingAmount/takingAmount, and
+get_trades reports fee_rate_bps "0" for this very order. Exit tx decoded the
+same way: 20.492220 gross minus 0.599600 fee = 19.892620 net, which matches
+the manually logged exit_usdc 19.89 exactly. True pnl 9.39, DB said 9.89.
+
+On top of that the executor never read the fill data it was already
+receiving: `_derive_fill` searched the response for keys (price/avgPrice/
+fillPrice/...) that a real CLOB response does not contain, so entry_price
+fell back to the scan-time price (0.2790 recorded vs 0.284 real) and shares
+were derived from the proposal (35.84 recorded vs 35.211266 real). Also
+`_extract_tx_hash` checked `transactionHash` singular while the response
+carries `transactionsHashes` plural, so every automated position's tx_hash
+column has been storing the ORDER id, not a settlement hash.
+
+**Changes (branch fix/entry-fill-recording, draft PR; adversarial review
+required before un-drafting):**
+- relay: after a fill, decode the settlement tx receipt(s) via public
+  Polygon RPCs and return `cash_out`, the true USDC out of the funder wallet
+  (notional + fee). Fails observable-or-nothing: any decode failure returns
+  None with a reason, never a guess. 15s time budget so a slow RPC cannot
+  starve the qclaw call. Relay also now logs the full CLOB order response
+  (it carries no secret) so the next fill-shape question is answerable from
+  the journal.
+- relay source committed to the repo (relay/polymarket-relay/), imported
+  verbatim from the droplet first (sha256 84db873d, droplet backup
+  relay.py.deployed-backup-2026-08-25) so the diff against deployed is
+  exact. Same lesson as the emma-credits out-of-band deploy incident.
+- executor: `_derive_entry` replaces `_derive_fill`. Preference order:
+  matched takingAmount/makingAmount (real shares, real avg price) then
+  legacy keys then scan price; usdc_amount = relay cash_out, else matched
+  notional, else the proposal. cash_out below notional is distrusted
+  (negative fee is not a thing). tx_hash now prefers transactionsHashes[0];
+  orderID fallback is logged loudly.
+- execute_trade.py relay timeout 30s -> 45s (still under the 60s subprocess
+  ceiling) to cover the receipt decode.
+- approval prompt now fetches the LIVE direction-side price at send time and
+  renders "Market now: X%" so Tyson can sanity-check a scan-time edge before
+  tapping Execute. Best-effort: fetch failure sends the prompt without the
+  line; the price shown is stored on the pending approval so the outcome
+  edit re-renders the exact body he decided against.
+- data correction on f4be9ee8 (backup in the PR description): entry_price
+  0.2790 -> 0.2840, shares 35.84 -> 35.21, usdc_amount 10.00 -> 10.50,
+  pnl 9.89 -> 9.39. Exit fields verified correct as real net proceeds and
+  left untouched.
+
+**Alert-table verification (closed as non-issue):** trading_position_alerts
+zero rows is CORRECT. 1204 monitor sweeps since 2026-08-11 with zero alert
+writes and zero write failures; the only position open since the table went
+live (f4be9ee8) ranged 0.2105 to 0.7650, never crossing take_profit (>0.85)
+or stop_loss (<0.08), and weakening cannot fire below a 0.50 entry.
+Observation for threshold tuning, not a bug: the price peaked at 0.765 on
+Aug 21, close to but under the TP line, so nothing nudged an exit near the
+top.
+
+Tests: 192 passed + 3 subtests (explicit-file pytest run; `pytest tests/`
+dir collection fails identically on untouched main, pre-existing quirk).
+31 new tests: real-fill derivation against the f4be9ee8 reference numbers,
+tx-hash preference, live-price prompt behaviour, and the relay settlement
+decode driven by the real receipt shape. No JS files touched.
+
+NOT deployed: relay change needs the scp + restart from relay/README.md and
+qclaw needs a trade-engine restart after merge, both post-review.
+
+## 2026-08-25: PR #94 adversarial review fixes (H1 hard budget, M1 upper bound, L2 tx_hash)
+
+Review verdict on c8782c1: decode + degradation chain PASS against the real
+on-chain receipts, but two blockers before un-draft.
+
+H1 (HIGH): the 15s decode budget was soft. The deadline was only checked
+inside the receipt-None retry loop, never at the top of the per-hash loop,
+and each RPC call always got its full timeout, so M slow-but-successful
+fetches stacked unbounded. Worst case that pushes the relay call past
+execute_trade.py's 45s AFTER a real fill: the executor's exit-1 path fired
+and Telegram said "Trade failed" with no position row, an untracked real
+position behind a misleading alert. Fixed on both sides:
+- relay: deadline checked once per hash before fetching; every RPC call's
+  timeout clamped to the remaining budget; a fetch with under 0.25s left is
+  refused without a call.
+- qclaw: execute_trade.py now separates ConnectTimeout (nothing reached the
+  relay, still relay_unreachable) from ReadTimeout/Timeout (request reached
+  the relay, order likely placed) which returns the
+  relay_timeout_order_status_unknown sentinel; executor maps that sentinel
+  to the same ORDER STATUS UNKNOWN / reconcile-by-hand messaging as the 60s
+  subprocess-timeout path. Except ordering is load-bearing: ConnectTimeout
+  subclasses Timeout.
+
+M1 (MEDIUM): cash_out was only distrusted below the notional. Added the
+symmetric bound: cash_out above MAX_CASH_OUT_NOTIONAL_FACTOR (1.5x) times
+the anchor (matched notional, else proposed amount) is distrusted, ERROR
+logged, anchor recorded. Real f4be9ee8 ratio is 1.05x, nowhere near the
+ceiling. Same one-sided-guard class as PR #91's C1.
+
+L2 folded in: f4be9ee8's tx_hash updated from the order id (resolves to no
+tx on any RPC) to the real settlement hash 0xaef3004a... in the same
+guarded-update pattern as the earlier correction.
+
+Accepted as documented follow-ups, no action: L1 (shares column numeric(10,2)
+truncates the 6dp the code computes; sub-cent effect at current sizes), L3
+(_fetch_current_price's enumerated except; broaden when convenient).
+
+New tests: budget-stacking scenario with a fake clock (2 fetches at 8s each,
+third hash refused at t=16 over a 15s budget), per-call timeout clamp,
+no-call-with-no-budget, multi-hash within budget still sums; executor
+sentinel mapping (UNKNOWN + reconcile, no row, and relay_unreachable still
+reports failed); execute_trade client classification (ReadTimeout/Timeout
+to sentinel, ConnectTimeout/ConnectionError stay unreachable); M1 both
+bounds, boundary 1.499x accepted, real-ratio no-false-positive, proposal
+anchor when amounts unparseable.
