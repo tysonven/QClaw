@@ -274,6 +274,53 @@ export function gateToolReference(response, ctx) {
 // "completed-tasks" / "auto-deploy" don't false-fire (P2 over-fire).
 const COMPLETION_RE = /(?<![\w-])(done|finished|complete|completed|shipped|deployed|fixed|resolved|merged|published|posted|sent|successfully)(?![\w-])/i;
 
+// ── Data-value discriminator (2026-08-27) ─────────────────────────────────
+// A completion word sitting in an explicit key/value slot is data Charlie is
+// REPORTING, not an action he is CLAIMING. GHL returns the literal string
+// "sent" as an invoice's status, so both "(status=sent)" and "**Status:** Sent
+// 21 Aug" trip COMPLETION_RE, and an invoice READ is not an isCompletionTool,
+// so the no-entity fallback finds nothing and a truthful, fully tool-backed
+// reply hard-fails. Observed 2026-08-27: two real outstanding invoices (FSC
+// #1000148, Flow OS #000019) were withheld from Tyson across all 3 attempts
+// while both GHL reads succeeded.
+//
+// The "match the word verbatim against this turn's tool RESULT" approach was
+// measured and rejected on two grounds. (1) It cannot work: index.js:344 stores
+// only `String(result).slice(0, 140)`, and the GHL payload is still inside
+// invoices[0].altId at that cutoff, so the status field never reaches the audit
+// row and the check returns false for the exact bug it was meant to fix.
+// (2) Even with the full payload it would be a laundering hole: matching a bare
+// dictionary word against a result blob would let "I deployed X" pass whenever
+// any unrelated result happened to contain "deployed".
+//
+// So the discriminator is POSITIONAL, not evidentiary, and the vocabulary is an
+// allowlist. Only `sent` is listed, because only `sent` is confirmed to arrive
+// as a status enum value (GHL invoices and conversations). The words the
+// 2026-08-11 fabrications actually used (deployed, shipped, fixed, merged,
+// logged, successfully) are deliberately absent and keep firing in every
+// position. `published`, `completed` and `merged` are known to be enum values
+// elsewhere (n8n/WordPress, GHL tasks, GitHub PRs) but are NOT added on
+// speculation: each is also a natural way to phrase a real completion claim
+// ("Deployment: complete"), so each needs its own observed false positive
+// before it earns an exemption.
+const DATA_VALUE_WORDS = 'sent';
+// The separator must PRECEDE the word: `=`, or a field label's `:` or `:**`,
+// with an optional opening quote. A verb in LABEL position ("Deployed: the auth
+// service") is untouched and still fires, as does bare prose ("I sent it").
+const DATA_VALUE_RE = new RegExp(
+  String.raw`(?:=|:\*\*|:)\s*["']?(?:${DATA_VALUE_WORDS})(?![\w-])`, 'gi');
+
+/**
+ * Blank completion words that occupy a data-VALUE slot so the caller can
+ * re-test what is left. Strictly reduces what COMPLETION_RE sees and nothing
+ * else: only the value occurrence is blanked, so a sentence that also uses the
+ * word in prose ("I sent it, so status=sent") still fires on that occurrence.
+ * Gate 1 only: Gates 3/5 and bootstrapMayBack still see the raw sentence.
+ */
+export function blankDataValues(sentence) {
+  return String(sentence || '').replace(DATA_VALUE_RE, ' ');
+}
+
 // 2026-08-12: the trading/manual-logging vocabulary the 2026-08-11 fabrications
 // used ("Manual trade logged", "Confirmed logged: Position …", "I bought YES").
 // These are SEPARATE from COMPLETION_RE because, unlike "deployed"/"shipped",
@@ -447,7 +494,10 @@ function windowEvents(ctx, windowMin) {
 export function gateCompletion(response, ctx) {
   const claims = splitSentences(response)
     .filter(s => !isSuppressed(s))
-    .filter(s => COMPLETION_RE.test(s) || isExtendedActionClaim(s));
+    // blankDataValues: a status enum value ("**Status:** Sent") is reported
+    // data, not an action assertion. Only the value occurrence is removed, so a
+    // real claim in the same sentence still fires. See the note above it.
+    .filter(s => COMPLETION_RE.test(blankDataValues(s)) || isExtendedActionClaim(s));
   if (!claims.length) return { gate: 'completion', fired: false };
   const events = windowEvents(ctx, ctx.windowMinComplete);
   const unbacked = [];

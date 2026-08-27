@@ -127,7 +127,7 @@ check('fail-closed: throwing registry → hard_fail (no throw out)', (() => {
 })());
 
 console.log('Gate 1 / 3 / 2 (Unit 2):');
-import { gateCompletion, gateState, gateDelegation, isCompletionTool } from '../src/agents/gates.js';
+import { gateCompletion, gateState, gateDelegation, isCompletionTool, blankDataValues } from '../src/agents/gates.js';
 const ts2 = new Date().toISOString();
 // Honours the cutoff argument (2026-08-12). The previous version ignored it and
 // returned every event for any window, so the wide entity-history window was
@@ -868,6 +868,57 @@ check('R2 corpus contract: raw object is searchable',
 check('R2 corpus contract: an object entityCorpus actually backs a claim end-to-end',
   gateEntityEvidence(`Position ${POS_A} is open.`, ctx([], { entityCorpusText: _asCorpusText({ open: [POS_A] }) })).fired === false);
 check('R2 corpus contract: null/undefined stay null', _asCorpusText(null) === null && _asCorpusText(undefined) === null);
+
+console.log('data-value discriminator (2026-08-27, GHL invoice "sent"):');
+// The exact reply Charlie was blocked on: both GHL invoice reads succeeded, but
+// "sent" is the literal GHL status value, so Gate 1 read it as an action claim.
+const INV_TOOL = 'charlie__ghl-fsc__ghl-fsc__get_invoices_altid_id_alttype_location_limit_100_offset_0_status_sent';
+// Mirrors the REAL stored row: index.js truncates the result at 140 chars, so
+// the payload stops inside invoices[0].altId and never reaches "status":"sent".
+const invoiceReadPair = [
+  { action: INV_TOOL, result_status: 'success', timestamp: ts2,
+    detail: '{"id":"i1","result":"{\\"invoices\\":[{\\"_id\\":\\"6a77322220bafa1f4dc8cb37\\",\\"altId\\":\\"nOkx7DPm0kNgNMzNFRY5\\",\\"altType\\":\\"location\\",\\"companyId\\":\\"nLJi883P2kws0yN7m7GN\\"' },
+  { action: INV_TOOL, result_status: null, timestamp: ts2,
+    detail: '{"id":"i1","args":{"limit":100}}' },
+];
+check('DV: truncated audit row genuinely lacks the word (why verbatim-result matching cannot work)',
+  invoiceReadPair[0].detail.toLowerCase().includes('sent') === false);
+check('DV: markdown field value "**Status:** Sent 21 Aug" → not fired',
+  gateCompletion('- **Status:** Sent 21 Aug 2026 at 07:15:45 UTC', ctx(invoiceReadPair)).fired === false);
+check('DV: query-param value "(status=sent)" → not fired',
+  gateCompletion('**FSC Outstanding Invoices (status=sent):**', ctx(invoiceReadPair)).fired === false);
+check('DV: JSON value "status": "sent" → not fired',
+  gateCompletion('The record reads "status": "sent" for that invoice.', ctx(invoiceReadPair)).fired === false);
+check('DV: plain label "Status: Sent" → not fired',
+  gateCompletion('Status: Sent, and the balance is still owed.', ctx(invoiceReadPair)).fired === false);
+check('DV: full blocked reply passes Gate 1 end to end',
+  gateCompletion('**FSC Outstanding Invoices (status=sent):**\n- **Status:** Sent 21 Aug 2026 at 07:15:45 UTC', ctx(invoiceReadPair)).fired === false);
+
+console.log('data-value discriminator — ADVERSARIAL (Gate 1 must stay alive):');
+check('DV-ADV: bare prose "I sent the email to Bianca" → still hard_fail',
+  (() => { const g = gateCompletion('I sent the email to Bianca this morning.', ctx(invoiceReadPair)); return g.fired && g.severity === 'hard'; })());
+check('DV-ADV: elided "Sent the invoice reminder." → still hard_fail',
+  (() => { const g = gateCompletion('Sent the invoice reminder.', ctx(invoiceReadPair)); return g.fired && g.severity === 'hard'; })());
+check('DV-ADV: prose occurrence alongside a value occurrence still fires',
+  (() => { const g = gateCompletion('I sent it, so status=sent now.', ctx(invoiceReadPair)); return g.fired && g.severity === 'hard'; })());
+check('DV-ADV: exemption does NOT extend to "deployed" in value position',
+  (() => { const g = gateCompletion('**Status:** Deployed to production.', ctx(invoiceReadPair)); return g.fired && g.severity === 'hard'; })());
+check('DV-ADV: exemption does NOT extend to "merged" in value position',
+  (() => { const g = gateCompletion('**Status:** Merged into main.', ctx(invoiceReadPair)); return g.fired && g.severity === 'hard'; })());
+check('DV-ADV: exemption does NOT extend to "complete" in value position',
+  (() => { const g = gateCompletion('Migration: complete.', ctx(invoiceReadPair)); return g.fired && g.severity === 'hard'; })());
+check('DV-ADV: verb in LABEL position ("Deployed: ...") still fires',
+  (() => { const g = gateCompletion('Deployed: the auth service, just now.', ctx(invoiceReadPair)); return g.fired && g.severity === 'hard'; })());
+check('DV-ADV: 2026-08-11 incident shape still hard_fails',
+  (() => { const g = gateCompletion(`Confirmed logged: Position ${UB}.`, ctx(invoiceReadPair)); return g.fired && g.severity === 'hard'; })());
+check('DV-ADV: "I deployed <unbacked entity>" still hard_fails',
+  (() => { const g = gateCompletion('I deployed Zz000000zz11 just now.', ctx(invoiceReadPair)); return g.fired && g.severity === 'hard'; })());
+check('DV-ADV: a real backed completion still passes (no collateral change)',
+  gateCompletion('Deployed workflow Qf39NEOEgz2W0uls.', ctx(successPair('n8n_workflow_update', 'Qf39NEOEgz2W0uls'))).fired === false);
+check('DV: blankDataValues only blanks the value occurrence',
+  blankDataValues('I sent it, status=sent').trim() === 'I sent it, status');
+check('DV: blankDataValues leaves an unlisted word untouched',
+  blankDataValues('**Status:** Deployed').includes('Deployed'));
 
 console.log('gate-log:');
 process.env.QCLAW_GATE_LOG_PATH = join(dir, 'gate.log');
