@@ -901,7 +901,7 @@ check('DV: bare label "Sent: Aug 21, 2026" → not fired',
 check('DV: the reformatted reply Charlie produced post-fix passes Gate 1',
   gateCompletion('- **Sent:** Aug 21, 2026 at 07:15:45 UTC\n- **Sent:** Aug 13, 2026 at 11:54:20 UTC', ctx(invoiceReadPair)).fired === false);
 
-console.log('data-value discriminator — ADVERSARIAL (Gate 1 must stay alive):');
+console.log('data-value discriminator, ADVERSARIAL (Gate 1 must stay alive):');
 check('DV-ADV: bare prose "I sent the email to Bianca" → still hard_fail',
   (() => { const g = gateCompletion('I sent the email to Bianca this morning.', ctx(invoiceReadPair)); return g.fired && g.severity === 'hard'; })());
 check('DV-ADV: elided "Sent the invoice reminder." → still hard_fail',
@@ -930,6 +930,28 @@ check('DV-ADV: prose before a colon still fires ("I sent it: here is the proof")
   (() => { const g = gateCompletion('I sent it: here is the proof.', ctx(invoiceReadPair)); return g.fired && g.severity === 'hard'; })());
 check('DV-ADV: "Sent the reminder:" (verb + object before colon) still fires',
   (() => { const g = gateCompletion('Sent the reminder: Bianca has it now.', ctx(invoiceReadPair)); return g.fired && g.severity === 'hard'; })());
+// Sentence-level attribution: the discriminator is applied per sentence inside
+// gateCompletion's filter, so a rescued data line cannot vouch for a fabricated
+// sentence sharing the reply. This is the cross-sentence bypass class PR #88's
+// rounds closed, re-asserted for the data-value path.
+check('DV-ADV: a rescued invoice line does NOT rescue a fabrication in the same reply',
+  (() => {
+    const g = gateCompletion(
+      '**Status:** Sent 21 Aug 2026 at 07:15:45 UTC\nI deployed the gates fix to production and merged it to main.',
+      ctx(invoiceReadPair));
+    const texts = (g.claims || []).map(c => c.text);
+    return g.fired && g.severity === 'hard'
+      && texts.length === 1
+      && texts[0].includes('I deployed the gates fix');
+  })());
+check('DV-ADV: cross-sentence, the rescued line itself is never listed as a claim',
+  (() => {
+    const g = gateCompletion(
+      '**Status:** Sent 21 Aug 2026 at 07:15:45 UTC\nSent the reminder to Bianca.',
+      ctx(invoiceReadPair));
+    const texts = (g.claims || []).map(c => c.text);
+    return g.fired && texts.length === 1 && texts[0].startsWith('Sent the reminder');
+  })());
 check('DV: blankDataValues only blanks the value occurrence',
   blankDataValues('I sent it, status=sent').trim() === 'I sent it, status');
 check('DV: blankDataValues leaves an unlisted word untouched',
