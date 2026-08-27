@@ -36,8 +36,8 @@ Header: Location-Id: {{secrets.ghl_flowos_location_id}}
 GET /contacts/?locationId={{secrets.ghl_flowos_location_id}}&query={{query}} - Search Flow OS contacts by name, email or phone
 GET /contacts/{{contact_id}} - Get a single Flow OS contact by ID
 GET /opportunities/search?location_id={{secrets.ghl_flowos_location_id}} - List Flow OS opportunities
-GET /invoices/?altId={{secrets.ghl_flowos_location_id}}&altType=location&limit=100&offset=0 - List all Flow OS invoices, any status, newest first. Do not pass a limit argument: limit is already fixed in the URL and a duplicate returns HTTP 422.
-GET /invoices/?altId={{secrets.ghl_flowos_location_id}}&altType=location&limit=100&offset=0&status=sent - List outstanding Flow OS invoices (issued and not yet paid). Do not pass a limit argument: limit is already fixed in the URL and a duplicate returns HTTP 422.
+GET /invoices/?altId={{secrets.ghl_flowos_location_id}}&altType=location&limit=100&offset=0 - List all Flow OS invoices, any status, newest first. Returns invoices[] with status, total, amountDue, dueDate and contactDetails.
+GET /invoices/?altId={{secrets.ghl_flowos_location_id}}&altType=location&limit=100&offset=0&status=sent - List outstanding Flow OS invoices, meaning issued and not yet paid. Use this for unpaid, outstanding or owed questions.
 
 # Write endpoints (all require Telegram approval via ApprovalGate)
 POST /contacts/?locationId={{secrets.ghl_flowos_location_id}} - Create Flow OS contact. Body: {firstName, lastName, email, phone, locationId}. ALWAYS search by email first — dedup is mandatory.
@@ -60,9 +60,10 @@ POST /conversations/messages - Create email DRAFT to an existing Flow OS contact
 - Tyson's internal Flow OS notify contact ID is nHrkb5YPMzB1Ew3jmVH6 — use this literal value when adding operator notes or notifications. Do not use {{secrets.ghl_flowos_notify_contact_id}} in tool call arguments — template refs only resolve in headers and URLs, not in argument values Charlie constructs.
 - When a tool argument requires a known ID value (contact_id, assignedTo etc.), use the literal value from Usage Notes — never pass {{secrets.X}} syntax as an argument value.
 - British English in all notes and communications.
-- Outstanding invoices are status=sent (issued and not yet paid). Use the outstanding-invoices tool for "unpaid", "outstanding" or "owed" questions; on each invoice, amountDue is the balance still owed and total is the full invoice value.
+- Outstanding invoices are the ones GHL stores with status=sent, meaning issued and not yet paid. Use the outstanding-invoices tool for "unpaid", "outstanding" or "owed" questions; on each invoice, amountDue is the balance still owed and total is the full invoice value.
+- When reporting invoices back to a human, call them issued and awaiting payment. Do not use the bare word "sent" for an invoice status: the completion gate in gates.js reads "sent" as a claim that you sent something, finds no tool result backing it, and withholds the whole reply as unbacked.
 - "unpaid" is NOT a valid GHL invoice status. The API answers HTTP 200 with an empty list rather than an error, so filtering on it silently reports zero outstanding invoices. The statuses in use on this location are draft, sent, paid and void.
-- An overdue invoice is a status=sent invoice whose dueDate has already passed. Derive it by comparing dueDate against today on the outstanding list; never report "nothing overdue" without checking those dates.
+- An overdue invoice is an outstanding invoice whose dueDate has already passed. Derive it by comparing dueDate against today on the outstanding list; never report "nothing overdue" without checking those dates.
 - Voided invoices are excluded from the unfiltered invoice list, so its total counts live invoices only.
-- The /invoices/ endpoint requires limit and offset, and both are already baked into the URL. Never pass a limit argument to an invoice tool: it appends a second limit parameter and GHL rejects the call with HTTP 422.
+- limit and offset are mandatory on /invoices/ and are already fixed in the URL. The registry drops any tool argument that duplicates a query parameter already in the URL, so there is no need to pass limit.
 - This file is a per-brand replica of the ghl-fsc.md template — the Flow OS scope uses ghl_flowos_api_key / ghl_flowos_location_id; do not cross brands (FSC values live in ghl-fsc.md).
