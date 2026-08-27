@@ -894,6 +894,13 @@ check('DV: plain label "Status: Sent" → not fired',
 check('DV: full blocked reply passes Gate 1 end to end',
   gateCompletion('**FSC Outstanding Invoices (status=sent):**\n- **Status:** Sent 21 Aug 2026 at 07:15:45 UTC', ctx(invoiceReadPair)).fired === false);
 
+check('DV: label position "- **Sent:** Aug 21, 2026" → not fired (GHL sent-at field)',
+  gateCompletion('- **Sent:** Aug 21, 2026 at 07:15:45 UTC', ctx(invoiceReadPair)).fired === false);
+check('DV: bare label "Sent: Aug 21, 2026" → not fired',
+  gateCompletion('Sent: Aug 21, 2026 at 07:15:45 UTC', ctx(invoiceReadPair)).fired === false);
+check('DV: the reformatted reply Charlie produced post-fix passes Gate 1',
+  gateCompletion('- **Sent:** Aug 21, 2026 at 07:15:45 UTC\n- **Sent:** Aug 13, 2026 at 11:54:20 UTC', ctx(invoiceReadPair)).fired === false);
+
 console.log('data-value discriminator — ADVERSARIAL (Gate 1 must stay alive):');
 check('DV-ADV: bare prose "I sent the email to Bianca" → still hard_fail',
   (() => { const g = gateCompletion('I sent the email to Bianca this morning.', ctx(invoiceReadPair)); return g.fired && g.severity === 'hard'; })());
@@ -915,6 +922,14 @@ check('DV-ADV: "I deployed <unbacked entity>" still hard_fails',
   (() => { const g = gateCompletion('I deployed Zz000000zz11 just now.', ctx(invoiceReadPair)); return g.fired && g.severity === 'hard'; })());
 check('DV-ADV: a real backed completion still passes (no collateral change)',
   gateCompletion('Deployed workflow Qf39NEOEgz2W0uls.', ctx(successPair('n8n_workflow_update', 'Qf39NEOEgz2W0uls'))).fired === false);
+check('DV-ADV: label arm does NOT extend to "deployed" ("Deployed: ...")',
+  (() => { const g = gateCompletion('Deployed: the auth service, just now.', ctx(invoiceReadPair)); return g.fired && g.severity === 'hard'; })());
+check('DV-ADV: label arm does NOT extend to "merged" ("Merged: ...")',
+  (() => { const g = gateCompletion('Merged: PR 58 into main.', ctx(invoiceReadPair)); return g.fired && g.severity === 'hard'; })());
+check('DV-ADV: prose before a colon still fires ("I sent it: here is the proof")',
+  (() => { const g = gateCompletion('I sent it: here is the proof.', ctx(invoiceReadPair)); return g.fired && g.severity === 'hard'; })());
+check('DV-ADV: "Sent the reminder:" (verb + object before colon) still fires',
+  (() => { const g = gateCompletion('Sent the reminder: Bianca has it now.', ctx(invoiceReadPair)); return g.fired && g.severity === 'hard'; })());
 check('DV: blankDataValues only blanks the value occurrence',
   blankDataValues('I sent it, status=sent').trim() === 'I sent it, status');
 check('DV: blankDataValues leaves an unlisted word untouched',

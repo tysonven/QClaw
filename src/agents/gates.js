@@ -304,11 +304,20 @@ const COMPLETION_RE = /(?<![\w-])(done|finished|complete|completed|shipped|deplo
 // ("Deployment: complete"), so each needs its own observed false positive
 // before it earns an exemption.
 const DATA_VALUE_WORDS = 'sent';
-// The separator must PRECEDE the word: `=`, or a field label's `:` or `:**`,
-// with an optional opening quote. A verb in LABEL position ("Deployed: the auth
-// service") is untouched and still fires, as does bare prose ("I sent it").
-const DATA_VALUE_RE = new RegExp(
-  String.raw`(?:=|:\*\*|:)\s*["']?(?:${DATA_VALUE_WORDS})(?![\w-])`, 'gi');
+// Two data positions, both requiring an adjacent key/value separator:
+//   VALUE  the word follows `=` or a field label's `:` / `:**`, optionally quoted
+//          ("(status=sent)", "**Status:** Sent", '"status": "sent"')
+//   LABEL  the word IS the field label, followed by `:` / `:**`
+//          ("- **Sent:** Aug 21, 2026" is GHL's sent-at date field)
+// The LABEL arm mirrors the guard already carried by EXTENDED_ELIDED_RE, where
+// `(?![\s*_]*:)` keeps "- **Created:** Apr 25, 2026" from reading as a claim
+// that Charlie created something. Only whitespace and markdown may sit between
+// the word and the colon, so ordinary prose that happens to precede a colon
+// ("I sent it: here is the proof") keeps firing.
+const DATA_VALUE_RE = new RegExp([
+  String.raw`(?:=|:\*\*|:)\s*["']?(?:${DATA_VALUE_WORDS})(?![\w-])`,
+  String.raw`(?<![\w-])(?:${DATA_VALUE_WORDS})(?=[\s*_]*:)`,
+].join('|'), 'gi');
 
 /**
  * Blank completion words that occupy a data-VALUE slot so the caller can
