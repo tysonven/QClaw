@@ -15,7 +15,7 @@
 import { AuditLog, parseAuditTs } from '../src/security/audit.js';
 import {
   splitSentences, stripCodeSpans, isSuppressed, extractEntities, correlatePairs,
-  matchEvidence, gateToolReference, runGates,
+  matchEvidence, gateToolReference, runGates, EVIDENCE_PATH,
 } from '../src/agents/gates.js';
 import { appendGateLog } from '../src/observability/gate-log.js';
 import { mkdtempSync, rmSync, existsSync, readFileSync, statSync } from 'fs';
@@ -74,9 +74,46 @@ check('matchEvidence: error-only row → not backed for success', matchEvidence(
   { action: 'deploy', detail: '{"id":"toolu_2","result":"boom"}', result_status: 'error', timestamp: evNow },
   { action: 'deploy', detail: '{"id":"toolu_2","args":{"id":"Qf39NEOEgz2W0uls"}}', result_status: null, timestamp: evNow },
 ], { requireStatus: 'success' }).backed === false);
-check('matchEvidence: no-entity this-turn fallback → backed weak', (() => {
+// Unit 1: the `weak` boolean is replaced by an explicit evidence path. This was
+// its ONLY read in the repo; nothing in src/ ever read it.
+check('matchEvidence: no-entity this-turn fallback → backed via no_entity_fallback', (() => {
   const r = matchEvidence('it is done', events, { requireStatus: 'success', turnStartMs: Date.now() - 120000 });
-  return r.backed === true && r.weak === true;
+  return r.backed === true
+    && r.path === EVIDENCE_PATH.NO_ENTITY_FALLBACK
+    && r.entityFree === true
+    && r.weak === undefined;          // the old boolean is gone, not shadowed
+})());
+check('matchEvidence: entity hit → path entity_match, not entity-free', (() => {
+  const r = matchEvidence('deployed Qf39NEOEgz2W0uls', events, { requireStatus: 'success' });
+  return r.backed === true && r.path === EVIDENCE_PATH.ENTITY_MATCH && r.entityFree === false;
+})());
+// The two former `weak: true` sites must stay distinguishable: bootstrap
+// recitation matched an ENTITY in the briefing, the fallback had no entity at
+// all. A single boolean could not tell them apart, so anything keyed on it would
+// have moved both.
+check('matchEvidence: bootstrap recitation → path bootstrap_recitation, sourced preserved', (() => {
+  const boot = bootstrapCorpus({ probes: [{ detail: 'workflow Qf39NEOEgz2W0uls is live' }] });
+  const r = matchEvidence('The build log shows Qf39NEOEgz2W0uls is now RESOLVED.', [],
+    { requireStatus: 'success', turnStartMs: Date.now() - 120000, bootstrapText: boot });
+  return r.backed === true
+    && r.path === EVIDENCE_PATH.BOOTSTRAP_RECITATION
+    && r.sourced === 'bootstrap'      // still read by gateState, must not regress
+    && r.entityFree === false;
+})());
+check('matchEvidence: the three paths are distinct values', new Set(Object.values(EVIDENCE_PATH)).size === 3);
+// entityFree is the discriminator `path` cannot carry: BOTH unbacked returns have
+// path null, but they come from structurally different places.
+check('matchEvidence: unbacked WITH an entity → entity_free false', (() => {
+  const r = matchEvidence('deployed WkXX0000zz9988yy', events, { requireStatus: 'success' });
+  return r.backed === false && r.path === null && r.entityFree === false;
+})());
+check('matchEvidence: unbacked with NO entity → entity_free true', (() => {
+  const r = matchEvidence('it is done', events, { requireStatus: 'success', turnStartMs: Date.now() + 60000 });
+  return r.backed === false && r.path === null && r.entityFree === true;
+})());
+check('matchEvidence: noEntityFallback=false → fails closed, still entity_free', (() => {
+  const r = matchEvidence('it is done', events, { requireStatus: 'success', turnStartMs: Date.now() - 120000, noEntityFallback: false });
+  return r.backed === false && r.path === null && r.entityFree === true;
 })());
 check('matchEvidence: no-entity, evidence pre-dates turn → not backed', matchEvidence('it is done', events, { requireStatus: 'success', turnStartMs: Date.now() + 60000 }).backed === false);
 // P1-2: interleaved cross-agent rows — id correlation must pair correctly (errored claim not success-backed)
@@ -877,7 +914,111 @@ const glRow = JSON.parse(gl);
 check('gate.log JSONL shape', glRow.gate === 'completion' && glRow.result === 'hard_fail' && glRow.attempt === 1);
 check('gate.log scrubs mid-string sk-ant key', !gl.includes('SECRET123') && gl.includes('<scrubbed>'));
 check('gate.log mode 0600', (statSync(join(dir, 'gate.log')).mode & 0o777) === 0o600);
+
+// ── Unit 1: evidence-path instrumentation ────────────────────────────────────
+// A row with no evidence notion (Gate 4/5, or a gate that threw) must report
+// null, NOT false. `!!undefined` would have logged every such row as
+// backed:false / not-entity-free, which is a claim the row cannot support.
+check('gate.log: absent evidence fields are null, never coerced to false',
+  glRow.fired === null && glRow.backed === null && glRow.path === null
+  && glRow.sourced === null && glRow.entity_free === null && glRow.check === null);
+
+const obsPath = join(dir, 'gate-obs.log');
+process.env.QCLAW_GATE_LOG_PATH = obsPath;
+appendGateLog({
+  gate: 'completion', claim: 'it is done; token sk-ant-admin01-OBSSECRET here',
+  result: 'pass', action: null, attempt: 1,
+  fired: false, check: 'completion', backed: true,
+  path: EVIDENCE_PATH.NO_ENTITY_FALLBACK, sourced: null, entity_free: true,
+});
+const obsRaw = readFileSync(obsPath, 'utf-8').trim();
+const obsRow = JSON.parse(obsRaw);
+check('gate.log: observation row carries path + backed + entity_free',
+  obsRow.fired === false && obsRow.backed === true && obsRow.check === 'completion'
+  && obsRow.path === 'no_entity_fallback' && obsRow.entity_free === true);
+check('gate.log: a PASS is now recordable (was unrepresentable before)', obsRow.result === 'pass');
+check('gate.log: observation claim text goes through the same scrubber',
+  !obsRaw.includes('OBSSECRET') && obsRaw.includes('<scrubbed>'));
+check('gate.log: pre-existing fields keep their meaning on observation rows',
+  obsRow.gate === 'completion' && obsRow.verified === false && obsRow.attempt === 1);
 delete process.env.QCLAW_GATE_LOG_PATH;
+
+// Observations must never leak into `claims`: that array drives hedgeResponse
+// (which DELETES the sentence from the reply) and the escalation text. A backed
+// claim appearing there would silently strip a truthful sentence.
+const obsEv = (action, id) => {
+  const t = new Date().toISOString();
+  return [
+    { action, detail: JSON.stringify({ id: 'o1', result: 'ok' }), result_status: 'success', timestamp: t },
+    { action, detail: JSON.stringify({ id: 'o1', args: { id } }), result_status: null, timestamp: t },
+  ];
+};
+const obsCtx = (evs) => ({
+  auditLog: { toolEventsSince: () => evs }, toolRegistry: { has: () => true },
+  now: Date.now(), turnStartMs: Date.now() - 120000, windowMinComplete: 10, windowMinState: 5,
+});
+const gPass = gateCompletion('Deployed workflow Qf39NEOEgz2W0uls.', obsCtx(obsEv('n8n_workflow_update', 'Qf39NEOEgz2W0uls')));
+check('observations: a PASSING gate still reports its evidence path',
+  gPass.fired === false && gPass.observations.length === 1
+  && gPass.observations[0].backed === true
+  && gPass.observations[0].path === EVIDENCE_PATH.ENTITY_MATCH);
+check('observations: a passing gate exposes no claims array',
+  gPass.claims === undefined);
+const gFail = gateCompletion('Deployed workflow Zz000000zz11.', obsCtx([]));
+check('observations: a FIRING gate reports both claims and observations',
+  gFail.fired === true && gFail.claims.length === 1 && gFail.observations.length === 1
+  && gFail.observations[0].backed === false && gFail.observations[0].path === null);
+check('observations: shell_exec backing an entity-free claim is now visible in the log',
+  (() => {
+    const g = gateCompletion('**Confirmed:** the fix is deployed and merged to main.', obsCtx(obsEv('shell_exec', 'x')));
+    return g.fired === false && g.observations.some(o =>
+      o.backed === true && o.path === EVIDENCE_PATH.NO_ENTITY_FALLBACK && o.entity_free === true);
+  })());
+check('observations: gateState records both the ran and ok checks',
+  (() => {
+    const g = gateState('The workflow Qf39NEOEgz2W0uls is healthy.',
+      obsCtx(obsEv('shared__n8n-api__n8n-api__get_workflows_id', 'Qf39NEOEgz2W0uls')));
+    const checks = g.observations.map(o => o.check);
+    return checks.includes('ran') && checks.includes('ok');
+  })());
+check('observations: gates that do not call matchEvidence report none',
+  gateToolReference('all good', { toolRegistry: { has: () => true } }).observations === undefined);
+
+// The blind spot this unit closes: a turn that passes first time called onGateLog
+// zero times before, so a fallback-backed claim was never recorded anywhere.
+const CLEAN = 'The workflow Qf39NEOEgz2W0uls is running.';
+const passLog = [];
+const rPass = await regenerateWithGates({
+  generate: async () => ({ content: CLEAN, model: 'm' }),
+  auditLog: mkAudit(readPair('shared__n8n-api__n8n-api__get_workflows_id', 'Qf39NEOEgz2W0uls')),
+  toolRegistry: { has: () => true }, turnStart: past, baseMessages: BM,
+  onGateLog: (g, a) => passLog.push({ result: g.result, attempt: a }),
+});
+check('U1: onGateLog now fires on a first-attempt PASS (was silent)',
+  rPass.gateOutcome === 'pass' && passLog.length === 1
+  && passLog[0].result === 'pass' && passLog[0].attempt === 1);
+check('U1: a passing turn still returns its content untouched',
+  rPass.content === CLEAN && rPass.gateAttempts === 1);
+check('U1: the passing turn reported an evidence path for its claim',
+  runGates(CLEAN, mkAudit(readPair('shared__n8n-api__n8n-api__get_workflows_id', 'Qf39NEOEgz2W0uls')),
+    { has: () => true }, { now: Date.now(), turnStart: past })
+    .gates.flatMap(g => g.observations || []).some(o => o.backed === true && o.path !== null));
+
+// The post-hedge re-check was the other unlogged outcome: the old loop logged
+// from its top, so a soft_fail that hedged clean emitted one row for the
+// soft_fail and nothing for the pass that followed.
+const hedgeLog = [];
+const rHedge = await regenerateWithGates({
+  generate: async () => ({ content: 'Deployed workflow Qf39NEOEgz2W0uls.', model: 'm' }),
+  auditLog: mkAudit(successPair('n8n_workflow_update', 'Qf39NEOEgz2W0uls')),
+  toolRegistry: { has: () => true }, turnStart: past, baseMessages: BM,
+  onGateLog: (g, a) => hedgeLog.push({ result: g.result, attempt: a }),
+});
+check('U1: soft_fail then hedge-to-pass now logs BOTH outcomes',
+  rHedge.gateOutcome === 'pass' && hedgeLog.length === 2
+  && hedgeLog[0].result === 'soft_fail' && hedgeLog[1].result === 'pass');
+check('U1: hedging behaviour itself is unchanged (content still replaced)',
+  rHedge.content === NO_VERIFIED_ANSWER && rHedge.gateAttempts === 1);
 
 rmSync(dir, { recursive: true, force: true });
 console.log(`\n${passed}/${passed + failed} checks passed`);

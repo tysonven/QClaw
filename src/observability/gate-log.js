@@ -37,12 +37,31 @@ function _rotateIfNeeded(path) {
   }
 }
 
+/** Boolean or null. Never coerce an absent field to false. */
+const _bool = (v) => (typeof v === 'boolean' ? v : null);
+
 /**
- * Append one gate-firing record. Never throws (logging must not break the
- * regeneration loop). Scrubs `claim` + `rewritten_claim` before write.
+ * Append one gate record. Never throws (logging must not break the regeneration
+ * loop). Scrubs `claim` + `rewritten_claim` before write.
  *
  * record: { gate, claim, verification_attempted, verified, result, action,
- *           attempt, rewritten_claim? }
+ *           attempt, rewritten_claim?, fired?, check?, backed?, path?, sourced?,
+ *           entity_free? }
+ *
+ * Two row kinds share this schema, told apart by `fired`:
+ *
+ *  - `fired: true`  = a gate firing, the only kind that existed before. Every
+ *    pre-existing field keeps its exact meaning, so existing greps still work.
+ *  - `fired: false` = an OBSERVATION: one matchEvidence call that did not (on its
+ *    own) fire the gate. These are new. They exist because a claim backed by the
+ *    no-entity fallback passes silently, so the evidence path that backed it was
+ *    unrecorded and uncountable.
+ *
+ * The evidence fields are null on rows that have no such notion (Gate 4's phantom
+ * tool names, Gate 5's identifier provenance, a gate that threw): those gates do
+ * not call matchEvidence, so there is no path to report. Null means "not
+ * applicable", not "no evidence", hence _bool rather than a `!!` coercion, which
+ * would have silently reported every such row as backed:false.
  */
 export function appendGateLog(record = {}) {
   const path = _path();
@@ -57,6 +76,13 @@ export function appendGateLog(record = {}) {
       result: record.result || null,            // 'pass'|'soft_fail'|'hard_fail'
       action: record.action || null,            // 'rewrite'|'reprompt'|'escalate'|'fail_closed_slice5_pending'|...
       attempt: record.attempt ?? 0,
+      // ── instrumentation (Unit 1) ──
+      fired: _bool(record.fired),               // true = gate firing, false = observation
+      check: record.check || null,              // 'completion'|'ran'|'ok'|'dispatch'|'outcome'
+      backed: _bool(record.backed),
+      path: record.path || null,                // EVIDENCE_PATH value, or null
+      sourced: record.sourced || null,          // 'bootstrap' when the snapshot backed it
+      entity_free: _bool(record.entity_free),
     };
     if (record.rewritten_claim != null) {
       entry.rewritten_claim = scrubSecrets(String(record.rewritten_claim)).slice(0, 500);

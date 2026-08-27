@@ -566,14 +566,33 @@ export class Agent {
         // become self-justifying on the following turn.
         provenance: buildProvenanceText(textMessage, truncatedHistory),
         baseMessages: messages,
+        // Called after EVERY runGates now, passes included (see regenerateWithGates).
+        // Two row kinds go out: the firings that were always logged, and the new
+        // per-matchEvidence observations. The observations are the point of the
+        // change: a claim backed by the no-entity fallback does not fire a gate,
+        // so before this the only evidence path anyone could count was the one on
+        // claims that FAILED. Observations carry claim text, so they go through the
+        // same scrubber (appendGateLog scrubs `claim` unconditionally).
         onGateLog: (gateOut, attempt) => {
           for (const g of gateOut.gates) {
-            if (!g.fired) continue;
-            for (const c of (g.claims || [])) {
+            if (g.fired) {
+              for (const c of (g.claims || [])) {
+                appendGateLog({
+                  gate: g.gate, claim: c.text || String(c),
+                  verification_attempted: c.verification_attempted !== false,
+                  verified: false, result: gateOut.result, action: g.action, attempt,
+                  fired: true,
+                });
+              }
+            }
+            // Gates 4 and 5 do not call matchEvidence, so they report none.
+            for (const o of (g.observations || [])) {
               appendGateLog({
-                gate: g.gate, claim: c.text || String(c),
-                verification_attempted: c.verification_attempted !== false,
-                verified: false, result: gateOut.result, action: g.action, attempt,
+                gate: g.gate, claim: o.claim,
+                verification_attempted: true, verified: false,
+                result: gateOut.result, action: g.action, attempt,
+                fired: false, check: o.check, backed: o.backed,
+                path: o.path, sourced: o.sourced, entity_free: o.entity_free,
               });
             }
           }
