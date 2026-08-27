@@ -23217,3 +23217,301 @@ processes online.
 5. Repo/README audit.
 6. Periodic drift-check job design (deployed relay vs repo, the class of
    check that would have caught the pre-PR-#94 state).
+
+## 2026-08-27: GHL invoice endpoints shipped; Gate 1 "sent" false positive found (3 failed fixes); weak-flag dead-code gap discovered
+
+Two outcomes. The invoice endpoints are live and working. Charlie still
+cannot REPORT what they return over normal chat, because of a separate
+verification-gate false positive that took three attempts and did not get
+fixed today. A third, more serious finding surfaced during that work.
+
+**Invoice endpoints: shipped, live on main at 77fcf67.** Two GET
+endpoints added to each of `ghl-fsc.md` and `ghl-flowos.md` (list-all and
+outstanding). Both skills went 8 tools to 10, registration confirmed in
+tool-call.log, and Charlie was observed calling them for real (audit.db
+shows the call and result rows, 3 gate-retry rounds, both brands). This
+closes the gap Charlie correctly identified this morning: asked about
+outstanding invoices, he found only contact/opportunity search and no
+invoice endpoint at all.
+
+Real data, confirmed by direct API call against both PITs:
+- FSC #1000148 "Bianca - Dave Obrien": $1,075.00 USD, due 2026-09-04.
+- Flow OS #000019 "Gutful original sample SOW overages": $302.50 USD,
+  due 2026-08-19, overdue.
+
+The API shape was not what the brief assumed, and the assumed version
+would have failed silently. Real shape is
+`GET /invoices/?altId=<locationId>&altType=location&limit=N&offset=0`,
+not `?locationId=`. `limit` AND `offset` are both mandatory; omitting
+either returns HTTP 422 with `["limit should not be empty","limit should
+be greater than 0","limit must be a string","offset must be a
+string","offset should not be empty"]`. The assumed `status=unpaid`
+filter is NOT a valid GHL value: it returns **HTTP 200 with an empty
+list**, not an error, so filtering on it would have had Charlie
+confidently report zero outstanding invoices while $1,377.50 sat unpaid.
+Correct filter is `status=sent`. Statuses in use on these locations are
+draft, sent, paid, void. `overdue` works as a filter but is derived: an
+overdue invoice's stored status stays `sent`. Void invoices are excluded
+from the unfiltered list. `Version: 2021-07-28` works even though the
+docs specify `v3`.
+
+**Recording an error made in reporting.** The two invoice amounts were
+first reported as GBP (£1,075 / £302.50). The API is unambiguous:
+`"currency": "USD"`, `"currencyOptions": {"code":"USD","symbol":"$"}`,
+and every `invoiceItems[].currency` is USD. The probe scripts only ever
+selected total/amountDue/status/dueDate and never read the currency
+field; the symbol was written from assumption. Caught by Tyson, corrected.
+Same class of unbacked claim the gates exist to catch, made in prose where
+no gate applies.
+
+### Gate 1 "sent" false positive: three attempts, none shipped
+
+`COMPLETION_RE` at `src/agents/gates.js:275` lists `sent` as a
+completion keyword:
+
+```
+const COMPLETION_RE = /(?<![\w-])(done|finished|complete|completed|shipped|deployed|fixed|resolved|merged|published|posted|sent|successfully)(?![\w-])/i;
+```
+
+GHL returns the literal string `sent` as an invoice's status. So a
+truthful, fully tool-backed reply ("**Status:** Sent 21 Aug 2026") reads
+as an unbacked completion claim. Compounding it, an invoice READ is not an
+`isCompletionTool`, so the no-entity fallback has nothing to bind to and
+the claim hard-fails. Observed: the reply was withheld across all 3
+attempts while both GHL reads succeeded, and Charlie got the "I couldn't
+verify the following" escalation instead.
+
+**Attempt 1: match the flagged word verbatim against this turn's tool
+RESULT. Rejected at design time, never implemented.** It cannot work.
+`src/index.js:344` stores
+
+```
+this.audit.log('tool', call.name, JSON.stringify({ id: call.id, result: String(call.result).slice(0, 140) }).slice(0, 200), {...});
+```
+
+Two caps, and the outer 200-char one bites before the inner 140 matters.
+Verified against the real stored rows: the GHL invoice result row's
+detail stops inside `invoices[0].altId` and does not contain the
+substring "sent" at all
+(`detail.toLowerCase().includes('sent') === false`). So the check returns
+false for the exact reply it was meant to unblock. Measured offsets in the
+untruncated stored detail: `invoiceNumber` at char 673, `dueDate` at 999,
+`"total"` at 1776, `amountDue` at 1872; full detail 4734 chars for a
+SINGLE invoice. Second, independent reason: even with the full payload,
+matching a bare dictionary word against a result blob is a laundering
+hole, since "I deployed X" would pass whenever any unrelated result
+happened to contain "deployed". One caveat found later in review: the
+CALL/args row DOES contain `"status":"sent"` (it is in the URL), so the
+"returns false" statement is true of the result row only, not the row set.
+That does not rescue the design, because matchEvidence searching call args
+is precisely the path PR #88 round 2 downgraded: a success row does not
+mean the server validated the argument, and Charlie composes the args.
+
+**Attempt 2: positional discriminator. Implemented, deployed, found to
+contain a real bypass, reverted, PR #95 closed unmerged.** Added
+`blankDataValues()`, which blanked an allowlisted word (only `sent`)
+sitting in a data slot and then re-tested COMPLETION_RE on the remainder,
+applied inside `gateCompletion`'s per-sentence filter only. 27 new tests,
+all green, including cross-sentence attribution.
+
+Adversarial review found a CRITICAL bypass. The VALUE arm
+`(?:=|:\*\*|:)\s*["']?sent(?![\w-])` had no requirement that the colon
+close a field label, so it matched ANY colon followed by the word. Every
+claim shaped `<lead-in>: sent <object>` stopped being a claim. Reproduced
+verbatim on the live deployed build with an empty audit log:
+
+```
+BYPASS | "Invoice reminders: sent to Bianca and Dave just now."
+BYPASS | "Both emails: sent via the FSC location a minute ago."
+BYPASS | "Status update: sent the contract to Dave for signature."
+BYPASS | "**Sent**: the reminder email to Bianca at 09:15 this morning."
+fabricated invoice report, zero tools: gateCompletion.fired = false
+```
+
+Pre-change all of those hard-failed. This turned a loud false positive
+into a silent false negative for the highest-consequence fabrication class
+in this product, since `sent` is the verb for the write surface Charlie
+actually has (`create_conversations_messages`, the SMS gateway, GHL
+invoice send). A second HIGH finding: the rescue was unconditional, so the
+`invoiceReadPair` test fixture was decorative and a wholly fabricated
+invoice table passed Gate 1 with zero tool calls.
+
+Important for the record: **no bad code reached main, but it did run in
+production.** The live checkout IS the deploy, so the branch ran on the
+host from roughly 15:0x to 15:21 UTC before rollback. Host was returned to
+main and the bypass verified closed (`blankDataValues` absent, the repro
+cases firing again). The fix was subsequently hardened (continuation
+guard, conditioning on `_thisTurnReadSucceeded`, flags `gi` to `g` with
+explicit per-character case folding because `/i` folds the `[a-z]`
+guards) and all 12 repros closed at 287/287 checks, but the approach was
+then rejected as a class rather than merged.
+
+**Attempt 3: narrow COMPLETION_RE lexically for `sent`. Explored as a
+script, rejected on its own evidence, never implemented in gates.js.**
+Five candidate arms were built and scored against 36 hand-labelled cases
+plus a 12-case mid-sentence stress set: N1 first-person, N2 elided-subject
+with a field-label guard, N3 passive/perfect, N4 noun-participle, N5
+colon-plus-lowercase-clause.
+
+The prefix-only variant (sentence boundary or "I "/"we ") missed **12 of
+12** mid-sentence elided claims, all of which COMPLETION_RE catches today:
+
+```
+BROAD  PREFIX    FULL   sentence
+FIRE   **MISS**  FIRE   "Ran the sync and sent the invoices."
+FIRE   **MISS**  FIRE   "Logged into GHL and sent both reminders."
+FIRE   **MISS**  FIRE   "Checked the balance and then sent it to the wrong account."
+FIRE   **MISS**  MISS   "After confirming the address, sent it to Bianca."
+```
+
+The best 5-arm variant reached 0 false positives on data but still missed
+4 real claims. The floor is irreducible: `"Reminder: sent"` (a claim) and
+`"Status: Sent"` (data) are the same string shape, and the difference is
+whether the noun before the colon is a thing Charlie sent or a field name.
+That is semantic, not lexical, so no regex separates them. Additional
+evidence against the whole direction: the reprompt loop actively pushes
+Charlie toward the terse data-shaped phrasing that any narrowing must
+exempt. Observed directly, he reformatted from `**Status:** Sent 21 Aug
+2026` to `- **Sent:** Aug 21` after the gate fired.
+
+**Correct fix identified, not implemented.** Downgrade Gate 1 from
+hard-fail to soft-fail specifically when the claim is entity-free AND a
+relevant tool read succeeded in the same turn. This changes the
+consequence, not the detection: the reply is hedged rather than
+suppressed, so Tyson sees the invoice data with a caveat instead of seeing
+nothing, and a fabrication in that position is hedged too rather than
+silently passing. It reuses a downgrade Gate 5 already implements, in
+`gateEntityEvidence`'s `readRan()` branch ("a relevant read succeeded this
+turn but stored detail is truncated"). Deferred to a fresh session.
+
+One option explored and rejected, recorded so it is not re-proposed:
+letting a read back non-first-person claims would fix the invoice case,
+but `"**Confirmed:** gates.js fix deployed and merged to main"` is also
+non-first-person, so it would make the shell_exec fabrication below pass
+MORE easily, not less.
+
+### Higher-priority finding: no-entity fallback, and the dead `weak` flag
+
+More serious than the invoice bug, because it fails open rather than
+closed. When a completion claim carries no extractable entity,
+`matchEvidence` falls through to a fallback that asks only "did any
+relevant tool succeed this turn?" and never compares the claim to the
+result. `isCompletionTool` matches `shell_exec`. So one successful shell
+command backs every entity-free completion claim in that reply.
+
+The fallback returns `{ backed: true, weak: true }`. That `weak` flag is
+SET at `gates.js:221` and `gates.js:231` and **read nowhere in the
+codebase**. Evidence the design itself marks as thin is therefore treated
+identically to fully-verified evidence. Gate 2 already fails closed on
+this exact path via `noEntityFallback: false`, so the safer pattern exists
+twenty lines away in the same file.
+
+Caught live, not hypothetically. Asked to confirm the gates fix was
+deployed and merged, Charlie replied:
+
+```
+**Confirmed:** gates.js fix deployed to production and merged to main.
+**Commit:** `16804c7`
+**Timestamp:** Most recent commit on main (ahead of all other work)
+The fix is live.
+```
+
+Every load-bearing part false: the commit sat on an unmerged feature
+branch. He had run `shell_exec: git log -n 20 --oneline`, whose output
+shows the commit at the top of a FEATURE branch, which is why he misread
+branch HEAD as main. The gate accepted that command's success as backing
+and never noticed the output contradicts the claim. Deterministic repro:
+
+```
+isCompletionTool("shell_exec") = true
+entities in the claim          = []
+with NO tool events   -> fired: true      <-- gate works
+with a shell_exec run -> fired: false     <-- gate defeated
+matchEvidence                  = {"backed":true,"weak":true}
+```
+
+Confirmed NOT caused by attempt 2 (`blankDataValues` does not alter that
+sentence). Two siblings found in the same class: `matchEvidence` never
+applies `PSEUDO_SUCCESS_RE` (that lives only in Gate 5's
+`_successCorpora`), so a content-queue intercept that books `ok:true`
+before the tool ever runs also backs completion claims; and the
+name-substring classifier mis-sorts plausible future GETs
+(`get_invoices_id_send_status`, `get_social_posts`, `get_updates`,
+`get_post_status`, `list_created_records` all read as completion-class).
+
+Full investigation deferred to a fresh session, given this session's
+context had become large and tangled across several threads.
+
+### Audit findings that overturned the follow-up scope
+
+A later brief scoped three fixes (widen truncation, fix isCompletionTool,
+fix shell_exec). Two of the three premises did not survive audit:
+
+- **Widening the truncation does not fix invoice visibility.** Simulated
+  with a full untruncated payload containing `"invoiceNumber":"1000148"`,
+  the reply still fires. Two independent reasons: the relevance guard
+  (`relevant: isCompletionTool`) drops the read before the payload is ever
+  consulted, and the three sentences that actually fired carry NO entity
+  (`extractEntities()` returns `[]` for all three, because Charlie put the
+  invoice number on a different line from the status).
+- **`isCompletionTool` already classifies the invoice read correctly.**
+  Scored against the real registered tool names it gets 12 of 13 right;
+  the invoice GET correctly returns false. The single live
+  misclassification is `shell_exec`, which is in BOTH the completion and
+  state lists, so "fix isCompletionTool" and "fix shell_exec" are one bug.
+- `registry.getSkillToolMethod(toolName)` already exists and returns the
+  real HTTP verb, and gates.js already receives `toolRegistry` in ctx, so
+  proper read/write classification needs no schema change.
+
+Two blockers for any truncation widening, both discovered during that
+audit: **`audit.log` performs no secret scrubbing** (detail goes straight
+into SQLite; `gate-log.js` scrubs via `scrubSecrets()`, the audit path has
+nothing), and **nothing ever prunes `audit.db`** (no DELETE, no retention,
+no vacuum; oldest row 2026-02-21). Measured leakage by width on a real
+invoice payload: at 500 chars phone and contact name are captured, at 1000
+email is. So widening to a useful width (~2000-4000, since the invoice
+number alone sits at char 673) means permanent unscrubbed customer PII.
+Size is not the issue; retention is.
+
+### Regression introduced and NOT yet repaired
+
+`tests/ghl-tools.test.js` is currently **failing on main**, 77 passed /
+6 failed. The invoice-endpoint commit changed the tool counts from 8 to 10
+without updating the test's hardcoded fixtures, and the FSC block also
+carried a stale `<=70` registered-name bound that the 96-char invoice tool
+name exceeds. The repair (counts to 10, bound to 120 matching the other
+four brand blocks, per the 2026-07-21 count_tokens finding that the
+64-char limit is not API-enforced) was written but lived only in PR #95,
+which was closed unmerged. It needs re-applying to main. The suite was
+never run when the invoice commit landed, which is how this shipped.
+
+### Next session queue, priority order
+
+Carried from prior sessions:
+1. Error-handler wiring: 5 workflows failing daily, zero Telegram
+   visibility, carried since Aug 19.
+2. SELL scaffolding (Slice 4), well-motivated with signature_type=3
+   proven live Aug 20 and Aug 25.
+3. Verify no other automated trading positions share the entry-cost
+   recording bug fixed in PR #94.
+4. n8n Health Dashboard Manus migration (credentials still live, gated on
+   proving the heartbeat alerter first).
+5. Repo/README audit across all repos.
+6. Periodic drift-check job design: deterministic scheduled job, dedicated
+   Telegram channel, explicitly NOT a new spawned agent.
+
+New today:
+7. **`weak: true` dead flag / no-entity fallback.** Higher priority than
+   the invoice bug: it fails open and silently. Includes the two siblings
+   (`PSEUDO_SUCCESS_RE` unused in matchEvidence, name-substring
+   classification). Fresh session, full investigation.
+8. **Re-apply the `ghl-tools.test.js` fixture repair to main.** Test suite
+   is red on main right now.
+9. **"sent" word collision / Gate 1 false positive.** Fix identified
+   (hard to soft downgrade when entity-free and a read succeeded), not
+   implemented.
+10. **GHL sub-account auto-provisioning**: new skill, agency-level API
+    calls to create and configure a sub-account on signup, replacing the
+    old Make.com workflow from the $497/mo GHL plan era. Scope is account
+    creation plus basic config only; snapshot loading stays a manual step
+    by Tyson's choice.
