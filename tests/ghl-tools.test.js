@@ -54,11 +54,12 @@ if (fsc) {
   check('ghl-fsc Location-Id header uses {{secrets.ghl_fsc_location_id}}',
     locHeader.includes('{{secrets.ghl_fsc_location_id}}'), `got "${locHeader}"`);
 
-  // Endpoint surface: 3 reads + 5 gated writes (2026-07-16), nothing destructive.
+  // Endpoint surface: 5 reads + 5 gated writes, nothing destructive.
+  // Reads went 3 -> 5 on 2026-08-27: list-all invoices + outstanding invoices.
   const methods = fsc.endpoints.map(e => e.method);
-  check('ghl-fsc has exactly 8 endpoints', fsc.endpoints.length === 8,
+  check('ghl-fsc has exactly 10 endpoints', fsc.endpoints.length === 10,
     `got ${fsc.endpoints.length}: ${methods.join(',')}`);
-  check('ghl-fsc has 3 GET endpoints', methods.filter(m => m === 'GET').length === 3,
+  check('ghl-fsc has 5 GET endpoints', methods.filter(m => m === 'GET').length === 5,
     `methods: ${methods.join(',')}`);
   check('ghl-fsc has 4 POST + 1 PUT write endpoints',
     methods.filter(m => m === 'POST').length === 4 && methods.filter(m => m === 'PUT').length === 1,
@@ -66,10 +67,10 @@ if (fsc) {
   check('ghl-fsc has NO destructive endpoints (DELETE/PATCH)',
     !methods.some(m => m === 'DELETE' || m === 'PATCH'), `methods: ${methods.join(',')}`);
 
-  // Tool generation: 8 tools, write verbs present but no delete_.
+  // Tool generation: 10 tools, write verbs present but no delete_.
   const tools = skillToTools(fsc);
   const names = tools.map(t => t.name);
-  check('ghl-fsc generates 8 tools', tools.length === 8, names.join(','));
+  check('ghl-fsc generates 10 tools', tools.length === 10, names.join(','));
   check('ghl-fsc registers no delete_ tools',
     !names.some(n => n.includes('__delete')), names.join(','));
 
@@ -93,10 +94,19 @@ if (fsc) {
   check('ghl-fsc has an email-draft tool',
     names.some(n => n === 'ghl-fsc__create_conversations_messages'), names.join(','));
 
-  // Registered (agent-scoped) names stay within a safe length bound.
+  check('ghl-fsc has a list-invoices tool',
+    names.some(n => n === 'ghl-fsc__get_invoices_altid_id_alttype_location_limit_100_offset_0'), names.join(','));
+  check('ghl-fsc has an outstanding-invoices tool (status=sent)',
+    names.some(n => n === 'ghl-fsc__get_invoices_altid_id_alttype_location_limit_100_offset_0_status_sent'), names.join(','));
+
+  // Registered (agent-scoped) names stay within a safe length bound. 120, matching
+  // the other four brand blocks below: the 2026-07-21 count_tokens check showed the
+  // classic 64-char limit is not enforced by the Anthropic API (128+ chars return
+  // HTTP 200). This is a runaway-name guard, not an API limit. FSC only outgrew the
+  // old 70 when the invoice reads landed (2026-08-27); its longest name is now 96.
   const registered = names.map(n => `charlie__ghl-fsc__${n}`);
-  check('registered FSC tool names are within the tool-name bound (≤70)',
-    registered.every(n => n.length <= 70),
+  check('registered FSC tool names are within the tool-name bound (≤120)',
+    registered.every(n => n.length <= 120),
     registered.map(n => `${n}(${n.length})`).join(' '));
 }
 
@@ -121,9 +131,9 @@ if (flowos) {
   check('ghl-flowos Location-Id header uses {{secrets.ghl_flowos_location_id}}',
     locHeader.includes('{{secrets.ghl_flowos_location_id}}'), `got "${locHeader}"`);
 
-  // Endpoint surface: 3 reads + 5 gated writes, nothing destructive (mirrors ghl-fsc).
+  // Endpoint surface: 5 reads + 5 gated writes, nothing destructive (mirrors ghl-fsc).
   const methods = flowos.endpoints.map(e => e.method);
-  check('ghl-flowos has exactly 8 endpoints', flowos.endpoints.length === 8,
+  check('ghl-flowos has exactly 10 endpoints', flowos.endpoints.length === 10,
     `got ${flowos.endpoints.length}: ${methods.join(',')}`);
   check('ghl-flowos has 4 POST + 1 PUT write endpoints',
     methods.filter(m => m === 'POST').length === 4 && methods.filter(m => m === 'PUT').length === 1,
@@ -133,7 +143,7 @@ if (flowos) {
 
   const flowosTools = skillToTools(flowos);
   const fnames = flowosTools.map(t => t.name);
-  check('ghl-flowos generates 8 tools', flowosTools.length === 8, fnames.join(','));
+  check('ghl-flowos generates 10 tools', flowosTools.length === 10, fnames.join(','));
   check('ghl-flowos registers no delete_ tools',
     !fnames.some(n => n.includes('__delete')), fnames.join(','));
   // Each read + write surface present by name.
@@ -145,6 +155,11 @@ if (flowos) {
     fnames.some(n => n === 'ghl-flowos__create_contacts_id_notes'), fnames.join(','));
   check('ghl-flowos has an email-draft tool',
     fnames.some(n => n === 'ghl-flowos__create_conversations_messages'), fnames.join(','));
+
+  check('ghl-flowos has a list-invoices tool',
+    fnames.some(n => n === 'ghl-flowos__get_invoices_altid_id_alttype_location_limit_100_offset_0'), fnames.join(','));
+  check('ghl-flowos has an outstanding-invoices tool (status=sent)',
+    fnames.some(n => n === 'ghl-flowos__get_invoices_altid_id_alttype_location_limit_100_offset_0_status_sent'), fnames.join(','));
 
   // Registered names: the longer "ghl-flowos" skill name pushes the opportunities
   // tool to 72 chars (charlie__ghl-flowos__ghl-flowos__get_opportunities_search_location_id_id).
