@@ -304,27 +304,41 @@ const COMPLETION_RE = /(?<![\w-])(done|finished|complete|completed|shipped|deplo
 // ("Deployment: complete"), so each needs its own observed false positive
 // before it earns an exemption.
 const DATA_VALUE_WORDS = 'sent';
-// Two data positions, both requiring an adjacent key/value separator:
-//   VALUE  the word follows `=` or a field label's `:` / `:**`, optionally quoted
-//          ("(status=sent)", "**Status:** Sent", '"status": "sent"')
-//   LABEL  the word IS the field label, followed by `:` / `:**`
-//          ("- **Sent:** Aug 21, 2026" is GHL's sent-at date field)
-// The LABEL arm mirrors the guard already carried by EXTENDED_ELIDED_RE, where
-// `(?![\s*_]*:)` keeps "- **Created:** Apr 25, 2026" from reading as a claim
-// that Charlie created something. Only whitespace and markdown may sit between
-// the word and the colon, so ordinary prose that happens to precede a colon
-// ("I sent it: here is the proof") keeps firing.
+// Case folding is done per-character instead of with the /i flag, because /i
+// would also fold the [a-z] guards below and let "Sent: Aug 21" read as a
+// clause continuation. Flags stay 'g' only so those guards mean LOWERCASE.
+const _ciWord = (w) => w.split('').map(c => `[${c.toLowerCase()}${c.toUpperCase()}]`).join('');
+const _WORDS_SRC = DATA_VALUE_WORDS.split('|').map(_ciWord).join('|');
+
+// Two data positions, each requiring an adjacent key/value separator AND a
+// non-clausal continuation. The continuation guard is what keeps this from
+// swallowing ordinary prose: a data value is followed by end-of-line, a date,
+// a number or punctuation, never by a verb's object. Adversarial review
+// 2026-08-27 found the unguarded first draft rescued ANY prose after ANY colon
+// ("Invoice reminders: sent to Bianca") with zero tool calls, which turned a
+// false positive into a silent Gate 1 bypass for the highest-consequence
+// fabrication class this product has (claiming an email/invoice went out).
+//   VALUE  the word follows `=`, a field label's `:` / `:**`, or a table `|`
+//          ("(status=sent)", "**Status:** Sent", '"status": "sent"', "| sent |")
+//   LABEL  the word IS the field label ("- **Sent:** Aug 21, 2026")
+// `(?!\s+[a-z])` / `(?!\s*[a-z])` reject a lowercase continuation, so
+// "…: sent to Bianca", "…: sent the contract" and "**Sent**: the reminder"
+// all stay claims. The separator scan is [ \t]* so it never crosses a newline.
 const DATA_VALUE_RE = new RegExp([
-  String.raw`(?:=|:\*\*|:)\s*["']?(?:${DATA_VALUE_WORDS})(?![\w-])`,
-  String.raw`(?<![\w-])(?:${DATA_VALUE_WORDS})(?=[\s*_]*:)`,
-].join('|'), 'gi');
+  String.raw`(?:=|:\*\*|:|\|)[ \t]*["']?(?:${_WORDS_SRC})(?![\w-])(?!\s+[a-z])`,
+  String.raw`(?<![\w-])(?:${_WORDS_SRC})(?=[\s*_]*:(?!\s*[a-z]))`,
+].join('|'), 'g');
 
 /**
- * Blank completion words that occupy a data-VALUE slot so the caller can
- * re-test what is left. Strictly reduces what COMPLETION_RE sees and nothing
- * else: only the value occurrence is blanked, so a sentence that also uses the
- * word in prose ("I sent it, so status=sent") still fires on that occurrence.
- * Gate 1 only: Gates 3/5 and bootstrapMayBack still see the raw sentence.
+ * Blank completion words that occupy a data slot so the caller can re-test what
+ * is left. Strictly reduces what COMPLETION_RE sees and nothing else: only the
+ * data occurrence is blanked, so a sentence that also uses the word in prose
+ * ("I sent it, so status=sent") still fires on that occurrence.
+ *
+ * Lexical only. It cannot tell a real status value from an invented one, which
+ * is why gateCompletion applies it ONLY when a read actually succeeded this
+ * turn: without that condition a wholly fabricated invoice table passes Gate 1
+ * with no tool calls at all (adversarial review 2026-08-27).
  */
 export function blankDataValues(sentence) {
   return String(sentence || '').replace(DATA_VALUE_RE, ' ');
@@ -501,12 +515,15 @@ function windowEvents(ctx, windowMin) {
 
 /** Gate 1 — completion: each claim needs a backing success tool result (entity-aware). */
 export function gateCompletion(response, ctx) {
+  // The data-slot rescue is CONDITIONAL on a read having succeeded this turn.
+  // A status value is only reported data if something actually reported it;
+  // with no read, "**Status:** Sent" is indistinguishable from an invention, so
+  // the raw sentence is used and the claim stands. _thisTurnReadSucceeded also
+  // excludes pseudo-success rows (out_of_scope, content-queue intercepts).
+  const dataSlotRescue = _thisTurnReadSucceeded(ctx);
   const claims = splitSentences(response)
     .filter(s => !isSuppressed(s))
-    // blankDataValues: a status enum value ("**Status:** Sent") is reported
-    // data, not an action assertion. Only the value occurrence is removed, so a
-    // real claim in the same sentence still fires. See the note above it.
-    .filter(s => COMPLETION_RE.test(blankDataValues(s)) || isExtendedActionClaim(s));
+    .filter(s => COMPLETION_RE.test(dataSlotRescue ? blankDataValues(s) : s) || isExtendedActionClaim(s));
   if (!claims.length) return { gate: 'completion', fired: false };
   const events = windowEvents(ctx, ctx.windowMinComplete);
   const unbacked = [];

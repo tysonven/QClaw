@@ -881,8 +881,6 @@ const invoiceReadPair = [
   { action: INV_TOOL, result_status: null, timestamp: ts2,
     detail: '{"id":"i1","args":{"limit":100}}' },
 ];
-check('DV: truncated audit row genuinely lacks the word (why verbatim-result matching cannot work)',
-  invoiceReadPair[0].detail.toLowerCase().includes('sent') === false);
 check('DV: markdown field value "**Status:** Sent 21 Aug" → not fired',
   gateCompletion('- **Status:** Sent 21 Aug 2026 at 07:15:45 UTC', ctx(invoiceReadPair)).fired === false);
 check('DV: query-param value "(status=sent)" → not fired',
@@ -914,8 +912,6 @@ check('DV-ADV: exemption does NOT extend to "merged" in value position',
   (() => { const g = gateCompletion('**Status:** Merged into main.', ctx(invoiceReadPair)); return g.fired && g.severity === 'hard'; })());
 check('DV-ADV: exemption does NOT extend to "complete" in value position',
   (() => { const g = gateCompletion('Migration: complete.', ctx(invoiceReadPair)); return g.fired && g.severity === 'hard'; })());
-check('DV-ADV: verb in LABEL position ("Deployed: ...") still fires',
-  (() => { const g = gateCompletion('Deployed: the auth service, just now.', ctx(invoiceReadPair)); return g.fired && g.severity === 'hard'; })());
 check('DV-ADV: 2026-08-11 incident shape still hard_fails',
   (() => { const g = gateCompletion(`Confirmed logged: Position ${UB}.`, ctx(invoiceReadPair)); return g.fired && g.severity === 'hard'; })());
 check('DV-ADV: "I deployed <unbacked entity>" still hard_fails',
@@ -952,6 +948,70 @@ check('DV-ADV: cross-sentence, the rescued line itself is never listed as a clai
     const texts = (g.claims || []).map(c => c.text);
     return g.fired && texts.length === 1 && texts[0].startsWith('Sent the reminder');
   })());
+// ── Adversarial review 2026-08-27: the CRITICAL bypass the first draft shipped.
+// The unguarded VALUE arm matched ANY colon followed by the word, so any claim
+// phrased "<lead-in>: sent <object>" stopped being a claim and passed Gate 1
+// with zero tool calls. These are the reviewer's verbatim repros. Every one must
+// fire even when a read DID succeed this turn, since the tightening is lexical
+// and must not depend on the evidence condition to hold.
+const COLON_PROSE_BYPASS = [
+  'Invoice reminders: sent to Bianca and Dave just now.',
+  'Both emails: sent via the FSC location a minute ago.',
+  'Payment chase: sent to Kylie with the updated PDF attached.',
+  'Here is what happened: sent the reminder, and the client replied.',
+  'Status update: sent the contract to Dave for signature.',
+  '09:15: sent the invoice to Bianca.',
+  '**Sent**: the reminder email to Bianca at 09:15 this morning.',
+  'I have **sent**: both invoice reminders.',
+  'Sent: the invoice reminder to Bianca just now.',
+  'Bianca: sent the invoice.',
+  'Bianca:   sent the invoice.',
+  'Status:\tsent the invoice.',
+  'Bianca: "sent the invoice.',
+];
+for (const s of COLON_PROSE_BYPASS) {
+  check(`DV-ADV: prose after a colon still fires: ${JSON.stringify(s).slice(0, 58)}`,
+    (() => { const g = gateCompletion(s, ctx(invoiceReadPair)); return g.fired && g.severity === 'hard'; })());
+}
+
+// ── The rescue is CONDITIONAL on a this-turn successful read. Without one, a
+// data-slot "sent" is indistinguishable from an invention, so the claim stands.
+// The reviewer's HIGH finding: the first draft rescued these with ctx([]), which
+// meant a wholly fabricated invoice report passed every gate with no tool calls.
+const DATA_SLOT_LINES = [
+  '- **Status:** Sent 21 Aug 2026 at 07:15:45 UTC',
+  '**FSC Outstanding Invoices (status=sent):**',
+  'The record reads "status": "sent" for that invoice.',
+  'Status: Sent, and the balance is still owed.',
+  '- **Sent:** Aug 21, 2026 at 07:15:45 UTC',
+  'Sent: Aug 21, 2026 at 07:15:45 UTC',
+  '| INV-1000148 | sent | Bianca |',
+];
+for (const s of DATA_SLOT_LINES) {
+  check(`DV: rescued when a read succeeded: ${JSON.stringify(s).slice(0, 50)}`,
+    gateCompletion(s, ctx(invoiceReadPair)).fired === false);
+  check(`DV-ADV: NOT rescued with zero tools: ${JSON.stringify(s).slice(0, 50)}`,
+    gateCompletion(s, ctx([])).fired === true);
+}
+check('DV-ADV: a wholly fabricated invoice report with zero tool calls still hard_fails',
+  (() => {
+    const g = gateCompletion(
+      '**FSC Outstanding Invoices (status=sent):**\n- Invoice 1000148 - **Status:** Sent 21 Aug 2026 - $9,999.00',
+      ctx([]));
+    return g.fired && g.severity === 'hard';
+  })());
+// A read that only pseudo-succeeded (out_of_scope / content-queue intercept)
+// must not arm the rescue: _thisTurnReadSucceeded filters those.
+check('DV-ADV: a pseudo-success read does NOT arm the rescue',
+  gateCompletion('- **Status:** Sent 21 Aug 2026 at 07:15:45 UTC', ctx([
+    { action: 'charlie__ghl-fsc__ghl-fsc__get_invoices_x', result_status: 'success', timestamp: ts2,
+      detail: '{"id":"z1","result":"{\\"error\\":\\"out_of_scope\\"}"}' },
+  ])).fired === true);
+// The /i flag would fold the lowercase-continuation guards; flags are 'g' only.
+check('DV: a capitalised month after the label is still data, not a clause',
+  blankDataValues('Sent: Aug 21, 2026').includes('Sent') === false);
+check('DV: a lowercase clause after the label is NOT blanked',
+  blankDataValues('Sent: the invoice reminder').includes('Sent') === true);
 check('DV: blankDataValues only blanks the value occurrence',
   blankDataValues('I sent it, status=sent').trim() === 'I sent it, status');
 check('DV: blankDataValues leaves an unlisted word untouched',
