@@ -2,8 +2,8 @@
 name: ghl-fsc
 category: on-demand
 surface: both
-keywords: [fsc, "flow states", "flow states collective", coaching, emma, members, "fsc contact", "fsc lead", "fsc opportunity"]
-tools: [ghl_fsc__search_contacts, ghl_fsc__get_contact, ghl_fsc__list_opportunities, ghl_fsc__create_contact, ghl_fsc__update_contact, ghl_fsc__add_note, ghl_fsc__create_task, ghl_fsc__send_email_draft]
+keywords: [fsc, "flow states", "flow states collective", coaching, emma, members, "fsc contact", "fsc lead", "fsc opportunity", "fsc invoice", "fsc invoices"]
+tools: [ghl_fsc__search_contacts, ghl_fsc__get_contact, ghl_fsc__list_opportunities, ghl_fsc__create_contact, ghl_fsc__update_contact, ghl_fsc__add_note, ghl_fsc__create_task, ghl_fsc__send_email_draft, ghl_fsc__list_invoices, ghl_fsc__list_outstanding_invoices]
 description: FSC GoHighLevel CRM — contacts and opportunities (reads + gated writes: create/update contact, notes, tasks, email drafts; all writes require Telegram approval via ApprovalGate)
 ---
 
@@ -34,6 +34,8 @@ Header: Location-Id: {{secrets.ghl_fsc_location_id}}
 GET /contacts/?locationId={{secrets.ghl_fsc_location_id}}&query={{query}} - Search FSC contacts by name, email or phone
 GET /contacts/{{contact_id}} - Get a single FSC contact by ID
 GET /opportunities/search?location_id={{secrets.ghl_fsc_location_id}} - List FSC opportunities
+GET /invoices/?altId={{secrets.ghl_fsc_location_id}}&altType=location&limit=100&offset=0 - List all FSC invoices, any status, newest first. Do not pass a limit argument: limit is already fixed in the URL and a duplicate returns HTTP 422.
+GET /invoices/?altId={{secrets.ghl_fsc_location_id}}&altType=location&limit=100&offset=0&status=sent - List outstanding FSC invoices (issued and not yet paid). Do not pass a limit argument: limit is already fixed in the URL and a duplicate returns HTTP 422.
 
 # Write endpoints (all require Telegram approval via ApprovalGate)
 POST /contacts/?locationId={{secrets.ghl_fsc_location_id}} - Create FSC contact. Body: {firstName, lastName, email, phone, locationId}. ALWAYS search by email first — dedup is mandatory.
@@ -56,4 +58,9 @@ POST /conversations/messages - Create email DRAFT to an existing FSC contact onl
 - Tyson's internal FSC notify contact ID is SbPJpeihuGK3RT6bspyq — use this literal value when adding operator notes or notifications. Do not use {{secrets.ghl_fsc_notify_contact_id}} in tool call arguments — template refs only resolve in headers and URLs, not in argument values Charlie constructs.
 - When a tool argument requires a known ID value (contact_id, assignedTo etc.), use the literal value from Usage Notes — never pass {{secrets.X}} syntax as an argument value.
 - British English in all notes and communications.
+- Outstanding invoices are status=sent (issued and not yet paid). Use the outstanding-invoices tool for "unpaid", "outstanding" or "owed" questions; on each invoice, amountDue is the balance still owed and total is the full invoice value.
+- "unpaid" is NOT a valid GHL invoice status. The API answers HTTP 200 with an empty list rather than an error, so filtering on it silently reports zero outstanding invoices. The statuses in use on this location are draft, sent, paid and void.
+- An overdue invoice is a status=sent invoice whose dueDate has already passed. Derive it by comparing dueDate against today on the outstanding list; never report "nothing overdue" without checking those dates.
+- Voided invoices are excluded from the unfiltered invoice list, so its total counts live invoices only.
+- The /invoices/ endpoint requires limit and offset, and both are already baked into the URL. Never pass a limit argument to an invoice tool: it appends a second limit parameter and GHL rejects the call with HTTP 422.
 - This file is the template for Flow OS, Crete and SproutCode — replicate it with the matching per-brand secret key names.
