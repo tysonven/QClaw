@@ -23886,3 +23886,41 @@ verification that never happened. The record was not wrong. It was load-bearing
 in a way nobody checked. Suppressing a monitor entry and registering its
 replacement must be one operation, not two, or the honest note becomes the
 camouflage.
+
+### The documentation caused the drift it existed to prevent
+
+Alongside the suppression finding above, a third failure of the same family
+turned up in the same session, and it is the sharpest of the three.
+
+`trading.md` carried a caveat warning that manually logged figures are often the
+PROPOSED trade rather than the confirmed fill, and instructing the reader to
+"treat logged entry_price / usdc_amount as approximate until reconciled against
+the Polymarket activity log". Every clause of that is correct. The risk it names
+is real, it names the right columns, and it prescribes a reconciliation step.
+
+The reconciliation source is the defect. The Polymarket activity log displays an
+average price that is FEE-INCLUSIVE. `entry_price` holds the RAW fill. So
+following the documentation exactly, and reconciling diligently against the
+source it names, is what put 0.4170 into a column whose correct value was
+0.4000. Position 71f8a608 is not a case of someone ignoring the guidance. It is
+what the guidance produces when followed correctly. A reader who skipped the
+caveat entirely would have left the scan price in place and been wrong by a
+different route, but a reader who obeyed it arrived at a number that looks more
+authoritative precisely because it came from the real trade record.
+
+Three of these in one week, and they share a shape:
+
+- "Deployed" recorded truthfully in this log, standing in for a restart that
+  never happened, so a fix sat inert for 8 days.
+- A monitor entry suppressed with an accurate, well-reasoned note, standing in
+  for the registration of its replacement, so the gap read as handled.
+- A documentation caveat, correct in its warning, naming a reconciliation
+  source that silently redefines the value being reconciled.
+
+In none of the three was anything false written down. In all three, a true
+record was load-bearing for a verification nobody performed, and its very
+correctness is what stopped anyone looking. The lesson is not "write more
+careful notes". These notes were careful. It is that a record asserting
+something was HANDLED needs to name what would prove it, or it becomes the
+reason no one checks. `trading.md` now names the settlement receipt, which is
+checkable, rather than the activity log, which merely looks authoritative.
