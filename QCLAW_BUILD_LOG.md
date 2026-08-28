@@ -23515,3 +23515,185 @@ New today:
     old Make.com workflow from the $497/mo GHL plan era. Scope is account
     creation plus basic config only; snapshot loading stays a manual step
     by Tyson's choice.
+
+## 2026-08-28: P1 weak-flag audit; evidence-path instrumentation shipped; test isolation split
+
+Read-only audit of the `weak` flag first, then two build units. The audit
+overturned enough of its own brief that the corrections matter more than
+the confirmations, so they lead.
+
+### What the audit corrected
+
+**`weak` was not read "nowhere in the codebase".** It has exactly one read,
+`tests/verification-gates.test.js:79`, and zero in `src/`. `git log -S ".weak"
+-- src/` returns no commits: write-only since the day it was created.
+
+**The two set sites are not the same thing.** `gates.js:221` is bootstrap
+recitation, where an entity WAS found but only in the briefing snapshot;
+`gates.js:231` is the no-entity fallback, where there was no entity to match at
+all. Site 221 also carries `sourced: 'bootstrap'`, which IS live state read by
+`gateState:484`. Anything keyed on the boolean alone would have silently moved
+bootstrap behaviour too.
+
+**The soft-fail-downgrade hypothesis is contradicted, not supported.** Slice 4
+documented the fallback's weakness deliberately and filed it LOW:
+
+```
+| LOW | Vague/no-entity completion claims rely on the weaker this-turn
+fallback (one relevant success can back multiple vague claims) — the soft
+reflex is the backstop; tighten only if observation shows leakage. |
+```
+
+So the downgrade is a NEW decision with no prior review to defer to. Slice 5
+faced the identical problem in Gate 2 and chose to DISABLE the fallback
+(`noEntityFallback: false`), not to downgrade it.
+
+**The 22:16:26 fabrication was NOT the P1 repro.** It supersedes nothing. No
+gate fired because `splitSentences` never splits on `.**` (the markdown
+adjacency arm fires only after `!` or `?`), and `NEG_RE` then suppresses the
+whole sentence on `aren't`. Replayed against the real audit rows:
+`runGates -> pass`, all five gates `fired=false`. It is a fourth, separate
+hole: no verb class covers a negative diagnostic claim.
+
+**Charlie's diagnosis that turn was fabricated, and the real cause was in his
+own turn's data.** Routing at 19:16:19.394Z resolved `on_demand=[]`,
+`active_set=9`: the message was "yes check", nine characters with no brand
+keyword, so no GHL skill routed and both invoice calls short-circuited to
+`out_of_scope` booked as success. Registration was correct in both process
+lifetimes spanning the window, and dispatch `5ad1e3eb` independently reported
+"Both checks PASS, nothing missing".
+
+### The blind spot, stated exactly
+
+Recorded verbatim because the wording matters and the shorthand loses it:
+
+**onGateLog never fired on a pass.** Not "non-firings were not logged" but the
+stronger fact: `onGateLog` was called only from the top of the failure loop in
+`regenerateWithGates`, so a turn that PASSED FIRST TIME called it zero times,
+and the post-hedge re-check was never logged either. A claim backed by the
+no-entity fallback passes, so no gate fires, so nothing was written anywhere.
+That is why fallback usage could not be counted retrospectively: the absence
+was structural, not a sampling gap.
+
+Blast radius bounded instead of counted, from live `audit.db` over 30 days: 82
+charlie interactive turns, 6 completion-class successes (2 `shell_exec`, 2
+`claude_code_result`, 1 `create_positions_manual`, 1 `_close`), and **6 of 82
+turns** whose window contained one. Six is the ceiling on turns where the
+fallback could have backed a completion claim.
+
+### Unit 1: evidence-path instrumentation (PR #96, ready for review)
+
+`weak` replaced by `path`: `entity_match` | `bootstrap_recitation` |
+`no_entity_fallback`, plus `entityFree` because BOTH unbacked returns have
+`path: null` and come from structurally different places, which no caller could
+previously distinguish. `sourced` untouched. Gates 1/2/3 attach `observations`,
+one per `matchEvidence` CALL (gateState calls it twice for a characterisation
+and the answers can differ), deliberately not in `claims`, which drives
+`hedgeResponse` and would have deleted truthful sentences.
+
+`onGateLog` now fires after every `runGates`. `gate.log` gains `fired` /
+`check` / `backed` / `path` / `sourced` / `entity_free`, null not false where
+inapplicable.
+
+Observation rows carry `claim: null`. gate.log previously held claim text only
+for FAILING claims; observations fire on every gated turn, so carrying their
+text would have widened the file to most of Charlie's real output, and
+`scrubSecrets` covers keys, not PII. Policy extracted into `gateLogRows()` so
+it is a unit-tested invariant, not a comment.
+
+Acceptance: **3475 replay cases byte-identical**, same sha256 both trees. Corpus
+is 1655 real Charlie replies from the live `memory.db` (2026-02-23 to
+2026-08-27), each paired with the real `audit.db` rows from its own window, plus
+1820 stress variants. Compared gate verdicts AND `hedgeResponse` /
+`buildRepromptNote` / `buildEscalation`. Adversarial pass (8 attacks) clean.
+Suite 231 to 261 checks.
+
+### Unit 2: test isolation (PRs #97 narrow, #98 stacked)
+
+Verbatim, because the reproduction is the finding:
+
+**`npm test` writes to the live store on a dev Mac.** Running the same suite
+against both trees and listing files modified in `~/.quantumclaw` during the
+run:
+
+```
+origin/main               -> ~/.quantumclaw/skill-load.log
+                             ~/.quantumclaw/tool-call.log
+fix/test-log-isolation    -> (nothing)
+```
+
+That is the 2026-08-27 incident (synthetic userIds 9999 / 8888 / 7777 /
+integration-test in the production skill-load.log) reproduced on a second
+machine. The per-log override already existed; 1 of ~40 test files sets it.
+
+Split on review: #97 covers the two named STORE sites (`database.js:98`,
+`bootstrap.js:256,431`) which turn out to be LATENT (no current test reaches
+either without a dir), and #98 covers the six log writers, which is the half
+actually leaking. Stores throw, logs redirect, because every log writer
+swallows its own errors by design and a throw would be caught inside the writer
+with the only symptom a silently missing line.
+
+`isTestContext()` is anchored on argv[1] so production is never misdetected;
+that is the thing to attack in review.
+
+### Live forensics, 2026-08-27 19:15-19:33Z
+
+Four turns. Turn 1 passed; turn 2 hard-failed 3x and escalated (the `sent`
+collision, with three genuine successful FSC reads in hand every attempt); turn
+3 passed and fabricated; turn 4 hard-failed once then passed on attempt 2.
+
+Attempt 2 passed because "Audit dispatch queued." contains no gated verb.
+`DELEGATION_RE` wants `dispatched`, not the noun. Had he written "I dispatched
+an audit" the gate would have fired AND passed on the real dispatch event. The
+correct phrasing is gated; the phrasing the reflex teaches is not.
+`buildRepromptNote` does not name dispatch; the steer is
+`verification-reflexes.md:91`, an always-on skill: "let me dispatch a Claude
+Code audit".
+
+Dispatch `5ad1e3eb` completed in 26s, exit 0, $0.084, and `surfaced_at` was
+still null 15 minutes later. Surfacing is pull-only via `gatherCcResults` inside
+the interactive turn path. There is no push and no timeout path, so "I'll report
+back when it surfaces the result" is unfulfillable.
+
+Also: the Flow OS "5 days overdue" figure came from prose, not a tool. No row in
+the window contains `overdue`, `days` or `dueDate`. It is also wrong: due
+2026-08-19, sent 2026-08-27, so 8 days. No gate examined it, because
+COMPLETION_RE and STATE_RE gate verbs and nothing gates numbers.
+
+### Open holes, ranked by how quietly they fail
+
+1. no-entity fallback backs any entity-free completion claim (`shell_exec` is
+   `isCompletionTool`), instrumented, not fixed
+2. `matchEvidence` never applies `PSEUDO_SUCCESS_RE`, so `out_of_scope` rows
+   launder as evidence, verified live that turn
+3. negative-diagnostic claims: one `aren't` suppresses the sentence
+4. numeric claims ungated entirely, both live instances financial
+5. dispatch results pull-only, no push, no timeout
+6. `sent` collision, the only one that fails LOUDLY and the only one anyone
+   had noticed
+
+### Next session queue
+
+Deferred pending path data from #96 running in production: the no-entity
+downgrade, the P2 `sent` collision, pseudo-success filtering in
+`matchEvidence`.
+
+Next build item: **replay harness**, promoted from queue. Prototype exists as
+#96's acceptance check. Blocked on a PII policy decision, recommendation
+delivered: commit a pseudonymised corpus (not a manifest, which relocates the
+PII and breaks CI), pseudonymise emails/phones/names/addresses while leaving ids
+alone (they are load-bearing for Gate 5 and must stay consistent with the paired
+audit rows), keep money, keep the full six months since retention drops 95% of
+coverage and still leaks. Measured: zero credentials in six months, so
+`scrubSecrets` addresses none of the actual exposure.
+
+New standalone item: **audit.db scrubbing + retention**. Now blocks quoted-figure
+gating and truncation widening. `audit.js` does no scrubbing on the write path
+while `gate-log.js` does; nothing prunes audit.db at all. Constraint the obvious
+design misses: Gate 5 reads a 30-day window, so retention shorter than that
+silently weakens it.
+
+Unblocked, no harness needed: currency-assertion check (numeric class 3 only,
+both live failures were financial), and the `.**` sentence-boundary fix
+(suppression half of the negative-diagnostic item, strictly more splitting so
+strictly fewer misses).
