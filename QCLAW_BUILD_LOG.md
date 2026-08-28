@@ -23813,3 +23813,76 @@ explicitly for f4be9ee8 on 2026-08-25. Consequence: `pnl` (7.50) deliberately
 does not equal `exit_usdc - usdc_amount` (7.86). On-chain-true values when
 wanted are `entry_price` 0.4830, `shares` 20.703932 (column is numeric(10,2), so
 20.70), `usdc_amount` 10.36.
+
+## 2026-08-28: entry-data correction across the position history; entry_price convention made canonical; the Dormancy blind spot was a suppression, not an omission
+
+**All four positions decoded against settlement receipts.** True fee-inclusive
+entry cost, from funder outflows on
+`0xE44f7511023d668A2467db5B74168611656eAA50` with fee recipient
+`0x115f48dc2a731aa16251c6d6e1befc42f92accc9`: XRP $1.00 fee 0.069990 cost
+10.069989; BTC $60k fee 0.418740 cost 10.388740; ETH $2,600 fee 0.501190 cost
+10.501189; SOL $110 fee 0.361890 cost 10.361889. The two July 2026 entries
+(`0x24b6619a`, `0xfc303758`) return NO RECEIPT from publicnode, which has pruned
+them. Neither corresponds to a row in `trading_positions`, so no row is blocked
+by the pruning.
+
+**Corrected, approved per row.** `b3cecdef` took all three fields:
+`entry_price` 0.3960 to 0.4830, `shares` 25.25 to 20.70, `usdc_amount` 10.00 to
+10.36. `pnl` STAYS 7.50 and was not rewritten: the exit was already computed on
+the 10.36 fee-inclusive basis when the close was reconciled earlier today, so
+this correction makes the row internally consistent rather than restating its
+result. `71f8a608` took `entry_price` 0.4170 to 0.4000 only; its `shares`
+(24.93) and `usdc_amount` (10.39) were already correct and its cost basis was
+sound, so `pnl` is unchanged at -9.74. Each write was guarded on the current
+value of every field it touched. `f4be9ee8` needed nothing, matching its
+2026-08-25 correction exactly.
+
+**71f8a608 was a CONVENTION defect, not a data defect.** 0.4170 is not a wrong
+number, it is the right number for a different definition: 10.388740 / 24.925 =
+0.4168, the fee-inclusive effective price, which is what the Polymarket UI
+displays as average price. It was wrong only because `f4be9ee8` had established
+`entry_price` = raw fill. That convention existed solely in precedent, in one
+corrected row, where nothing could enforce or even state it. The doc's own
+standing advice made it worse: the caveat in `trading.md` said to reconcile
+against "the Polymarket activity log", which is precisely the fee-inclusive
+source that produces 0.4170.
+
+**Convention is now canonical** in `src/agents/skills/trading.md` (ff84be4):
+`entry_price` is the RAW fill; fee-inclusive cost lives in `usdc_amount`;
+`exit_usdc` is NET; `exit_price` is net-effective; effective ENTRY price is
+derived and NEVER stored. The entry/exit asymmetry is deliberate and is the
+easiest thing to get wrong. Reconcile against the settlement receipt, never the
+UI.
+
+**HELD: f4a0bd50, deliberately not corrected.** Its `usdc_amount` is understated
+by 0.07 (10.00 against a true 10.069989), but three uncertainties stack on the
+only row whose `pnl` would change: its `tx_hash` is NULL so the mapping to the
+XRP fill is inference from value-match and 1:1 elimination rather than proof;
+there is an unexplained 26.6 hour gap between the on-chain fill
+(2026-08-10 13:02:45Z) and `opened_at` (2026-08-11 15:39:46Z) where every other
+row matches within seconds or minutes; and it was closed 2 minutes after being
+opened via a resolution redemption whose receipt was never decoded, leaving
+`exit_usdc` 11.11 unverified. 0.07 USDC does not justify correcting a financial
+record on inference. To clear it: decode the redemption receipt, explain the gap
+and the 2-minute open-to-close, identify what wrote the row, then re-present with
+the mapping proven.
+
+**The Dormancy Alerter blind spot came from a SUPPRESSION with a stated reason,
+not from an omission.** The monitored set is a hardcoded `expectations` array in
+the "Compute Silent" code node of O5ir2Mp0e2AXkUXZ. The entry for
+`3YahxqOguET3pifj` "Trading - Market Scanner" carries
+`"suppressed": true` with the reason "Retired 2026-08-05: replaced by the Python
+trade-engine scanner cron (Session 6); n8n active=false. Not a fault - do not
+alert." That note is accurate. The scanner WAS retired and it WAS replaced. The
+suppression was the correct action for the workflow it describes. What no step
+did was register the replacement, and because the entry that would have gone
+silent now carries a documented, reasonable explanation for its silence, the gap
+it left is invisible to anyone reading the map. A reviewer scanning that array
+sees an accounted-for entry, not a missing one.
+
+This is the same class of failure as "deployed" not meaning "restarted", logged
+earlier today: in both cases a true, well-intentioned record stood in for a
+verification that never happened. The record was not wrong. It was load-bearing
+in a way nobody checked. Suppressing a monitor entry and registering its
+replacement must be one operation, not two, or the honest note becomes the
+camouflage.
