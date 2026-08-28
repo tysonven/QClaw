@@ -61,12 +61,10 @@ jobs:
           fi
 
   python-test:
-    # The 208 Python tests cover the trade engine and the financial path:
-    # entry-fill derivation, settlement decode, the approval gate, the position
-    # monitor. Until this job existed they gated nothing. The `test` job
-    # pip-installs src/trade_engine/requirements.txt and then runs only
-    # `npm test`, which made the CI summary LOOK like Python was covered. A
-    # deploy gate is only worth as much as the suite behind it.
+    # The 208+ Python tests cover the trade engine and the financial path.
+    # Until this job existed they gated nothing: the `test` job pip-installs
+    # requirements and then runs only `npm test`, which made the CI summary
+    # look like Python was covered.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -79,52 +77,46 @@ jobs:
       - name: Install Python dependencies
         run: |
           pip install -r src/trade_engine/requirements.txt
-          # pytest is not in requirements.txt (that file is runtime deps only).
-          # Pinned to the major the suite is verified against: 9.0.2 on qclaw.
+          # pytest is not a runtime dep so it is not in requirements.txt.
+          # Pinned to the major the suite is verified against.
           pip install 'pytest>=9,<10'
 
       - name: Run Python suite
         run: |
-          set -e
-          # globstar so the glob RECURSES. tests/test_*.py alone misses
-          # tests/clipper/test_smart_crop_filter.py, which lives in a
-          # subdirectory: exactly the silent under-testing this loop is
-          # supposed to prevent, so the first version of it had the bug it was
-          # written to avoid. failglob so a moved or renamed tests/ directory
-          # fails loudly instead of leaving the loop with nothing to run and
-          # the job passing having tested zero things.
-          shopt -s globstar failglob
+          set -uo pipefail
+          # nullglob (not failglob) so an empty match yields an empty array we
+          # can test explicitly, rather than an error whose fatality depends on
+          # `set -e`. The teeth here are the explicit count check and the
+          # `exit $rc` at the end, NOT a shell option: an earlier version of
+          # this comment credited failglob, but without `set -e` a failed glob
+          # merely skips the loop and the script exits 0.
+          shopt -s globstar nullglob
+          files=(tests/**/test_*.py)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::no test files matched tests/**/test_*.py"
+            exit 1
+          fi
+          echo "collected ${#files[@]} test files"
 
-          # Per-file, not `pytest tests/`. Two reasons, both load-bearing:
+          # Collect failures instead of stopping at the first one. Fail-fast
+          # plus tests/clipper sorting first meant a single collection error
+          # hid every trade-engine result, so CI reported one problem per run
+          # and the suite's real state stayed unknown.
           #
-          # 1. `pytest tests/` FAILS at collection on this repo, and does so on
-          #    untouched main. Directory collection reports
-          #    "cannot import name 'Header' from 'fastapi' (unknown location)"
-          #    across six modules. Passing file paths explicitly does not
-          #    trigger it, and running each file in its own process cannot be
-          #    affected by cross-module import state at all.
-          #
-          # 2. The glob is deliberate rather than a hardcoded file list. A
-          #    hardcoded list silently stops covering new test files the moment
-          #    someone adds one, and nothing fails to announce it. That is the
-          #    same shape as restarting one process out of six.
-          #
-          # Per-file isolation is also what makes the clipper test safe to
-          # include. tests/clipper/test_smart_crop_filter.py stubs fastapi,
-          # pydantic, anthropic, boto3 and httpx into sys.modules at MODULE
-          # scope with no teardown, so in a shared process every module
-          # imported after it sees empty stubs. That is the actual cause of the
-          # `pytest tests/` collection failure described above, and it is
-          # tracked as a suite defect to fix properly; one process per file
-          # means the pollution cannot escape.
-          #
-          # Verified 2026-08-28 on qclaw: 211 passed + 6 subtests across all
-          # 8 files.
-          for f in tests/**/test_*.py; do
+          # Per-file, not `pytest tests/`: directory collection fails on
+          # untouched main because tests/clipper stubs fastapi/pydantic into
+          # sys.modules at module scope with no teardown. Tracked separately as
+          # a suite defect; one process per file means it cannot leak.
+          rc=0
+          for f in "${files[@]}"; do
             echo "::group::$f"
-            python -m pytest "$f" -q
+            if ! python -m pytest "$f" -q; then
+              rc=1
+              echo "::error file=$f::pytest FAILED for $f"
+            fi
             echo "::endgroup::"
           done
+          exit $rc
 
   deploy:
     # Gating lives in the SAME workflow as the tests because `needs:` cannot
@@ -134,15 +126,21 @@ jobs:
     # production. The 2026-08-27 attempt-2 bypass ran live for ~20 minutes
     # through exactly this hole.
     #
-    # Keeping deploy.yml and triggering it on `workflow_run` was considered and
-    # rejected: workflow_run fires when CI COMPLETES regardless of outcome, so
-    # the guarantee would depend on remembering to test
+    # `workflow_run` was rejected: it fires when CI COMPLETES regardless of
+    # outcome, so the guarantee would depend on remembering to test
     # github.event.workflow_run.conclusion, and it runs the workflow file from
-    # the default branch rather than from the pushed commit. `needs:` has
-    # neither footgun.
+    # the default branch rather than the pushed commit.
     needs: [test, lint, python-test]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    # Two pushes in quick succession would otherwise put two deploys on the box
+    # at once, contending on .git/index.lock and on npm ci rewriting
+    # node_modules underneath each other. cancel-in-progress is false on
+    # purpose: interrupting a deploy midway through npm ci is worse than
+    # queueing behind it.
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
     steps:
       - name: Deploy to server
         uses: appleboy/ssh-action@v1.0.3
@@ -154,49 +152,85 @@ jobs:
           script: |
             cd /root/QClaw
 
-            # A dirty production checkout means someone edited the box directly
-            # or a previous deploy half-applied. `git stash` used to hide that
-            # and carry on, which silently promotes unreviewed drift into
-            # production and leaves it in a stash nobody reads. Refuse instead.
-            # The tree is expected to be fully clean: __pycache__/ and
-            # node_modules/ are gitignored, verified 2026-08-28.
-            if [ -n "$(sudo git status --porcelain)" ]; then
+            # Clean-tree assert that fails CLOSED. The previous form captured
+            # stdout only, so any git failure (dubious ownership, index.lock,
+            # sudo losing NOPASSWD, disk full) produced empty stdout, discarded
+            # a non-zero exit, and let the deploy proceed against an unknown
+            # tree. Capture stderr too, check the exit status explicitly, and
+            # reuse the captured output rather than calling git a second time,
+            # which was both a race and a second chance to fail open.
+            if ! tree_status=$(sudo git status --porcelain 2>&1); then
+              echo "::error::git status failed on /root/QClaw, refusing to deploy"
+              printf '%s\n' "$tree_status"
+              exit 1
+            fi
+            if [ -n "$tree_status" ]; then
               echo "::error::/root/QClaw has uncommitted drift; refusing to deploy."
-              sudo git status --porcelain
+              printf '%s\n' "$tree_status"
               exit 1
             fi
 
-            # --ff-only so a deploy can never quietly create a merge commit on
-            # the production checkout.
-            sudo git pull --ff-only origin main
+            # Deploy the commit CI validated, not whatever main points at now.
+            # needs: inserts ~2 minutes, so with a plain `git pull origin main`
+            # a commit that landed during that window would ship on the back of
+            # an earlier commit's green run.
+            sudo git fetch origin
+            sudo git merge --ff-only ${{ github.sha }}
 
-            # npm ci, not npm install: installs exactly what the lockfile
-            # pins and fails outright if package.json and package-lock.json
-            # disagree, so production cannot float to dependency versions CI
-            # never tested. --ignore-scripts is retained deliberately.
-            sudo npm ci --ignore-scripts --prefix /root/QClaw
+            # npm ci, not npm install: installs exactly what the lockfile pins
+            # and fails if package.json and package-lock.json disagree.
+            sudo npm ci --ignore-scripts
+
+            # --ignore-scripts is KEPT deliberately: it stops every transitive
+            # dependency's postinstall running as root on the production box,
+            # which is a security posture worth more than the convenience of
+            # automatic native builds. But npm ci WIPES node_modules and
+            # --ignore-scripts then suppresses the rebuild, so the two native
+            # modules must be rebuilt explicitly and by name. canvas@3.2.3 and
+            # better-sqlite3@11.10.0 were placed out of band and are not
+            # otherwise reproducible from this pipeline.
+            sudo npm rebuild canvas better-sqlite3
+
+            # Prove they actually load. canvas failing is loud (it kills the
+            # Flow OS image generator), but better-sqlite3 degrades SILENTLY
+            # behind try/catch with JSON fallbacks: audit.db and memory.db stop
+            # receiving writes with only a log.warn, stranding the gate replay
+            # corpus. A silent data-loss path is exactly what this pipeline
+            # exists to stop, so assert rather than hope.
+            sudo node -e "require('canvas'); require('better-sqlite3'); console.log('native modules OK')"
+
+            # @agexhq/hub-lite is an optionalDependency, so npm ci exits 0 even
+            # when it fails to install. Without this check the restart below
+            # would happily start a process whose entry file does not exist.
+            if [ ! -f node_modules/@agexhq/hub-lite/src/index.js ]; then
+              echo "::error::@agexhq/hub-lite entry file missing after npm ci"
+              exit 1
+            fi
 
             # ALL SIX processes. Verified from `pm2 jlist` on 2026-08-28, every
             # one executes code from this repo:
+            #   agex-hub                node_modules/@agexhq/hub-lite/src/index.js
             #   quantumclaw             src/index.js
             #   trade-engine            src/trade_engine/main.py
             #   trading-worker          src/trading/monte_carlo.py
             #   claude-code-dispatcher  src/dispatch/start.js
             #   clipper-worker          src/clipper (bash, cwd in repo)
-            #   agex-hub                node_modules/@agexhq/hub-lite/src/index.js
             #
             # Restarting quantumclaw alone is the mechanical reason PR #94 sat
             # inert for 8 days: the pipeline pulled the fix and restarted a
-            # process that does not run it, so a position opened on 2026-08-27
-            # still recorded proposal values instead of real fills.
+            # process that does not run it.
+            #
+            # agex-hub goes FIRST on purpose: src/index.js:92-106 has
+            # quantumclaw connect to the hub at localhost:4891 during boot and
+            # no reconnect logic was found, so restarting the hub after
+            # quantumclaw tears that connection down seconds after it is made.
             #
             # Deliberately NOT path-filtered. agex-hub runs out of node_modules,
-            # which `npm ci` rewrites on EVERY deploy even when no source file
+            # which npm ci rewrites on EVERY deploy even when no source file
             # changed, so "which files changed" does not determine "which
-            # processes are stale". Inferring that mapping is precisely the
-            # cleverness this job exists to remove. Add any new PM2 process here.
-            sudo pm2 restart quantumclaw trade-engine trading-worker \
-              claude-code-dispatcher clipper-worker agex-hub --update-env
+            # processes are stale". Add any new PM2 process here.
+            sudo pm2 restart agex-hub quantumclaw trade-engine trading-worker \
+              claude-code-dispatcher clipper-worker --update-env
 
             # Uptimes in the log make "deployed" checkable rather than assumed.
             sudo pm2 list

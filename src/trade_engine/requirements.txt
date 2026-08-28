@@ -11,3 +11,16 @@ anthropic>=0.25.0
 # Required because PM2 env_file does not inject /root/.quantumclaw/.env on this
 # host — config.py loads it with python-dotenv instead. See config.py docstring.
 python-dotenv>=1.0.0
+# requests is imported by src/trading/execute_trade.py (line 23), which the
+# test suite loads. It was present system-wide on qclaw and absent from this
+# file, so the suite passed on the box and could not even import that module on
+# a bare CI runner.
+requests>=2.31.0
+
+# NOTE: every constraint above is a LOWER BOUND only. CI resolves the newest
+# matching release on each run, so this job can turn red with no repo change,
+# and the versions it tests will not match the ones installed on qclaw
+# (fastapi 0.135.3, pydantic 2.12.5, httpx 0.28.1, anthropic 0.89.0, recorded
+# 2026-08-28). Pinning is a tracked follow-up rather than part of this PR: a
+# pinned set needs its own verified install run, and asserting one here without
+# that run would repeat the mistake this PR was reviewed for.
