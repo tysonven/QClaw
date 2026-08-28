@@ -24148,3 +24148,73 @@ assertion. The assertion is the point: `canvas` fails loudly, but
 `audit.db` and `memory.db` would simply stop receiving writes behind a
 `log.warn`, stranding the gate replay corpus. A deploy that quietly disables the
 audit trail is the exact failure this pipeline was being rewritten to prevent.
+
+### Eighth instance, the recursive one: the guard against silent degradation was silently succeeding
+
+The whole `--ignore-scripts` decision in PR #101 rested on one line. Keep the
+security posture, rebuild the two native modules explicitly, and prove they work
+so that a failed rebuild fails the deploy loudly instead of silently disabling
+the audit trail. The proof was:
+
+    sudo node -e "require('canvas'); require('better-sqlite3'); console.log('native modules OK')"
+
+That line cannot detect the thing it was added to catch. better-sqlite3 loads
+its addon LAZILY, inside the Database constructor
+(`node_modules/better-sqlite3/lib/database.js:48`,
+`addon = DEFAULT_ADDON || (DEFAULT_ADDON = require('bindings')('better_sqlite3.node'))`).
+`require('better-sqlite3')` returns the JS wrapper and never touches
+`better_sqlite3.node`. Confirmed on qclaw directly rather than by argument:
+after a bare require, `process.moduleLoadList` contains no native entry at all.
+The reviewer proved the consequence against three broken states, deleted,
+corrupt, and zero bytes: the assertion exits 0 on every one of them, while
+actual use exits 1.
+
+So the guard written specifically to convert a silent failure into a loud one
+was itself silently succeeding. It would have reported "native modules OK" over
+a deleted binding, and `audit.db` would have stopped receiving writes behind a
+single `log.warn`, stranding the gate replay corpus. The fix instantiates:
+
+    sudo node -e "require('canvas'); const D=require('better-sqlite3'); new D(':memory:').exec('create table t(x)'); console.log('native modules OK')"
+
+Reachability is not hypothetical, and the asymmetry is the point: `canvas` is
+N-API and survives a Node major version bump; better-sqlite3 11.10.0 is not and
+does not. A node upgrade is precisely the event that leaves canvas passing, this
+check vacuous, and the audit store quietly unwritten. The two modules were
+checked by one line as though they failed the same way. They do not.
+
+**The recursive part.** That line was not invented. It copied the shape already
+in the codebase at `src/security/audit.js:14-19`:
+
+    Database = mod.default;
+    // Test that the native binding actually works
+    if (typeof Database !== 'function') Database = null;
+
+The comment asserts the check works. The check tests that an import returned a
+function, which is true whenever the JS wrapper loaded, and says nothing about
+the native addon. `src/memory/manager.js:24-31` repeats the same shape without
+the claim. Both are pre-existing, both predate PR #101, and both sit on the path
+to the store the gates read as evidence. They are now a separate queue item,
+deliberately not folded into #101.
+
+That is what makes this the eighth instance and the most recursive one. The
+earlier seven were records standing in for verifications. Here a comment
+asserting that a verification happens caused a new verification to be written in
+its image, in a PR whose entire subject is that checks must be able to fail. The
+false claim propagated because it read as settled. Nobody re-derives a check
+that already has a comment saying it works.
+
+Also corrected in the same pass, and the same species: `git merge --ff-only
+${{ github.sha }}` reports "Already up to date" and exits 0 when HEAD is at or
+ahead of that sha. The step meant to pin the deploy to the CI-validated commit
+could therefore succeed without pinning anything, reachable through a commit
+made directly on `/root/QClaw`, which happens here, or out-of-order queued
+deploys. It now asserts `HEAD == github.sha` afterwards rather than trusting an
+exit code. And the `test` job ran `npm install` while the deploy ran `npm ci`,
+so CI validated a node tree the deploy does not install; it now runs `npm ci`
+too.
+
+Recorded as a runbook rather than code, `docs/runbooks/deploy-partial-failure.md`:
+the deploy fails closed but is not atomic. `npm ci` replaces `node_modules`
+before six serial `pm2 restart` calls, so a mid-script failure leaves the
+remaining processes running old code against a replaced tree, with nothing
+retrying and nothing alerting on the mixed state.
