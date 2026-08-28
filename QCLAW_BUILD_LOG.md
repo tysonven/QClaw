@@ -23747,3 +23747,69 @@ path resolution. Recorded as a note, not a finding.
 #97 and deploying, at 16:29 and 16:37 Athens. Not unattributed, no tracing owed.
 The rollback lead raised against them is also retired: both commits were created
 2026-08-28 and did not exist during the 2026-08-27 session.
+
+## 2026-08-28: trade-engine restarted onto PR #94 (gate sequenced); position b3cecdef close reconciled on-chain
+
+**PR #94 was inert on the live path for 8 days.** The entry-cost recording fix
+merged as 6ad3ac3 and was deployed to the qclaw checkout on 2026-08-25, and the
+2026-08-25 build log entry recorded it as deployed. The code was on disk:
+`/root/QClaw/src/trade_engine/executor.py` contained `_derive_entry` and
+`transactionsHashes` in the live checkout. The running process was not the code
+on disk. `pm2 info trade-engine` showed `uptime 8D` on 2026-08-28, meaning the
+process started around 2026-08-20 and was never restarted for the 2026-08-25
+deploy. The running image predated the fix by five days.
+
+**Proof came from a position opened after the deploy.** `b3cecdef-9948-40c7-9691-1b9c4ce579bc`
+opened 2026-08-27 12:15:30Z, two days after the deploy, and still recorded
+proposal values rather than fill values: `entry_price` 0.3960 (the simulation's
+`implied_odds`, not a price), `shares` 25.25 (10 / 0.396), `usdc_amount` 10.00
+(notional, fee excluded). The real fill was 0.483 x 20.703932 for 10.361889 out
+including a 0.361890 fee. Its stored `tx_hash`
+`0xc0def89b6adca79ffd0ed0d109f009c3a0e2c3af7fa8680c703706625add6f42` returns no
+receipt on Polygon: still the ORDER ID, the exact `_extract_tx_hash` bug #94
+fixed. The real entry settlement is
+`0xa64e3b7fed0be710fd44e01b0153fa391c1e992bf9a65df216935cf45af67d84`.
+
+**Lesson.** "Deployed" in a build log is not evidence that the fix is running.
+Check process uptime against the deploy timestamp. A deploy that copies code
+without restarting the process is a silent no-op on every code path it touches.
+
+**Restart, gate-sequenced.** `trading_config.trading_enabled` was set false
+before the restart and true after, so the restart did not happen with an open
+gate. `max_position_usdc` (10), `min_edge_threshold` (7) and `daily_loss_limit`
+(20) were not touched in either write. Tyson restarted trade-engine on the host:
+online at 14:18:45, startup complete, four scheduler jobs registered, no errors.
+The current row is `id=1, trading_enabled=true, max_position_usdc=10,
+min_edge_threshold=7, daily_loss_limit=20`.
+
+**PR #94 confirmation is PENDING, not verified.** The fix is now in the running
+image, which is a statement about the process, not about its output. Nothing has
+exercised `_derive_entry` or `_extract_tx_hash` since the restart, because no
+position has opened since. Confirmation requires the NEXT recorded entry to show
+a real fill price, fee-inclusive `usdc_amount`, and a `tx_hash` that resolves to
+a receipt on Polygon. Until such a row exists and has been checked on-chain,
+treat #94 as deployed-but-unconfirmed. Do not close it out on the strength of
+the restart.
+
+**Position b3cecdef close reconciled against the chain.** The close was missing
+entirely (status open, exit fields NULL) and no duplicate row existed. Exit
+settlement `0xfae10c8a6f26760d0c27614fecb89de15625239c7ec960dbf992b1334a23ef47`
+decodes as gross 4.251510 + 13.772100 = 18.023610 across two makers, fee
+0.163120 to `0x115f48dc2a731aa16251c6d6e1befc42f92accc9`, NET 17.860490 into
+funder `0xE44f7511023d668A2467db5B74168611656eAA50`. Written: `exit_price`
+0.8628 (net-effective, 17.860490 / 20.7), `exit_usdc` 17.86, `pnl` 7.50
+(17.860490 - 10.361889), `exit_reason` manual_close, `closed_at`
+2026-08-27T20:55:36Z. A first pass wrote the GROSS 18.02 / 0.8707 taken from the
+data-api trade record and was corrected in place; the data-api figure is
+pre-fee and overstates `exit_usdc`. Decoding requires the third collateral
+contract `0xc011a7e12a19f7b1f670d46f03b03f3342e82dfb` (Polymarket wrapped
+collateral); filtering on the two USDC addresses alone matches zero logs and
+looks like a clean "no transfers" result. publicnode returns HTTP 403 without a
+User-Agent header.
+
+**Still open on b3cecdef.** The entry fields remain proposal values and were not
+corrected, since that is the same class of data correction Tyson approved
+explicitly for f4be9ee8 on 2026-08-25. Consequence: `pnl` (7.50) deliberately
+does not equal `exit_usdc - usdc_amount` (7.86). On-chain-true values when
+wanted are `entry_price` 0.4830, `shares` 20.703932 (column is numeric(10,2), so
+20.70), `usdc_amount` 10.36.
