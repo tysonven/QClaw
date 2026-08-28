@@ -23977,3 +23977,50 @@ Worth stating plainly, because it is the fourth instance this week of a true
 record standing in for an unperformed check: the deploy pipeline reported
 success on every one of those 8 days. It really had deployed. "Deploy
 succeeded" was accurate and meant less than everyone reading it assumed.
+
+### The heartbeat built to detect stale processes was itself a stale process
+
+Recorded verbatim because it is the cleanest statement of the whole week:
+
+> The heartbeat built to detect stale processes was itself a stale process, for
+> the same reason and via the same five lines.
+
+`record_success_heartbeat` was written, tested (208 + 3 subtests), contract-
+verified against live PostgREST, and pushed as 0f1634b. deploy.yml then pulled
+it onto /root/QClaw within minutes, restarted `quantumclaw`, and left
+`trade-engine` running the image it had been running since 14:18:45. The
+instrument whose entire purpose is to reveal "this process is not running the
+code you think it is" was, at that moment, a process not running the code anyone
+thought it was. It could not report its own absence, because the thing that
+would have reported it was the thing that had not started.
+
+This is not a coincidence or a neat turn of phrase. It is the same mechanism
+producing the same outcome a fourth time in one week, and the reason it keeps
+landing is that every layer reported success honestly:
+
+- The deploy pipeline said deployed. It had deployed.
+- The build log said deployed. That was accurate.
+- The Dormancy Alerter map said the retired scanner was accounted for. It was.
+- `trading.md` said reconcile against the activity log. That log is real.
+
+Four true statements, four unperformed verifications. In none of them did
+anything lie. What each provided was a plausible reason not to look, and the
+more accurate the statement, the stronger that reason. The failure mode is not
+bad records. It is records that answer a question adjacent to the one that
+matters: "did the deploy run" instead of "is the new code executing", "was the
+retirement noted" instead of "is the replacement watched", "was a source named"
+instead of "does that source define the value the same way".
+
+The fix in every case is the same shape: make the record name the thing that
+would falsify it. PR #101 does this mechanically, restarting all six processes
+and printing `pm2 list` so uptimes are in the deploy log, which makes "deployed"
+checkable instead of assumed. It also closes the gap that CI's own summary
+looked like it covered the Python suite when `needs:` gated on a job that ran
+only `npm test`, so the 208 tests over the financial path gated nothing. A
+guarantee is worth exactly the suite behind it.
+
+Sequencing from here, which tests both fixes in one pass: merging #101 restarts
+trade-engine, which lands the heartbeat writer as a side effect. Real rows for
+`trade-engine-scanner` and `trade-engine-monitor` are then the evidence that the
+deploy fix worked, and the absence of those rows is the evidence that it did
+not. Nothing is added to the Dormancy Alerter until those rows exist.
