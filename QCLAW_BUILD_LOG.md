@@ -24024,3 +24024,61 @@ trade-engine, which lands the heartbeat writer as a side effect. Real rows for
 `trade-engine-scanner` and `trade-engine-monitor` are then the evidence that the
 deploy fix worked, and the absence of those rows is the evidence that it did
 not. Nothing is added to the Dormancy Alerter until those rows exist.
+
+### A stub written for portability voided the coverage it appeared to provide
+
+Sixth instance this week, and the most literal one yet, because here the thing
+standing in for a verification was not a note or a log line. It was code, whose
+entire job was to stand in.
+
+`tests/clipper/test_smart_crop_filter.py` stubs `httpx`, `anthropic`, `boto3`,
+`fastapi` and `pydantic` into `sys.modules` at module scope, with no teardown.
+Its docstring gives the reason, and it is a good one: "Runs anywhere Python 3 is
+available", so importing `src/clipper/main.py` does not require those packages
+installed. A portability affordance, written in good faith. It did three things
+nobody intended.
+
+**It voided the suite's coverage.** Because the stubs land during collection and
+are never removed, running the suite the obvious way, `pytest tests/`, fails at
+collection for SIX trade-engine modules with `cannot import name 'Header' from
+'fastapi' (unknown location)`. Not one trade-engine test runs. The failure names
+fastapi, points at `relay.py`, and looks like a dependency problem in code that
+has nothing to do with the clipper. The test file's own assertion, the
+comma-escape invariant, stayed valid throughout. What was destroyed was every
+OTHER test's ability to run in the same process.
+
+**It concealed a live deprecation in production code.** The pydantic stub
+defines `"validator": lambda *a, **kw: (lambda f: f)`, a no-op. Under it,
+`src/clipper/main.py:127`'s `@validator("caption_style", pre=True)` decorates
+nothing, the validator body is never exercised, and no warning is emitted.
+Imported against real pydantic 2.12.5 it immediately reports
+`PydanticDeprecatedSince20 ... Deprecated in Pydantic V2.0 to be removed in
+V3.0`. A V1-style validator that breaks on Pydantic V3 has been sitting in the
+clipper's request model, invisible, precisely because the thing that would have
+reported it had been replaced by something that reports nothing.
+
+**It concealed that the portability claim was false.** Probing with the real
+packages pre-imported showed the tests pass on qclaw, and a socket guard over
+`create_connection` and `socket.connect` recorded ZERO network attempts, so the
+usual justification for stubbing heavy clients does not apply here. But forcing
+the CI and laptop condition, where `/root/.quantumclaw/.env` does not exist and
+`load_env` swallows the FileNotFoundError, `R2_ACCOUNT_ID` falls back to `""`,
+`endpoint_url` becomes `https://.r2.cloudflarestorage.com`, and boto3 raises
+`ValueError: Invalid endpoint` at import. The module cannot be imported without
+R2 configuration. The stub was not enabling the suite to run anywhere; it was
+hiding the fact that it could not.
+
+That last point nearly produced a seventh instance. Deleting the stubbing on the
+strength of "the real deps are installed everywhere" would have passed on qclaw
+and failed on CI and the Mac, with a collection-error signature identical to the
+one this session was spent diagnosing. The fix is one more line of a pattern
+already in the file, an `os.environ.setdefault` for the three `R2_*` vars beside
+the `SUPABASE_SERVICE_ROLE_KEY` and `ANTHROPIC_API_KEY` ones already there.
+
+The running tally, all six the same shape: a deploy that reported success and
+restarted the wrong process; a build log that said deployed and was right; a
+monitor entry suppressed with an accurate reason and no replacement registered;
+documentation naming a real reconciliation source that defines the value
+differently; a CI loop written against silent under-testing that under-tested by
+one file; and now a stub written for portability that removed the coverage it
+appeared to give. None of them lied. Every one supplied a reason not to look.
