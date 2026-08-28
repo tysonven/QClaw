@@ -24218,3 +24218,67 @@ the deploy fails closed but is not atomic. `npm ci` replaces `node_modules`
 before six serial `pm2 restart` calls, so a mid-script failure leaves the
 remaining processes running old code against a replaced tree, with nothing
 retrying and nothing alerting on the mixed state.
+
+### Ninth instance: a comment written to prevent a regression carried the evidence that would cause it
+
+The round-2 fix replaced a vacuous `require()` assertion with a real
+instantiation, and documented why in a comment so nobody would undo it. The
+comment cited the wrong evidence:
+
+    # Verified on qclaw: process.moduleLoadList contains no native entry
+    # after a bare require.
+
+That statement is true. It is also true AFTER instantiation, and that is the
+problem. Measured on qclaw, node v22.22.2: `process.moduleLoadList` reports 102
+entries following a bare `require('better-sqlite3')` and 102 entries following
+`new Database(':memory:').exec(...)`, byte identical, because `.node` addons are
+`dlopen`'d rather than appended to that list. The citation cannot distinguish
+the two states it was offered as proof of.
+
+So a re-tester following the comment's own method would observe no difference
+between require and instantiate, conclude the instantiation is redundant, and
+remove it. Straight back into the round-2 bug, having done exactly what the
+comment told them to do. A comment written to prevent a regression carried the
+evidence that would cause it.
+
+The conclusion was never in doubt and is proven four other ways, including the
+source itself (`lib/database.js:48`, `require('bindings')('better_sqlite3.node')`
+inside the constructor) and the reviewer's three broken-state tests. Only the
+cited method was wrong. It has been replaced with one that discriminates, the
+process memory map:
+
+    node -e "require('better-sqlite3'); console.log(require('fs')
+      .readFileSync('/proc/self/maps','utf8').includes('better_sqlite3.node'))"   # false
+    node -e "const D=require('better-sqlite3'); new D(':memory:'); console.log(require('fs')
+      .readFileSync('/proc/self/maps','utf8').includes('better_sqlite3.node'))"   # true
+
+False then true. The shared object enters the process map only on instantiation.
+
+This is a distinct failure from the eight before it. Those were true records
+standing in for verifications that never happened. This one is a true record
+standing in for a DIFFERENT verification than the one it appears to support: the
+observation was accurate, it was honestly obtained, and it was load-bearing for
+a conclusion it has no power to establish. Being correct is not the same as
+being evidence, and a citation is only as good as its ability to come out the
+other way.
+
+Also corrected in the same round, and the more operationally dangerous of the
+two: `docs/runbooks/deploy-partial-failure.md` filed "HEAD is not the validated
+commit" under "nothing changed, no action needed, fix the cause and re-run".
+Re-running cannot work. The pin trips only when the box HEAD is at or AHEAD of
+`github.sha`, so a re-run replays the same sha against the same box state and
+fails identically, forever. Recovery is exclusively box-side. The runbook was
+therefore documenting a permanent deploy outage as a transient one, for a
+failure mode this very PR introduces, whose expected trigger the workflow's own
+comment describes as a commit made directly on /root/QClaw, "which happens
+here". That case and the pre-existing dirty-tree case now have their own section
+with concrete box-side commands, including creating a preservation branch before
+any `reset --hard`, because commits made on the box exist nowhere else.
+
+And the runbook's own verification step had the same shape as the bug it was
+written for: it told the operator to check uptime, but `pm2 restart` returns on
+RESPAWN rather than on health, so a crash-looping process displays a fresh
+uptime and reads as recovered. It now points at `status` and the restart
+counter. The unasserted `pm2 list` at the end of the deploy script has the
+identical weakness and is queued as its own item: a deploy that restarts all six
+processes into a crash-loop still reports green.
