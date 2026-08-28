@@ -183,6 +183,46 @@ Credentials: POLYMARKET_PRIVATE_KEY + POLYMARKET_FUNDER_ADDRESS
   approval message rather than the confirmed fill. Treat logged entry_price /
   usdc_amount as approximate until reconciled against the Polymarket activity
   log. The BTC row was corrected this way on 2026-08-14.
+
+  **Column semantics (canonical, 2026-08-28). Do not infer these from
+  precedent: precedent is what drifted.**
+
+  - `entry_price` is the RAW FILL price, exactly as the fill reports it. It is
+    NOT the scan price, NOT the simulation's `implied_odds`, and NOT the
+    fee-inclusive effective price.
+  - `usdc_amount` is the FEE-INCLUSIVE entry cost: everything that left the
+    funder wallet in the entry settlement, notional plus taker fee.
+  - `exit_usdc` is the NET proceeds: what arrived at the funder wallet, gross
+    minus taker fee.
+  - `exit_price` is net-effective, `exit_usdc / shares`.
+  - `pnl` is `exit_usdc - usdc_amount`.
+  - Effective ENTRY price (`usdc_amount / shares`) is DERIVED and is NEVER
+    stored. Writing it into `entry_price` is exactly the drift this rule exists
+    to stop.
+
+  The asymmetry is deliberate and is the easiest thing here to get wrong:
+  `entry_price` is raw, `exit_price` is net-effective. Both stay consistent with
+  `pnl` because the entry fee lives in `usdc_amount` while the exit fee is
+  already subtracted out of `exit_usdc`.
+
+  **Reconcile against the settlement RECEIPT, not the Polymarket UI.** The two
+  disagree by construction: the CLOB data-api `/trades` feed reports the raw
+  fill price and GROSS proceeds, while the UI's average price is fee-inclusive.
+  Position 71f8a608 stored `entry_price` 0.4170 against a 0.4000 fill precisely
+  because 0.4170 is 10.388740 / 24.925, the UI number. Corrected 2026-08-28.
+  Taking a gross figure from `/trades` as `exit_usdc` fails the same way in the
+  other direction: b3cecdef's exit is 17.86 net, not the 18.02 gross.
+
+  To decode a receipt, sum the 6dp token Transfer events into and out of funder
+  `0xE44f7511023d668A2467db5B74168611656eAA50`, with fee recipient
+  `0x115f48dc2a731aa16251c6d6e1befc42f92accc9`. The contract set MUST include
+  `0xc011a7e12a19f7b1f670d46f03b03f3342e82dfb` (Polymarket wrapped collateral)
+  alongside the two USDC addresses. Filtering on the USDC pair alone matches
+  ZERO logs and returns a clean-looking "no transfers" result that is entirely
+  false. `polygon-bor-rpc.publicnode.com` returns HTTP 403 without a User-Agent
+  header, and prunes receipts for older transactions (July 2026 entries no
+  longer decode).
+
 - trading_simulations: scanner Monte Carlo output. Written ONLY by
   src/trade_engine/scanner.py. The market's identity lives in
   raw_output (question, polymarket_condition_id), not in a column.
