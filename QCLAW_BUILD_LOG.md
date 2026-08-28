@@ -13,6 +13,29 @@
 - Reference them as `<stored in ~/.quantumclaw/.env>` or `<rotated — see secrets store>`.
 - If a token accidentally lands in a commit, rotate it immediately even if the repo is private — history is durable and hard to scrub.
 
+### Anchoring claims (convention, 2026-08-28)
+
+This log covers more than one repo, and entries outlive the state they were
+written against. Two rules close the gap:
+
+- **Every SHA is repo-qualified.** Write `ghl-support-bot main at 00e57a0`, never
+  a bare `main at 00e57a0`. A reader finding an unqualified SHA in a file named
+  QCLAW_BUILD_LOG.md will reasonably take it for QClaw's.
+- **Any claim about repo or runtime state is anchored to the SHA, host or run it
+  holds at, not written in the present tense.** "Stale at ghl-support-bot
+  00e57a0; fixed on `branch`, unmerged as of this entry" stays true forever.
+  "The docblock is stale" becomes false the moment someone merges the fix, with
+  nothing to signal it changed.
+
+The failure this closes is the entry that is true when written and false a merge
+or a deploy later. It has four common shapes: deploy status assumed from an
+earlier fetch, a test-suite result quoted from a previous run, a PR called open
+or merged without re-checking, and a measurement carried forward after it was
+superseded. Anchoring makes all four self-dating rather than silently wrong.
+
+Applies to verification too: report what was checked and when. "Verified live on
+the host at 13:29Z" is a fact; "is live" is a claim with no expiry.
+
 ---
 
 ## Infrastructure
@@ -24351,3 +24374,331 @@ a COMPLETED scan, and the monitor withholds its heartbeat entirely when
 an error count instead. So a missing row after the due time is a real signal in
 either case rather than a timing artifact, provided the due time has actually
 passed.
+
+## 2026-08-27 to 2026-08-28: ghl-support-bot: extraction hygiene, the feedback loop closed, and two gates that were destroying user input
+
+Separate repo (`tysonven/ghl-support-bot`, Railway project `wholesome-emotion`),
+recorded here because the decisions and the defects are the kind that repeat.
+Four PRs merged: #11 extraction hygiene, #12 feedback notifier, #13 comment box
+and webhook split, #14 access gate. ghl-support-bot main at `00e57a0` when
+this entry was written.
+
+### Slice A: extraction hygiene (PR #11)
+
+The crawler stored the whole rendered help-centre page, not the article. Every
+document carried the portal masthead, breadcrumbs and search widget before the
+body, then the "Was this article helpful?" form and the folder and
+related-article link lists after it.
+
+Measured across the 2,859-article corpus, not estimated: **chrome was 23.1% of
+everything stored, 4,573,381 characters.** help_center p50 went 6,269 to 4,656
+chars, p90 11,584 to 9,970. **521 documents dropped out of the over-6,000 set**
+(53.3% to 35.0%), which is the set that matters because 6,000 is the embedding
+window in `buildDocEmbedText`.
+
+The link lists were the actively harmful part. `extractText` renders `<a>`
+labels as prose, so every article ended with the titles of a dozen articles it
+links to, text describing documents whose content is absent. That is the
+mechanism behind the earlier "an article titled X exists but its content was not
+in context" eval failure.
+
+Extraction is now scoped to the `fw-content--single-article` container, closed
+by depth-counting `<div>` after scripts, styles and comments are stripped
+(bodies nest up to 6 deep; matching the next `</div>` truncates). Present in 45
+of 45 sampled pages, and the live crawl reported `extractionFallback` absent,
+i.e. zero.
+
+**Titles were worse than the body.** `extractTitle` cuts `<title>` at the first
+`-`, `–` or `|`. On this host the portal suffix is colon-separated so it
+survived on **2,135 of 2,859 titles**, while any hyphen inside a real title
+truncated it: **421 titles were under 25 characters**, including "Workflow
+Action - Math Operation" stored as `Action`, "LC Phone Messaging Policy" as
+`LC`, and "Two-Way Email Sync for Outlook" as `2`. The title leads the embedded
+text, so those documents were embedded as if that were their subject. Now taken
+from the on-page `<h1>`. After the crawl: portal suffix on 1 document (a stale
+404), average title length 46.1 chars, and the remaining short titles are
+legitimate slugs: "FAQs", "Glossary", "Tap to Pay".
+
+**Without `HELP_CENTER_FORCE_REFETCH` the entire slice would have been a
+no-op.** The incremental skip compares sitemap `lastmod` against `lastCrawled`,
+so an article GHL has not edited is never re-fetched. Changing how an unchanged
+page is PARSED is invisible to that signal: the fix would have reached only
+articles GHL happened to edit next, leaving the corpus in two states
+indefinitely, which is exactly how 5 documents sat frozen at the retired
+12,000-char ingestion cap for months. Off by default, set for one run, then
+unset. The forced crawl, verbatim:
+
+    [crawler] help_center: SUCCESS discovered=2859 attempted=2859 fetched=2858
+    written=2858 unchanged=0 skippedFresh=0 failed=1 deactivated=0
+    [200:2858 404:1] extractionThin=33
+
+`extractionThin=33` is expected, not a fault: 33 articles are a bare Loom or
+YouTube iframe with no prose. A found container is always trusted rather than
+rerouted on length, because for those the whole-page fallback stores ~500 chars
+of navigation labels that then get embedded and shown to the model as the
+article. An empty body is the honest representation.
+
+Re-embed cost $0.08. Off-topic floor re-measured against the real re-crawled
+corpus: off-topic max 0.3550, weakest real question 0.4058, band 0.0508. **Floor
+stays 0.32**. At 0.32 it admits 1 of 12 off-topic and refuses 0 of 4 real,
+identical to before, and the one admitted query ("file a US federal tax return
+as a sole trader") has a genuine 1099-for-affiliates article as its top hit, so
+it is arguably a true positive. **The `OFF_TOPIC_FLOOR` docblock still quotes
+the pre-hygiene band [0.3338, 0.3950] and is stale.**
+
+### The feedback loop, and an IDOR it would have activated (PRs #12, #13)
+
+`feedback.submit` wrote to `message_feedback` and nothing read it except the
+thumb state and the admin counters. The route from a thumbs-down to a better
+answer ran through Tyson noticing it. Notifications now go out on every rating.
+
+**The security finding is the part worth keeping.** `feedback.submit` took
+`messageId` and `sessionId` straight from the client with no ownership check,
+the sole `sessionId`-taking procedure in the router lacking the
+`getChatSession(sessionId, ctx.user.id)` + NOT_FOUND check that
+`chat.getMessages`, `chat.sendMessage` and `chat.getSessionFeedback` all
+perform. That was **inert** while nothing read the rated message back. Adding a
+notifier that reads the message plus the preceding question and POSTs them to a
+third-party webhook would have turned a latent IDOR into **automated
+cross-tenant exfiltration**: rate a stranger's message id and their private
+conversation is mailed out under your name. Both ids are global autoincrements,
+so decrementing `messageId` walks a victim's transcript. Caught by the
+pre-commit security review, not by tests. Fixed in two layers: the mutation
+verifies session ownership AND that the message is in that session, and
+`getFeedbackNotificationContext` independently scopes every read to the caller's
+own sessions via inner joins on `chat_sessions`.
+
+**Generalisable lesson: a dormant authorisation gap becomes live the moment
+something starts reading what it guards.** The write-side hole had existed for
+months and was harmless. Adding a read made it critical without touching the
+hole itself.
+
+**`message_feedback` had no unique key on `(messageId, userId)`**, so the
+`onDuplicateKeyUpdate` in `submitMessageFeedback`, commented "one rating per
+user per message", could never fire. Every thumb click inserted a row. Same
+defect and same fix as `user_access` in migration 0008; added as 0011. Blast
+radius checked before applying, as with 0008: 7 rows, 7 distinct pairs, 0
+duplicate groups, so the constraint applied with no deletion.
+
+### The comment box: the cause was unmount, not a state setter (PR #14)
+
+Thumbs-down opened a comment box that vanished about a second later, having
+already submitted the rating with no comment. **0 of 7 production rows had ever
+carried a comment.**
+
+Fixed once by gating the mutation's `onSuccess` so it only closes the box when
+that submission carried a comment. It still vanished. The second diagnosis is
+the useful one: **nothing was closing it. The component holding it stopped
+existing.** `commentOpen` is `useState` inside `ChatInterface`, and `GHLInner`
+returns six mutually exclusive subtrees by `gate.kind` with only "granted"
+containing the chat. Any transition to loading or error unmounted the component
+and destroyed all of its state: the open box, its draft, and a half-typed chat
+message with it. A Clerk token refresh or one failed entitlement poll was
+enough. Grepping for `setCommentOpen(null)` finds nothing, because destruction
+is not a setter.
+
+The gate now distinguishes **an answer from a failure to ask**. Losing
+entitlement produces a SUCCESSFUL response (`hasAccess: false` / `expired:
+true`, HTTP 200) and gates immediately, fresh or stale. A denial is honoured
+even from a stale answer, because erring toward the gate is safe and it is still
+something the server said. A token refresh or 500 produces no answer; where a
+previous successful answer exists it is reused, flagged `degraded`, and the page
+renders a banner ABOVE the chat instead of replacing it, the same shape as the
+existing `messagesQuery` banner, for the same reason. **The rule is "is there an
+answer", never a timer, so a real revocation cannot hide inside the grace
+window: it arrives as data, and data always wins.** Reuse is capped at 10
+minutes from `dataUpdatedAt`; a missing timestamp counts as expired, because an
+unreachable branch should fail toward the gate.
+
+**`access.check` now polls every 2 minutes, and that is load-bearing.**
+Remounting used to be what re-checked entitlement. Removing the teardown removed
+the re-check with it, so without the poll a subscription ending mid-session
+would go unnoticed until the next page load. This was a hole created by the fix,
+named only because the constraint was stated up front.
+
+This gate is UX, not authorisation: `requireBrandAccess` re-authorises
+server-side on every message and every stream (`chatStream.ts:92`,
+`routers.ts:268/277/298`), reading MySQL fresh each time. Reusing a stale
+verdict can leave a chat box open for someone who has lost access; it cannot let
+them use it.
+
+Also fixed while in there: a submission with no comment wrote `comment: null`
+over one already stored. Reachable only once the box worked, so nothing was lost
+in production.
+
+### Evaluation
+
+Tyson's V4 evaluation run after the corpus and prompt work: **7 of 10 useful,
+zero fabrications.** Recorded as reported rather than measured here: the
+automated fixture suite scores assertions, not usefulness. Independently, an
+instrumented end-to-end comparison over the same ten questions (real retrieval,
+real model, old corpus versus cleaned) using the eval's own detectors found
+fabrications going **1 to 0**: the old corpus produced `{{webhook.field_name}}`,
+which is in no document, while the cleaned corpus retrieved the article that
+actually contains the fields. No question regressed.
+
+**The fixture eval cannot see corpus changes.** Its contexts are hardcoded
+inline, so it tests prompt behaviour and is blind to retrieval and extraction.
+Treating it as the acceptance gate for a corpus change is a false negative
+waiting to happen; the end-to-end comparison is what actually tested this work.
+
+### Decisions, with reasoning
+
+**No debounce on the two-email sequence.** A thumbs-down sends two
+notifications: the rating, then the comment when it arrives seconds later. This
+is by design and follows from saving the bare rating immediately, which is what
+makes a rating survive the user abandoning the comment box. A hold timer was
+proposed and **rejected**: in-memory, so it loses notifications on restart;
+forces the 10/hour rate cap to move to send time; and opens a deploy-shaped
+failure window, all to save one email a month. Revisit only if volume makes it
+annoying, at which point the right hold length will be known rather than
+guessed.
+
+**Email formatting lives in GHL workflow config, never server-side.** The
+notifier sends plain text with newlines and `──` separators. GHL's Internal
+Notification body accepts HTML, so wrapping `{{inboundWebhookRequest.content}}`
+in a `<pre>` with `white-space: pre-wrap` preserves them and renders correctly.
+Do not add HTML generation to the notifier: it would break that `<pre>` and put
+presentation in the wrong layer.
+
+**Feedback notifications use their own `FEEDBACK_WEBHOOK_URL`, with no fallback
+to `GHL_OUTBOUND_WEBHOOK_URL`.** The first version reused the lifecycle webhook;
+the payload arrived at GHL and did nothing, because that workflow branches on
+`event` being `purchase_completed` / `subscription_canceled` /
+`subscription_reactivated` and anything else falls through to END. It also has a
+Create Contact node behind an unfiltered trigger, so feeding it payloads
+carrying a rater's name and email risks writing CRM contacts as a side effect of
+someone clicking a thumb. When the variable is unset, nothing is sent and the
+reason is logged at error level. Falling back would restore both problems while
+looking delivered from this side.
+
+### Open
+
+- `OFF_TOPIC_FLOOR` docblock carries the stale pre-hygiene band [0.3338,
+  0.3950] at ghl-support-bot 00e57a0. Corrected to the measured [0.3550,
+  0.4058] on `docs/off-topic-floor-band-2026-08-28` (8bb0a5d), unmerged as of
+  this entry. Floor value itself unchanged at 0.32.
+- No tenancy layer; white label remains a build, not a flag.
+- Chunking (Slice B) is the next quality lever and is unstarted. Measured at
+  ghl-support-bot 00e57a0 after hygiene, 35.0% of active help_center documents
+  (1,002 of 2,859) exceed the 6,000-char embedding window and rank on their
+  opening only. The 58% quoted in the crawler.ts comment and the 53.3% from the
+  2026-08-25 audit are both superseded.
+- changelog and marketplace_docs are client-rendered and need a headless
+  browser; 4 `marketplace_docs` rows are not documents at all but a favicon and
+  three CSS files ingested as "Untitled".
+- One stale help-centre document (id 1265) 404s but is still in the sitemap, so
+  reconciliation correctly declines to deactivate it. It will not self-heal.
+
+## 2026-08-28: /health reported a state that was true and misleading; the heartbeat writer is verified by the durable row
+
+Closes falsification condition 2 from the #101 entry above, and with it the
+8-day stale-process bug: the writer is in the running image and it fires.
+Verified at QClaw main `f9f8a38`, live checkout `/root/QClaw` at `f9f8a38`,
+clean, read at 21:16Z.
+
+**The evidence is one row in `workflow_heartbeats`** (Supabase project
+`fdabygmromuqtysitodp`), verbatim:
+
+    workflow_id:    trade-engine-monitor
+    workflow_name:  Trade Engine position monitor (qclaw)
+    status:         success
+    started_at:     2026-08-28 21:06:28.926345+00
+
+That is the first `IntervalTrigger(minutes=15)` sweep after the ~20:51Z restart
+onto `2ea7ca0`, landing where the #101 entry predicted it would.
+
+### The new shape: an endpoint that is true and misleading
+
+At 21:10Z `/health` on `127.0.0.1:4003` returned, verbatim:
+
+    "scheduler_running":true,"scheduler_jobs":4,"last_scan_at":null,
+    "last_monitor_at":null,"monitor_positions_resolved":0
+
+Read against falsification condition 1 from the entry above, "if
+`last_monitor_at` is STILL null after ~21:10Z, the scheduler is not firing the
+job at all", that looks like a triggered alarm. It is not. Every field in that
+response is accurate. The reading is still wrong, because **`/health` cannot
+distinguish "has not fired yet" from "is not firing".** Its counters are
+in-process and reset on restart, so a null means "no sweep since this process
+started" and nothing more. It carries no memory of the sweep that already
+succeeded 4 minutes earlier.
+
+The durable row is the signal that survives restarts. The endpoint is not.
+Anyone reading `/health` alone at 21:10Z would have opened a scheduler
+investigation into a system that was working, having watched it work 4 minutes
+before.
+
+This is the tenth instance this week of a claim about runtime state that nobody
+verified, and a shape the other nine did not have. The previous ones were stale,
+assumed or superseded: something that had been true and had quietly stopped
+being true. This one was never false. The endpoint answered exactly the question
+it was asked, and the question was the wrong one.
+
+### Why the counters were young: the restart, and what triggered it
+
+All six PM2 processes restarted together approximately 84 seconds before the
+21:10Z reading. `trade-engine` restart counter read **17**, against the **16**
+recorded in the #101 entry after that deploy.
+
+The host reflog for `/root/QClaw` gives the cause, verbatim:
+
+    f9f8a38 HEAD@{2026-08-28 21:06:51 +0000}: merge f9f8a38...: Fast-forward
+    2ea7ca0 HEAD@{2026-08-28 20:48:39 +0000}: merge 2ea7ca0...: Fast-forward
+    e9b2766 HEAD@{2026-08-28 20:43:36 +0000}: pull origin main: Fast-forward
+
+The 21:09Z restart was the deploy of `f9f8a38`, which is a **docs-only commit**:
+the build log entry recording #101, CI started 21:04:20Z. Confirmed by Tyson, no
+third actor. The gated pipeline from #101 restarts all six processes for any
+commit reaching main, so a build log edit restarted `trade-engine` in production
+and reset the heartbeat clock.
+
+**The recursion is the point.** The entry that documented "heartbeat rows
+PENDING" is what triggered the deploy that reset `/health`, producing the null
+that then read as that same entry's own falsification condition. Writing down
+that a thing was unverified destroyed the evidence that would have verified it,
+within three minutes, through a pipeline nobody thought of as touching runtime
+state because the commit was documentation. Nothing here was careless; the
+observation and the observed share a deploy trigger.
+
+Sequence, all times UTC on 2026-08-28:
+
+1. 20:48:39 pull to `2ea7ca0` (#101), six processes restart at approximately 20:51
+2. **21:06:28.926 monitor sweep fires and writes the success heartbeat row**
+3. 21:06:51 pull to `f9f8a38`, docs only, **23 seconds after the row was written**
+4. approximately 21:09 six processes restart again, `/health` counters reset
+5. 21:10 `/health` reads null, DB row still present
+
+Worth a decision rather than a note: a docs-only commit causing a full
+six-process production restart, `trade-engine` included, is a real cost of the
+current pipeline. It also means the next reader of `/health` after any docs
+merge sees the same misleading nulls.
+
+`trade-engine-scanner` still has no row as of 21:16Z. That is expected, not a
+gap, and for a reason stronger than the schedule: the previous `scanner_weekday`
+fire was 20:00Z, which **predates the 20:51Z restart**, so no row could exist
+yet whatever the writer does. The next fire is 22:00Z.
+
+The difference matters enough to name, since this entry sits alongside the
+convention: "due at 22:00Z" is a claim, and a reader has to trust it. "The
+20:00Z fire predates the 20:51Z restart, so no row could exist yet" is an
+argument, and a reader can check it. Prefer the second whenever the evidence
+allows, and notice when you have written the first.
+
+The writer itself is already proven by the monitor row, since both call the same
+`record_success_heartbeat`.
+
+### Two host traps that cost real time here
+
+**`pm2 list` over ssh returns an empty table.** The ssh user is `flowos`; the
+processes run under root's PM2 daemon. `pm2 list` as `flowos` prints the header
+and zero rows, which reads exactly like a total outage. Use `sudo pm2 list`.
+What prevented a false alarm was that `/health` on :4003 was answering normally
+at the same moment, which cannot be true of a host with no processes.
+
+**The local date rolls over three hours before UTC does.** The workstation clock
+read 2026-08-29 while the host read `2026-08-28T21:10:19Z`, Athens being UTC+3.
+The ~21:10Z threshold in falsification condition 1 was therefore not comfortably
+in the past, it was exactly the current minute. Reasoning "it is the next day,
+so the deadline is long gone" would have converted a boundary reading into a
+confident wrong conclusion. Anchor to host time, not to the local date.
