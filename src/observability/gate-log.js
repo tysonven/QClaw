@@ -37,13 +37,78 @@ function _rotateIfNeeded(path) {
   }
 }
 
+/** Boolean or null. Never coerce an absent field to false. */
+const _bool = (v) => (typeof v === 'boolean' ? v : null);
+
 /**
- * Append one gate-firing record. Never throws (logging must not break the
- * regeneration loop). Scrubs `claim` + `rewritten_claim` before write.
+ * Append one gate record. Never throws (logging must not break the regeneration
+ * loop). Scrubs `claim` + `rewritten_claim` before write.
  *
  * record: { gate, claim, verification_attempted, verified, result, action,
- *           attempt, rewritten_claim? }
+ *           attempt, rewritten_claim?, fired?, check?, backed?, path?, sourced?,
+ *           entity_free? }
+ *
+ * Two row kinds share this schema, told apart by `fired`:
+ *
+ *  - `fired: true`  = a gate firing, the only kind that existed before. Every
+ *    pre-existing field keeps its exact meaning, so existing greps still work.
+ *  - `fired: false` = an OBSERVATION: one matchEvidence call that did not (on its
+ *    own) fire the gate. These are new. They exist because a claim backed by the
+ *    no-entity fallback passes silently, so the evidence path that backed it was
+ *    unrecorded and uncountable.
+ *
+ * The evidence fields are null on rows that have no such notion (Gate 4's phantom
+ * tool names, Gate 5's identifier provenance, a gate that threw): those gates do
+ * not call matchEvidence, so there is no path to report. Null means "not
+ * applicable", not "no evidence", hence _bool rather than a `!!` coercion, which
+ * would have silently reported every such row as backed:false.
  */
+/**
+ * Map one runGates outcome to the rows that describe it. Pure, so the content
+ * policy below is a tested invariant rather than a comment inside a callback.
+ *
+ * FIRING rows carry claim text, exactly as they always have.
+ * OBSERVATION rows carry NONE.
+ *
+ * That asymmetry is the point. Before observations existed, gate.log held claim
+ * text only for claims that FAILED. Observations fire on every gated turn
+ * including passes, so logging their text would have widened the file to most of
+ * Charlie's real output, including replies quoting customer names, amounts and
+ * emails. scrubSecrets covers API keys and Telegram tokens, not PII. Nulling the
+ * claim keeps the content envelope exactly where it was while still recording
+ * which evidence path backed what.
+ *
+ * Nothing analytic is lost: gate + check + backed + path + entity_free is the
+ * payload, and sentence-shape analysis belongs in the replay harness, which reads
+ * memory.db directly instead of persisting a second copy here.
+ */
+export function gateLogRows(gateOut = {}, attempt = 0) {
+  const rows = [];
+  for (const g of (gateOut.gates || [])) {
+    if (g.fired) {
+      for (const c of (g.claims || [])) {
+        rows.push({
+          gate: g.gate, claim: c.text || String(c),
+          verification_attempted: c.verification_attempted !== false,
+          verified: false, result: gateOut.result, action: g.action, attempt,
+          fired: true,
+        });
+      }
+    }
+    // Gates 4 and 5 do not call matchEvidence, so they report no observations.
+    for (const o of (g.observations || [])) {
+      rows.push({
+        gate: g.gate, claim: null,          // never the sentence: see above
+        verification_attempted: true, verified: false,
+        result: gateOut.result, action: g.action, attempt,
+        fired: false, check: o.check, backed: o.backed,
+        path: o.path, sourced: o.sourced, entity_free: o.entity_free,
+      });
+    }
+  }
+  return rows;
+}
+
 export function appendGateLog(record = {}) {
   const path = _path();
   try {
@@ -57,6 +122,13 @@ export function appendGateLog(record = {}) {
       result: record.result || null,            // 'pass'|'soft_fail'|'hard_fail'
       action: record.action || null,            // 'rewrite'|'reprompt'|'escalate'|'fail_closed_slice5_pending'|...
       attempt: record.attempt ?? 0,
+      // ── instrumentation (Unit 1) ──
+      fired: _bool(record.fired),               // true = gate firing, false = observation
+      check: record.check || null,              // 'completion'|'ran'|'ok'|'dispatch'|'outcome'
+      backed: _bool(record.backed),
+      path: record.path || null,                // EVIDENCE_PATH value, or null
+      sourced: record.sourced || null,          // 'bootstrap' when the snapshot backed it
+      entity_free: _bool(record.entity_free),
     };
     if (record.rewritten_claim != null) {
       entry.rewritten_claim = scrubSecrets(String(record.rewritten_claim)).slice(0, 500);

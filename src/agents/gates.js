@@ -164,10 +164,43 @@ export function correlatePairs(events) {
 }
 
 /**
+ * Which evidence path backed a claim. Instrumentation only: nothing branches on
+ * these, they are recorded so gate.log can show HOW a claim was backed, not just
+ * whether it was.
+ *
+ * Replaces the `weak: true` boolean that was set at the bootstrap-recitation and
+ * no-entity-fallback returns and read nowhere in src/ (introduced with the
+ * fallback itself in Slice 4, PR #43, never given a consumer). The boolean
+ * conflated two structurally different returns: bootstrap recitation matches an
+ * entity in the briefing snapshot, the fallback has no entity to match at all.
+ * Anything keyed on "weak" would therefore have moved both. Naming the path keeps
+ * them distinguishable.
+ *
+ * `sourced: 'bootstrap'` is UNCHANGED and stays on the bootstrap return: it is
+ * live, load-bearing state read by gateState (a recited characterisation is not a
+ * contradicted one). `path` is additive next to it, never a replacement.
+ */
+export const EVIDENCE_PATH = {
+  /** The claim's entity token was found in a this-turn tool row. */
+  ENTITY_MATCH: 'entity_match',
+  /** The claim's entity token was found only in the session bootstrap snapshot. */
+  BOOTSTRAP_RECITATION: 'bootstrap_recitation',
+  /** The claim had NO extractable entity; any relevant this-turn success backed it. */
+  NO_ENTITY_FALLBACK: 'no_entity_fallback',
+};
+
+/**
  * §2.5 entity-aware match. `requireStatus`: 'success' (completion/character) or
  * 'nonnull' (probe "ran"). Entity token must appear in the CALL row's args
  * (`detail`); falls back to a this-turn relevant-tool pair when the claim has
- * no extractable entity. Returns { backed, evidence? }.
+ * no extractable entity.
+ *
+ * Returns { backed, path, entityFree, evidence?, sourced? }. `path` is one of
+ * EVIDENCE_PATH when backed, null when not. `entityFree` records whether
+ * extractEntities() came back empty, which `path` alone cannot express on the
+ * unbacked returns: those come from two structurally different places (an entity
+ * was present but matched nothing, versus there was no entity and no relevant
+ * success) and were previously indistinguishable to every caller.
  */
 export function matchEvidence(sentence, events, { requireStatus = 'success', turnStartMs = 0, relevant = null, bootstrapText = null, strictRelevant = false, noEntityFallback = true, matchResultDetail = false } = {}) {
   const pairs = correlatePairs(events);
@@ -201,7 +234,9 @@ export function matchEvidence(sentence, events, { requireStatus = 'success', tur
       const hay = resultUsable
         ? String(p.call.detail || '') + '\n' + String(p.result.detail || '')
         : String(p.call.detail || '');
-      if (entities.some(e => hay.includes(e))) return { backed: true, evidence: p };
+      if (entities.some(e => hay.includes(e))) {
+        return { backed: true, path: EVIDENCE_PATH.ENTITY_MATCH, entityFree: false, evidence: p };
+      }
     }
     // Slice 4.1: the this-session bootstrap snapshot is a legitimate source for
     // a RECITED claim about a known entity (Charlie cites his briefing). DEFAULT
@@ -218,20 +253,39 @@ export function matchEvidence(sentence, events, { requireStatus = 'success', tur
     // those require a real this-turn result event, not the briefing snapshot.
     if (!strictRelevant && bootstrapText && bootstrapMayBack(sentence)
         && entities.some(e => corpusHasEntity(bootstrapText, e))) {
-      return { backed: true, sourced: 'bootstrap', weak: true };
+      return { backed: true, path: EVIDENCE_PATH.BOOTSTRAP_RECITATION, entityFree: false, sourced: 'bootstrap' };
     }
-    return { backed: false };
+    return { backed: false, path: null, entityFree: false };
   }
   // no-entity fallback: a this-turn pair for a verb-relevant tool. Disabled when
   // noEntityFallback=false so an entity-free outcome claim FAILS CLOSED.
-  if (!noEntityFallback) return { backed: false };
+  if (!noEntityFallback) return { backed: false, path: null, entityFree: true };
   for (const p of candidates) {
     const ts = parseAuditTs(p.result.timestamp);
     if (ts >= turnStartMs && (!relevant || relevant(p.result.action))) {
-      return { backed: true, evidence: p, weak: true };
+      return { backed: true, path: EVIDENCE_PATH.NO_ENTITY_FALLBACK, entityFree: true, evidence: p };
     }
   }
-  return { backed: false };
+  return { backed: false, path: null, entityFree: true };
+}
+
+/**
+ * One instrumentation row per matchEvidence CALL, not per claim: gateState calls
+ * it twice for a characterisation ('ran' then 'ok') and those two answers can
+ * differ, which is exactly the kind of thing the log needs to show. `check` names
+ * the call site. Never read by any gate; carried on the gate result as
+ * `observations` (deliberately NOT `claims`, which drives hedgeResponse and the
+ * escalation text and must keep containing only fired claims).
+ */
+function observe(check, sentence, m) {
+  return {
+    check,
+    claim: sentence,
+    backed: m.backed === true,
+    path: m.path ?? null,
+    sourced: m.sourced ?? null,
+    entity_free: m.entityFree ?? null,
+  };
 }
 
 // ── Gate 4 — tool reference (structural) ──────────────────────────────────
@@ -448,9 +502,10 @@ export function gateCompletion(response, ctx) {
   const claims = splitSentences(response)
     .filter(s => !isSuppressed(s))
     .filter(s => COMPLETION_RE.test(s) || isExtendedActionClaim(s));
-  if (!claims.length) return { gate: 'completion', fired: false };
+  if (!claims.length) return { gate: 'completion', fired: false, observations: [] };
   const events = windowEvents(ctx, ctx.windowMinComplete);
   const unbacked = [];
+  const observations = [];
   for (const c of claims) {
     // matchResultDetail: a created record's id is SERVER-generated and exists
     // only in the result payload (e.g. create_positions_manual returns
@@ -459,20 +514,22 @@ export function gateCompletion(response, ctx) {
     // replaying the genuine 2026-08-11 19:21 position. Confined to
     // isCompletionTool actions by the `relevant` guard in matchEvidence.
     const m = matchEvidence(c, events, { requireStatus: 'success', turnStartMs: ctx.turnStartMs ?? 0, relevant: isCompletionTool, bootstrapText: ctx.bootstrapText, matchResultDetail: true });
+    observations.push(observe('completion', c, m));
     if (!m.backed) unbacked.push({ text: c, verification_attempted: true, verified: false });
   }
-  if (!unbacked.length) return { gate: 'completion', fired: false };
-  return { gate: 'completion', fired: true, severity: 'hard', claims: unbacked, action: 'reprompt', reason: 'completion claim without a backing success tool result' };
+  if (!unbacked.length) return { gate: 'completion', fired: false, observations };
+  return { gate: 'completion', fired: true, severity: 'hard', claims: unbacked, action: 'reprompt', reason: 'completion claim without a backing success tool result', observations };
 }
 
 /** Gate 3 — state: probe must have RUN (nonnull); characterization needs success. */
 export function gateState(response, ctx) {
   const claims = detectClaims(response, STATE_RE);
-  if (!claims.length) return { gate: 'state', fired: false };
+  if (!claims.length) return { gate: 'state', fired: false, observations: [] };
   const events = windowEvents(ctx, ctx.windowMinState);
-  let anyHard = false; const fired = [];
+  let anyHard = false; const fired = []; const observations = [];
   for (const c of claims) {
     const ran = matchEvidence(c, events, { requireStatus: 'nonnull', turnStartMs: ctx.turnStartMs ?? 0, relevant: isStateTool, bootstrapText: ctx.bootstrapText });
+    observations.push(observe('ran', c, ran));
     if (!ran.backed) { fired.push({ text: c, verification_attempted: true, verified: false, severity: 'soft' }); continue; }
     if (CHARACTERIZATION_RE.test(c)) {
       // Success check is TOOL-ONLY (no bootstrapText): a this-turn probe that
@@ -481,11 +538,12 @@ export function gateState(response, ctx) {
       // at all), there is no this-turn probe to contradict, so a recited
       // characterization ("agex-hub stable at 38h") is not a hard contradiction.
       const ok = matchEvidence(c, events, { requireStatus: 'success', turnStartMs: ctx.turnStartMs ?? 0, relevant: isStateTool });
+      observations.push(observe('ok', c, ok));
       if (!ok.backed && ran.sourced !== 'bootstrap') { anyHard = true; fired.push({ text: c, verification_attempted: true, verified: false, severity: 'hard' }); } // this-turn probe ran but not success → contradicted
     }
   }
-  if (!fired.length) return { gate: 'state', fired: false };
-  return { gate: 'state', fired: true, severity: anyHard ? 'hard' : 'soft', claims: fired, action: anyHard ? 'reprompt' : 'rewrite', reason: anyHard ? 'characterization contradicted by tool result' : 'state claim without a probe in window' };
+  if (!fired.length) return { gate: 'state', fired: false, observations };
+  return { gate: 'state', fired: true, severity: anyHard ? 'hard' : 'soft', claims: fired, action: anyHard ? 'reprompt' : 'rewrite', reason: anyHard ? 'characterization contradicted by tool result' : 'state claim without a probe in window', observations };
 }
 
 /**
@@ -512,9 +570,10 @@ export function gateState(response, ctx) {
 export function gateDelegation(response, ctx) {
   const sentences = splitSentences(response).filter(s => !isSuppressed(s));
   const cc = sentences.filter(s => DELEGATION_RE.test(s) || ((CC_MENTION_RE.test(s) || SPECIALIST_MENTION_RE.test(s)) && CC_OUTCOME_RE.test(s)));
-  if (!cc.length) return { gate: 'delegation', fired: false };
+  if (!cc.length) return { gate: 'delegation', fired: false, observations: [] };
   const events = windowEvents(ctx, ctx.windowMinComplete);
   const fired = [];
+  const observations = [];
   for (const s of cc) {
     const ccMention = CC_MENTION_RE.test(s);
     const specMention = SPECIALIST_MENTION_RE.test(s);
@@ -532,11 +591,12 @@ export function gateDelegation(response, ctx) {
       // lives in the result row, not the call args — so match the result detail too
       // (safe: strictRelevant already confines candidates to success dispatch events).
       : matchEvidence(s, events, { requireStatus: 'success', turnStartMs: ctx.turnStartMs ?? 0, relevant: isAnyDispatch, strictRelevant: true, matchResultDetail: true });
+    observations.push(observe(isOutcome ? 'outcome' : 'dispatch', s, m));
     if (!m.backed) fired.push({ text: s, verification_attempted: true, verified: false });
   }
-  if (!fired.length) return { gate: 'delegation', fired: false };
+  if (!fired.length) return { gate: 'delegation', fired: false, observations };
   return {
-    gate: 'delegation', fired: true, severity: 'hard', claims: fired, action: 'reprompt',
+    gate: 'delegation', fired: true, severity: 'hard', claims: fired, action: 'reprompt', observations,
     reason: 'delegation claim unbacked: a dispatch claim needs a this-turn claude_code_dispatch or delegate_to event; an outcome claim needs a completed claude_code_result (Claude Code) or delegate_to_result (specialist) for the cited task',
   };
 }
@@ -1118,18 +1178,29 @@ export function buildEscalation(gateOut) {
  * The raw failing response is NEVER returned — only a hedged/corrected/escalated
  * one. Branches on gateOut.result (NOT action literals). Caller keeps tools
  * registered for the whole call (cleanupTools fires once after this returns).
+ *
+ * `onGateLog` is now invoked after EVERY runGates call, including the ones that
+ * pass. Previously it was called only from the top of the failure loop, so two
+ * classes of outcome were never recorded anywhere: a turn that passed first time,
+ * and the post-hedge re-check. Both are the interesting cases for the evidence
+ * path: a claim backed by the no-entity fallback PASSES, so the gate does not
+ * fire, so nothing was written. That absence is why the fallback's real usage
+ * could not be counted retrospectively. Control flow is untouched: the callback is
+ * best-effort and its return value is ignored, exactly as before.
  */
 export async function regenerateWithGates({ generate, auditLog, toolRegistry, turnStart, agentScope = null, bootstrap = null, provenance = null, entityCorpus = null, baseMessages, maxAttempts = 3, onGateLog = null, onEscalate = null, now = null }) {
   const opts = () => ({ now: now || Date.now(), turnStart, agentScope, bootstrap, provenance, entityCorpus });
+  const emit = (g, a) => { if (onGateLog) { try { onGateLog(g, a); } catch { /* logging best-effort */ } } };
   let messages = baseMessages;
   let result = await generate(messages);
   let attempt = 1;
   let gateOut = runGates(result.content, auditLog, toolRegistry, opts());
+  emit(gateOut, attempt);
   while (gateOut.result !== 'pass') {
-    if (onGateLog) { try { onGateLog(gateOut, attempt); } catch { /* logging best-effort */ } }
     if (gateOut.result === 'soft_fail') {
       result = { ...result, content: hedgeResponse(result.content, gateOut) };
       gateOut = runGates(result.content, auditLog, toolRegistry, opts());
+      emit(gateOut, attempt);
       if (gateOut.result === 'pass') break;
     }
     if (attempt >= maxAttempts) {
@@ -1141,6 +1212,7 @@ export async function regenerateWithGates({ generate, auditLog, toolRegistry, tu
     result = await generate(messages);
     attempt++;
     gateOut = runGates(result.content, auditLog, toolRegistry, opts());
+    emit(gateOut, attempt);
   }
   return { ...result, gateAttempts: attempt, gateOutcome: gateOut.result };
 }

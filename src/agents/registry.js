@@ -13,7 +13,7 @@ import { loadSkills } from './skill-loader.js';
 import { scanSpecialistResults } from '../tools/delegate-to.js';
 import { regenerateWithGates, isGatedTurn, buildProvenanceText } from './gates.js';
 import { gatherCcResults, depositCcEvidence } from './cc-results.js';
-import { appendGateLog } from '../observability/gate-log.js';
+import { appendGateLog, gateLogRows } from '../observability/gate-log.js';
 import { appendChannelEvent } from '../observability/channel-events.js';
 
 // Slice 3f: prompt-cache kill-switch read per-request. process.env is a
@@ -566,17 +566,12 @@ export class Agent {
         // become self-justifying on the following turn.
         provenance: buildProvenanceText(textMessage, truncatedHistory),
         baseMessages: messages,
+        // Called after EVERY runGates now, passes included (see regenerateWithGates).
+        // gateLogRows owns the mapping and the content policy (firing rows keep
+        // their claim text, observation rows carry none), so both are unit-tested
+        // rather than living in this callback.
         onGateLog: (gateOut, attempt) => {
-          for (const g of gateOut.gates) {
-            if (!g.fired) continue;
-            for (const c of (g.claims || [])) {
-              appendGateLog({
-                gate: g.gate, claim: c.text || String(c),
-                verification_attempted: c.verification_attempted !== false,
-                verified: false, result: gateOut.result, action: g.action, attempt,
-              });
-            }
-          }
+          for (const row of gateLogRows(gateOut, attempt)) appendGateLog(row);
         },
         onEscalate: (gateOut, attempt) => {
           const gates = gateOut.gates.filter(g => g.fired).map(g => g.gate);
