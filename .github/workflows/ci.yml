@@ -59,3 +59,78 @@ jobs:
             echo "::error::Found require() in src/ (use ESM imports)"
             exit 1
           fi
+
+  deploy:
+    # Gating lives in the SAME workflow as the tests because `needs:` cannot
+    # reference a job in another workflow. deploy.yml was a separate workflow
+    # triggered directly by `push`, so it had no way to wait: it landed in
+    # ~15s while CI takes ~2min, and a commit that FAILED CI still reached
+    # production. The 2026-08-27 attempt-2 bypass ran live for ~20 minutes
+    # through exactly this hole.
+    #
+    # Keeping deploy.yml and triggering it on `workflow_run` was considered and
+    # rejected: workflow_run fires when CI COMPLETES regardless of outcome, so
+    # the guarantee would depend on remembering to test
+    # github.event.workflow_run.conclusion, and it runs the workflow file from
+    # the default branch rather than from the pushed commit. `needs:` has
+    # neither footgun.
+    needs: [test, lint]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to server
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_IP }}
+          username: flowos
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script_stop: true
+          script: |
+            cd /root/QClaw
+
+            # A dirty production checkout means someone edited the box directly
+            # or a previous deploy half-applied. `git stash` used to hide that
+            # and carry on, which silently promotes unreviewed drift into
+            # production and leaves it in a stash nobody reads. Refuse instead.
+            # The tree is expected to be fully clean: __pycache__/ and
+            # node_modules/ are gitignored, verified 2026-08-28.
+            if [ -n "$(sudo git status --porcelain)" ]; then
+              echo "::error::/root/QClaw has uncommitted drift; refusing to deploy."
+              sudo git status --porcelain
+              exit 1
+            fi
+
+            # --ff-only so a deploy can never quietly create a merge commit on
+            # the production checkout.
+            sudo git pull --ff-only origin main
+
+            # npm ci, not npm install: installs exactly what the lockfile
+            # pins and fails outright if package.json and package-lock.json
+            # disagree, so production cannot float to dependency versions CI
+            # never tested. --ignore-scripts is retained deliberately.
+            sudo npm ci --ignore-scripts --prefix /root/QClaw
+
+            # ALL SIX processes. Verified from `pm2 jlist` on 2026-08-28, every
+            # one executes code from this repo:
+            #   quantumclaw             src/index.js
+            #   trade-engine            src/trade_engine/main.py
+            #   trading-worker          src/trading/monte_carlo.py
+            #   claude-code-dispatcher  src/dispatch/start.js
+            #   clipper-worker          src/clipper (bash, cwd in repo)
+            #   agex-hub                node_modules/@agexhq/hub-lite/src/index.js
+            #
+            # Restarting quantumclaw alone is the mechanical reason PR #94 sat
+            # inert for 8 days: the pipeline pulled the fix and restarted a
+            # process that does not run it, so a position opened on 2026-08-27
+            # still recorded proposal values instead of real fills.
+            #
+            # Deliberately NOT path-filtered. agex-hub runs out of node_modules,
+            # which `npm ci` rewrites on EVERY deploy even when no source file
+            # changed, so "which files changed" does not determine "which
+            # processes are stale". Inferring that mapping is precisely the
+            # cleverness this job exists to remove. Add any new PM2 process here.
+            sudo pm2 restart quantumclaw trade-engine trading-worker \
+              claude-code-dispatcher clipper-worker agex-hub --update-env
+
+            # Uptimes in the log make "deployed" checkable rather than assumed.
+            sudo pm2 list
