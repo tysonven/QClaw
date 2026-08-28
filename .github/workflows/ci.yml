@@ -30,7 +30,9 @@ jobs:
         run: pip install -r src/trade_engine/requirements.txt
 
       - name: Install dependencies
-        run: npm install
+        # npm ci, matching what the deploy runs. With npm install here, CI
+        # validated a node tree that the deploy did not install.
+        run: npm ci
 
       - name: Run smoke tests
         run: npm test
@@ -177,6 +179,17 @@ jobs:
             sudo git fetch origin
             sudo git merge --ff-only ${{ github.sha }}
 
+            # merge --ff-only reports "Already up to date" and exits 0 when HEAD
+            # is already at or AHEAD of that sha, so on its own the step does
+            # not deliver what it claims. Reachable via a commit made directly
+            # on /root/QClaw, which happens here, or out-of-order queued
+            # deploys. Assert the outcome rather than trusting the exit code.
+            test "$(sudo git rev-parse HEAD)" = "${{ github.sha }}" || {
+              echo "::error::HEAD is not the CI-validated commit ${{ github.sha }}"
+              sudo git rev-parse HEAD
+              exit 1
+            }
+
             # npm ci, not npm install: installs exactly what the lockfile pins
             # and fails if package.json and package-lock.json disagree.
             sudo npm ci --ignore-scripts
@@ -197,7 +210,19 @@ jobs:
             # receiving writes with only a log.warn, stranding the gate replay
             # corpus. A silent data-loss path is exactly what this pipeline
             # exists to stop, so assert rather than hope.
-            sudo node -e "require('canvas'); require('better-sqlite3'); console.log('native modules OK')"
+            #
+            # better-sqlite3 MUST be INSTANTIATED, not merely required. It loads
+            # its addon lazily, inside the Database constructor
+            # (node_modules/better-sqlite3/lib/database.js:48,
+            # `require('bindings')('better_sqlite3.node')`), so `require()`
+            # alone never touches better_sqlite3.node and exits 0 against a
+            # deleted, corrupt or zero-byte binding. Verified on qclaw:
+            # process.moduleLoadList contains no native entry after a bare
+            # require. This is not hypothetical. canvas is N-API and survives a
+            # Node major bump; better-sqlite3 11.10.0 is not and does not, so a
+            # node upgrade is exactly the event that leaves canvas passing and
+            # this check vacuous while audit.db quietly stops recording.
+            sudo node -e "require('canvas'); const D=require('better-sqlite3'); new D(':memory:').exec('create table t(x)'); console.log('native modules OK')"
 
             # @agexhq/hub-lite is an optionalDependency, so npm ci exits 0 even
             # when it fails to install. Without this check the restart below
