@@ -216,9 +216,24 @@ jobs:
             # (node_modules/better-sqlite3/lib/database.js:48,
             # `require('bindings')('better_sqlite3.node')`), so `require()`
             # alone never touches better_sqlite3.node and exits 0 against a
-            # deleted, corrupt or zero-byte binding. Verified on qclaw:
-            # process.moduleLoadList contains no native entry after a bare
-            # require. This is not hypothetical. canvas is N-API and survives a
+            # deleted, corrupt or zero-byte binding.
+            #
+            # TO RE-VERIFY, use a check that can actually tell the two apart.
+            # NOT process.moduleLoadList: it reports 102 entries, byte
+            # identical, both after a bare require and after instantiation,
+            # because .node addons are dlopen'd rather than added to that list.
+            # It cannot distinguish the states, so consulting it makes the
+            # instantiation below look redundant and leads straight back to the
+            # bug this line replaced. The discriminating check is the process
+            # memory map (verified on qclaw, node v22.22.2):
+            #   node -e "require('better-sqlite3'); \
+            #     console.log(require('fs').readFileSync('/proc/self/maps','utf8') \
+            #       .includes('better_sqlite3.node'))"   # => false
+            #   node -e "const D=require('better-sqlite3'); new D(':memory:'); \
+            #     console.log(require('fs').readFileSync('/proc/self/maps','utf8') \
+            #       .includes('better_sqlite3.node'))"   # => true
+            #
+            # This is not hypothetical. canvas is N-API and survives a
             # Node major bump; better-sqlite3 11.10.0 is not and does not, so a
             # node upgrade is exactly the event that leaves canvas passing and
             # this check vacuous while audit.db quietly stops recording.
@@ -241,9 +256,15 @@ jobs:
             #   claude-code-dispatcher  src/dispatch/start.js
             #   clipper-worker          src/clipper (bash, cwd in repo)
             #
-            # Restarting quantumclaw alone is the mechanical reason PR #94 sat
-            # inert for 8 days: the pipeline pulled the fix and restarted a
-            # process that does not run it.
+            # PR #94 sat inert for 8 days through two separate failures, and
+            # they are worth keeping distinct because fixing either alone would
+            # have left the other. The CAUSE is this list: the pipeline
+            # restarted quantumclaw only, so it pulled the fix and restarted a
+            # process that does not run it. The missed DETECTION was that
+            # nobody compared process uptime against the deploy timestamp,
+            # which is what the `pm2 list` at the end of this script and step 5
+            # of docs/runbooks/deploy-partial-failure.md are for. This line
+            # fixes the cause, not the detection.
             #
             # agex-hub goes FIRST on purpose: src/index.js:92-106 has
             # quantumclaw connect to the hub at localhost:4891 during boot and
