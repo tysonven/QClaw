@@ -60,6 +60,60 @@ jobs:
             exit 1
           fi
 
+  python-test:
+    # The 208 Python tests cover the trade engine and the financial path:
+    # entry-fill derivation, settlement decode, the approval gate, the position
+    # monitor. Until this job existed they gated nothing. The `test` job
+    # pip-installs src/trade_engine/requirements.txt and then runs only
+    # `npm test`, which made the CI summary LOOK like Python was covered. A
+    # deploy gate is only worth as much as the suite behind it.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies
+        run: |
+          pip install -r src/trade_engine/requirements.txt
+          # pytest is not in requirements.txt (that file is runtime deps only).
+          # Pinned to the major the suite is verified against: 9.0.2 on qclaw.
+          pip install 'pytest>=9,<10'
+
+      - name: Run Python suite
+        run: |
+          set -e
+          # Fail loudly if the glob matches nothing. Without this, a moved or
+          # renamed tests/ directory would leave the loop with nothing to run
+          # and the job would pass having tested zero things, which is the
+          # exact class of silent-success this PR exists to remove.
+          shopt -s failglob
+
+          # Per-file, not `pytest tests/`. Two reasons, both load-bearing:
+          #
+          # 1. `pytest tests/` FAILS at collection on this repo, and does so on
+          #    untouched main. Directory collection reports
+          #    "cannot import name 'Header' from 'fastapi' (unknown location)"
+          #    across six modules. Passing file paths explicitly does not
+          #    trigger it, and running each file in its own process cannot be
+          #    affected by cross-module import state at all.
+          #
+          # 2. The glob is deliberate rather than a hardcoded file list. A
+          #    hardcoded list silently stops covering new test files the moment
+          #    someone adds one, and nothing fails to announce it. That is the
+          #    same shape as restarting one process out of six.
+          #
+          # Verified 2026-08-28 on qclaw: this loop yields the same
+          # 208 passed + 3 subtests as the single-process explicit-file run.
+          for f in tests/test_*.py; do
+            echo "::group::$f"
+            python -m pytest "$f" -q
+            echo "::endgroup::"
+          done
+
   deploy:
     # Gating lives in the SAME workflow as the tests because `needs:` cannot
     # reference a job in another workflow. deploy.yml was a separate workflow
@@ -74,7 +128,7 @@ jobs:
     # github.event.workflow_run.conclusion, and it runs the workflow file from
     # the default branch rather than from the pushed commit. `needs:` has
     # neither footgun.
-    needs: [test, lint]
+    needs: [test, lint, python-test]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
