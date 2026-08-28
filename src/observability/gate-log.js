@@ -14,17 +14,15 @@
  */
 
 import { existsSync, appendFileSync, chmodSync, statSync, renameSync } from 'fs';
-import { join } from 'path';
-import { homedir } from 'os';
 import { log } from '../core/logger.js';
+import { resolveLogPath } from '../core/paths.js';
 import { scrubSecrets } from './anthropic-spend-poller.js';
 
-const DEFAULT_PATH = join(homedir(), '.quantumclaw', 'gate.log');
 const ROTATION_BYTES = 50 * 1024 * 1024;
 const MODE = 0o600;
 
 function _path() {
-  return process.env.QCLAW_GATE_LOG_PATH || DEFAULT_PATH;
+  return resolveLogPath('QCLAW_GATE_LOG_PATH', 'gate.log');
 }
 
 function _rotateIfNeeded(path) {

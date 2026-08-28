@@ -33,15 +33,15 @@
 
 import { readFileSync, writeFileSync, appendFileSync, existsSync, chmodSync, statSync } from 'fs';
 import { join } from 'path';
-import { homedir } from 'os';
 import { readEnvFile } from '../core/env.js';
+import { resolveLogPath } from '../core/paths.js';
 
 const OWNER_TELEGRAM_CHAT_ID = 1375806243; // mirrors src/tools/executor.js
 const DEFAULTS = { soft_24h_usd: 5, hard_1h_usd: 3, cooldown_minutes: 60 };
 const MODE = 0o600;
 
-function thresholdsPath() { return process.env.QCLAW_SPEND_THRESHOLDS_PATH || join(homedir(), '.quantumclaw', 'spend-thresholds.json'); }
-function statePath() { return process.env.QCLAW_SPEND_ALERT_STATE_PATH || join(homedir(), '.quantumclaw', 'spend-alert-state.log'); }
+function thresholdsPath() { return resolveLogPath('QCLAW_SPEND_THRESHOLDS_PATH', 'spend-thresholds.json'); }
+function statePath() { return resolveLogPath('QCLAW_SPEND_ALERT_STATE_PATH', 'spend-alert-state.log'); }
 function healthPath() { return statePath() + '.health'; }
 
 /** Load thresholds, falling back to baked defaults on missing/malformed file. */
