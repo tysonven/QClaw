@@ -18,11 +18,10 @@
 
 import { existsSync, appendFileSync, chmodSync, statSync, renameSync } from 'fs';
 import { join } from 'path';
-import { homedir } from 'os';
 import { createHash } from 'crypto';
 import { log } from '../core/logger.js';
+import { resolveLogPath } from '../core/paths.js';
 
-const DEFAULT_PATH = join(homedir(), '.quantumclaw', 'cache-usage.log');
 const ROTATION_BYTES = 50 * 1024 * 1024; // 50 MB
 const MODE = 0o600;
 
@@ -54,7 +53,7 @@ export function __resetCacheUsageLogForTests() {
 }
 
 function _path() {
-  return process.env.QCLAW_CACHE_USAGE_LOG_PATH || DEFAULT_PATH;
+  return resolveLogPath('QCLAW_CACHE_USAGE_LOG_PATH', 'cache-usage.log');
 }
 
 function _rotateIfNeeded(path) {

@@ -16,9 +16,9 @@
 
 import { MCPClient } from './mcp-client.js';
 import { log } from '../core/logger.js';
+import { resolveLogPath } from '../core/paths.js';
 import { appendFileSync, chmodSync, existsSync, mkdirSync, statSync } from 'fs';
 import { dirname, join } from 'path';
-import { homedir } from 'os';
 
 /**
  * Per-preset scope map. Domain tools (stripe, ghl) scope to the build/
@@ -37,8 +37,7 @@ const PRESET_SCOPE_MAP = {
  * alongside audit.db in ~/.quantumclaw/.
  */
 function _toolCallLogPath() {
-  return process.env.QCLAW_TOOL_CALL_LOG_PATH
-    || join(homedir(), '.quantumclaw', 'tool-call.log');
+  return resolveLogPath('QCLAW_TOOL_CALL_LOG_PATH', 'tool-call.log');
 }
 
 /**

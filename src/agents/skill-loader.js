@@ -21,8 +21,8 @@
 import { readdirSync, readFileSync, existsSync, appendFileSync, chmodSync, statSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { join, dirname } from 'path';
-import { homedir } from 'os';
 import { log } from '../core/logger.js';
+import { resolveLogPath } from '../core/paths.js';
 import { routeKeywords } from './skill-router.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -31,7 +31,7 @@ const SKILLS_DIR = join(REPO_ROOT, 'src', 'agents', 'skills');
 
 // Tests override via QCLAW_SKILL_LOG_PATH so they don't pollute the real log.
 function _logPath() {
-  return process.env.QCLAW_SKILL_LOG_PATH || join(homedir(), '.quantumclaw', 'skill-load.log');
+  return resolveLogPath('QCLAW_SKILL_LOG_PATH', 'skill-load.log');
 }
 
 const HARD_CAP_ON_DEMAND = 4;

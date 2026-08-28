@@ -12,13 +12,12 @@
 
 import { appendFileSync, chmodSync, existsSync, mkdirSync } from 'fs';
 import { dirname, join } from 'path';
-import { homedir } from 'os';
 import { log } from '../core/logger.js';
+import { resolveLogPath } from '../core/paths.js';
 import { scrubSecrets } from './anthropic-spend-poller.js';
 
 function _path() {
-  return process.env.QCLAW_CHANNEL_EVENTS_LOG_PATH
-    || join(homedir(), '.quantumclaw', 'channel-events.log');
+  return resolveLogPath('QCLAW_CHANNEL_EVENTS_LOG_PATH', 'channel-events.log');
 }
 
 /** Append one JSONL channel event ({ts, event, ...}); string fields scrubbed. Best-effort. */

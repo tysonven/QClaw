@@ -12,23 +12,21 @@
  * memory.db, and the append-only logs. A test writing there corrupts the
  * evidence trail the gates depend on, and would look exactly like real traffic.
  *
- * This PR covers the STORES: qclaw.db and the bootstrap workspace. No current
- * test reaches either without a dir, so the hole here is latent rather than
- * active, and closing it is cheap insurance on the two files whose contents the
- * gates treat as evidence.
+ * The STORES half landed first (resolveStoreDir). This adds the LOGS, which is
+ * the half that was actually leaking: a full `npm test` on a machine with a real
+ * ~/.quantumclaw writes to the production skill-load.log and tool-call.log on
+ * every run. That is the same gap that put synthetic userIds (9999 / 8888 /
+ * 7777 / integration-test) into the production skill-load.log on 2026-08-27,
+ * interleaved with real Telegram traffic, because the per-log override is opt-in
+ * and only 1 of ~40 test files sets it.
  *
- * The append-only LOGS have the same defect and it is NOT latent: a full test
- * run writes to the production skill-load.log and tool-call.log today. That half
- * needs a different remedy (redirect, not throw, because those writers swallow
- * their own errors) and lands separately so isTestContext can be reviewed on its
- * own before anything depends on it more widely.
- *
- * The fix here is to make omission fail loudly under test instead of quietly
- * resolving to production. In production, behaviour is unchanged.
+ * Stores throw, logs redirect. The remedies differ because the failure modes do:
+ * see resolveLogPath.
  */
 
 import { join } from 'path';
-import { homedir } from 'os';
+import { homedir, tmpdir } from 'os';
+import { mkdtempSync } from 'fs';
 
 /** The production store directory, honouring an explicit QCLAW_HOME override. */
 export function qclawHome() {
@@ -80,4 +78,39 @@ export function resolveStoreDir(explicitDir, label = 'store') {
     );
   }
   return qclawHome();
+}
+
+// Lazily-created scratch dir, one per test process, shared by every log writer
+// that falls through to it. Created on first use so a production run never makes
+// a temp directory it will not use.
+let _scratch = null;
+export function testScratchDir() {
+  if (!_scratch) _scratch = mkdtempSync(join(tmpdir(), 'qclaw-test-logs-'));
+  return _scratch;
+}
+
+/**
+ * Resolve an append-only log path.
+ *
+ * Logs get a REDIRECT rather than the throw resolveStoreDir uses, because every
+ * one of these writers is best-effort and swallows its own errors. A throw there
+ * would be caught by the writer's own try/catch, the test would pass, and the
+ * only visible effect would be a log line that silently went missing. Redirecting
+ * to a per-process temp dir cannot break a caller and cannot reach production.
+ *
+ * This is the half that was actually leaking. `skill-load.log` and
+ * `tool-call.log` are written on ordinary agent code paths that ~40 test files
+ * exercise, while only ONE (skill-loader.test.js) sets the opt-in override. The
+ * 2026-08-27 run that put synthetic userIds into the production skill-load.log
+ * went through exactly this gap, and a full `npm test` on a dev machine with a
+ * real ~/.quantumclaw still reproduces it.
+ *
+ * @param {string} envVar    the existing per-log override (kept, still wins)
+ * @param {string} filename  e.g. 'gate.log'
+ */
+export function resolveLogPath(envVar, filename) {
+  const explicit = envVar ? process.env[envVar] : null;
+  if (explicit && String(explicit).trim()) return String(explicit);
+  if (isTestContext() && !process.env.QCLAW_HOME) return join(testScratchDir(), filename);
+  return join(qclawHome(), filename);
 }
