@@ -23697,3 +23697,53 @@ Unblocked, no harness needed: currency-assertion check (numeric class 3 only,
 both live failures were financial), and the `.**` sentence-boundary fix
 (suppression half of the negative-diagnostic item, strictly more splitting so
 strictly fewer misses).
+
+### 2026-08-28 addendum: #97 merged and verified live; PR state at session close
+
+**#97 merged as `bcb16ee` and deployed to the host.** Verified by Tyson on the
+live box, recorded here as his verification rather than mine: clean boot, **zero
+occurrences of "refusing to open the live" in the error log**, degradation level
+1/5 unchanged.
+
+The zero-occurrence check is the one that matters, and it is worth saying why
+rather than just that it passed. `resolveStoreDir` throws that exact string when
+`isTestContext()` returns true and no dir was supplied. A production boot must
+never take that branch, so zero occurrences is direct evidence that
+`isTestContext()` did **not** false-positive on the real entry path
+(`/root/QClaw/src/index.js`). That was the specific risk flagged for review on
+#97: a false positive there turns a real boot into a thrown error.
+
+**PR state at session close:**
+
+| PR | branch | state |
+|---|---|---|
+| #96 | `instr/evidence-path` | open, **draft** (returned to draft; adversarial review goes to a fresh session) |
+| #97 | `fix/test-store-isolation` | **MERGED** `bcb16ee` |
+| #98 | `fix/test-log-isolation` | open, **draft**, rebased onto `bcb16ee` and re-based to `main` (its original base branch merged) |
+| #99 | `docs/build-log-20260828` | **MERGED** `725f48d` |
+
+#98's adversarial review is deliberately NOT done in the session that wrote it.
+It comes to the diff cold, and the thing to attack is `isTestContext()`. Note the
+asymmetry with #97 when reviewing: a false positive in #97 THROWS, which is loud
+and was just disproven in production. A false positive in #98 REDIRECTS, which is
+silent, and would send production `gate.log` / `tool-call.log` / `skill-load.log`
+to a temp directory with nothing to indicate it. The failure mode is strictly
+quieter than the one already cleared, so clearing #97 does not clear #98.
+
+**Note, unverified inference.** `claude-code-dispatcher` runs under PM2 with exec
+cwd `/home/flowos` while its script is `/root/QClaw/src/dispatch/start.js`. The
+mismatch appears harmless: `claude-code-dispatcher.js:51` and `:92` resolve both
+load-bearing paths absolutely (`process.env.QCLAW_REPO_PATH || '/root/QClaw'`,
+`process.env.QCLAW_ENV_PATH || '/root/.quantumclaw/.env'`), so cwd is not
+load-bearing for either. The inference, NOT verified, is that `pm_cwd` was
+captured from wherever `pm2 start` was invoked and has simply persisted: the
+process runs as root with a script under `/root`, `/home/flowos` is the `flowos`
+user's home, and it has 56 days uptime with 3 restarts. `ecosystem.config.cjs`
+was not opened and nothing else in the dispatch path was checked for relative
+path resolution. Recorded as a note, not a finding.
+
+**Retired.** Two `git pull --ff-only` entries in the host reflog at 13:29:34Z and
+13:37:55Z were briefly queried as unattributed. They are Tyson merging #99 and
+#97 and deploying, at 16:29 and 16:37 Athens. Not unattributed, no tracing owed.
+The rollback lead raised against them is also retired: both commits were created
+2026-08-28 and did not exist during the 2026-08-27 session.
