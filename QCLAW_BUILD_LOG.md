@@ -23985,3 +23985,116 @@ looking delivered from this side.
   three CSS files ingested as "Untitled".
 - One stale help-centre document (id 1265) 404s but is still in the sitemap, so
   reconciliation correctly declines to deactivate it. It will not self-heal.
+
+## 2026-08-28: /health reported a state that was true and misleading; the heartbeat writer is verified by the durable row
+
+Closes falsification condition 2 from the #101 entry above, and with it the
+8-day stale-process bug: the writer is in the running image and it fires.
+Verified at QClaw main `f9f8a38`, live checkout `/root/QClaw` at `f9f8a38`,
+clean, read at 21:16Z.
+
+**The evidence is one row in `workflow_heartbeats`** (Supabase project
+`fdabygmromuqtysitodp`), verbatim:
+
+    workflow_id:    trade-engine-monitor
+    workflow_name:  Trade Engine position monitor (qclaw)
+    status:         success
+    started_at:     2026-08-28 21:06:28.926345+00
+
+That is the first `IntervalTrigger(minutes=15)` sweep after the ~20:51Z restart
+onto `2ea7ca0`, landing where the #101 entry predicted it would.
+
+### The new shape: an endpoint that is true and misleading
+
+At 21:10Z `/health` on `127.0.0.1:4003` returned, verbatim:
+
+    "scheduler_running":true,"scheduler_jobs":4,"last_scan_at":null,
+    "last_monitor_at":null,"monitor_positions_resolved":0
+
+Read against falsification condition 1 from the entry above, "if
+`last_monitor_at` is STILL null after ~21:10Z, the scheduler is not firing the
+job at all", that looks like a triggered alarm. It is not. Every field in that
+response is accurate. The reading is still wrong, because **`/health` cannot
+distinguish "has not fired yet" from "is not firing".** Its counters are
+in-process and reset on restart, so a null means "no sweep since this process
+started" and nothing more. It carries no memory of the sweep that already
+succeeded 4 minutes earlier.
+
+The durable row is the signal that survives restarts. The endpoint is not.
+Anyone reading `/health` alone at 21:10Z would have opened a scheduler
+investigation into a system that was working, having watched it work 4 minutes
+before.
+
+This is the tenth instance this week of a claim about runtime state that nobody
+verified, and a shape the other nine did not have. The previous ones were stale,
+assumed or superseded: something that had been true and had quietly stopped
+being true. This one was never false. The endpoint answered exactly the question
+it was asked, and the question was the wrong one.
+
+### Why the counters were young: the restart, and what triggered it
+
+All six PM2 processes restarted together approximately 84 seconds before the
+21:10Z reading. `trade-engine` restart counter read **17**, against the **16**
+recorded in the #101 entry after that deploy.
+
+The host reflog for `/root/QClaw` gives the cause, verbatim:
+
+    f9f8a38 HEAD@{2026-08-28 21:06:51 +0000}: merge f9f8a38...: Fast-forward
+    2ea7ca0 HEAD@{2026-08-28 20:48:39 +0000}: merge 2ea7ca0...: Fast-forward
+    e9b2766 HEAD@{2026-08-28 20:43:36 +0000}: pull origin main: Fast-forward
+
+The 21:09Z restart was the deploy of `f9f8a38`, which is a **docs-only commit**:
+the build log entry recording #101, CI started 21:04:20Z. Confirmed by Tyson, no
+third actor. The gated pipeline from #101 restarts all six processes for any
+commit reaching main, so a build log edit restarted `trade-engine` in production
+and reset the heartbeat clock.
+
+**The recursion is the point.** The entry that documented "heartbeat rows
+PENDING" is what triggered the deploy that reset `/health`, producing the null
+that then read as that same entry's own falsification condition. Writing down
+that a thing was unverified destroyed the evidence that would have verified it,
+within three minutes, through a pipeline nobody thought of as touching runtime
+state because the commit was documentation. Nothing here was careless; the
+observation and the observed share a deploy trigger.
+
+Sequence, all times UTC on 2026-08-28:
+
+1. 20:48:39 pull to `2ea7ca0` (#101), six processes restart at approximately 20:51
+2. **21:06:28.926 monitor sweep fires and writes the success heartbeat row**
+3. 21:06:51 pull to `f9f8a38`, docs only, **23 seconds after the row was written**
+4. approximately 21:09 six processes restart again, `/health` counters reset
+5. 21:10 `/health` reads null, DB row still present
+
+Worth a decision rather than a note: a docs-only commit causing a full
+six-process production restart, `trade-engine` included, is a real cost of the
+current pipeline. It also means the next reader of `/health` after any docs
+merge sees the same misleading nulls.
+
+`trade-engine-scanner` still has no row as of 21:16Z. That is expected, not a
+gap, and for a reason stronger than the schedule: the previous `scanner_weekday`
+fire was 20:00Z, which **predates the 20:51Z restart**, so no row could exist
+yet whatever the writer does. The next fire is 22:00Z.
+
+The difference matters enough to name, since this entry sits alongside the
+convention: "due at 22:00Z" is a claim, and a reader has to trust it. "The
+20:00Z fire predates the 20:51Z restart, so no row could exist yet" is an
+argument, and a reader can check it. Prefer the second whenever the evidence
+allows, and notice when you have written the first.
+
+The writer itself is already proven by the monitor row, since both call the same
+`record_success_heartbeat`.
+
+### Two host traps that cost real time here
+
+**`pm2 list` over ssh returns an empty table.** The ssh user is `flowos`; the
+processes run under root's PM2 daemon. `pm2 list` as `flowos` prints the header
+and zero rows, which reads exactly like a total outage. Use `sudo pm2 list`.
+What prevented a false alarm was that `/health` on :4003 was answering normally
+at the same moment, which cannot be true of a host with no processes.
+
+**The local date rolls over three hours before UTC does.** The workstation clock
+read 2026-08-29 while the host read `2026-08-28T21:10:19Z`, Athens being UTC+3.
+The ~21:10Z threshold in falsification condition 1 was therefore not comfortably
+in the past, it was exactly the current minute. Reasoning "it is the next day,
+so the deadline is long gone" would have converted a boundary reading into a
+confident wrong conclusion. Anchor to host time, not to the local date.
