@@ -36,6 +36,8 @@ from src.trade_engine.approval import ApprovalGate, run_update_poller  # noqa: E
 from src.trade_engine.executor import TradeExecutor  # noqa: E402
 from src.trade_engine.config import config, configure_logging  # noqa: E402
 from src.trade_engine.database import (  # noqa: E402
+    HEARTBEAT_MONITOR,
+    HEARTBEAT_SCANNER,
     SupabaseError,
     close_client,
     count_all_positions,
@@ -46,6 +48,7 @@ from src.trade_engine.database import (  # noqa: E402
     get_recent_simulations,
     get_trading_config,
     get_unresolved_alerts,
+    record_success_heartbeat,
     resolve_alerts_for_position,
     set_manual_hold,
     update_position,
@@ -169,6 +172,20 @@ async def scheduled_scan() -> None:
         log.exception("scheduled scan failed")
         return
 
+    # Success heartbeat, emitted for EVERY completed scan including one that
+    # found nothing. A quiet market must never read as a dead process, which is
+    # exactly why this keys on the scan COMPLETING and not on it having found
+    # anything. Both failure paths above have already returned.
+    await record_success_heartbeat(
+        HEARTBEAT_SCANNER,
+        {
+            "markets_fetched": summary.markets_fetched,
+            "simulations_run": summary.simulations_run,
+            "high_edge": len(summary.high_edge),
+            "open_positions": open_count,
+        },
+    )
+
     # Heartbeat so a quiet market is distinguishable from a dead engine on
     # Telegram. Reuses the executor's notifier: same dedicated-token-first
     # send path and best-effort semantics as trade notifications.
@@ -182,9 +199,25 @@ async def scheduled_monitor() -> None:
     """Cron entry point: one Position Monitor sweep every 15 minutes."""
     try:
         async with PositionMonitor() as monitor:
-            await monitor.check_positions()
+            result = await monitor.check_positions()
     except Exception:  # noqa: BLE001 - check_positions should never raise; belt+braces
         log.exception("scheduled monitor sweep failed")
+        return
+
+    # check_positions() NEVER raises: a DB failure inside it returns a result
+    # carrying errors=1 rather than propagating. Emitting success on return
+    # alone would therefore report a failed sweep as healthy, which is the
+    # started-only false-green wearing a different hat. Stay silent on an
+    # errored sweep and let the Alerter notice the gap.
+    if result.errors:
+        log.warning(
+            "monitor sweep completed with %s error(s); heartbeat withheld",
+            result.errors,
+        )
+        return
+    await record_success_heartbeat(
+        HEARTBEAT_MONITOR, {"positions_checked": result.positions_checked}
+    )
 
 
 @asynccontextmanager

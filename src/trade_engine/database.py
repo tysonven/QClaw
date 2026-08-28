@@ -16,6 +16,7 @@ status code and response body.
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -429,3 +430,53 @@ async def set_manual_hold(position_id: str, hold: bool) -> dict[str, Any]:
     every sweep so the dashboard and Analyst stay accurate.
     """
     return await update_position(position_id, {"manual_hold": bool(hold)})
+
+
+# Heartbeat identities. ONE per scheduled entry point, deliberately not one per
+# APScheduler job: scanner_monday / scanner_weekday / scanner_weekend are the
+# same scan_job under three cron windows and only one is live on any given day,
+# so three identities would report two false dormancies every Monday.
+HEARTBEAT_SCANNER = ("trade-engine-scanner", "Trade Engine scanner (qclaw)")
+HEARTBEAT_MONITOR = ("trade-engine-monitor", "Trade Engine position monitor (qclaw)")
+
+
+async def record_success_heartbeat(
+    identity: tuple[str, str],
+    metadata: Optional[dict[str, Any]] = None,
+) -> None:
+    """Record a SUCCESS heartbeat for a completed scheduled run. Never raises.
+
+    Success-only BY CONSTRUCTION: there is no started or error variant here,
+    and adding one is a behaviour change rather than a convenience. A started
+    heartbeat reports healthy the instant a job BEGINS, so a job that starts
+    and then fails on every single run still reads green to the Dormancy
+    Alerter. That exact trap is why the Alerter's map deliberately excludes the
+    legacy Position Monitor: "a map entry today would go green off 'started'
+    rows alone".
+
+    execution_id MUST be unique per run. record_heartbeat upserts on
+    (workflow_id, execution_id) and its DO UPDATE branch does NOT touch
+    started_at, so reusing an id would freeze started_at at the first call
+    forever. The Alerter reads max(started_at), so a live job would be reported
+    dormant.
+
+    Failures are swallowed: observability must never take down the job it
+    observes. A dropped heartbeat degrades to a dormancy alert, which is the
+    safe direction to fail in.
+    """
+    workflow_id, workflow_name = identity
+    try:
+        await _request(
+            "POST",
+            "/rpc/record_heartbeat",
+            json_body={
+                "p_workflow_id": workflow_id,
+                "p_status": "success",
+                "p_workflow_name": workflow_name,
+                "p_execution_id": str(uuid.uuid4()),
+                "p_metadata": metadata,
+            },
+            write=True,
+        )
+    except Exception:  # noqa: BLE001 - a heartbeat must never fail its job
+        log.exception("heartbeat write failed for %s", workflow_id)
