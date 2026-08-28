@@ -24082,3 +24082,69 @@ documentation naming a real reconciliation source that defines the value
 differently; a CI loop written against silent under-testing that under-tested by
 one file; and now a stub written for portability that removed the coverage it
 appeared to give. None of them lied. Every one supplied a reason not to look.
+
+### Seventh instance, new variant: verification run in an environment that does not represent the one it gates
+
+The previous six were true records standing in for unperformed checks. This one
+is different, and worse, because the check WAS performed. It was performed on
+the wrong machine.
+
+"211 passed + 6 subtests" was written into a PR body, a commit message, a build
+log entry and a memory record as the verified state of the Python suite. It was
+true. It is reproducible on qclaw right now. It has never once been true on a
+GitHub runner. Both branch runs, 33198125241 and 33199690154, failed, and
+`python-test` has been red from the moment it existed. The number was real
+evidence about a machine that is not the machine the gate runs on.
+
+Two causes, one root, and the root is that qclaw is a richer environment than a
+bare runner in ways that are invisible unless you go looking:
+
+- `tests/test_execute_trade_client.py` loads `src/trading/execute_trade.py`,
+  which imports `requests` at line 23. `requests` is not in
+  `src/trade_engine/requirements.txt`. It is installed system-wide on qclaw, so
+  the import succeeds there and nowhere else.
+- `tests/clipper/test_smart_crop_filter.py` loads `src/clipper/main.py`, which
+  calls `load_env("/root/.quantumclaw/.env")` at module scope (line 41).
+  `load_env` caught only `FileNotFoundError`. On a machine without read access
+  to `/root` this raises `PermissionError`, at import, during collection. The
+  test's own docstring claims it "runs anywhere Python 3 is available" and the
+  PR body called the suite "hermetic". Both were false in the same way: the file
+  stubs five Python packages and does not stub a filesystem read of a
+  root-owned secrets file.
+
+The compounding factor is that `tests/clipper` sorts first and the loop was
+fail-fast, so one collection error ended the run before a single trade-engine
+test executed. CI could report exactly one problem per attempt, and the suite's
+actual state on the runner stayed unknown across both runs. The loop now
+collects failures and exits non-zero at the end.
+
+The fix for this session's own process is the part worth keeping. The
+verification was re-run in an environment built to match the runner rather than
+the box: the tree copied out of `/root`, owned by an unprivileged user, executed
+as that user with `/root/.quantumclaw/.env` confirmed unreadable first. All 8
+files pass there, 211 total, loop exit 0. That is the permission dimension
+proven. The dependency dimension is NOT proven locally: `python3-venv` is not
+installed on qclaw, a clean interpreter could not be built without mutating the
+box for a test, and the system interpreter already has `requests`. So the
+`requests` fix was verified by CI and by nothing else, and this entry said so
+rather than rounding it up, because claiming otherwise would be the same error
+one level deeper.
+
+CI has since confirmed it. Run 33202965329, job 98956766913, on the runner:
+`collected 8 test files`, then 3, 20, 40, 5, 67, 19, 39 and 18 passed, totalling
+211 passed and 6 subtests, `python-test: success`. That is the first time the
+figure has ever been true in the environment that gates the deploy. The number
+did not change. The machine it was measured on did.
+
+Also fixed in the same pass, from the same review: `npm ci --ignore-scripts`
+wiped `node_modules` and suppressed the rebuild of `canvas@3.2.3` and
+`better-sqlite3@11.10.0`, both placed out of band and not reproducible from the
+pipeline. `--ignore-scripts` was KEPT, because it stops every transitive
+dependency's postinstall running as root on the production box, and that is
+worth more than automatic native builds; an explicit `npm rebuild canvas
+better-sqlite3` restores exactly the two that need it, followed by a `require()`
+assertion. The assertion is the point: `canvas` fails loudly, but
+`better-sqlite3` degrades SILENTLY behind try/catch with JSON fallbacks, so
+`audit.db` and `memory.db` would simply stop receiving writes behind a
+`log.warn`, stranding the gate replay corpus. A deploy that quietly disables the
+audit trail is the exact failure this pipeline was being rewritten to prevent.
