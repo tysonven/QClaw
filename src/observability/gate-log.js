@@ -63,6 +63,52 @@ const _bool = (v) => (typeof v === 'boolean' ? v : null);
  * applicable", not "no evidence", hence _bool rather than a `!!` coercion, which
  * would have silently reported every such row as backed:false.
  */
+/**
+ * Map one runGates outcome to the rows that describe it. Pure, so the content
+ * policy below is a tested invariant rather than a comment inside a callback.
+ *
+ * FIRING rows carry claim text, exactly as they always have.
+ * OBSERVATION rows carry NONE.
+ *
+ * That asymmetry is the point. Before observations existed, gate.log held claim
+ * text only for claims that FAILED. Observations fire on every gated turn
+ * including passes, so logging their text would have widened the file to most of
+ * Charlie's real output, including replies quoting customer names, amounts and
+ * emails. scrubSecrets covers API keys and Telegram tokens, not PII. Nulling the
+ * claim keeps the content envelope exactly where it was while still recording
+ * which evidence path backed what.
+ *
+ * Nothing analytic is lost: gate + check + backed + path + entity_free is the
+ * payload, and sentence-shape analysis belongs in the replay harness, which reads
+ * memory.db directly instead of persisting a second copy here.
+ */
+export function gateLogRows(gateOut = {}, attempt = 0) {
+  const rows = [];
+  for (const g of (gateOut.gates || [])) {
+    if (g.fired) {
+      for (const c of (g.claims || [])) {
+        rows.push({
+          gate: g.gate, claim: c.text || String(c),
+          verification_attempted: c.verification_attempted !== false,
+          verified: false, result: gateOut.result, action: g.action, attempt,
+          fired: true,
+        });
+      }
+    }
+    // Gates 4 and 5 do not call matchEvidence, so they report no observations.
+    for (const o of (g.observations || [])) {
+      rows.push({
+        gate: g.gate, claim: null,          // never the sentence: see above
+        verification_attempted: true, verified: false,
+        result: gateOut.result, action: g.action, attempt,
+        fired: false, check: o.check, backed: o.backed,
+        path: o.path, sourced: o.sourced, entity_free: o.entity_free,
+      });
+    }
+  }
+  return rows;
+}
+
 export function appendGateLog(record = {}) {
   const path = _path();
   try {

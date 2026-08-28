@@ -17,7 +17,7 @@ import {
   splitSentences, stripCodeSpans, isSuppressed, extractEntities, correlatePairs,
   matchEvidence, gateToolReference, runGates, EVIDENCE_PATH,
 } from '../src/agents/gates.js';
-import { appendGateLog } from '../src/observability/gate-log.js';
+import { appendGateLog, gateLogRows } from '../src/observability/gate-log.js';
 import { mkdtempSync, rmSync, existsSync, readFileSync, statSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -926,7 +926,7 @@ check('gate.log: absent evidence fields are null, never coerced to false',
 const obsPath = join(dir, 'gate-obs.log');
 process.env.QCLAW_GATE_LOG_PATH = obsPath;
 appendGateLog({
-  gate: 'completion', claim: 'it is done; token sk-ant-admin01-OBSSECRET here',
+  gate: 'completion', claim: null,
   result: 'pass', action: null, attempt: 1,
   fired: false, check: 'completion', backed: true,
   path: EVIDENCE_PATH.NO_ENTITY_FALLBACK, sourced: null, entity_free: true,
@@ -937,11 +937,54 @@ check('gate.log: observation row carries path + backed + entity_free',
   obsRow.fired === false && obsRow.backed === true && obsRow.check === 'completion'
   && obsRow.path === 'no_entity_fallback' && obsRow.entity_free === true);
 check('gate.log: a PASS is now recordable (was unrepresentable before)', obsRow.result === 'pass');
-check('gate.log: observation claim text goes through the same scrubber',
-  !obsRaw.includes('OBSSECRET') && obsRaw.includes('<scrubbed>'));
 check('gate.log: pre-existing fields keep their meaning on observation rows',
   obsRow.gate === 'completion' && obsRow.verified === false && obsRow.attempt === 1);
+check('gate.log: the writer still scrubs whatever claim it IS given',
+  (() => {
+    const p = join(dir, 'gate-scrub.log');
+    process.env.QCLAW_GATE_LOG_PATH = p;
+    appendGateLog({ gate: 'completion', claim: 'done; key sk-ant-admin01-OBSSECRET here', result: 'hard_fail', attempt: 1, fired: true });
+    const raw = readFileSync(p, 'utf-8');
+    return !raw.includes('OBSSECRET') && raw.includes('<scrubbed>');
+  })());
 delete process.env.QCLAW_GATE_LOG_PATH;
+
+// Content policy, as an invariant rather than a comment: gate.log held claim text
+// only for FAILING claims before observations existed. Observations fire on every
+// gated turn including passes, so carrying their text would have widened the file
+// to most of Charlie's real output, and scrubSecrets covers keys, not PII.
+const polGateOut = {
+  result: 'hard_fail',
+  gates: [{
+    gate: 'completion', fired: true, severity: 'hard', action: 'reprompt',
+    claims: [{ text: 'Deployed the thing for Bianca Stuurman, $1,075.00', verification_attempted: true }],
+    observations: [
+      { check: 'completion', claim: 'Deployed the thing for Bianca Stuurman, $1,075.00', backed: false, path: null, sourced: null, entity_free: true },
+      { check: 'completion', claim: 'Invoice 1000148 is sent, due 4 Sep, bianca@example.com', backed: true, path: EVIDENCE_PATH.NO_ENTITY_FALLBACK, sourced: null, entity_free: true },
+    ],
+  }],
+};
+const polRows = gateLogRows(polGateOut, 2);
+check('gateLogRows: one firing row plus one row per observation', polRows.length === 3);
+check('gateLogRows: the FIRING row still carries its claim text (unchanged)',
+  polRows.filter(r => r.fired === true).length === 1
+  && polRows.find(r => r.fired === true).claim.includes('Bianca Stuurman'));
+check('gateLogRows: NO observation row carries claim text',
+  polRows.filter(r => r.fired === false).every(r => r.claim === null));
+check('gateLogRows: no customer data reaches gate.log via an observation',
+  !JSON.stringify(polRows.filter(r => r.fired === false)).includes('bianca@example.com'));
+check('gateLogRows: observations still carry the analytic payload',
+  polRows.filter(r => r.fired === false).every(r => r.check === 'completion' && typeof r.backed === 'boolean')
+  && polRows.some(r => r.fired === false && r.path === EVIDENCE_PATH.NO_ENTITY_FALLBACK));
+check('gateLogRows: a PASSING gate emits observations and no firing rows',
+  (() => {
+    const rows = gateLogRows({ result: 'pass', gates: [{ gate: 'completion', fired: false, observations: [{ check: 'completion', claim: 'x', backed: true, path: EVIDENCE_PATH.ENTITY_MATCH, sourced: null, entity_free: false }] }] }, 1);
+    return rows.length === 1 && rows[0].fired === false && rows[0].claim === null && rows[0].result === 'pass';
+  })());
+check('gateLogRows: a gate with neither claims nor observations emits nothing',
+  gateLogRows({ result: 'pass', gates: [{ gate: 'tool_reference', fired: false }] }, 1).length === 0);
+check('gateLogRows: kill-switch output (no gates) emits nothing',
+  gateLogRows({ result: 'pass', gates: [], disabled: true }, 1).length === 0);
 
 // Observations must never leak into `claims`: that array drives hedgeResponse
 // (which DELETES the sentence from the reply) and the escalation text. A backed
