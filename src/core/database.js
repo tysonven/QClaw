@@ -13,7 +13,13 @@
 import { join } from 'path';
 import { existsSync, mkdirSync } from 'fs';
 import { log } from './logger.js';
+import { resolveStoreDir } from './paths.js';
 
+// Module-level singleton: the FIRST getDb() call decides the file for the whole
+// process, and every later call gets it back regardless of the dir it asked for.
+// That is what makes an unguarded default here worse than elsewhere. One test
+// reaching getDb() with no dir before anything else would pin the entire process
+// to the live qclaw.db, including any code that later passed a temp dir.
 let _db = null;
 let _ready = false;
 
@@ -95,7 +101,9 @@ const QCLAW_SCHEMA = `
 export async function getDb(configDir) {
   if (_ready && _db) return _db;
 
-  const dir = configDir || join((await import('os')).homedir(), '.quantumclaw');
+  // resolveStoreDir refuses the live store when a test omits the dir. Production
+  // passes config._dir (src/index.js), so this path is unchanged there.
+  const dir = resolveStoreDir(configDir, 'qclaw.db');
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 
   const dbPath = join(dir, 'qclaw.db');
