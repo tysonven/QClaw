@@ -86,11 +86,14 @@ jobs:
       - name: Run Python suite
         run: |
           set -e
-          # Fail loudly if the glob matches nothing. Without this, a moved or
-          # renamed tests/ directory would leave the loop with nothing to run
-          # and the job would pass having tested zero things, which is the
-          # exact class of silent-success this PR exists to remove.
-          shopt -s failglob
+          # globstar so the glob RECURSES. tests/test_*.py alone misses
+          # tests/clipper/test_smart_crop_filter.py, which lives in a
+          # subdirectory: exactly the silent under-testing this loop is
+          # supposed to prevent, so the first version of it had the bug it was
+          # written to avoid. failglob so a moved or renamed tests/ directory
+          # fails loudly instead of leaving the loop with nothing to run and
+          # the job passing having tested zero things.
+          shopt -s globstar failglob
 
           # Per-file, not `pytest tests/`. Two reasons, both load-bearing:
           #
@@ -106,9 +109,18 @@ jobs:
           #    someone adds one, and nothing fails to announce it. That is the
           #    same shape as restarting one process out of six.
           #
-          # Verified 2026-08-28 on qclaw: this loop yields the same
-          # 208 passed + 3 subtests as the single-process explicit-file run.
-          for f in tests/test_*.py; do
+          # Per-file isolation is also what makes the clipper test safe to
+          # include. tests/clipper/test_smart_crop_filter.py stubs fastapi,
+          # pydantic, anthropic, boto3 and httpx into sys.modules at MODULE
+          # scope with no teardown, so in a shared process every module
+          # imported after it sees empty stubs. That is the actual cause of the
+          # `pytest tests/` collection failure described above, and it is
+          # tracked as a suite defect to fix properly; one process per file
+          # means the pollution cannot escape.
+          #
+          # Verified 2026-08-28 on qclaw: 211 passed + 6 subtests across all
+          # 8 files.
+          for f in tests/**/test_*.py; do
             echo "::group::$f"
             python -m pytest "$f" -q
             echo "::endgroup::"
