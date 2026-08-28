@@ -23,6 +23,7 @@ import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { homedir } from 'os';
 import { log } from '../core/logger.js';
+import { resolveStoreDir } from '../core/paths.js';
 
 import { probe as probeN8n } from './probes/n8n.js';
 import { probe as probeHeartbeat } from './probes/heartbeat-freshness.js';
@@ -253,7 +254,7 @@ async function _layer6Skills(agentName, userId, warnings) {
 async function _layer1Identity(config, agentName, services, warnings) {
   // Workspace-rooted SOUL/IDENTITY (per audit T1 resolution: read from
   // existing paths, no promotion). VALUES comes from the loaded TrustKernel.
-  const dir = config?._dir || join(homedir(), '.quantumclaw');
+  const dir = resolveStoreDir(config?._dir, 'workspace');
   const agentRoot = join(dir, 'workspace', 'agents', agentName);
 
   const soul = _safeRead(join(agentRoot, 'SOUL.md'), warnings, `SOUL.md missing for agent ${agentName}`);
@@ -424,11 +425,11 @@ function _trimBuildLog(text) {
 }
 
 function _appendLog(result, config) {
-  // Resolve log path from config?._dir (mirrors _layer1Identity at line 212),
-  // so tests using a tmpdir _dir get isolated logs without mutating
-  // process.env.HOME. Production callers omit _dir, falling back to
-  // ~/.quantumclaw/bootstrap.log.
-  const dir = config?._dir || join(homedir(), '.quantumclaw');
+  // Resolve log path from config?._dir (mirrors _layer1Identity), so tests using
+  // a tmpdir _dir get isolated logs without mutating process.env.HOME. That was
+  // always the intent; resolveStoreDir now enforces it, so a test that FORGETS
+  // the _dir fails loudly instead of appending to the live bootstrap.log.
+  const dir = resolveStoreDir(config?._dir, 'bootstrap.log');
   const logPath = join(dir, 'bootstrap.log');
 
   // Strip large doc bodies before writing — keep the JSONL tractable.
