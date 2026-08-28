@@ -37,6 +37,16 @@ def load_env(path: str):
                     os.environ.setdefault(key.strip(), value.strip())
     except FileNotFoundError:
         pass
+    except OSError as exc:
+        # An env file that EXISTS but cannot be READ is a different condition
+        # from one that is absent, and it used to crash this module at import.
+        # That made src/clipper/main.py unimportable on any machine without
+        # read access to /root, which is why CI could not run the clipper test
+        # at all: PermissionError during collection, before a single assertion.
+        # Degrade like the missing-file case, but SAY SO, because on the box an
+        # unreadable secrets file is a real misconfiguration that must not pass
+        # in silence.
+        logging.warning("load_env: could not read %s: %s", path, exc)
 
 load_env("/root/.quantumclaw/.env")
 

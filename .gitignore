@@ -72,4 +72,5 @@ CLAUDE_CODE_TASKS.md
 
 # Python bytecode caches
 __pycache__/
+.pytest_cache/
 *.pyc

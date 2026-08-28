@@ -30,7 +30,9 @@ jobs:
         run: pip install -r src/trade_engine/requirements.txt
 
       - name: Install dependencies
-        run: npm install
+        # npm ci, matching what the deploy runs. With npm install here, CI
+        # validated a node tree that the deploy did not install.
+        run: npm ci
 
       - name: Run smoke tests
         run: npm test
@@ -59,3 +61,222 @@ jobs:
             echo "::error::Found require() in src/ (use ESM imports)"
             exit 1
           fi
+
+  python-test:
+    # The 208+ Python tests cover the trade engine and the financial path.
+    # Until this job existed they gated nothing: the `test` job pip-installs
+    # requirements and then runs only `npm test`, which made the CI summary
+    # look like Python was covered.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies
+        run: |
+          pip install -r src/trade_engine/requirements.txt
+          # pytest is not a runtime dep so it is not in requirements.txt.
+          # Pinned to the major the suite is verified against.
+          pip install 'pytest>=9,<10'
+
+      - name: Run Python suite
+        run: |
+          set -uo pipefail
+          # nullglob (not failglob) so an empty match yields an empty array we
+          # can test explicitly, rather than an error whose fatality depends on
+          # `set -e`. The teeth here are the explicit count check and the
+          # `exit $rc` at the end, NOT a shell option: an earlier version of
+          # this comment credited failglob, but without `set -e` a failed glob
+          # merely skips the loop and the script exits 0.
+          shopt -s globstar nullglob
+          files=(tests/**/test_*.py)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::no test files matched tests/**/test_*.py"
+            exit 1
+          fi
+          echo "collected ${#files[@]} test files"
+
+          # Collect failures instead of stopping at the first one. Fail-fast
+          # plus tests/clipper sorting first meant a single collection error
+          # hid every trade-engine result, so CI reported one problem per run
+          # and the suite's real state stayed unknown.
+          #
+          # Per-file, not `pytest tests/`: directory collection fails on
+          # untouched main because tests/clipper stubs fastapi/pydantic into
+          # sys.modules at module scope with no teardown. Tracked separately as
+          # a suite defect; one process per file means it cannot leak.
+          rc=0
+          for f in "${files[@]}"; do
+            echo "::group::$f"
+            if ! python -m pytest "$f" -q; then
+              rc=1
+              echo "::error file=$f::pytest FAILED for $f"
+            fi
+            echo "::endgroup::"
+          done
+          exit $rc
+
+  deploy:
+    # Gating lives in the SAME workflow as the tests because `needs:` cannot
+    # reference a job in another workflow. deploy.yml was a separate workflow
+    # triggered directly by `push`, so it had no way to wait: it landed in
+    # ~15s while CI takes ~2min, and a commit that FAILED CI still reached
+    # production. The 2026-08-27 attempt-2 bypass ran live for ~20 minutes
+    # through exactly this hole.
+    #
+    # `workflow_run` was rejected: it fires when CI COMPLETES regardless of
+    # outcome, so the guarantee would depend on remembering to test
+    # github.event.workflow_run.conclusion, and it runs the workflow file from
+    # the default branch rather than the pushed commit.
+    needs: [test, lint, python-test]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    # Two pushes in quick succession would otherwise put two deploys on the box
+    # at once, contending on .git/index.lock and on npm ci rewriting
+    # node_modules underneath each other. cancel-in-progress is false on
+    # purpose: interrupting a deploy midway through npm ci is worse than
+    # queueing behind it.
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    steps:
+      - name: Deploy to server
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_IP }}
+          username: flowos
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script_stop: true
+          script: |
+            cd /root/QClaw
+
+            # Clean-tree assert that fails CLOSED. The previous form captured
+            # stdout only, so any git failure (dubious ownership, index.lock,
+            # sudo losing NOPASSWD, disk full) produced empty stdout, discarded
+            # a non-zero exit, and let the deploy proceed against an unknown
+            # tree. Capture stderr too, check the exit status explicitly, and
+            # reuse the captured output rather than calling git a second time,
+            # which was both a race and a second chance to fail open.
+            if ! tree_status=$(sudo git status --porcelain 2>&1); then
+              echo "::error::git status failed on /root/QClaw, refusing to deploy"
+              printf '%s\n' "$tree_status"
+              exit 1
+            fi
+            if [ -n "$tree_status" ]; then
+              echo "::error::/root/QClaw has uncommitted drift; refusing to deploy."
+              printf '%s\n' "$tree_status"
+              exit 1
+            fi
+
+            # Deploy the commit CI validated, not whatever main points at now.
+            # needs: inserts ~2 minutes, so with a plain `git pull origin main`
+            # a commit that landed during that window would ship on the back of
+            # an earlier commit's green run.
+            sudo git fetch origin
+            sudo git merge --ff-only ${{ github.sha }}
+
+            # merge --ff-only reports "Already up to date" and exits 0 when HEAD
+            # is already at or AHEAD of that sha, so on its own the step does
+            # not deliver what it claims. Reachable via a commit made directly
+            # on /root/QClaw, which happens here, or out-of-order queued
+            # deploys. Assert the outcome rather than trusting the exit code.
+            test "$(sudo git rev-parse HEAD)" = "${{ github.sha }}" || {
+              echo "::error::HEAD is not the CI-validated commit ${{ github.sha }}"
+              sudo git rev-parse HEAD
+              exit 1
+            }
+
+            # npm ci, not npm install: installs exactly what the lockfile pins
+            # and fails if package.json and package-lock.json disagree.
+            sudo npm ci --ignore-scripts
+
+            # --ignore-scripts is KEPT deliberately: it stops every transitive
+            # dependency's postinstall running as root on the production box,
+            # which is a security posture worth more than the convenience of
+            # automatic native builds. But npm ci WIPES node_modules and
+            # --ignore-scripts then suppresses the rebuild, so the two native
+            # modules must be rebuilt explicitly and by name. canvas@3.2.3 and
+            # better-sqlite3@11.10.0 were placed out of band and are not
+            # otherwise reproducible from this pipeline.
+            sudo npm rebuild canvas better-sqlite3
+
+            # Prove they actually load. canvas failing is loud (it kills the
+            # Flow OS image generator), but better-sqlite3 degrades SILENTLY
+            # behind try/catch with JSON fallbacks: audit.db and memory.db stop
+            # receiving writes with only a log.warn, stranding the gate replay
+            # corpus. A silent data-loss path is exactly what this pipeline
+            # exists to stop, so assert rather than hope.
+            #
+            # better-sqlite3 MUST be INSTANTIATED, not merely required. It loads
+            # its addon lazily, inside the Database constructor
+            # (node_modules/better-sqlite3/lib/database.js:48,
+            # `require('bindings')('better_sqlite3.node')`), so `require()`
+            # alone never touches better_sqlite3.node and exits 0 against a
+            # deleted, corrupt or zero-byte binding.
+            #
+            # TO RE-VERIFY, use a check that can actually tell the two apart.
+            # NOT process.moduleLoadList: it reports 102 entries, byte
+            # identical, both after a bare require and after instantiation,
+            # because .node addons are dlopen'd rather than added to that list.
+            # It cannot distinguish the states, so consulting it makes the
+            # instantiation below look redundant and leads straight back to the
+            # bug this line replaced. The discriminating check is the process
+            # memory map (verified on qclaw, node v22.22.2):
+            #   node -e "require('better-sqlite3'); \
+            #     console.log(require('fs').readFileSync('/proc/self/maps','utf8') \
+            #       .includes('better_sqlite3.node'))"   # => false
+            #   node -e "const D=require('better-sqlite3'); new D(':memory:'); \
+            #     console.log(require('fs').readFileSync('/proc/self/maps','utf8') \
+            #       .includes('better_sqlite3.node'))"   # => true
+            #
+            # This is not hypothetical. canvas is N-API and survives a
+            # Node major bump; better-sqlite3 11.10.0 is not and does not, so a
+            # node upgrade is exactly the event that leaves canvas passing and
+            # this check vacuous while audit.db quietly stops recording.
+            sudo node -e "require('canvas'); const D=require('better-sqlite3'); new D(':memory:').exec('create table t(x)'); console.log('native modules OK')"
+
+            # @agexhq/hub-lite is an optionalDependency, so npm ci exits 0 even
+            # when it fails to install. Without this check the restart below
+            # would happily start a process whose entry file does not exist.
+            if [ ! -f node_modules/@agexhq/hub-lite/src/index.js ]; then
+              echo "::error::@agexhq/hub-lite entry file missing after npm ci"
+              exit 1
+            fi
+
+            # ALL SIX processes. Verified from `pm2 jlist` on 2026-08-28, every
+            # one executes code from this repo:
+            #   agex-hub                node_modules/@agexhq/hub-lite/src/index.js
+            #   quantumclaw             src/index.js
+            #   trade-engine            src/trade_engine/main.py
+            #   trading-worker          src/trading/monte_carlo.py
+            #   claude-code-dispatcher  src/dispatch/start.js
+            #   clipper-worker          src/clipper (bash, cwd in repo)
+            #
+            # PR #94 sat inert for 8 days through two separate failures, and
+            # they are worth keeping distinct because fixing either alone would
+            # have left the other. The CAUSE is this list: the pipeline
+            # restarted quantumclaw only, so it pulled the fix and restarted a
+            # process that does not run it. The missed DETECTION was that
+            # nobody compared process uptime against the deploy timestamp,
+            # which is what the `pm2 list` at the end of this script and step 5
+            # of docs/runbooks/deploy-partial-failure.md are for. This line
+            # fixes the cause, not the detection.
+            #
+            # agex-hub goes FIRST on purpose: src/index.js:92-106 has
+            # quantumclaw connect to the hub at localhost:4891 during boot and
+            # no reconnect logic was found, so restarting the hub after
+            # quantumclaw tears that connection down seconds after it is made.
+            #
+            # Deliberately NOT path-filtered. agex-hub runs out of node_modules,
+            # which npm ci rewrites on EVERY deploy even when no source file
+            # changed, so "which files changed" does not determine "which
+            # processes are stale". Add any new PM2 process here.
+            sudo pm2 restart agex-hub quantumclaw trade-engine trading-worker \
+              claude-code-dispatcher clipper-worker --update-env
+
+            # Uptimes in the log make "deployed" checkable rather than assumed.
+            sudo pm2 list
