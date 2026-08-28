@@ -24282,3 +24282,72 @@ uptime and reads as recovered. It now points at `status` and the restart
 counter. The unasserted `pm2 list` at the end of the deploy script has the
 identical weakness and is queued as its own item: a deploy that restarts all six
 processes into a crash-loop still reports green.
+
+## 2026-08-28: PR #101 merged, first gated deploy succeeded; heartbeat row verification PENDING
+
+**Merged and deployed.** PR #101 merged; qclaw live checkout at `2ea7ca0`
+(QClaw repo). This was the first run of the gated pipeline, and it is the first
+deploy in this repo's history that restarted more than one process.
+
+**What the deploy did, observed rather than assumed.** All six PM2 processes
+restarted, every restart counter incremented by exactly one, and all six were
+still at those same counters when re-read 30 seconds later, all `online`. That
+second read is the part that matters: `pm2 restart` returns on RESPAWN and not
+on health, so a single reading of a fresh uptime cannot distinguish a healthy
+process from one in a crash-loop. Two reads with a stable counter can.
+`trade-engine` went 15 to 16 with a clean error log.
+
+**The heartbeat writer is finally in the running image.** It had been sitting on
+disk since `0f1634b` (QClaw repo), pulled forward by the old pipeline within
+minutes of each push while `trade-engine` uptime never moved. Confirmed present
+in the running image after this deploy: `record_success_heartbeat` appears three
+times in `/root/QClaw/src/trade_engine/main.py` at `2ea7ca0`, and the process
+restarted onto it at approximately 20:51Z.
+
+**Row verification is PENDING, not confirmed.** As of 21:03Z,
+`workflow_heartbeats` holds ZERO rows for `trade-engine-scanner` and ZERO for
+`trade-engine-monitor`, and `/health` reports `last_scan_at: null` and
+`last_monitor_at: null`. That is the EXPECTED state at this moment and is
+evidence of nothing either way: `position_monitor` is an
+`IntervalTrigger(minutes=15)` and APScheduler fires interval jobs first at
+start + interval, not at startup, so with a ~20:51Z restart the first sweep is
+due ~21:06Z. The scanner is due at the 22:00Z `scanner_weekday` fire. Both
+counters in `/health` reset on restart, so their nulls are consistent with a
+process 12 minutes old and prove nothing about the writer.
+
+Recording this as pending rather than as success is the whole point. Every
+failure logged this week came from treating a plausible intermediate state as a
+finished one, and "deployed, therefore working" is exactly the inference that
+cost 8 days on PR #94.
+
+**The two falsification conditions, to be checked next session:**
+
+1. If `last_monitor_at` in `/health` is STILL null after ~21:10Z, the scheduler
+   is not firing the job at all. That is a scheduler problem, not a writer
+   problem, and `scheduler_running` / `scheduler_jobs` (4) would need
+   re-examining.
+2. If `last_monitor_at` ADVANCES but no row appears in `workflow_heartbeats`,
+   the writer is failing and swallowing the error. `record_success_heartbeat`
+   catches every exception by design so that observability can never take down
+   the job it observes, which means a failed write is invisible at the call
+   site and shows up only as `log.exception("heartbeat write failed for %s")`
+   in the trade-engine log.
+
+**CHECK THE TABLE, NEVER THE RETURN.** The function cannot raise. A clean return
+proves nothing whatsoever, and this was already caught once during the
+pre-restart contract self-test, where two calls "completed without raising" and
+only a direct query established that rows had actually landed. The same
+discipline applies here.
+
+**Nothing has been added to `O5ir2Mp0e2AXkUXZ`.** No entry for either identity
+goes into the Dormancy Alerter's `expectations` map until real rows exist,
+because the map's own logic reports an entry with no heartbeat as
+`never_heartbeated` and would alert immediately and continuously. The correct
+order is writer first, rows confirmed, map entry last.
+
+**Scanner note for whoever picks this up:** the scanner heartbeat emits only on
+a COMPLETED scan, and the monitor withholds its heartbeat entirely when
+`result.errors` is non-zero, since `check_positions()` never raises and returns
+an error count instead. So a missing row after the due time is a real signal in
+either case rather than a timing artifact, provided the due time has actually
+passed.
