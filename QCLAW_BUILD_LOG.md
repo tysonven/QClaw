@@ -23924,3 +23924,56 @@ careful notes". These notes were careful. It is that a record asserting
 something was HANDLED needs to name what would prove it, or it becomes the
 reason no one checks. `trading.md` now names the settlement receipt, which is
 checkable, rather than the activity log, which merely looks authoritative.
+
+### deploy.yml is the mechanical explanation for "deployed does not mean restarted"
+
+The 8-day inert-fix entry above recorded WHAT happened, that the code reached
+disk and the process never picked it up, and drew the lesson that a deploy
+without a restart is a silent no-op. It did not explain WHY the restart was
+missing. `.github/workflows/deploy.yml` is the answer, and it is five lines:
+
+    cd /root/QClaw
+    git stash
+    sudo git pull origin main
+    sudo npm install --ignore-scripts --prefix /root/QClaw
+    sudo pm2 restart quantumclaw
+
+`sudo pm2 restart quantumclaw` is the whole of it. Verified from `pm2 jlist` on
+2026-08-28, SIX processes execute code out of this repo: `quantumclaw`
+(src/index.js), `trade-engine` (src/trade_engine/main.py), `trading-worker`
+(src/trading/monte_carlo.py), `claude-code-dispatcher` (src/dispatch/start.js),
+`clipper-worker` (src/clipper, bash with cwd in the repo) and `agex-hub`
+(node_modules/@agexhq/hub-lite/src/index.js). The pipeline restarts one of the
+six. So PR #94 was not forgotten and nobody skipped a step: the automation
+pulled the fix onto disk and restarted a process that does not run it. A
+position opened on 2026-08-27 recorded proposal values because the pipeline
+worked exactly as written.
+
+This was watched happening live during this session. Every docs push to main
+today triggered deploy.yml, which pulled /root/QClaw forward within minutes
+while `trade-engine` uptime sat unchanged. The heartbeat writer (0f1634b) landed
+on disk the same way and is, as of this entry, still not running. The trap
+reproduces on demand.
+
+Three further defects in the same five lines. `git stash` silently promotes any
+drift on the production checkout into an unread stash and deploys anyway.
+`npm install` is unpinned against a lockfile that exists, so production can
+float to dependency versions CI never tested. And the deploy job is a SEPARATE
+workflow triggered directly by `push`, landing in ~15s against a ~2min CI, so a
+commit that FAILS CI still reaches production. That last one is not theoretical:
+it is how the 2026-08-27 attempt-2 bypass ran live for roughly 20 minutes.
+
+Draft PR #101 addresses all four. The CI gate required moving the deploy job
+into ci.yml, since `needs:` cannot reference a job in another workflow;
+`workflow_run` was rejected because it fires when CI completes regardless of
+outcome, making the guarantee depend on remembering to check the conclusion. The
+restart list is deliberately NOT path-filtered: `agex-hub` runs out of
+node_modules, which `npm ci` rewrites on every deploy even when no source file
+changed, so "which files changed" does not determine "which processes are
+stale". Inferring that mapping is the same species of cleverness that produced
+the original bug.
+
+Worth stating plainly, because it is the fourth instance this week of a true
+record standing in for an unperformed check: the deploy pipeline reported
+success on every one of those 8 days. It really had deployed. "Deploy
+succeeded" was accurate and meant less than everyone reading it assumed.
