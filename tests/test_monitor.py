@@ -61,10 +61,16 @@ def make_position(**overrides) -> TradePosition:
     return TradePosition(**base)
 
 
-def sim_row(sim_id="sim-1", condition_id=CID, question=QUESTION) -> dict:
+MARKET_ID = "3846614"
+
+
+def sim_row(sim_id="sim-1", condition_id=CID, question=QUESTION,
+            market_id=None) -> dict:
     raw = {"question": question}
     if condition_id is not None:
         raw["polymarket_condition_id"] = condition_id
+    if market_id is not None:
+        raw["polymarket_market_id"] = market_id
     return {"id": sim_id, "asset": "eth", "raw_output": raw}
 
 
@@ -111,6 +117,7 @@ class MonitorTestCase(unittest.TestCase):
         self.resolve_calls = []     # (position_id, note)
 
         self.gamma_by_cid = {}      # condition_id -> list payload or Exception
+        self.gamma_by_id = {}       # numeric market id -> dict payload or Exception
         self.gamma_requests = []
         self.telegram_requests = []
         self.telegram_status = 200
@@ -189,19 +196,46 @@ class MonitorTestCase(unittest.TestCase):
                 return httpx.Response(tests.telegram_status, json={"ok": True})
             if request.url.host == "gamma-api.polymarket.com":
                 tests.gamma_requests.append(str(request.url))
-                cid = request.url.params.get("condition_ids")
-                payload = tests.gamma_by_cid.get(cid)
-                if isinstance(payload, Exception):
-                    raise payload
-                if payload is None:
-                    return httpx.Response(200, json=[])
-                return httpx.Response(200, json=payload)
+                return tests.gamma_response(request)
             raise AssertionError(f"unexpected host: {request.url.host}")
 
         self.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         self.monitor = PositionMonitor(
             client=self.client, token="test-token", chat_id="12345"
         )
+
+    def gamma_response(self, request: httpx.Request) -> httpx.Response:
+        """Emulate Gamma's real routing and filter semantics, not a friendlier
+        version of them. Probed live 2026-09-02:
+
+          * /markets/<numeric id> returns the market as an OBJECT regardless
+            of whether it is live or closed, and 404s for an unknown id.
+          * /markets?condition_ids=... returns an ARRAY and applies `closed`
+            as a strict two-valued filter. Omitting `closed` behaves exactly
+            like closed=false, so a resolved market is invisible without
+            closed=true.
+
+        The monitor's phantom-open bug was a mismatch between assumed and real
+        semantics, so a permissive mock here would let it back in unnoticed.
+        """
+        path = request.url.path
+        if path.startswith("/markets/"):
+            payload = self.gamma_by_id.get(path.rsplit("/", 1)[-1])
+            if isinstance(payload, Exception):
+                raise payload
+            if payload is None:
+                return httpx.Response(404, json={"error": "not found"})
+            return httpx.Response(200, json=payload)
+
+        payload = self.gamma_by_cid.get(request.url.params.get("condition_ids"))
+        if isinstance(payload, Exception):
+            raise payload
+        if not payload:
+            return httpx.Response(200, json=[])
+        wants_closed = request.url.params.get("closed") == "true"
+        if bool(payload[0].get("closed")) is not wants_closed:
+            return httpx.Response(200, json=[])
+        return httpx.Response(200, json=payload)
 
     def tearDown(self) -> None:
         for name, fn in self._orig.items():
@@ -277,6 +311,196 @@ class TestLookups(MonitorTestCase):
         result = self.sweep()
         self.assertEqual(result.positions_unpriceable, 1)
         self.assertEqual(self.update_calls, [])
+
+
+class TestMarketLookupRouting(MonitorTestCase):
+    """The phantom-open regression surface.
+
+    Position e09b82fe resolved worthless on 2026-08-31 and stayed 'open' for
+    four days because the conditionId listing cannot see a closed market and
+    _fetch_market had no other route. These tests pin every route and, just as
+    importantly, pin that the fix did not invert the bug onto live markets.
+    """
+
+    def test_path_form_preferred_and_is_the_only_call(self):
+        self.positions = [make_position()]
+        self.sim_rows["sim-1"] = sim_row(market_id=MARKET_ID)
+        self.gamma_by_id[MARKET_ID] = gamma_market(yes="0.55", no="0.45")[0]
+        self.gamma_by_cid[CID] = gamma_market(yes="0.55", no="0.45")
+        self.sweep()
+        self.assertEqual(len(self.gamma_requests), 1)
+        self.assertTrue(self.gamma_requests[0].endswith(f"/markets/{MARKET_ID}"))
+
+    def test_path_form_finds_a_resolved_market(self):
+        """The regression test. Path form is state-agnostic, so one call."""
+        self.positions = [make_position()]
+        self.sim_rows["sim-1"] = sim_row(market_id=MARKET_ID)
+        self.gamma_by_id[MARKET_ID] = gamma_market(
+            yes="0", no="1", active=True, closed=True
+        )[0]
+        result = self.sweep()
+        self.assertEqual(len(self.gamma_requests), 1)
+        self.assertEqual(result.positions_resolved, 1)
+        self.assertEqual(result.positions_unpriceable, 0)
+        self.assertEqual(self.update_calls[0][1]["exit_reason"], "resolved_loss")
+
+    def test_listing_fallback_finds_a_resolved_market(self):
+        """No market_id (older simulation rows): plain listing misses, the
+        closed=true retry finds it. Two calls, still closes."""
+        self.positions = [make_position()]
+        self.sim_rows["sim-1"] = sim_row()
+        self.gamma_by_cid[CID] = gamma_market(
+            yes="0", no="1", active=True, closed=True
+        )
+        result = self.sweep()
+        self.assertEqual(len(self.gamma_requests), 2)
+        self.assertNotIn("closed=true", self.gamma_requests[0])
+        self.assertIn("closed=true", self.gamma_requests[1])
+        self.assertEqual(result.positions_resolved, 1)
+
+    def test_live_market_still_found_by_the_plain_listing(self):
+        """Guards against inverting the bug. A live market must resolve on the
+        FIRST listing call, with no closed=true request at all: appending that
+        filter globally would make every open position unpriceable."""
+        self.positions = [make_position()]
+        self.sim_rows["sim-1"] = sim_row()
+        self.gamma_by_cid[CID] = gamma_market(yes="0.55", no="0.45")
+        result = self.sweep()
+        self.assertEqual(len(self.gamma_requests), 1)
+        self.assertNotIn("closed=true", self.gamma_requests[0])
+        self.assertEqual(result.positions_unpriceable, 0)
+        self.assertEqual(self.update_calls, [])
+
+    def test_path_form_404_falls_back_to_the_listing(self):
+        self.positions = [make_position()]
+        self.sim_rows["sim-1"] = sim_row(market_id=MARKET_ID)
+        # gamma_by_id left empty -> 404
+        self.gamma_by_cid[CID] = gamma_market(yes="0.55", no="0.45")
+        result = self.sweep()
+        self.assertEqual(len(self.gamma_requests), 2)
+        self.assertTrue(self.gamma_requests[0].endswith(f"/markets/{MARKET_ID}"))
+        self.assertIn(f"condition_ids={CID}", self.gamma_requests[1])
+        self.assertEqual(result.positions_unpriceable, 0)
+
+    def test_path_form_transport_error_falls_back_to_the_listing(self):
+        """A Gamma hiccup on the preferred route must degrade to the old
+        behaviour, not make every position unpriceable."""
+        self.positions = [make_position()]
+        self.sim_rows["sim-1"] = sim_row(market_id=MARKET_ID)
+        self.gamma_by_id[MARKET_ID] = httpx.ConnectError("boom")
+        self.gamma_by_cid[CID] = gamma_market(
+            yes="0", no="1", active=True, closed=True
+        )
+        result = self.sweep()
+        self.assertEqual(result.positions_resolved, 1)
+
+    def test_missing_from_every_route_counts_unpriceable(self):
+        self.positions = [make_position()]
+        self.sim_rows["sim-1"] = sim_row(market_id=MARKET_ID)
+        with self.assertLogs("trade_engine.monitor", level="WARNING") as logs:
+            result = self.sweep()
+        self.assertEqual(len(self.gamma_requests), 3)
+        self.assertEqual(result.positions_unpriceable, 1)
+        self.assertEqual(self.update_calls, [])
+        self.assertTrue(any("market not found" in line for line in logs.output))
+
+    def test_no_identifier_at_all_makes_no_request(self):
+        self.positions = [make_position()]
+        self.sim_rows["sim-1"] = sim_row(condition_id=None)
+        result = self.sweep()
+        self.assertEqual(self.gamma_requests, [])
+        self.assertEqual(result.positions_unpriceable, 1)
+
+
+class TestResolutionFlagSemantics(MonitorTestCase):
+    """`closed` alone means settled.
+
+    Gamma reports a resolved market as active=True, closed=True (condition
+    0x535f3249cc…, read 2026-09-02). The old `active is False and closed is
+    True` conjunction was therefore False on a genuinely settled market, and
+    only the 0.0/1.0 price fallback closed it.
+
+    COVERAGE NOTE, verified by mutation on 2026-09-02: restoring the old
+    conjunction fails exactly ONE test in this file,
+    test_active_true_closed_true_with_non_final_price_does_not_close. Every
+    other resolution test survives it, because a market settling to 0.0/1.0
+    is closed by the price fallback whether or not resolved_flags fired. So
+    that non-final-price test is the only thing standing between us and a
+    future "simplification" back to the broken conjunction. Do not delete it,
+    and do not trust a green suite here without it.
+    """
+
+    def test_active_true_closed_true_resolves(self):
+        """Pins the intended path. NOT a discriminator on its own: the price
+        fallback closes this case under the old conjunction too."""
+        self.positions = [make_position()]
+        self.sim_rows["sim-1"] = sim_row(market_id=MARKET_ID)
+        self.gamma_by_id[MARKET_ID] = gamma_market(
+            yes="0", no="1", active=True, closed=True
+        )[0]
+        result = self.sweep()
+        self.assertEqual(result.positions_resolved, 1)
+        self.assertEqual(self.update_calls[0][1]["exit_reason"], "resolved_loss")
+
+    def test_active_true_closed_true_with_non_final_price_does_not_close(self):
+        """Keying on `closed` alone must not license a close at a price that
+        has not settled. Voided or still-settling markets wait."""
+        self.positions = [make_position()]
+        self.sim_rows["sim-1"] = sim_row(market_id=MARKET_ID)
+        self.gamma_by_id[MARKET_ID] = gamma_market(
+            yes="0.4", no="0.6", active=True, closed=True
+        )[0]
+        with self.assertLogs("trade_engine.monitor", level="WARNING") as logs:
+            result = self.sweep()
+        self.assertEqual(result.positions_resolved, 0)
+        self.assertEqual(result.positions_unpriceable, 1)
+        self.assertEqual(self.update_calls, [])
+        self.assertTrue(any("not final" in line for line in logs.output))
+
+    def test_open_market_is_not_treated_as_resolved(self):
+        self.positions = [make_position()]
+        self.sim_rows["sim-1"] = sim_row(market_id=MARKET_ID)
+        self.gamma_by_id[MARKET_ID] = gamma_market(
+            yes="0.55", no="0.45", active=True, closed=False
+        )[0]
+        result = self.sweep()
+        self.assertEqual(result.positions_resolved, 0)
+        self.assertEqual(self.update_calls, [])
+
+
+class TestPhantomOpenAcceptance(MonitorTestCase):
+    """End-to-end reproduction of the live position this fix exists for."""
+
+    def test_e09b82fe_closes_with_the_expected_row(self):
+        self.positions = [make_position(
+            id="e09b82fe-6674-4ba4-9717-5ea22e9d99aa",
+            direction="YES",
+            entry_price=0.0152,
+            shares=659.39,
+            usdc_amount=10.69,
+        )]
+        self.sim_rows["sim-1"] = sim_row(
+            market_id=MARKET_ID,
+            question="Will the price of Ethereum be above $2,500 on August 31?",
+        )
+        # Exactly what Gamma serves for condition 0x535f3249cc… since
+        # closedTime 2026-08-31T16:54:31Z.
+        self.gamma_by_id[MARKET_ID] = gamma_market(
+            yes="0", no="1", active=True, closed=True
+        )[0]
+
+        result = self.sweep()
+
+        self.assertEqual(result.positions_resolved, 1)
+        self.assertEqual(result.positions_unpriceable, 0)
+        self.assertEqual(len(self.update_calls), 1)
+        position_id, updates = self.update_calls[0]
+        self.assertEqual(position_id, "e09b82fe-6674-4ba4-9717-5ea22e9d99aa")
+        self.assertEqual(updates["status"], "closed")
+        self.assertEqual(updates["exit_price"], 0.0)
+        self.assertEqual(updates["exit_reason"], "resolved_loss")
+        self.assertEqual(updates["exit_usdc"], 0.0)
+        self.assertEqual(updates["pnl"], -10.69)
 
 
 class TestUnresolved(MonitorTestCase):

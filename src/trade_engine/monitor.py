@@ -8,9 +8,9 @@ APScheduler (Session 6) and on demand via /monitor/run.
 
 Rule order per position — first match wins:
 
-1. RESOLUTION (new, not in n8n). A market reporting active=false AND
-   closed=true, or whose direction-side price has finalised at exactly 1.0 or
-   0.0, is settled: close at the final price with exit_reason 'resolved_win' /
+1. RESOLUTION (new, not in n8n). A market reporting closed=true, or whose
+   direction-side price has finalised at exactly 1.0 or 0.0, is settled: close
+   at the final price with exit_reason 'resolved_win' /
    'resolved_loss'. The n8n TP/SL rules caught most settlements implicitly (a
    resolved-YES market trips take_profit at 1.0) but mislabelled the exit and
    missed one case entirely: a position entered at <= 0.20 that resolves
@@ -38,11 +38,21 @@ So a threshold crossing now FLAGS, it does not close:
   * trading_positions is NOT touched. status stays 'open', and pnl stays NULL
     until a real close is logged via POST /positions/manual-close.
 
-RESOLUTION IS DIFFERENT AND IS UNCHANGED. A settled market (active=false and
-closed=true, or a finalised 1.0/0.0 price) really has closed and really does pay
-out, so _close() still writes status='closed' for resolved_win / resolved_loss.
+RESOLUTION IS DIFFERENT AND IS UNCHANGED. A settled market (closed=true, or a
+finalised 1.0/0.0 price) really has closed and really does pay out, so
+_close() still writes status='closed' for resolved_win / resolved_loss.
 Do not route those through the alert path: they are real closes, not requests
 for a human to act.
+
+FINDING A RESOLVED MARKET (2026-09-02: read _fetch_market before changing it)
+------------------------------------------------------------------------------
+Gamma drops closed markets from the default /markets listing, so the
+conditionId query this monitor used could not see a market once it settled.
+Position e09b82fe stayed 'open' for four days after resolving worthless while
+the sweep scored it 'unpriceable' 189 times and reported a healthy run. The
+close path above was never reached, because the fetch that feeds it returned
+None. _fetch_market now prefers the numeric-id path form, which is the only
+state-agnostic route, and falls back to the listing in both of its states.
 
 Prices are DIRECTION-SIDE throughout, matching the n8n `priceFor(conditionId,
 direction)` helper: for a NO position, currentPrice is outcomePrices[1] and a
@@ -70,7 +80,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
 
 import httpx
 
@@ -104,6 +114,33 @@ WEAKENING_MIN_ENTRY = 0.50
 # Populated after each sweep so /health can report monitor freshness.
 # resolved_total is a process-lifetime running count of settlement closes.
 _last_monitor: dict[str, Any] = {"at": None, "resolved_total": 0}
+
+
+class MarketRef(NamedTuple):
+    """The identifiers needed to price one position's market.
+
+    Both ids are carried, not just the conditionId. The numeric Gamma id is
+    the only one that resolves a market whose state we do not already know
+    (see _fetch_market), and trading_positions itself carries neither: its
+    market_id column is a uuid FK to the empty trading_markets table and
+    stays NULL, so the simulation row is the only route back to a market.
+    """
+
+    condition_id: Optional[str]
+    market_id: Optional[str]
+    question: Optional[str]
+
+    @property
+    def usable(self) -> bool:
+        """True when at least one identifier can address a Gamma market."""
+        return bool(self.condition_id or self.market_id)
+
+    @property
+    def label(self) -> str:
+        """Short, log-safe identifier. Prefers whichever id will be tried."""
+        if self.market_id:
+            return f"market_id={self.market_id}"
+        return f"{(self.condition_id or '?')[:12]}…"
 
 
 def last_monitor_state() -> dict[str, Any]:
@@ -173,7 +210,7 @@ class PositionMonitor:
 
         counts = {
             "resolved": 0, "tp_sl": 0, "alert": 0, "unpriceable": 0, "error": 0,
-            "alert_dup": 0, "held": 0,
+            "alert_dup": 0, "held": 0, "not_found": 0,
         }
         for position in positions:
             try:
@@ -189,7 +226,10 @@ class PositionMonitor:
             positions_checked=len(positions),
             positions_resolved=counts["resolved"],
             positions_tp_sl=counts["alert"],
-            positions_unpriceable=counts["unpriceable"],
+            # not_found totals in here so this counter keeps its old meaning:
+            # every position the sweep could not act on. The tags stay separate
+            # because only not_found can conceal a settled position.
+            positions_unpriceable=counts["unpriceable"] + counts["not_found"],
             # alerts_sent counts NEW alerts only: a deduped crossing sends no
             # Telegram message, so counting it here would misreport notification
             # volume and hide whether the anti-spam path is working.
@@ -211,7 +251,14 @@ class PositionMonitor:
 
     async def _check_one(self, position: TradePosition) -> str:
         """Evaluate one position. Returns an outcome tag for the sweep counts:
-        'resolved' | 'tp_sl' | 'alert' | 'unpriceable' | 'error' | 'open'."""
+        'resolved' | 'tp_sl' | 'alert' | 'unpriceable' | 'not_found' | 'error'
+        | 'held' | 'open'.
+
+        'not_found' is a distinct tag, not a flavour of 'unpriceable': a market
+        no route can find is a different failure from one we found and could
+        not price, and only the first can hide a settled position. Both still
+        total into positions_unpriceable so the existing counter is unchanged.
+        """
         if not position.simulation_id:
             # M3 gap: pre-Session-6 positions opened without a persisted
             # simulation row. There is no route back to a market — skip.
@@ -221,44 +268,53 @@ class PositionMonitor:
             )
             return "unpriceable"
 
-        condition_id, question = await self._resolve_condition_id(position.simulation_id)
-        if not condition_id:
+        ref = await self._resolve_market_ref(position.simulation_id)
+        if not ref.usable:
             log.warning(
-                "monitor: position %s: simulation %s carries no condition_id — skipped",
-                position.id, position.simulation_id,
+                "monitor: position %s: simulation %s carries no market "
+                "identifier, skipped", position.id, position.simulation_id,
             )
             return "unpriceable"
 
-        market = await self._fetch_market(condition_id)
+        market = await self._fetch_market(ref)
         if market is None:
             log.warning(
-                "monitor: market not found on Gamma for %s… (position %s) — skipped",
-                condition_id[:12], position.id,
+                "monitor: market not found on Gamma for %s (position %s), skipped",
+                ref.label, position.id,
             )
-            return "unpriceable"
+            return "not_found"
 
         yes_price, no_price = self._outcome_prices(market)
         if yes_price is None or no_price is None:
             log.warning(
-                "monitor: no price available for %s… (position %s) — skipped",
-                condition_id[:12], position.id,
+                "monitor: no price available for %s (position %s), skipped",
+                ref.label, position.id,
             )
             return "unpriceable"
 
         direction = (position.direction or "").upper()
         current_price = yes_price if direction == "YES" else no_price
-        question = question or f"{condition_id[:10]}…"
+        question = ref.question or ref.label
 
         # 1. RESOLUTION — settled markets close at the final price.
-        resolved_flags = market.get("active") is False and market.get("closed") is True
+        #
+        # Keyed on `closed` ALONE. This test also required `active is False`
+        # until 2026-09-02, and Gamma reports a settled market like this:
+        #     active: True, closed: True, outcomePrices: ["0", "1"]
+        # (condition 0x535f3249cc…, read 2026-09-02, closedTime 16:54:31Z).
+        # The conjunction was therefore False on a market that had genuinely
+        # resolved, and only the 0.0/1.0 price fallback below closed it. A
+        # market resolving to a non-final price fell through both and stayed
+        # open. `closed` is the field that actually means settled.
+        resolved_flags = market.get("closed") is True
         if resolved_flags or current_price in (0.0, 1.0):
             if current_price not in (0.0, 1.0):
-                # active=false/closed=true but outcomePrices not finalised
+                # closed=true but outcomePrices not finalised
                 # (e.g. voided or still settling): there is no defensible
                 # win/loss to write, so wait for the next sweep.
                 log.warning(
-                    "monitor: %s… reports closed but price %.4f is not final "
-                    "(position %s) — skipped", condition_id[:12], current_price,
+                    "monitor: %s reports closed but price %.4f is not final "
+                    "(position %s), skipped", ref.label, current_price,
                     position.id,
                 )
                 return "unpriceable"
@@ -637,49 +693,117 @@ class PositionMonitor:
 
     # --- lookups ----------------------------------------------------------
 
-    async def _resolve_condition_id(
-        self, simulation_id: str
-    ) -> tuple[Optional[str], Optional[str]]:
-        """simulation_id -> (conditionId, question) via trading_simulations.
+    async def _resolve_market_ref(self, simulation_id: str) -> MarketRef:
+        """simulation_id -> MarketRef via trading_simulations.
 
-        trading_positions stores no Polymarket identifier of its own
-        (market_id is a uuid FK to trading_markets and stays NULL), so the
-        simulation row is the only route back to a priceable market. Key
-        fallback order matches the n8n node: polymarket_condition_id first,
-        then condition_id.
+        Key fallback order for the conditionId matches the n8n node:
+        polymarket_condition_id first, then condition_id. The numeric Gamma id
+        at polymarket_market_id is new here and is what _fetch_market prefers;
+        it is present on all 500 most recent trading_simulations rows (checked
+        2026-09-02), and the conditionId routes remain for anything older.
         """
         rows = await get_simulations_by_ids([simulation_id])
         raw = (rows[0].get("raw_output") if rows else None) or {}
         condition_id = raw.get("polymarket_condition_id") or raw.get("condition_id")
+        market_id = raw.get("polymarket_market_id")
         question = raw.get("question")
-        return (
-            str(condition_id) if condition_id else None,
-            str(question) if question else None,
+        return MarketRef(
+            condition_id=str(condition_id) if condition_id else None,
+            market_id=str(market_id) if market_id else None,
+            question=str(question) if question else None,
         )
 
-    async def _fetch_market(self, condition_id: str) -> Optional[dict[str, Any]]:
-        """GET /markets?condition_ids=<id> — query param, NOT the path form:
-        the path form resolves Gamma's numeric ids and 404s for a conditionId."""
-        try:
-            response = await self._get_client().get(
-                GAMMA_MARKETS_URL, params={"condition_ids": condition_id}
+    async def _fetch_market(self, ref: MarketRef) -> Optional[dict[str, Any]]:
+        """Fetch the market for `ref`, live or already resolved.
+
+        Three routes, best first:
+
+          1. GET /markets/<numeric id>. The ONLY state-agnostic route.
+             Verified 2026-09-02 against both a resolved market (3846614) and
+             a live one (559651).
+          2. GET /markets?condition_ids=<id>. Live markets only.
+          3. GET /markets?condition_ids=<id>&closed=true. Resolved only.
+
+        Routes 2 and 3 are the fallback for simulation rows that predate
+        polymarket_market_id, and they also mean a Gamma hiccup on route 1
+        degrades to the old behaviour instead of making every position
+        unpriceable.
+
+        DO NOT collapse this to a single listing call, and in particular do
+        NOT "fix" the resolved case by appending closed=true to route 2.
+        Gamma's `closed` is a strict two-valued filter with no "either" value,
+        and OMITTING it behaves exactly like closed=false. Probed live
+        2026-09-02:
+
+            market    query                            rows
+            live      condition_ids=...                   1
+            live      condition_ids=...&closed=true       0   <- breaks TP/SL
+            resolved  condition_ids=...                   0   <- the bug
+            resolved  condition_ids=...&closed=true       1
+
+        Route 2 alone is what left position e09b82fe 'open' for four days
+        after it resolved worthless. manual.py:102 already walks both states
+        for its slug lookup; this restores the same discipline here.
+        """
+        if ref.market_id:
+            market = await self._gamma_get(
+                f"{GAMMA_MARKETS_URL}/{ref.market_id}", None, ref
             )
+            if market is not None:
+                return market
+            log.info(
+                "monitor: gamma id lookup missed for %s, falling back to the "
+                "conditionId listing", ref.label,
+            )
+
+        if not ref.condition_id:
+            return None
+
+        market = await self._gamma_get(
+            GAMMA_MARKETS_URL, {"condition_ids": ref.condition_id}, ref
+        )
+        if market is not None:
+            return market
+        return await self._gamma_get(
+            GAMMA_MARKETS_URL,
+            {"condition_ids": ref.condition_id, "closed": "true"},
+            ref,
+        )
+
+    async def _gamma_get(
+        self,
+        url: str,
+        params: Optional[dict[str, str]],
+        ref: MarketRef,
+    ) -> Optional[dict[str, Any]]:
+        """One Gamma request. Returns the market dict, or None for any miss.
+
+        Normalises both response shapes: the path form returns an object, the
+        listing form an array. An empty array is a miss, not an error, and a
+        404 from the path form is an ordinary miss too. Both fall through to
+        the next route rather than logging noise on every sweep.
+        """
+        try:
+            response = await self._get_client().get(url, params=params)
         except httpx.HTTPError as exc:
-            log.warning("monitor: gamma fetch failed for %s…: %s", condition_id[:12], exc)
+            log.warning("monitor: gamma fetch failed for %s: %s", ref.label, exc)
+            return None
+        if response.status_code == 404:
             return None
         if response.status_code >= 300:
             log.warning(
-                "monitor: gamma HTTP %s for %s…: %s",
-                response.status_code, condition_id[:12], response.text[:200],
+                "monitor: gamma HTTP %s for %s: %s",
+                response.status_code, ref.label, response.text[:200],
             )
             return None
         try:
             payload = response.json()
         except ValueError:
-            log.warning("monitor: gamma returned non-JSON for %s…", condition_id[:12])
+            log.warning("monitor: gamma returned non-JSON for %s", ref.label)
             return None
-        market = payload[0] if isinstance(payload, list) and payload else payload
-        return market if isinstance(market, dict) else None
+        if isinstance(payload, list):
+            payload = payload[0] if payload else None
+        return payload if isinstance(payload, dict) else None
 
     @staticmethod
     def _outcome_prices(
