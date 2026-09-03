@@ -309,9 +309,24 @@ class PositionMonitor:
         resolved_flags = market.get("closed") is True
         if resolved_flags or current_price in (0.0, 1.0):
             if current_price not in (0.0, 1.0):
-                # closed=true but outcomePrices not finalised
-                # (e.g. voided or still settling): there is no defensible
-                # win/loss to write, so wait for the next sweep.
+                # closed=true but the direction-side price is not 0.0 or 1.0.
+                #
+                # KNOWN GAP, do not read this as handled (cold review of PR
+                # #103, F1). Polymarket VOIDS a market by resolving it 50/50,
+                # and a void is a real settlement: it refunds 0.5 per share.
+                # Sampling 800 recently-closed markets on 2026-09-03 found 8
+                # sitting at closed=true, umaResolutionStatus=resolved,
+                # outcomePrices ["0.5","0.5"] (e.g. id 4049628, a cancelled
+                # cricket fixture). A position in one of those returns
+                # 'unpriceable' here on every sweep, forever, with errors=0.
+                # That is the same silent-success shape this PR exists to kill.
+                #
+                # It is left unfixed deliberately: closing at 0.5 is a real
+                # money-write and a behaviour change, so it belongs in its own
+                # reviewed change, not smuggled into the fetch fix. Until then
+                # this branch is correct only for markets that are still
+                # settling, where waiting IS right.
+
                 log.warning(
                     "monitor: %s reports closed but price %.4f is not final "
                     "(position %s), skipped", ref.label, current_price,

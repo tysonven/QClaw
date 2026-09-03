@@ -24839,10 +24839,32 @@ precisely a mismatch between assumed and real semantics.
   future "simplification" back to the broken conjunction.
 
 `python3 -m unittest discover -s tests` reports 14 tests and 6 errors on this
-branch AND on `QClaw main at 5795c03`; `test_analyst`, `test_manual_position`
-and `test_relay_settlement` fail locally on `ModuleNotFoundError: No module
-named 'anthropic'`. Both are pre-existing and unrelated. CI runs pytest per file
-for exactly this reason (`.github/workflows/ci.yml:108`).
+branch AND on `QClaw main at 5795c03`. Pre-existing and unrelated to this change.
+CI runs pytest per file for exactly this reason (`.github/workflows/ci.yml:108`).
+
+**CORRECTION, 2026-09-03, from the cold review of PR #103.** The paragraph above
+originally attributed those 6 errors to `ModuleNotFoundError: No module named
+'anthropic'` across three modules. The count was right and the conclusion
+(pre-existing, unrelated) was right, but the named modules and the cause were
+both wrong. Re-run verbatim:
+
+```
+ImportError: cannot import name 'ConfigDict' from 'pydantic' (unknown location)   x3
+ImportError: cannot import name 'ValidationError' from 'pydantic' (unknown location)
+ImportError: cannot import name 'Header' from 'fastapi' (unknown location)
+ImportError: cannot import name 'Request' from 'fastapi' (unknown location)
+```
+
+Six modules error, not three, and they include `test_monitor` itself, the very
+file this PR adds tests to. The cause is the already-tracked `tests/clipper`
+`sys.modules` stub-poisoning defect, not a missing `anthropic`.
+
+How the wrong cause got written down: `anthropic` is what you see running the
+modules INDIVIDUALLY, where the clipper stubs never load. That observation was
+carried across to the `discover` run without re-reading its output. It is the
+anchored-claims failure this log's own convention exists to prevent, in the
+entry that documents a verification-discipline fix, which is worth recording
+rather than quietly correcting.
 
 ### Position e09b82fe is deliberately NOT corrected
 
