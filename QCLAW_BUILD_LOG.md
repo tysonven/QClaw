@@ -24702,3 +24702,215 @@ The ~21:10Z threshold in falsification condition 1 was therefore not comfortably
 in the past, it was exactly the current minute. Reasoning "it is the next day,
 so the deadline is long gone" would have converted a boundary reading into a
 confident wrong conclusion. Anchor to host time, not to the local date.
+
+---
+
+## 2026-09-02: trading disabled by owner decision; the phantom-open close path found and fixed on a branch
+
+Read-only investigation of position `e09b82fe` (the PR #94 acceptance test)
+turned up seven defects. One gate was closed immediately; the rest are scoped
+and sequenced. This entry records the halt, its reason, and build item 3.
+
+### Trading is DISABLED
+
+`trading_config.trading_enabled` set to `false` at 2026-09-02, verified by an
+independent re-read. `max_position_usdc` (10), `min_edge_threshold` (7) and
+`daily_loss_limit` (20) were deliberately left untouched.
+
+**Reason, per owner decision:** the entry logic is systematically wrong on short
+horizons, and the daily loss limit cannot see a loss that resolves to zero.
+Those two combine badly: the scanner was proposing 5 to 14 maximum-size
+candidates per scan, and the one loss it produced never closed, so it never
+entered the daily-loss sum that Gate 3 reads.
+
+**Trading stays disabled until build items 3, 1 and 2 are all merged and
+verified.** That is an owner decision, not an engineering recommendation, and it
+does not lapse when item 3 lands.
+
+Enforcement is Gate 1 at `QClaw src/trade_engine/executor.py:227`, which
+re-reads `trading_config` live on every execution attempt. No cache, no restart
+needed. Gate 1 runs AFTER the approval step (`scanner.py` calls
+`apply_approval` then `apply_execution`, confirmed from the 2026-08-31 log where
+`Trade APPROVED` at 15:24:38 precedes the `trading_config` read at 15:24:39), so
+Telegram proposals continue to arrive and are refused after approval. Moving
+that read earlier is build item 5.
+
+### What PR #94 settled
+
+Verified, thread closed. Position `e09b82fe` tx
+`0xf6bee8991d7219ff761442393613b3a3095ec11ad165c5edc326d0851e2a942b` resolves to
+a successful Polygon receipt at block 92989904. Decoded: two ERC1155 transfers
+to the funder totalling 659.388887 shares, collateral out 9.999999, fee
+0.689380 to `0x115f48dc2a731aa16251c6d6e1befc42f92accc9`, total debit
+10.689379. The row holds `shares 659.39` and `usdc_amount 10.69`. The executor
+logged it at the time:
+
+```
+2026-08-31 15:24:42,661 INFO  trade_engine.executor: recording real cash out 10.689379 USDC (notional 9.999999)
+```
+
+`usdc_amount` is fee-inclusive and reconciles to the receipt to the cent.
+
+### The phantom-open: why a resolved position stayed open for four days
+
+The market resolved at `closedTime 2026-08-31 16:54:31+00`. On-chain payout
+vector read at `latest` on 2026-09-02: `payoutDenominator = 1`,
+`payoutNumerators = [0, 1]`, so YES pays nothing. The funder wallet still holds
+659.388887 of the losing token, so no redemption transaction exists and none
+will: redeeming a losing outcome pays zero, and Polymarket's UI "Loss" row is a
+resolution display, not a transaction.
+
+The monitor was not waiting for a fill. It has a resolution branch that would
+have closed this correctly. It never reached it, because the fetch that feeds
+that branch returned `None`. Probed live against Gamma on 2026-09-02:
+
+```
+market    query                                          rows
+live      condition_ids=0xa467b14d51…                       1
+live      condition_ids=0xa467b14d51…&closed=true           0
+resolved  condition_ids=0x535f3249cc…                       0
+resolved  condition_ids=0x535f3249cc…&closed=true           1
+```
+
+`closed` is a strict two-valued filter with no "either" value, and omitting it
+behaves exactly like `closed=false`. `_fetch_market` used the bare listing, so a
+market became invisible the moment it settled.
+
+189 occurrences in `/root/.pm2/logs/trade-engine-error.log` on the qclaw host,
+first `2026-08-31 17:12:51`, last `2026-09-02 16:12:51`:
+
+```
+2026-09-02 16:12:51,205 WARNING  trade_engine.monitor: monitor: market not found on Gamma for 0x535f3249cc… (position e09b82fe-6674-4ba4-9717-5ea22e9d99aa) — skipped
+```
+
+**It reported healthy throughout.** `unpriceable` is not an error, so the sweep
+logged `checked=1 resolved=0 tp_sl=0 alerts=0 unpriceable=1 errors=0` and emitted
+a success heartbeat whose metadata is `{"positions_checked": 1}` and nothing
+else (`main.py:219`). Heartbeat rows for `trade-engine-monitor` since
+2026-08-28: 461 rows, all `success`, first 2026-08-28T21:06:28Z, last
+2026-09-02T16:12:51Z, no gaps. Supabase, the dashboard and the Dormancy Alerter
+were all green through four days of a dead close path. Surfacing those counters
+is build item 4.
+
+### A second defect was queued behind the first
+
+`resolved_flags` required `active is False and closed is True`. Gamma reports
+this settled market as `active: True, closed: True`. The conjunction was
+therefore False on a market that had genuinely resolved, and only the
+`current_price in (0.0, 1.0)` fallback would have closed it. A market resolving
+to a non-final price fell through both and stayed open indefinitely.
+
+### Build item 3, on branch `trade-engine-phantom-open-close-path`
+
+Unmerged as of this entry. `_fetch_market` now takes a `MarketRef` and tries
+three routes, best first:
+
+1. `GET /markets/<numeric id>`. The only state-agnostic route, verified
+   2026-09-02 against both the resolved market (3846614) and a live one
+   (559651). `raw_output.polymarket_market_id` carries the id and is present on
+   all 500 most recent `trading_simulations` rows.
+2. `GET /markets?condition_ids=…` for live markets.
+3. the same with `&closed=true` for resolved ones.
+
+Routes 2 and 3 cover simulation rows predating `polymarket_market_id` and mean a
+Gamma hiccup on route 1 degrades to the old behaviour rather than making every
+position unpriceable. `manual.py:102` already walked both listing states for its
+slug lookup; the pattern existed in this repo and had simply never been applied
+to the monitor. `resolved_flags` now keys on `closed` alone. A new `not_found`
+outcome tag separates "no route found it" from "found but could not price it",
+and both still total into `positions_unpriceable` so the existing counter keeps
+its meaning.
+
+Test suite `tests/test_monitor.py` 39 tests to 51, all passing at the branch
+head. The mock Gamma transport was rewritten to enforce the real routing and
+filter semantics rather than a more permissive fiction, since the bug was
+precisely a mismatch between assumed and real semantics.
+
+**Coverage proved by mutation, run 2026-09-02, not asserted:**
+
+- Reverting `_fetch_market` to the listing-only route fails 24 tests
+  (21 failures, 3 errors), including the whole pre-existing `TestResolution`
+  class, which the stricter mock converted into regression coverage.
+- Restoring the `active is False` conjunction fails exactly ONE test,
+  `test_active_true_closed_true_with_non_final_price_does_not_close`. Every
+  other resolution test survives it, because a market settling to 0.0/1.0 is
+  closed by the price fallback regardless. That asymmetry is recorded in the
+  test class docstring: it is the single test standing between the repo and a
+  future "simplification" back to the broken conjunction.
+
+`python3 -m unittest discover -s tests` reports 14 tests and 6 errors on this
+branch AND on `QClaw main at 5795c03`. Pre-existing and unrelated to this change.
+CI runs pytest per file for exactly this reason (`.github/workflows/ci.yml:108`).
+
+**CORRECTION, 2026-09-03, from the cold review of PR #103.** The paragraph above
+originally attributed those 6 errors to `ModuleNotFoundError: No module named
+'anthropic'` across three modules. The count was right and the conclusion
+(pre-existing, unrelated) was right, but the named modules and the cause were
+both wrong. Re-run verbatim:
+
+```
+ImportError: cannot import name 'ConfigDict' from 'pydantic' (unknown location)   x3
+ImportError: cannot import name 'ValidationError' from 'pydantic' (unknown location)
+ImportError: cannot import name 'Header' from 'fastapi' (unknown location)
+ImportError: cannot import name 'Request' from 'fastapi' (unknown location)
+```
+
+Six modules error, not three, and they include `test_monitor` itself, the very
+file this PR adds tests to. The cause is the already-tracked `tests/clipper`
+`sys.modules` stub-poisoning defect, not a missing `anthropic`.
+
+How the wrong cause got written down: `anthropic` is what you see running the
+modules INDIVIDUALLY, where the clipper stubs never load. That observation was
+carried across to the `discover` run without re-reading its output. It is the
+anchored-claims failure this log's own convention exists to prevent, in the
+entry that documents a verification-discipline fix, which is worth recording
+rather than quietly correcting.
+
+### Position e09b82fe is deliberately NOT corrected
+
+It is the live acceptance test for this branch: on the first sweep after deploy
+it must close itself with `exit_price 0.0`, `exit_reason resolved_loss`,
+`exit_usdc 0.0`, `pnl -10.69`. Correcting the row by hand first would do
+manually what the fix exists to do automatically and would destroy the only
+end-to-end evidence available. `tests/test_monitor.py::TestPhantomOpenAcceptance`
+pins the same assertion in unit form.
+
+### Settlement provenance: a narrowed rule
+
+`tx_hash` present is not proof of settlement. Position `b3cecdef` carries
+`0xc0def89b…`, which returns null for both `eth_getTransactionByHash` and
+`eth_getTransactionReceipt` on three independent Polygon RPCs while the other
+hashes resolve on those same nodes. Its real transactions, recovered from the
+Polymarket data API and confirmed against receipts, are
+`0xa64e3b7fed0be710fd44e01b0153fa391c1e992bf9a65df216935cf45af67d84` (entry) and
+`0xfae10c8a6f26760d0c27614fecb89de15625239c7ec960dbf992b1334a23ef47` (exit). The
+row's money is correct to the cent, so the 2026-08-28 correction it records was
+substantively right; only the field that made it auditable was wrong.
+
+> `tx_hash` NULL is not a paper trade. `tx_hash` present is not proof of
+> settlement. A position is settlement-verified only when its hash resolves to a
+> successful Polygon receipt whose ERC1155 transfer to the funder matches
+> `shares` and whose collateral movement matches `usdc_amount`. Anything else is
+> unverified regardless of what the field contains.
+
+Four of five position rows have a hash that is wrong or missing. Nothing was
+written to `trading_positions`; the corrected values and the full hash map are
+scoped, not applied. A standing reconciler is queued.
+
+### Polymarket's fee, solved
+
+Eight receipts, buys and sells, prices from 1.5c to 90c, maximum residual 4e-6:
+
+```
+fee = 0.07 * p * (1 - p) * shares        equivalently   fee / notional = 0.07 * (1 - p)
+```
+
+A first pass at this under-counted the fee on matched trades, because on those
+the exchange contract pays the fee sink rather than the funder and the decoder
+keyed on the funder as sender. There is one fee mechanism, not two. Treat 0.07
+as a monitored hypothesis with a residual check, not a constant: it is an
+empirical fit to one wallet in one market family, not documentation.
+
+The consequence is that `usdc_amount` is predictable before an order is sent, so
+position sizing can bound the realised debit instead of the notional. That is
+build item 7, merged with the Kelly sizing decision as item 2.
