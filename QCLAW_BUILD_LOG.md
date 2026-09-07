@@ -24914,3 +24914,96 @@ empirical fit to one wallet in one market family, not documentation.
 The consequence is that `usdc_amount` is predictable before an order is sent, so
 position sizing can bound the realised debit instead of the notional. That is
 build item 7, merged with the Kelly sizing decision as item 2.
+
+---
+
+## 2026-09-07: CI/CD Slice 1 and Slice 2; a check aimed at the wrong thing is a new variant of the vacuity pattern
+
+Slice 1 of the CI/CD rollout brief made the existing checks capable of failing,
+before any of them was wired to gate anything. Slice 2 put the first merge gate
+on a repo. Three PRs, all merged this day:
+
+- QClaw main at `0d4b302` (PR #113)
+- flow-coach-ai main at `1c57421` (PR #12)
+- ghl-support-bot main at `37705de` (PR #16)
+
+### The finding worth carrying forward
+
+The vacuity pattern as recorded so far is *a check that asserts nothing*: the
+`runIf` tests that skip, the grep that reports and exits 0. QClaw's `console.log`
+lint step is a second variant, and it is harder to see: **a check that asserts,
+but looks where the defect is not.**
+
+That step grepped for `console\.log` with an exclusion list naming four
+`cli/*.js` files. Replacing it with eslint `no-console` changed the count from
+23 to 27, and the two sets barely overlap in what matters:
+
+- All **23** the grep found are CLI or cron entrypoint output, where stdout is
+  the product. Every one benign.
+- **6** the grep never saw are the real defects, and they are invisible to it
+  because they use `console.error` and `console.warn` rather than `console.log`:
+  `src/security/currency-rates.js`, `src/security/spike-detector.js`,
+  `src/dashboard/server.js`, `src/flowos-marketing/generate-image-card.js`.
+  All four are library or server paths that should log through
+  `src/core/logger.js`. Converted at `0d4b302`.
+
+So the exclusion list was not merely stale. It excluded everything harmless
+while the actual violations were outside the pattern it matched. A reviewer
+checking "does this check assert something" would have passed it, because it
+did assert, on the wrong thing.
+
+**Standing review question, wider than the original one:** not just *does this
+check assert*, but *does it look where the defect would actually be*. A check
+scoped by an enumeration or a single literal pattern should be read as a claim
+about where defects live, and that claim is usually undocumented and often
+wrong.
+
+Two mechanical consequences, both fixed at `0d4b302`:
+
+- `npm run lint` was defined in `package.json` and had never run, because no
+  eslint config was ever committed. `eslint.config.js` now exists and `ci.yml`
+  calls it. Since `lint` is a `needs:` dependency of `deploy`, "lint passed" in
+  the deploy chain previously asserted nothing about logging.
+- `npm test` was a 2222-character `&&` chain naming 49 files while 52 existed.
+  The three it had drifted past were `cc-dispatcher`, `cc-results` and
+  `shell-exec-spawn-limits`, the last a security control, together 116
+  assertions that gated nothing. Replaced with `scripts/run-js-tests.mjs`,
+  which globs, fails explicitly on zero matches, and accumulates per file
+  rather than `&&` fail-fast. CI run `34116867695` reports 52/52 on node 20
+  and node 22.
+
+**Do not extend the globbing to the Python side.** `pytest tests/` and
+`unittest discover -s tests` both fail on QClaw main because `tests/clipper`
+stubs `fastapi` and `pydantic` into `sys.modules` at module scope with no
+teardown, poisoning collection for unrelated modules. `ci.yml` runs pytest per
+file for that reason and the per-file loop is load-bearing, not leftover mess.
+
+### Deploy verification
+
+CI run `34116867695` on QClaw main at `0d4b302`: `lint` 16s, `test (20)` 36s,
+`test (22)` 1m48s, `python-test` 30s, `deploy` 3m4s, all success. All six PM2
+processes reported `online` after restart at 2026-09-07T11:34:15Z: `agex-hub`,
+`claude-code-dispatcher`, `clipper-worker`, `quantumclaw`, `trade-engine`,
+`trading-worker`. The six-process restart is behaviour from PR #101, not new
+here.
+
+### flow-coach-ai is the first repo gated at merge
+
+Branch protection on flow-coach-ai `main` as of 2026-09-07: required status
+check `test`, `strict` true (branch must be up to date), pull request required,
+zero required approvals, force pushes disabled, deletions disabled,
+`enforce_admins` **true**. The last is deliberate: with a sole admin who can
+click through, "on main means tests passed" is a habit rather than a property.
+
+Proven by attacking it, not by reading the settings back. PR #13 carried a
+deliberately failing test: CI `FAILURE`, `mergeStateStatus: BLOCKED`, and
+`gh pr merge` refused with "the base branch policy prohibits the merge". A
+separate `git push --force origin main` was refused with `GH006: Protected
+branch update failed`. PR #13 closed and its branch deleted.
+
+The vacuity fix in that repo: `server/csp.test.ts` gated five tests on
+`it.runIf(built)` while `dist/` is gitignored and nothing built before the test
+run, so a clean clone reported `5 passed | 5 skipped`, EXIT=0. Two of the five
+skipped tests were the anti-vacuity guards themselves. On CI run `34113474757`,
+a genuinely clean runner, the suite now reports 72 passed (72) with node
+v20.20.2 from `.nvmrc`.
