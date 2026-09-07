@@ -24914,3 +24914,159 @@ empirical fit to one wallet in one market family, not documentation.
 The consequence is that `usdc_amount` is predictable before an order is sent, so
 position sizing can bound the realised debit instead of the notional. That is
 build item 7, merged with the Kelly sizing decision as item 2.
+
+---
+
+## 2026-09-07: CI/CD Slice 1 and Slice 2; a check aimed at the wrong thing is a new variant of the vacuity pattern
+
+Slice 1 of the CI/CD rollout brief made the existing checks capable of failing,
+before any of them was wired to gate anything. Slice 2 put the first merge gate
+on a repo. Three PRs, all merged this day:
+
+- QClaw main at `0d4b302` (PR #113)
+- flow-coach-ai main at `1c57421` (PR #12)
+- ghl-support-bot main at `37705de` (PR #16)
+
+### The finding worth carrying forward
+
+The vacuity pattern as recorded so far is *a check that asserts nothing*: the
+`runIf` tests that skip, the grep that reports and exits 0. QClaw's `console.log`
+lint step is a second variant, and it is harder to see: **a check that asserts,
+but looks where the defect is not.**
+
+That step grepped for `console\.log` with an exclusion list of five patterns:
+`core/logger.js`, `cli/brand.js`, `cli/index.js`, `cli/onboard.js`, and
+`agex-sdk`. Note that one is not under `cli/` and one is a path fragment rather
+than a file.
+
+**eslint `no-console` at `0d4b302` reports 27 violations, which decompose as:**
+
+```
+19  benign entrypoint output   covered by an inline eslint-disable with a reason
+                               (17 inline comments, plus one file-level block in
+                                src/dispatch/start.js covering its 2 lines)
+ 8  real defects               converted to src/core/logger.js
+--
+27
+```
+
+The 8, by file, all library or server paths that should never have bypassed the
+logger:
+
+```
+src/security/spike-detector.js               3
+src/dashboard/server.js                      2
+src/security/currency-rates.js               2
+src/flowos-marketing/generate-image-card.js  1
+```
+
+Reproduce with:
+`git diff df44380 0d4b302 -- 'src/**/*.js' | grep -cE "^-[[:space:]]*console\.(error|warn)"`
+
+**The old grep's 23 is a different population and must not be added to these.**
+Re-run at the parent commit `df44380` it returns exactly 23, but it counts
+surviving `console.log` lines, where eslint counts all `console.*` violations.
+The two overlap without nesting, so 23 and 8 do not sum to anything meaningful.
+An earlier draft of this entry stated "23 benign plus 6 defects", which is wrong
+twice: the defect count is 8, and the two figures were never addable.
+
+The 23 decomposes as:
+
+```
+17  src/cli/postinstall.js   excluded by eslint entirely, since src/cli/** is
+                             a directory rule: this is a CLI installer and its
+                             stdout is the product
+ 6  entrypoint console.log   a subset of the 19 benign above
+```
+
+So the two populations overlap in only 6 lines, and the corrected numbers make
+the point sharper than the original ones did: **the grep returned 23 results,
+not one of them a true positive, and missed all 8 real defects.** It could not
+have found them at any exclusion-list setting, because they use `console.error`
+and `console.warn` and it matched only `console.log`.
+
+The exclusion list was therefore not merely stale. It was pointed away from
+where the defects were. A reviewer checking "does this check assert something"
+would have passed it, because it did assert, on the wrong thing.
+
+**Standing review question, wider than the original one:** not just *does this
+check assert*, but *does it look where the defect would actually be*. A check
+scoped by an enumeration or a single literal pattern should be read as a claim
+about where defects live, and that claim is usually undocumented and often
+wrong.
+
+Two mechanical consequences, both fixed at `0d4b302`:
+
+- `npm run lint` was defined in `package.json` and had never run, because no
+  eslint config was ever committed. `eslint.config.js` now exists and `ci.yml`
+  calls it. Since `lint` is a `needs:` dependency of `deploy`, "lint passed" in
+  the deploy chain previously asserted nothing about logging.
+- `npm test` was a 2222-character `&&` chain naming 49 files while 52 existed.
+  The three it had drifted past were `cc-dispatcher`, `cc-results` and
+  `shell-exec-spawn-limits`, the last a security control, together 116
+  assertions that gated nothing. Replaced with `scripts/run-js-tests.mjs`,
+  which globs, fails explicitly on zero matches, and accumulates per file
+  rather than `&&` fail-fast. CI run `34116867695` reports 52/52 on node 20
+  and node 22.
+
+**The glob widened an existing leak, and that is worth recording against this
+change rather than only in its favour.** `npm test` writes to
+`~/.quantumclaw/skill-load.log` and `~/.quantumclaw/tool-call.log` in the live
+store. That leak predates `0d4b302` and is what draft PR #98
+(`fix/test-log-isolation`) exists to close; it is the same gap that put
+synthetic userIds `9999`, `8888`, `7777` and `integration-test` into the
+production `skill-load.log` on 2026-08-27. Running 52 files instead of 49 means
+three more processes now reach it. Measured on 2026-09-07 at `0d4b302`:
+`skill-load.log` 1097 to 1111 lines, `tool-call.log` 2210 to 2225, prior content
+a strict byte prefix in both, restored from snapshot afterwards. With #98
+applied the live store is untouched. Not a reason to revert, but a local
+`npm test` stamps those two files until #98 lands.
+
+The per-file `spawnSync` design in `scripts/run-js-tests.mjs` is load-bearing
+beyond tidiness: the gate tests are plain node scripts that call `process.exit`,
+and `store-isolation.test.js` mutates `QCLAW_TEST` and `QCLAW_HOME` mid-file
+including setting `QCLAW_TEST=0` to assert production behaviour. In a shared
+process that last one would leak and make unrelated tests write to the live
+store. Do not convert this runner to an in-process one.
+
+**Do not extend the globbing to the Python side.** `pytest tests/` and
+`unittest discover -s tests` both fail on QClaw main because `tests/clipper`
+stubs `fastapi` and `pydantic` into `sys.modules` at module scope with no
+teardown, poisoning collection for unrelated modules. `ci.yml` runs pytest per
+file for that reason and the per-file loop is load-bearing, not leftover mess.
+
+### Deploy verification
+
+CI run `34116867695` on QClaw main at `0d4b302`: `lint` 16s, `test (20)` 36s,
+`test (22)` 1m48s, `python-test` 30s, `deploy` 3m4s, all success.
+
+All six PM2 processes were `online` by 2026-09-07T11:34:15Z: `agex-hub`,
+`claude-code-dispatcher`, `clipper-worker`, `quantumclaw`, `trade-engine`,
+`trading-worker`. The restarts themselves span roughly 11:34:07Z to 11:34:14Z
+rather than landing at one instant, measured from `pm_uptime` on the host and
+corroborated by the uptime column of the deploy log's own `pm2 list` at
+11:34:14.7Z. `11:34:15Z` is when the log line was printed, which is not the
+same claim.
+
+The six-process restart is behaviour from PR #101, not new here.
+
+### flow-coach-ai is the first repo gated at merge
+
+Branch protection on flow-coach-ai `main` as of 2026-09-07: required status
+check `test`, `strict` true (branch must be up to date), pull request required,
+zero required approvals, force pushes disabled, deletions disabled,
+`enforce_admins` **true**. The last is deliberate: with a sole admin who can
+click through, "on main means tests passed" is a habit rather than a property.
+
+Proven by attacking it, not by reading the settings back. PR #13 carried a
+deliberately failing test: CI `FAILURE`, `mergeStateStatus: BLOCKED`, and
+`gh pr merge` refused with "the base branch policy prohibits the merge". A
+separate `git push --force origin main` was refused with `GH006: Protected
+branch update failed`. PR #13 closed and its branch deleted.
+
+The vacuity fix in that repo: `server/csp.test.ts` gated five tests on
+`it.runIf(built)` while `dist/` is gitignored and nothing built before the test
+run, so a clean clone reported `5 passed | 5 skipped`, EXIT=0. Two of the five
+skipped tests were the anti-vacuity guards themselves. On CI run `34113474757`,
+a genuinely clean runner, the suite now reports 72 passed (72) with node
+v20.20.2 from `.nvmrc`.
