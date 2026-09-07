@@ -24934,23 +24934,60 @@ The vacuity pattern as recorded so far is *a check that asserts nothing*: the
 lint step is a second variant, and it is harder to see: **a check that asserts,
 but looks where the defect is not.**
 
-That step grepped for `console\.log` with an exclusion list naming four
-`cli/*.js` files. Replacing it with eslint `no-console` changed the count from
-23 to 27, and the two sets barely overlap in what matters:
+That step grepped for `console\.log` with an exclusion list of five patterns:
+`core/logger.js`, `cli/brand.js`, `cli/index.js`, `cli/onboard.js`, and
+`agex-sdk`. Note that one is not under `cli/` and one is a path fragment rather
+than a file.
 
-- All **23** the grep found are CLI or cron entrypoint output, where stdout is
-  the product. Every one benign.
-- **6** the grep never saw are the real defects, and they are invisible to it
-  because they use `console.error` and `console.warn` rather than `console.log`:
-  `src/security/currency-rates.js`, `src/security/spike-detector.js`,
-  `src/dashboard/server.js`, `src/flowos-marketing/generate-image-card.js`.
-  All four are library or server paths that should log through
-  `src/core/logger.js`. Converted at `0d4b302`.
+**eslint `no-console` at `0d4b302` reports 27 violations, which decompose as:**
 
-So the exclusion list was not merely stale. It excluded everything harmless
-while the actual violations were outside the pattern it matched. A reviewer
-checking "does this check assert something" would have passed it, because it
-did assert, on the wrong thing.
+```
+19  benign entrypoint output   covered by an inline eslint-disable with a reason
+                               (17 inline comments, plus one file-level block in
+                                src/dispatch/start.js covering its 2 lines)
+ 8  real defects               converted to src/core/logger.js
+--
+27
+```
+
+The 8, by file, all library or server paths that should never have bypassed the
+logger:
+
+```
+src/security/spike-detector.js               3
+src/dashboard/server.js                      2
+src/security/currency-rates.js               2
+src/flowos-marketing/generate-image-card.js  1
+```
+
+Reproduce with:
+`git diff df44380 0d4b302 -- 'src/**/*.js' | grep -cE "^-[[:space:]]*console\.(error|warn)"`
+
+**The old grep's 23 is a different population and must not be added to these.**
+Re-run at the parent commit `df44380` it returns exactly 23, but it counts
+surviving `console.log` lines, where eslint counts all `console.*` violations.
+The two overlap without nesting, so 23 and 8 do not sum to anything meaningful.
+An earlier draft of this entry stated "23 benign plus 6 defects", which is wrong
+twice: the defect count is 8, and the two figures were never addable.
+
+The 23 decomposes as:
+
+```
+17  src/cli/postinstall.js   excluded by eslint entirely, since src/cli/** is
+                             a directory rule: this is a CLI installer and its
+                             stdout is the product
+ 6  entrypoint console.log   a subset of the 19 benign above
+```
+
+So the two populations overlap in only 6 lines, and the corrected numbers make
+the point sharper than the original ones did: **the grep returned 23 results,
+not one of them a true positive, and missed all 8 real defects.** It could not
+have found them at any exclusion-list setting, because they use `console.error`
+and `console.warn` and it matched only `console.log`.
+
+The exclusion list was therefore not merely stale. It was pointed away from
+where the defects were. A reviewer checking "does this check assert something"
+would have passed it, because it did assert, on the wrong thing.
 
 **Standing review question, wider than the original one:** not just *does this
 check assert*, but *does it look where the defect would actually be*. A check
@@ -24972,6 +25009,26 @@ Two mechanical consequences, both fixed at `0d4b302`:
   rather than `&&` fail-fast. CI run `34116867695` reports 52/52 on node 20
   and node 22.
 
+**The glob widened an existing leak, and that is worth recording against this
+change rather than only in its favour.** `npm test` writes to
+`~/.quantumclaw/skill-load.log` and `~/.quantumclaw/tool-call.log` in the live
+store. That leak predates `0d4b302` and is what draft PR #98
+(`fix/test-log-isolation`) exists to close; it is the same gap that put
+synthetic userIds `9999`, `8888`, `7777` and `integration-test` into the
+production `skill-load.log` on 2026-08-27. Running 52 files instead of 49 means
+three more processes now reach it. Measured on 2026-09-07 at `0d4b302`:
+`skill-load.log` 1097 to 1111 lines, `tool-call.log` 2210 to 2225, prior content
+a strict byte prefix in both, restored from snapshot afterwards. With #98
+applied the live store is untouched. Not a reason to revert, but a local
+`npm test` stamps those two files until #98 lands.
+
+The per-file `spawnSync` design in `scripts/run-js-tests.mjs` is load-bearing
+beyond tidiness: the gate tests are plain node scripts that call `process.exit`,
+and `store-isolation.test.js` mutates `QCLAW_TEST` and `QCLAW_HOME` mid-file
+including setting `QCLAW_TEST=0` to assert production behaviour. In a shared
+process that last one would leak and make unrelated tests write to the live
+store. Do not convert this runner to an in-process one.
+
 **Do not extend the globbing to the Python side.** `pytest tests/` and
 `unittest discover -s tests` both fail on QClaw main because `tests/clipper`
 stubs `fastapi` and `pydantic` into `sys.modules` at module scope with no
@@ -24981,11 +25038,17 @@ file for that reason and the per-file loop is load-bearing, not leftover mess.
 ### Deploy verification
 
 CI run `34116867695` on QClaw main at `0d4b302`: `lint` 16s, `test (20)` 36s,
-`test (22)` 1m48s, `python-test` 30s, `deploy` 3m4s, all success. All six PM2
-processes reported `online` after restart at 2026-09-07T11:34:15Z: `agex-hub`,
+`test (22)` 1m48s, `python-test` 30s, `deploy` 3m4s, all success.
+
+All six PM2 processes were `online` by 2026-09-07T11:34:15Z: `agex-hub`,
 `claude-code-dispatcher`, `clipper-worker`, `quantumclaw`, `trade-engine`,
-`trading-worker`. The six-process restart is behaviour from PR #101, not new
-here.
+`trading-worker`. The restarts themselves span roughly 11:34:07Z to 11:34:14Z
+rather than landing at one instant, measured from `pm_uptime` on the host and
+corroborated by the uptime column of the deploy log's own `pm2 list` at
+11:34:14.7Z. `11:34:15Z` is when the log line was printed, which is not the
+same claim.
+
+The six-process restart is behaviour from PR #101, not new here.
 
 ### flow-coach-ai is the first repo gated at merge
 
