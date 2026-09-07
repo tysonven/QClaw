@@ -25070,3 +25070,116 @@ run, so a clean clone reported `5 passed | 5 skipped`, EXIT=0. Two of the five
 skipped tests were the anti-vacuity guards themselves. On CI run `34113474757`,
 a genuinely clean runner, the suite now reports 72 passed (72) with node
 v20.20.2 from `.nvmrc`.
+
+---
+
+## 2026-09-07: a third vacuity variant, found by running a check for the first time
+
+Same day as the CI Slice 1 and 2 entry above, and it belongs with it. Wiring
+ghl-support-bot's grounding evals into CI (repo `ghl-support-bot`, PR #17, open
+and blocked as of this entry) ran them for the first time ever. One failed
+immediately, and the failure is a third distinct shape of the same underlying
+problem.
+
+### The three variants, stated together
+
+1. **Asserts nothing.** The `it.runIf(built)` tests in flow-coach-ai that
+   skipped when the build output was absent, and the twelve grounding evals
+   that skipped without an API key. Green, exit 0, nothing measured.
+2. **Asserts, but looks where the defect is not.** QClaw's `console.log` grep,
+   recorded in the entry above: 23 results, not one a true positive, and all 8
+   real defects invisible to it because it matched only `console.log`.
+3. **Asserts, looks in the right place, but matches a proxy rather than the
+   property.** This one.
+
+### What variant 3 looks like
+
+`server/grounding.eval.test.ts:124-129` in ghl-support-bot flags numbered lines
+containing any of `click|toggle|tick|enable|disable|switch on|switch off|check
+the box|drag|drop down`. The property it is trying to enforce is stated in its
+own docblock at `:120-123`: "What must never appear for a feature that does not
+exist is a procedure telling the user to click or toggle something."
+
+Keyword presence is a proxy for that property, and the proxy broke on contact
+with real output. Two CI runs, different model wording each time, both failing:
+
+```
+"to see if a password protection toggle exists"        toggle as a NOUN
+"check whether there is a password protection toggle"  toggle as a NOUN
+"ask ... how to enable it"                             enable inside advice
+                                                       to contact support
+```
+
+None of those is an imperative UI action. The same file's test comment at
+`:341-344` explicitly says numbered advice such as "contact support" is
+acceptable, so the helper contradicts the intent documented four lines above the
+assertion that uses it.
+
+The direction of failure is the interesting part. Variants 1 and 2 pass when
+they should fail. **Variant 3 fails when it should pass.** That makes it feel
+like the opposite problem, and it is not: all three come from a check
+implementing something adjacent to the property it claims to enforce. A
+false-positive guard is not harmless either, because the pressure it creates is
+to loosen it, and a fabrication guard loosened under deadline pressure is how a
+real regression gets through later.
+
+**Standing review question, third of three:** does this check match the
+property, or a proxy for it? Ask it of any check whose implementation is a
+keyword list, a regex over prose, or a filename pattern. Those are all proxies,
+and a proxy is a claim that the pattern and the property coincide, which is
+usually undocumented and sometimes false.
+
+### Disposition, and what NOT to do
+
+Not fixed here. Loosening a fabrication guard goes to a session that comes to
+the diff cold, per the standing rule that put QClaw PR #96 back into draft. The
+brief is at `~/Projects/flow-coach-ai-audit/BRIEF-grounding-eval-helper-fix.md`
+and states the controls: the original eight-step fabrication must still be
+flagged, hedged existence phrasing must not be, and the change must be proven
+not to weaken the guard rather than asserted safe.
+
+`ghl-support-bot` PR #17 stays blocked in the meantime, and `test` stays a
+required context on that repo's `main`. A gate producing an inconvenient result
+on its first day is not a reason to remove the gate. Removing it would be the
+same move as making the evals advisory, which is the defect this whole piece of
+work exists to remove.
+
+### Branch protection now live on QClaw main
+
+Applied 2026-09-07, brought forward rather than waiting on PRs #96 and #98,
+which will need to rebase.
+
+```
+required checks : lint, python-test, test (20), test (22)
+strict          : true      (branch must be up to date)
+enforce_admins  : true      approvals required: 0
+force pushes    : false     deletions: false
+```
+
+`deploy` is deliberately not a required context: it reports `skipped` on pull
+requests, since it is gated on `github.event_name == 'push'`.
+
+Verified before enabling, rather than assumed, because branch protection would
+break a deploy that pushes rather than pulls:
+
+```
+git push / git tag / git commit anywhere in .github/workflows/  : NONE
+deploy job git verbs                : fetch, merge --ff-only, rev-parse, status
+permissions / GITHUB_TOKEN / PAT    : none declared
+```
+
+Proven after enabling, both refused:
+
+```
+$ git push --force origin main
+remote: error: GH006: Protected branch update failed for refs/heads/main.
+remote: - Changes must be made through a pull request.
+remote: - 4 of 4 required status checks are expected.
+
+$ git push origin main
+remote: error: GH006 ... Changes must be made through a pull request.
+```
+
+Consequence worth stating plainly: 15 of the last 20 commits to QClaw `main`
+reached it as direct pushes. That route is now closed, for every operator and
+every session.
