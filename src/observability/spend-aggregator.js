@@ -221,11 +221,14 @@ function round6(n) { return Math.round(n * 1e6) / 1e6; }
 const isMain = import.meta.url === `file://${process.argv[1]}`;
 if (isMain) {
   if (process.env.pm_id !== undefined) {
+    // eslint-disable-next-line no-console -- CLI/cron entrypoint: stdout is this script's output, not a diagnostic
     console.error('[spend-aggregator] refusing to run inside PM2 (pm_id set) — cron-only');
     process.exit(2);
   }
   const env = { ...readEnvFile(), ...process.env };
   aggregate({ env })
+    // eslint-disable-next-line no-console -- CLI/cron entrypoint: stdout is this script's output, not a diagnostic
     .then(r => { console.log(`[spend-aggregator] ${r.turns} turns → ${r.upserted} rollup rows (recon ${r.reconciliation}); pricing as_of ${r.pricingAsOf}`); process.exit(0); })
+    // eslint-disable-next-line no-console -- CLI/cron entrypoint: stdout is this script's output, not a diagnostic
     .catch(err => { console.error(`[spend-aggregator] FAILED: ${scrubSecrets(err?.message || String(err))}`); process.exit(1); });
 }

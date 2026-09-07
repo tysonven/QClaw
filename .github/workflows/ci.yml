@@ -42,16 +42,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check for console.log in src (excluding logger, brand, CLI)
-        run: |
-          if grep -rn 'console\.log' src/ --include='*.js' \
-            | grep -v 'core/logger.js' \
-            | grep -v 'cli/brand.js' \
-            | grep -v 'cli/index.js' \
-            | grep -v 'cli/onboard.js' \
-            | grep -v 'agex-sdk'; then
-            echo "::warning::Found console.log in src/ (use log.info/debug/warn/error instead)"
-          fi
+      - name: Use Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Replaces a grep that emitted ::warning:: with no `exit 1`, so it
+      # reported 23 violations on every run and still passed. Since this job
+      # is a `needs:` dependency of `deploy`, that meant "lint passed" in the
+      # deploy chain asserted nothing about logging.
+      #
+      # eslint is the validator: it does not match `console.` inside strings or
+      # comments the way the grep did (the repo has `console.cloud.google.com`
+      # URLs), it covers console.error and console.warn rather than only
+      # console.log, and legitimate entrypoint output carries an inline
+      # `eslint-disable-next-line no-console -- <reason>` at the line instead
+      # of accumulating in an exclusion list. See eslint.config.js.
+      - name: Lint
+        run: npm run lint
 
       - name: Check for CommonJS require() in src
         run: |

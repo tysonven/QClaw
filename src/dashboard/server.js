@@ -1554,11 +1554,11 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
             // which is indistinguishable from genuinely-nothing-wrong on the
             // one panel built to surface what needs attention.
             alertsFetchOk = false;
-            console.error('[trading] alert fetch returned non-array:', JSON.stringify(aRows).slice(0, 300));
+            log.error(`[trading] alert fetch returned non-array: ${JSON.stringify(aRows).slice(0, 300)}`);
           }
         } catch (e) {
           alertsFetchOk = false;
-          console.error('[trading] alert fetch failed:', e.message);
+          log.error(`[trading] alert fetch failed: ${e.message}`);
         }
         const RANK = { stop_loss: 3, take_profit: 2, weakening: 1 };
         res.json(rows.map(({ trading_simulations: sim, ...p }) => {

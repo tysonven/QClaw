@@ -248,8 +248,10 @@ if (isMain) {
     for (const cfg of TARGETS) {
       try {
         const r = await runWatcher({ env, cfg });
+        // eslint-disable-next-line no-console -- CLI/cron entrypoint: stdout is this script's output, not a diagnostic
         console.log(`[liveness-watcher] ${cfg.workflowId} class=${r.class} fired=${r.fired}${r.suppressed ? ' (' + r.suppressed + ')' : ''}`);
       } catch (err) {
+        // eslint-disable-next-line no-console -- CLI/cron entrypoint: stdout is this script's output, not a diagnostic
         console.error(`[liveness-watcher] ${cfg.workflowId} error (non-fatal): ${err?.message || err}`);
       }
     }

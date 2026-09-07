@@ -11,6 +11,8 @@
  * (Direct `node src/dispatch/claude-code-dispatcher.js` still works for foreground /
  * one-shot runs via the dispatcher's own isMain block.)
  */
+/* eslint-disable no-console -- CLI/cron entrypoint: stdout is this script's output, not a diagnostic. This whole module is the
+   PM2 entrypoint: it starts the loop and reports why it did not. */
 import { mainLoop, loadEnv } from './claude-code-dispatcher.js';
 
 if (process.env.QCLAW_CC_DISPATCHER_ENABLED === '0') {

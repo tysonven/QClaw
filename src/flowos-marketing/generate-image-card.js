@@ -21,6 +21,7 @@
 import { createCanvas, loadImage } from 'canvas';
 import { writeFileSync } from 'fs';
 import { parseArgs } from 'util';
+import { log } from '../core/logger.js';
 
 // ─── Brand Palette ───────────────────────────────────────────
 const DARK_BG     = '#1a2a2a';
@@ -141,7 +142,7 @@ function getLogoMark() {
       const buf = Buffer.from(await res.arrayBuffer());
       return await loadImage(buf);
     })().catch(err => {
-      console.warn(`[flowos-marketing] logo-mark unavailable (${err.message}); rendering text-only footer`);
+      log.warn(`[flowos-marketing] logo-mark unavailable (${err.message}); rendering text-only footer`);
       _logoPromise = null; // allow retry on next generation
       return null;
     });
@@ -467,8 +468,10 @@ if (isMain) {
   try {
     const buf = await generateImageCard(values);
     writeFileSync(values.output, buf);
+    // eslint-disable-next-line no-console -- CLI/cron entrypoint: stdout is this script's output, not a diagnostic
     console.log(`✓ ${values.output} (${buf.length} bytes, ${WIDTH}×${HEIGHT})`);
   } catch (err) {
+    // eslint-disable-next-line no-console -- CLI/cron entrypoint: stdout is this script's output, not a diagnostic
     console.error(`Error: ${err.message}`);
     process.exit(1);
   }
