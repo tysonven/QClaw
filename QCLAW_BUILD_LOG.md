@@ -25183,3 +25183,150 @@ remote: error: GH006 ... Changes must be made through a pull request.
 Consequence worth stating plainly: 15 of the last 20 commits to QClaw `main`
 reached it as direct pushes. That route is now closed, for every operator and
 every session.
+
+## 2026-09-07: variant 3 corrected, the proxy was leaking as well as over-firing
+
+Amends the "a third vacuity variant" entry above. That entry states, in bold,
+**"Variant 3 fails when it should pass"**, and contrasts it with variants 1 and
+2 which pass when they should fail. That framing is half right and the missing
+half is the more serious one. Fixing the helper in repo `ghl-support-bot`
+(PR #18, merged at `ghl-support-bot@e35603c`) measured both directions, and the
+keyword proxy was leaking real fabrications at the same time as it was failing
+correct answers.
+
+### The measurement
+
+`uiInstructionSteps` was run over a 75-line labelled corpus, built from the two
+failing CI runs, the system prompt's own worked examples, and reconstructed
+fabrications. Counted at `ghl-support-bot@eca85f6` (the keyword version) against
+`ghl-support-bot@e35603c` (the replacement):
+
+| version | flagged correct answers | missed fabrications |
+| --- | --- | --- |
+| keyword match | 10 of 25 | 5 of 40 |
+| clause-position match | 0 of 25 | 0 of 40 |
+
+### What it was leaking
+
+This numbered walkthrough scored **zero** hits on the keyword helper:
+
+```
+2. Select **Security** from the settings menu.
+3. Turn on **Password Protection**.
+```
+
+That is an invented procedure for a feature GoHighLevel does not have, which is
+precisely what Q1 exists to catch. It uses none of `click|toggle|tick|enable|
+disable|switch on|switch off|check the box|drag|drop down`, so the keyword list
+never sees it.
+
+It also cleared the other two assertions in the same test. `ungroundedNavLabels`
+missed it because there is no arrow chain to parse, the labels being spread
+across separate numbered lines. The `numberedSteps(answer).length < 6` ceiling
+missed it because two steps is under six. So the answer would have passed Q1
+outright, on all three assertions, while inventing a navigation path and a
+control that do not exist.
+
+`drop down` deserves a specific note: it is a noun in essentially all UI prose
+("look for a drop down"), so its presence in a list of verbs was never matching
+an action at all. It is gone at `ghl-support-bot@e35603c`.
+
+### Correction to the standing framing
+
+The three variants are better stated as a single failure with two symptoms. A
+check that matches a proxy rather than the property does not fail in a
+consistent direction. It fails wherever the proxy and the property come apart,
+and for a keyword list over natural language that is both directions at once:
+
+- the keyword appears without the property (noun uses, reported questions),
+  which is the false positive that took Q1 red
+- the property appears without the keyword (synonyms, paraphrase), which is the
+  silent leak
+
+The visible half creates pressure to loosen the check. The invisible half is
+what the loosening would then be blamed for. The earlier entry's warning that
+"a fabrication guard loosened under deadline pressure is how a real regression
+gets through later" was right about the risk and wrong about the mechanism: the
+regression was already getting through, before anyone touched the guard.
+
+**Standing review question, restated:** does this check match the property, or a
+proxy? And if a proxy, measure BOTH directions before trusting it. A proxy that
+has only been observed to over-fire has not been shown to be conservative. It
+has been shown to be visible.
+
+### Disposition
+
+Fixed by a session that came to the diff cold, per the standing rule. The
+counter-argument the brief raised, that the model might still be inventing a
+place to look and the prompt should be tightened instead, was tested and
+rejected on three grounds, the decisive one being that the failing line from the
+rerun of GitHub Actions run `34123422286` names no location at all:
+
+```
+3. Check whether there is a password protection toggle or field
+```
+
+Also, the flagged text is what `server/prompts.ts` instructs. Rule 2's worked
+example tells the model to say "In the funnel builder, look for the page
+settings panel", and Rule 3 sanctions "Contact support to ask whether this is
+possible". Both are now pinned as negative controls in the suite, so the guard
+going back to fighting the prompt is a test failure rather than a discovery.
+
+Proven not to weaken the guard rather than asserted safe: the original
+eight-step fabrication is a positive control; replacing the helper with one
+returning `[]` unconditionally fails six tests, verified by making the
+substitution and running it; and the keyword version is retained in the suite
+and asserted to fail the negative controls, so a revert cannot report green.
+
+### The gate ordering trap, worth carrying
+
+`ghl-support-bot` `main` requires the `test` context with `enforce_admins`
+enabled, but `.github/workflows/ci.yml` existed only on PR #17's branch. A
+`pull_request` workflow runs from the head ref, so PR #18, branched off `main`,
+had no workflow, could never produce a `test` check, and reported
+`mergeStateStatus=BLOCKED` permanently. PR #17 was equally stuck, failing on the
+very bug #18 fixed.
+
+Neither PR could merge, and the only routes out were to relax the gate, which
+the brief forbids, or to land the fix onto the branch that carries the workflow.
+Taken: PR #18 was retargeted from `main` to `ci/slice-3-env-assertion-and-workflow`
+and rebase-merged there. The gate was not touched.
+
+Generalisation: **a required status check whose workflow is introduced by the
+same PR it gates cannot be satisfied by any independent fix branched from the
+protected branch.** Land the workflow first, or expect the first fix after it to
+need stacking.
+
+### Verified
+
+GitHub Actions run `34135414616` on `ghl-support-bot@e35603c`, concluded
+`success` at 2026-09-07T14:54:54Z. `server/grounding.eval.test.ts` 35 tests
+passed including the twelve live evals against `claude-haiku-4-5`, Q1 among
+them. 21 test files passed. PR #17 moved to `mergeStateStatus=CLEAN` with
+`test=SUCCESS`, and is left unmerged for Tyson.
+
+Three consecutive local runs of the twelve live evals passed 35/35 before the
+push, on the same tree.
+
+### Open finding: ungroundedNavLabels only sees arrow chains
+
+Not fixed, and not in scope of the brief. `ungroundedNavLabels` extracts
+locations only from an arrow or chevron chain (`A > B > C`, `A -> B`). A
+location named in ordinary prose, comma-separated or joined by "or", is
+invisible to it. From run `34123422286`:
+
+```
+1. **Check the funnel or site builder directly** - look in the page settings
+   or security options while editing your landing page to see if a password
+   protection toggle exists.
+```
+
+`securit` appears zero times in that fixture's `PASSWORD_CONTEXT`, so "security
+options" is ungrounded, and nothing in the suite sees it. It is not fabrication
+under the prompt at `ghl-support-bot@e35603c`, because Rule 2 requires exactly
+this hedging and the model complies. The exposure is that the check does not
+depend on the prompt staying that way: if Rule 2 is ever weakened, the suite
+would not notice ungrounded locations returning in prose form.
+
+Tracked as `ghl-support-bot` issue #19. Same variant-3 shape as the entry above,
+which is the point: this is the second proxy found in one file.
