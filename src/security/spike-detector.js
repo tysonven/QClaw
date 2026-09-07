@@ -108,3 +108,6 @@ export default class SpikeDetector {
     return [];
   }
 }
+
+// protection probe, to be discarded
+console.log("protection probe");
