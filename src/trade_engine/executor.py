@@ -2,7 +2,7 @@
 """Trade executor — the only component in this repo that spends real money.
 
 Sits behind the approval gate: nothing here runs until a human has tapped
-Execute on a Telegram message. Even then, six independent gates are re-checked
+Execute on a Telegram message. Even then, seven independent gates are re-checked
 against LIVE state before the order goes out, because the approval may be up to
 30 minutes stale by the time it is acted on and the world moves in between.
 
@@ -30,6 +30,7 @@ well-formed conditionId is refused rather than sent with the wrong identifier.
 import asyncio
 import json
 import logging
+import math
 import re
 import subprocess
 from datetime import datetime, timezone
@@ -212,7 +213,7 @@ class TradeExecutor:
     # --- gates ------------------------------------------------------------
 
     async def _run_gates(self, candidate: ScannerCandidate) -> None:
-        """Six checks against live state. Raises ExecutionGateError on refusal.
+        """Seven checks against live state. Raises ExecutionGateError on refusal.
 
         Ordered cheapest-and-most-decisive first: the global brake before the
         per-trade arithmetic, so a disabled system does not spend three
@@ -281,6 +282,35 @@ class TradeExecutor:
             )
             raise ExecutionGateError("invalid_market_identifier")
         log.debug("gate 6 ok: conditionId well-formed")
+
+        # GATE 7, the market must still be long enough to price.
+        # PolymarketScanner.analyse_edge already refuses anything under this
+        # floor, so in a healthy pipeline this gate never fires. That is the
+        # point: the scanner PROPOSES and the executor EXECUTES, and a control
+        # that lives in one layer only is not a control. GATE 1 re-reads the
+        # global brake here for the same reason, the candidate in hand may
+        # have been selected up to 30 minutes ago, by a scanner running older
+        # code, or reconstructed from a persisted approval.
+        #
+        # Fails CLOSED on a missing or non-finite value, matching gates 1-6:
+        # an unknown horizon is refused, never waved through.
+        horizon = candidate.horizon_days
+        floor = config.min_horizon_tradeable_days
+        if horizon is None or not isinstance(horizon, (int, float)) \
+                or isinstance(horizon, bool) or not math.isfinite(float(horizon)):
+            log.error(
+                "gate 7: candidate has no usable horizon (market_id=%s, value=%r)",
+                candidate.market_id, horizon,
+            )
+            raise ExecutionGateError("horizon_below_minimum")
+        if float(horizon) < floor:
+            log.error(
+                "gate 7: horizon %.4fd is below the %.2fd tradeable floor "
+                "(market_id=%s), refusing",
+                float(horizon), floor, candidate.market_id,
+            )
+            raise ExecutionGateError("horizon_below_minimum")
+        log.debug("gate 7 ok: horizon=%.4fd >= %.2fd", float(horizon), floor)
 
     # --- execution --------------------------------------------------------
 

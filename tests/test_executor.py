@@ -280,6 +280,45 @@ class GateTest(unittest.TestCase):
     def test_gate6_rejects_malformed_hex(self):
         self.assert_blocked("invalid_market_identifier", condition_id="0xdeadbeef")
 
+    # --- GATE 7, the tradeable-horizon floor ------------------------------
+    #
+    # These deliberately DO NOT go through the scanner. The scanner refuses
+    # sub-day markets too, but the whole point of gate 7 is that the executor
+    # refuses independently: a candidate can reach execute() from a 30-minute-
+    # old approval, from a persisted ApprovalResult, or from a scanner running
+    # older code. Constructing the candidate directly is what proves the two
+    # layers are independent rather than one guard tested twice.
+
+    def test_gate7_refuses_the_e09b82fe_horizon(self):
+        """0.0412d, the 3,558-second market that cost $10.69.
+
+        Edge is left at the fixture's healthy 0.2164 on purpose: this must be
+        refused on horizon ALONE, with nothing wrong with the edge.
+        """
+        self.assert_blocked("horizon_below_minimum", horizon_days=0.041181)
+
+    def test_gate7_refuses_just_under_the_floor(self):
+        self.assert_blocked("horizon_below_minimum", horizon_days=0.999)
+
+    def test_gate7_admits_exactly_the_floor(self):
+        """1.0d is tradeable, the floor is a minimum, not an exclusive bound."""
+        ex = StubExecutor()
+        with DBStub():
+            result = run(ex.execute(make_approval(horizon_days=1.0)))
+        self.assertTrue(result.success)
+
+    def test_gate7_admits_a_fractional_horizon_above_the_floor(self):
+        """20.58d must trade normally; this gate refuses SHORT, not FRACTIONAL."""
+        ex = StubExecutor()
+        with DBStub():
+            result = run(ex.execute(make_approval(horizon_days=20.582881944)))
+        self.assertTrue(result.success)
+
+    def test_gate7_fails_closed_on_non_finite_horizon(self):
+        for bad in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(horizon=bad):
+                self.assert_blocked("horizon_below_minimum", horizon_days=bad)
+
     def test_unapproved_status_refused(self):
         for status in (ApprovalStatus.skipped, ApprovalStatus.timeout,
                        ApprovalStatus.analyst_skip, ApprovalStatus.pending):

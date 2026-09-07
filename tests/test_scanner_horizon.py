@@ -1,0 +1,267 @@
+"""Tests for the scanner's horizon arithmetic and tradeable-horizon refusal.
+
+src/trade_engine/scanner.py had no test file at all before this one, which is
+how PolymarketScanner._horizon_days shipped a math.ceil that rounded a
+3,558-second market up to a full day and priced position e09b82fe into a
+maximum-size loss.
+
+Two separate things are covered:
+
+  * _horizon_days now returns exact fractional days, and the guards downstream
+    of it are UNCHANGED by that (they were equivalent under ceil, and the tests
+    assert the equivalence rather than assuming it).
+  * MIN_HORIZON_TRADEABLE_DAYS is a hard refusal, enforced here before the
+    market is ever simulated. TradeExecutor GATE 7 enforces the same floor
+    independently, see tests/test_executor.py.
+
+No network: analyse_edge is driven with hand-built Gamma market dicts.
+
+Run:
+    python3 -m unittest tests/test_scanner_horizon.py
+"""
+
+import asyncio
+import math
+import os
+import sys
+import unittest
+from datetime import datetime, timedelta, timezone
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+for _key in (
+    "SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "ANTHROPIC_API_KEY",
+    "TELEGRAM_BOT_TOKEN", "OWNER_TELEGRAM_CHAT_ID",
+    "POLYMARKET_PRIVATE_KEY", "POLYMARKET_FUNDER_ADDRESS",
+):
+    os.environ.setdefault(_key, f"test-{_key.lower()}")
+
+from src.trade_engine.config import (  # noqa: E402
+    DEFAULT_MIN_HORIZON_TRADEABLE_DAYS,
+    Config,
+    config,
+)
+from src.trade_engine.models import ScannerCandidate  # noqa: E402
+from src.trade_engine.scanner import (  # noqa: E402
+    DEFAULT_HORIZON_DAYS,
+    HORIZON_MAX_DAYS,
+    PolymarketScanner,
+)
+
+NOW = datetime(2026, 8, 31, 15, 0, 42, 96934, tzinfo=timezone.utc)
+E09B82FE_END = "2026-08-31T16:00:00Z"     # 3,557.903 seconds after NOW
+E09B82FE_HORIZON = 0.04117943363425926    # exactly 3557.903066 / 86400
+
+
+def run(coro):
+    return asyncio.run(coro)
+
+
+def make_market(end_date, **overrides):
+    """A Gamma market dict that clears every filter except the one under test.
+
+    btc so the weekend filter never applies (crypto trades at weekends), volume
+    and yes_price comfortably inside their bands, target above the btc price
+    floor of 10,000.
+    """
+    market = {
+        "id": "3257355",
+        "conditionId": "0x" + "ab" * 32,
+        "slug": "bitcoin-above-60000",
+        "question": "Will Bitcoin reach $60,000 in September?",
+        "description": "",
+        "endDate": end_date,
+        "outcomePrices": '["0.50", "0.50"]',
+        "volume": "279582.74",
+        "event_slug": "what-price-will-bitcoin-hit",
+    }
+    market.update(overrides)
+    return market
+
+
+class HorizonDaysTest(unittest.TestCase):
+    """_horizon_days returns exact fractional days."""
+
+    def test_the_e09b82fe_horizon_is_not_rounded_up(self):
+        """The bug, stated as a test: 3,558 seconds is not one day."""
+        horizon = PolymarketScanner._horizon_days(E09B82FE_END, NOW)
+        self.assertAlmostEqual(horizon, E09B82FE_HORIZON, places=9)
+        self.assertNotEqual(horizon, 1)
+        self.assertLess(horizon, 0.05)
+
+    def test_returns_a_float(self):
+        horizon = PolymarketScanner._horizon_days(E09B82FE_END, NOW)
+        self.assertIsInstance(horizon, float)
+
+    def test_fractional_multi_day_horizons_are_exact(self):
+        """The four historical touch_* positions were all rounded up too, by
+        0.33 to 0.67 days. Values taken from their persisted simulation rows."""
+        cases = [
+            # simulation row, scan time, exact horizon, what ceil() used
+            ("cee4eacd", datetime(2026, 8, 11, 14, 0, 37, 831454,
+                                  tzinfo=timezone.utc), 20.58289546928241, 21),
+            ("d0892076", datetime(2026, 8, 11, 20, 0, 29, 266616,
+                                  tzinfo=timezone.utc), 20.33299459935185, 21),
+            ("d23ba1d9", datetime(2026, 8, 20, 18, 1, 0, 531793,
+                                  tzinfo=timezone.utc), 11.415966067210649, 12),
+            ("d9905812", datetime(2026, 8, 27, 12, 0, 45, 952146,
+                                  tzinfo=timezone.utc), 4.666134813125, 5),
+        ]
+        for sim_id, now, expected, old in cases:
+            with self.subTest(simulation=sim_id):
+                horizon = PolymarketScanner._horizon_days(
+                    "2026-09-01T04:00:00Z", now
+                )
+                self.assertAlmostEqual(horizon, expected, places=9)
+                self.assertEqual(math.ceil(horizon), old)
+                self.assertLess(horizon, old)
+
+    def test_absent_end_date_defaults_to_a_float(self):
+        for absent in (None, ""):
+            with self.subTest(end_date=absent):
+                horizon = PolymarketScanner._horizon_days(absent, NOW)
+                self.assertEqual(horizon, DEFAULT_HORIZON_DAYS)
+                self.assertIsInstance(horizon, float)
+
+    def test_unparseable_end_date_defaults_to_a_float(self):
+        horizon = PolymarketScanner._horizon_days("not-a-date", NOW)
+        self.assertEqual(horizon, DEFAULT_HORIZON_DAYS)
+        self.assertIsInstance(horizon, float)
+
+    def test_naive_timestamps_are_treated_as_utc(self):
+        aware = PolymarketScanner._horizon_days("2026-08-31T16:00:00Z", NOW)
+        naive = PolymarketScanner._horizon_days("2026-08-31T16:00:00", NOW)
+        self.assertAlmostEqual(aware, naive, places=9)
+
+    def test_a_past_end_date_is_negative(self):
+        """Feeds the `horizon_days <= 0` rejection below."""
+        self.assertLess(PolymarketScanner._horizon_days("2026-08-30T16:00:00Z", NOW), 0)
+
+
+class GuardEquivalenceTest(unittest.TestCase):
+    """The two downstream guards are UNCHANGED by the fractional horizon.
+
+    ceil(T) <= 0 iff T <= 0, and ceil(T) <= 35 iff T <= 35. Asserting the
+    equivalence directly is what justifies leaving those guards alone: it
+    proves the fix changes only the VALUE passed downstream, not which markets
+    survive filtering.
+    """
+
+    def test_zero_guard_is_equivalent_under_ceil(self):
+        for t in (-5.0, -1.0, -0.5, -1e-9, 0.0, 1e-9, 0.0412, 0.5, 1.0, 2.5):
+            with self.subTest(t=t):
+                self.assertEqual(t <= 0, math.ceil(t) <= 0)
+
+    def test_max_days_guard_is_equivalent_under_ceil(self):
+        for t in (0.5, 1.0, 34.0, 34.2, 34.999, 35.0, 35.0001, 35.4, 36.0, 40.0):
+            with self.subTest(t=t):
+                self.assertEqual(
+                    t > HORIZON_MAX_DAYS, math.ceil(t) > HORIZON_MAX_DAYS
+                )
+
+    def test_lookback_selector_is_equivalent_under_ceil(self):
+        """monte_carlo picks a 21d vol window when horizon <= 35."""
+        for t in (0.0412, 1.0, 34.9, 35.0, 35.1, 90.0):
+            with self.subTest(t=t):
+                self.assertEqual(t <= 35, math.ceil(t) <= 35)
+
+
+class TradeableFloorTest(unittest.TestCase):
+    """MIN_HORIZON_TRADEABLE_DAYS: a refusal, not a penalty."""
+
+    def analyse(self, *markets):
+        scanner = PolymarketScanner()
+        return run(scanner.analyse_edge(list(markets)))
+
+    def end_in(self, **delta):
+        return (datetime.now(timezone.utc) + timedelta(**delta)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+
+    def test_default_floor_is_one_day(self):
+        self.assertEqual(DEFAULT_MIN_HORIZON_TRADEABLE_DAYS, 1.0)
+        self.assertEqual(config.min_horizon_tradeable_days, 1.0)
+
+    def test_a_sub_day_market_is_refused(self):
+        """A 59-minute market, e09b82fe's shape, never reaches the simulator."""
+        selected = self.analyse(make_market(self.end_in(seconds=3558)))
+        self.assertEqual(selected, [])
+
+    def test_refused_across_the_sub_day_range(self):
+        for seconds in (60, 3558, 3600 * 6, 3600 * 23):
+            with self.subTest(seconds=seconds):
+                self.assertEqual(self.analyse(make_market(self.end_in(seconds=seconds))), [])
+
+    def test_a_market_above_the_floor_survives(self):
+        """The floor refuses SHORT markets, not fractional ones."""
+        selected = self.analyse(make_market(self.end_in(days=20, hours=13)))
+        self.assertEqual(len(selected), 1)
+        self.assertAlmostEqual(selected[0]["horizon_days"], 20.54, delta=0.02)
+
+    def test_the_surviving_horizon_is_fractional_not_rounded(self):
+        selected = self.analyse(make_market(self.end_in(days=4, hours=16)))
+        self.assertEqual(len(selected), 1)
+        horizon = selected[0]["horizon_days"]
+        self.assertNotEqual(horizon, math.ceil(horizon))
+        self.assertAlmostEqual(horizon, 4.666, delta=0.01)
+
+    def test_refusal_is_independent_of_edge(self):
+        """No simulation has run at the point of refusal, so no edge exists yet.
+
+        This is what makes the floor a second, independent control rather than
+        a restatement of the edge threshold: analyse_edge drops the market
+        before run_simulations is ever called.
+        """
+        selected = self.analyse(make_market(self.end_in(seconds=3558)))
+        self.assertEqual(selected, [])
+        # And the market is otherwise perfectly valid, same dict, longer clock.
+        self.assertEqual(len(self.analyse(make_market(self.end_in(days=10)))), 1)
+
+    def test_env_can_raise_the_floor_but_never_lower_it(self):
+        """A typo or an over-eager override must not re-open the sub-day path."""
+        saved = os.environ.get("MIN_HORIZON_TRADEABLE_DAYS")
+        try:
+            for attempt in ("0", "0.0", "-5", "0.5", "0.041"):
+                with self.subTest(value=attempt):
+                    os.environ["MIN_HORIZON_TRADEABLE_DAYS"] = attempt
+                    self.assertEqual(Config().min_horizon_tradeable_days, 1.0)
+            os.environ["MIN_HORIZON_TRADEABLE_DAYS"] = "3"
+            self.assertEqual(Config().min_horizon_tradeable_days, 3.0)
+        finally:
+            if saved is None:
+                os.environ.pop("MIN_HORIZON_TRADEABLE_DAYS", None)
+            else:
+                os.environ["MIN_HORIZON_TRADEABLE_DAYS"] = saved
+
+
+class CandidateModelTest(unittest.TestCase):
+    """ScannerCandidate.horizon_days must accept a fractional value.
+
+    Left as int, pydantic v2 raises int_from_float and _to_candidate takes down
+    the entire scan rather than one market, because it runs for every high-edge
+    AND no-edge row.
+    """
+
+    def make(self, horizon):
+        return ScannerCandidate(
+            market_id="3257355", condition_id="0x" + "ab" * 32,
+            question="Will Bitcoin reach $60,000 in September?", asset="btc",
+            direction="YES", edge=0.14, sim_probability=0.56,
+            market_probability=0.42, volume=279582.74, horizon_days=horizon,
+            market_url="https://polymarket.com/market/x", amount_usdc=9.5,
+        )
+
+    def test_accepts_a_fractional_horizon(self):
+        for horizon in (E09B82FE_HORIZON, 4.666135, 20.582884, 1.0, 30.0):
+            with self.subTest(horizon=horizon):
+                self.assertAlmostEqual(
+                    self.make(horizon).horizon_days, horizon, places=9
+                )
+
+    def test_an_int_horizon_still_validates(self):
+        """Persisted approvals written before this change must still load."""
+        self.assertEqual(self.make(21).horizon_days, 21.0)
+
+
+if __name__ == "__main__":
+    unittest.main()

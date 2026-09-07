@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Monte Carlo simulation worker for gold and BTC price prediction."""
+"""Monte Carlo simulation worker for gold and BTC price prediction.
+
+Data fetching, the macro adjustment and the HTTP surface live here. The pricing
+ARITHMETIC lives in simulation.py and is imported, see that module's docstring
+for why the split exists.
+"""
 
 from flask import Flask, request, jsonify
 import yfinance as yf
@@ -7,7 +12,36 @@ import numpy as np
 from scipy import stats
 from datetime import datetime, timedelta
 import math
-import re
+
+# PM2 runs this file as a SCRIPT (`python3 /root/QClaw/src/trading/monte_carlo.py`,
+# cwd /root/QClaw), which puts src/trading on sys.path but NOT the repo root, so
+# the packaged import fails there. The test suite and any future in-process
+# caller import it the packaged way. Both forms are supported explicitly rather
+# than relying on whichever one happens to work.
+try:
+    from src.trading.simulation import (
+        MAX_STEPS,
+        MIN_HORIZON_MODEL_DAYS,
+        NUM_SIMULATIONS,
+        STEPS_PER_DAY,
+        coerce_horizon,
+        detect_market_type,
+        simulate_paths,
+        steps_for_horizon,
+        wilson_interval,
+    )
+except ImportError:  # pragma: no cover - exercised by the PM2 script invocation
+    from simulation import (  # type: ignore[no-redef]
+        MAX_STEPS,
+        MIN_HORIZON_MODEL_DAYS,
+        NUM_SIMULATIONS,
+        STEPS_PER_DAY,
+        coerce_horizon,
+        detect_market_type,
+        simulate_paths,
+        steps_for_horizon,
+        wilson_interval,
+    )
 
 app = Flask(__name__)
 
@@ -27,44 +61,12 @@ MACRO_TICKERS = {
     "tnx": "^TNX",
 }
 
-NUM_SIMULATIONS = 10_000
 TRADING_DAYS_YEAR = 252
 
-
-def wilson_interval(successes, total, z=1.96):
-    """Wilson score interval for binomial proportion."""
-    if total == 0:
-        return 0.0, 0.0, 0.0
-    p_hat = successes / total
-    denom = 1 + z**2 / total
-    centre = (p_hat + z**2 / (2 * total)) / denom
-    spread = z * math.sqrt((p_hat * (1 - p_hat) + z**2 / (4 * total)) / total) / denom
-    return round(centre, 4), round(max(0, centre - spread), 4), round(min(1, centre + spread), 4)
-
-
-def detect_market_type(question, target, current_price):
-    """
-    Detect whether this is a touch market or close-on-date market.
-
-    Touch market: "will X dip to/reach/hit Y" — checks any path touch
-    Close-on-date: "will X be above/below Y on [date]" — checks final price only
-
-    Returns: 'touch_above' | 'touch_below' | 'close_above' | 'close_below'
-    """
-    q = (question or '').lower()
-
-    # Close-on-date patterns: "above X on [date]" or "over X on [date]"
-    if re.search(r'\b(above|over)\b', q) and re.search(r'\bon\b', q):
-        return 'close_above'
-
-    # Close-on-date patterns: "below X on [date]" or "under X on [date]"
-    if re.search(r'\b(below|under)\b', q) and re.search(r'\bon\b', q):
-        return 'close_below'
-
-    # Touch market: direction based on target vs current price
-    if target < current_price:
-        return 'touch_below'
-    return 'touch_above'
+# NUM_SIMULATIONS, STEPS_PER_DAY, MAX_STEPS, MIN_HORIZON_MODEL_DAYS,
+# wilson_interval, detect_market_type, coerce_horizon, steps_for_horizon and
+# simulate_paths are imported from simulation.py above. They are re-exported by
+# that import so existing callers of monte_carlo.<name> keep working.
 
 
 def fetch_macro():
@@ -86,7 +88,7 @@ def fetch_macro():
     return factors
 
 
-def run_simulation(asset, target, horizon_days=30, question=''):
+def run_simulation(asset, target, horizon_days=30.0, question=''):
     """Run Monte Carlo simulation for an asset."""
     ticker_symbol = TICKERS.get(asset)
     if not ticker_symbol:
@@ -118,35 +120,16 @@ def run_simulation(asset, target, horizon_days=30, question=''):
     if not np.isfinite(mu) or not np.isfinite(sigma) or sigma <= 0:
         return None, f"Invalid statistics for {asset}: mu={mu}, sigma={sigma} (possible NaN/sparse data)"
 
-    dt = 1.0  # mu and sigma are daily, so dt=1 day per step
-    steps = horizon_days
-
-    # Generate Monte Carlo paths using GBM
-    np.random.seed(None)
-    Z = np.random.standard_normal((NUM_SIMULATIONS, steps))
-    drift = (mu - 0.5 * sigma**2) * dt
-    diffusion = sigma * np.sqrt(dt) * Z
-
-    # Build price paths
-    log_increments = drift + diffusion
-    log_paths = np.cumsum(log_increments, axis=1)
-    paths = current_price * np.exp(log_paths)
-
-    # Determine market type and count hits
+    # mu and sigma are per DAY. horizon_days is a total time in days, not a
+    # step count, dt comes out of simulate_paths as horizon/steps.
     market_type = detect_market_type(question, target, current_price)
-    if market_type == 'close_above':
-        hits = (paths[:, -1] >= target).sum()
-    elif market_type == 'close_below':
-        hits = (paths[:, -1] <= target).sum()
-    elif market_type == 'touch_above':
-        hits = np.any(paths >= target, axis=1).sum()
-    else:  # touch_below
-        hits = np.any(paths <= target, axis=1).sum()
+    priced = simulate_paths(
+        current_price, target, mu, sigma, horizon_days, market_type,
+        num_simulations=NUM_SIMULATIONS,
+    )
 
     market_type_used = market_type
-
-    hits = int(hits)
-    prob, ci_lower, ci_upper = wilson_interval(hits, NUM_SIMULATIONS)
+    prob, ci_lower, ci_upper = wilson_interval(priced.hits, priced.total)
 
     # Macro adjustment for gold
     macro = fetch_macro()
@@ -171,6 +154,12 @@ def run_simulation(asset, target, horizon_days=30, question=''):
         "target": target,
         "asset": asset,
         "horizon_days": horizon_days,
+        # What was actually priced. horizon_days is what the caller asked for;
+        # these three say how it was discretised, so a stored simulation row
+        # can be re-derived later instead of guessed at.
+        "horizon_days_model": priced.horizon_days_model,
+        "steps": priced.steps,
+        "steps_per_day": STEPS_PER_DAY,
         "market_type": market_type_used,
         "question": question or f"Will {asset} hit ${target}?",
         "simulations": NUM_SIMULATIONS,
@@ -187,16 +176,24 @@ def simulate():
         body = request.get_json(force=True, silent=True) or {}
         asset = body.get("asset", "gold").lower()
         target = body.get("target")
-        horizon = body.get("horizon_days", 30)
+        horizon = body.get("horizon_days", 30.0)
 
         if target is None:
             return jsonify({"error": "target is required"}), 400
 
         try:
             target = float(target)
-            horizon = int(horizon)
         except (ValueError, TypeError):
             return jsonify({"error": "target must be numeric"}), 400
+        if not math.isfinite(target):
+            return jsonify({"error": "target must be finite"}), 400
+
+        # coerce_horizon, NOT int(). See simulation.coerce_horizon for why the
+        # int() this replaced was a second, independent truncation that failed
+        # SILENTLY on touch markets.
+        horizon, horizon_error = coerce_horizon(horizon)
+        if horizon_error:
+            return jsonify({"error": horizon_error}), 400
 
         question = body.get("question", "")
         result, error = run_simulation(asset, target, horizon, question)

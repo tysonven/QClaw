@@ -56,6 +56,25 @@ DEFAULT_HIGH_EDGE_THRESHOLD = 0.07
 DEFAULT_NO_EDGE_THRESHOLD = -0.20
 DEFAULT_MIN_ALERT_VOLUME = 5000.0
 
+# Hard refusal floor on how short a market may be to be proposed OR placed.
+# THIS is the control that protects the money path from short-dated markets, 
+# not monte_carlo.MIN_HORIZON_MODEL_DAYS, which is numerical safety only.
+#
+# The scanner's Monte Carlo estimates daily_sigma from 21 daily closes. Making
+# the horizon arithmetic exact (2026-09-07) lets it price a 59-minute window
+# correctly by its own lights, but a 21-day daily-close vol estimate is not
+# calibrated for an intraday window at all, there is no intraday data behind
+# it. Correct arithmetic on an uncalibrated model is still not a tradeable
+# number, so anything under a day is refused outright rather than sized.
+#
+# Enforced in TWO independent places on purpose: PolymarketScanner.analyse_edge
+# drops the market before it is ever simulated, and TradeExecutor GATE 7
+# re-checks it against live state immediately before the order goes out. A
+# control that exists in one layer only is not a control, the scanner
+# proposes, the executor executes, and an approval can be up to 30 minutes
+# stale by the time it is acted on.
+DEFAULT_MIN_HORIZON_TRADEABLE_DAYS = 1.0
+
 VERSION = "0.1.0"
 
 
@@ -111,6 +130,15 @@ class Config:
         )
         self.min_alert_volume: float = self._float_env(
             "MIN_ALERT_VOLUME", DEFAULT_MIN_ALERT_VOLUME
+        )
+        # Clamped at the floor, never below: an env typo (0, negative, or an
+        # over-eager 0.5) must not be able to re-open the sub-day path that
+        # cost position e09b82fe. Raising it is allowed, lowering it is not.
+        self.min_horizon_tradeable_days: float = max(
+            DEFAULT_MIN_HORIZON_TRADEABLE_DAYS,
+            self._float_env(
+                "MIN_HORIZON_TRADEABLE_DAYS", DEFAULT_MIN_HORIZON_TRADEABLE_DAYS
+            ),
         )
 
         self.approval_timeout_seconds: int = self._int_env(
