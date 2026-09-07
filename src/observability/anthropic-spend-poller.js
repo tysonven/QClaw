@@ -186,6 +186,7 @@ function round4(n) { return Math.round(n * 1e4) / 1e4; }
 const isMain = import.meta.url === `file://${process.argv[1]}`;
 if (isMain) {
   if (process.env.pm_id !== undefined) {
+    // eslint-disable-next-line no-console -- CLI/cron entrypoint: stdout is this script's output, not a diagnostic
     console.error('[spend-poller] refusing to run inside PM2 (pm_id set) — cron-only');
     process.exit(2);
   }
@@ -195,9 +196,11 @@ if (isMain) {
   const endDate = process.argv[3] || utcDate(now, 1);
   const startDate = process.argv[2] || utcDate(now, -30);
   pollAndStore({ env, startDate, endDate })
+    // eslint-disable-next-line no-console -- CLI/cron entrypoint: stdout is this script's output, not a diagnostic
     .then(r => { console.log(`[spend-poller] upserted ${r.upserted} day(s): ${r.dates[0]}..${r.dates[r.dates.length - 1]}`); process.exit(0); })
     .catch(err => {
       const msg = scrubSecrets(err?.message || String(err));
+      // eslint-disable-next-line no-console -- CLI/cron entrypoint: stdout is this script's output, not a diagnostic
       console.error(`[spend-poller] FAILED: ${msg}`);
       process.exit(err instanceof AuthError ? 3 : 1);
     });

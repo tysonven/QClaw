@@ -5,6 +5,7 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { log } from '../core/logger.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -81,7 +82,7 @@ export default class SpikeDetector {
         alerts = JSON.parse(fs.readFileSync(this.alertFile, 'utf8'));
       }
     } catch (err) {
-      console.error('Failed to load alerts:', err.message);
+      log.error(`Failed to load alerts: ${err.message}`);
     }
 
     alerts.push(alert);
@@ -92,7 +93,7 @@ export default class SpikeDetector {
 
     fs.writeFileSync(this.alertFile, JSON.stringify(alerts, null, 2));
     
-    console.warn(`⚠️  SPIKE ALERT: ${alert.type} spike detected (${alert.multiplier[alert.type]}x normal)`);
+    log.warn(`⚠️  SPIKE ALERT: ${alert.type} spike detected (${alert.multiplier[alert.type]}x normal)`);
   }
 
   async getRecentAlerts(limit = 10) {
@@ -102,7 +103,7 @@ export default class SpikeDetector {
         return alerts.slice(-limit).reverse();
       }
     } catch (err) {
-      console.error('Failed to lalerts:', err.message);
+      log.error(`Failed to lalerts: ${err.message}`);
     }
     return [];
   }

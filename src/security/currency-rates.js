@@ -2,6 +2,8 @@
  * Currency conversion using exchangerate-api.com
  */
 
+import { log } from '../core/logger.js';
+
 const SUPPORTED_CURRENCIES = ['USD', 'EUR', 'GBP', 'JPY', 'AUD', 'CAD'];
 const CACHE_TTL = 3600000; // 1 hour
 
@@ -24,9 +26,9 @@ async function fetchRates() {
     cacheTime = now;
     return ratesCache;
   } catch (err) {
-    console.error('Failed to fetch exchange rates:', err.message);
+    log.error(`Failed to fetch exchange rates: ${err.message}`);
     if (ratesCache) {
-      console.warn('Using stale exchange rates');
+      log.warn('Using stale exchange rates');
       return ratesCache;
     }
     return { USD: 1.27, EUR: 1.19, GBP: 1, JPY: 196, AUD: 2.02, CAD: 1.79 };

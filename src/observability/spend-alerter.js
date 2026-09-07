@@ -236,11 +236,14 @@ function safeMtimeMs(p) { try { return statSync(p).mtimeMs; } catch { return 0; 
 const isMain = import.meta.url === `file://${process.argv[1]}`;
 if (isMain) {
   if (process.env.pm_id !== undefined) {
+    // eslint-disable-next-line no-console -- CLI/cron entrypoint: stdout is this script's output, not a diagnostic
     console.error('[spend-alerter] refusing to run inside PM2 (pm_id set) — cron-only');
     process.exit(2);
   }
   const env = { ...readEnvFile(), ...process.env };
   runAlerter({ env })
+    // eslint-disable-next-line no-console -- CLI/cron entrypoint: stdout is this script's output, not a diagnostic
     .then(r => { console.log(`[spend-alerter] fired=${r.fired ?? 'none'} 24h=$${(r.usd24h ?? 0).toFixed(4)} 1h=$${(r.usd1h ?? 0).toFixed(4)}${r.suppressed ? ' (suppressed: ' + r.suppressed + ')' : ''}`); process.exit(0); })
+    // eslint-disable-next-line no-console -- CLI/cron entrypoint: stdout is this script's output, not a diagnostic
     .catch(err => { console.error(`[spend-alerter] error (non-fatal): ${err?.message || err}`); process.exit(0); }); // always 0
 }

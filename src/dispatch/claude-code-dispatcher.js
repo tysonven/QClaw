@@ -744,8 +744,10 @@ try {
 } catch { isMain = import.meta.url === `file://${process.argv[1]}`; }
 if (isMain) {
   if (process.env.QCLAW_CC_DISPATCHER_ENABLED === '0') {
+    // eslint-disable-next-line no-console -- CLI/cron entrypoint: stdout is this script's output, not a diagnostic
     console.warn('[dispatcher] QCLAW_CC_DISPATCHER_ENABLED=0 — not starting');
     process.exit(0);
   }
+  // eslint-disable-next-line no-console -- CLI/cron entrypoint: stdout is this script's output, not a diagnostic
   mainLoop(loadEnv()).catch((err) => { console.error(`[dispatcher] fatal: ${err?.message || err}`); process.exit(1); });
 }

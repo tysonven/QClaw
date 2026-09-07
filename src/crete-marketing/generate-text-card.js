@@ -319,8 +319,10 @@ if (isMain) {
   try {
     const buf = await generateTextCard(values);
     writeFileSync(values.output, buf);
+    // eslint-disable-next-line no-console -- CLI/cron entrypoint: stdout is this script's output, not a diagnostic
     console.log(`✓ ${values.output} (${buf.length} bytes, ${WIDTH}×${HEIGHT})`);
   } catch (err) {
+    // eslint-disable-next-line no-console -- CLI/cron entrypoint: stdout is this script's output, not a diagnostic
     console.error(`Error: ${err.message}`);
     process.exit(1);
   }
