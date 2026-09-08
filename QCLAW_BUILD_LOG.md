@@ -25985,3 +25985,114 @@ appleboy/ssh-action          v1 unchanged (composite, no node runtime)
 Bumping only the two actions the warning named would have left `setup-python`
 and `pnpm/action-setup` warning. Bumping `upload-artifact` by one major would
 have fixed nothing at all while appearing to.
+
+## 2026-09-08: a wrong conclusion that survived review and became an instruction, and two defects the tests found rather than the reasoning
+
+Three findings from the fee-aware Kelly sizing work (PR #127). The first is
+about how a wrong answer propagated rather than that it occurred, which is what
+this register is for.
+
+### A wrong region, approved, and then issued back as a measurement target
+
+The audit for that PR reported that fractional Kelly at a $25 bankroll lands
+under Polymarket's 5-share minimum for almost every market, and stated the
+surviving region as **price >= 0.964**, deep favourites.
+
+That is backwards. The condition to clear the minimum is
+
+    edge >= 2 * price * (1 - price)
+
+and edge can NEVER exceed (1 - price), because that is the whole payoff.
+Substituting gives 2 * price <= 1. **Above price 0.5 the minimum is unreachable
+at any edge, including certainty.** At p = 1 the stake collapses to
+KELLY_FRACTION * bankroll = $2.50 whatever the price, giving 2.5 / price shares,
+which crosses 5 at price 0.48.
+
+So deep favourites are the one region that is arithmetically IMPOSSIBLE, not the
+region that survives. What survives is price in [0.10, ~0.48] with a very large
+edge: a simulated probability of 0.29 at price 0.10, 0.54 at 0.20, 0.74 at 0.30,
+0.90 at 0.40.
+
+The error is a partial derivation. `edge >= 2 * price * (1 - price)` was
+evaluated at the 7-point edge floor, which gives price <= 0.036 or
+price >= 0.964, and the second root was reported without asking whether an edge
+of 0.07 is achievable at a price of 0.964. It is not: the maximum there is 0.036.
+A root of the inequality was mistaken for a feasible point.
+
+**What matters is what happened next.** The audit was reviewed and accepted. The
+conclusion was then written back into the next instruction as a measurement
+target: find what fraction of proposed candidates land at price >= 0.964. That
+instruction directed work at a region that cannot exist. The error was caught
+only while writing `test_above_price_one_half_it_is_impossible_at_any_edge`,
+which checks p = 1 at a range of prices because that is the best case there is,
+and found the "surviving" region failing at certainty.
+
+Two things generalise:
+
+1. **A conclusion that survives review acquires authority it did not earn.**
+   Nobody re-derived it, because it had been checked. The same shape as the
+   eighth-instance entry, where a comment asserting that a verification happens
+   caused a new verification to be written in its image.
+2. **An analytic result should be evaluated at its extremes before it is
+   trusted.** The inequality was solved correctly and its solution was not
+   tested for reachability. Checking the boundary case, p = 1, would have taken
+   one line and did, once someone wrote it as a test rather than as prose.
+
+Recorded in the code as well: `sizing.py`'s docstring states the corrected
+region and names the error, and a test is named for it, so the next reader meets
+the correction rather than the original.
+
+### A test that pinned behaviour at exactly one point, and so proved nothing
+
+`tests/test_analyst.py::test_reduce_floors_at_three_dollars` asserted that
+reducing a $3.00 position returns $3.00. The implementation was
+
+    max(AMOUNT_MIN_USDC, before / 2)        # AMOUNT_MIN_USDC = 3.0
+
+which is a floor, not a reduction. On a $1.23 position it returns $3.00: a 2.4x
+INCREASE, on the exact path where the Analyst has just said it is less confident.
+A safety inversion, invisible for as long as the old sizing ramp never produced
+a position below $3, and live the moment Kelly did.
+
+The transferable part is the test, not the bug. **The assertion was true at
+exactly one input.** $3.00 is the single value where "floor at 3" and "halve"
+happen to agree, so a test written at that value passes under both the correct
+and the incorrect implementation. It could not distinguish them, and it was the
+only test of that behaviour.
+
+**A test that pins behaviour at one value proves nothing about the function.**
+It proves the function passes through one point. Two implementations agreeing at
+one point is not evidence they agree anywhere else, and a single-point test on a
+function that should be monotone, or bounded, or a reduction, asserts none of
+those properties. The replacement asserts `reduce(x) < x` across 0.25, 1.23,
+3.00 and 10.00.
+
+Same family as `test_gate7_admits_exactly_the_floor` from PR #118, which
+asserted a decayed horizon should pass. Both were tests written from the shape
+of the implementation rather than from the property the code owes.
+
+### A correctness defect found by writing tests, not by reasoning
+
+Worth saying plainly, because the honest account is that nobody spotted it by
+thinking about it.
+
+`sizing.py` computed the notional, then derived `shares` from that value, then
+rounded the notional to 6 decimal places for transmission. The rounded notional
+is what the relay is sent, and therefore what the exchange divides by price to
+get the order size. So the share count checked against the exchange minimum was
+NOT the share count the exchange would compute.
+
+The difference is around 1e-6 and is irrelevant everywhere except at the
+boundary, which is precisely where this value is used: `shares >= orderMinSize`
+is the entire question GATE 8 exists to answer. At the boundary it is the
+difference between a clean local refusal and an order sent and rejected by the
+exchange after a human approved it.
+
+It surfaced from a test asserting `shares == notional / price`, written to pin
+an obvious-looking invariant, which then failed by 1.06e-6. The fix is to round
+first and derive both `shares` and `debit` from the rounded figure.
+
+The general point is not "write more tests". It is that **an invariant that
+looks too obvious to assert is exactly the one an implementation can quietly
+break**, because nobody re-reads code to check something they already believe.
+The assertion was written for completeness and earned its place immediately.
