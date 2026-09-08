@@ -25129,6 +25129,31 @@ keyword list, a regex over prose, or a filename pattern. Those are all proxies,
 and a proxy is a claim that the pattern and the property coincide, which is
 usually undocumented and sometimes false.
 
+### The direction NOT measured, which is the worse one
+
+What was observed is a false RED: the cache held the mutant's bytecode, the disk
+held correct source, and correct code reported six failures. That wastes a
+session and it fails safe, because a red suite gets investigated.
+
+The mechanism is symmetric and nothing in it prefers that direction. The inverse
+is a false GREEN: the cache holds bytecode compiled before an edit, and the suite
+reports green about source that never ran. The conditions are the same two, a
+size-preserving edit and a same-second write, and they are more common outside a
+harness than inside one, because ordinary development edits files in place all
+day.
+
+That direction was not observed here and was not measured. It is recorded
+because the observed direction is the benign one, and an entry stopping at "it
+reported failures that were not real" would understate the finding by exactly
+the half that matters. Whether a same-second false green is reachable in
+practice on this repo is unmeasured, and is the obvious first question if this
+is ever scoped.
+
+Inside a mutation harness specifically the inverse presents as a mutant
+appearing to SURVIVE, which the harness reports as "test is vacuous": a false
+alarm rather than a false pass. The harness is the safer place for this bug to
+happen. Nothing else is.
+
 ### Disposition, and what NOT to do
 
 Not fixed here. Loosening a fabrication guard goes to a session that comes to
@@ -25331,7 +25356,7 @@ would not notice ungrounded locations returning in prose form.
 Tracked as `ghl-support-bot` issue #19. Same variant-3 shape as the entry above,
 which is the point: this is the second proxy found in one file.
 
-## 2026-09-08: eleventh instance, and a fourth variant: the code under test was not the code on disk
+## 2026-09-08: thirteenth instance, and a fourth variant: the code under test was not the code on disk
 
 Found while building the fractional-horizon fix (repo `QClaw`, PR #118, branch
 `fix/fractional-horizon`, head `cf85dc2`). The fix itself is recorded with that
@@ -25341,6 +25366,41 @@ The verification method for #118 was mutation testing: reintroduce each shape of
 the bug, confirm a test goes red, restore. Eight mutants, run by a harness in the
 session scratchpad. The harness reported all eight killed. Then a routine suite
 re-run, against a tree with no mutants in it, reported six failures.
+
+### Corrected: what "thirteenth" is counting
+
+This entry was merged as "eleventh instance" in PR #120. That undercounts by
+two, and the number is corrected here along with the convention that produced
+the error, since the convention is the reusable part.
+
+**An instance is one OCCURRENCE of the pattern found in the wild.** That is what
+the numbered run has been counting: "the tenth instance this week of a claim
+about runtime state that nobody verified" (line 24632). A *variant* is a shape
+the pattern can take, and is a separate axis: three were named on 2026-09-07 and
+this entry adds a fourth. A correction to an existing entry is neither.
+
+"Eleventh" came from counting only entries that explicitly claim a number. Two
+later entries record real occurrences without numbering them, and they are the
+gap:
+
+```
+24920  the console.log grep aimed at the wrong thing     eleventh
+       (27 real eslint no-console violations at 0d4b302)
+25076  the ghl-support-bot keyword guard                 twelfth
+       (grounding eval failing on first execution)
+25187  variant 3 corrected, the proxy was leaking too    NOT an instance:
+       a correction to 25076, not a new finding
+```
+
+Both unnumbered entries introduced a variant, and the variant framing is
+evidently what displaced the instance count in each case. Naming a new shape of
+the pattern and recording a new occurrence of it are separate acts, and an entry
+doing both should do both explicitly.
+
+The gap was found by `tysonvenables-4e` in peer review, which also read the two
+entries as sitting on a different axis and declined to treat that read as
+authoritative. The occurrence reading above is the one the file's own wording at
+24632 supports, so the count moves rather than the definition.
 
 ### The wrong answer, verbatim
 
