@@ -25561,3 +25561,125 @@ cache purge in it, and this entry is the reason why.
 
 Nothing about PR #118's code changed as a result of this. The finding is entirely
 about the evidence for it, which is the point.
+
+## 2026-09-08: fourteenth and fifteenth instances, plus the false green arriving two hours after being recorded as unmeasured
+
+Three findings from the review round on PR #118 (fractional horizon). None came
+from the review itself; all three surfaced from mutation testing the fixes. Two
+are new occurrences of the vacuity pattern, and the third is the harness lying
+again, in the direction the thirteenth-instance entry above said had not been
+observed.
+
+Counting convention as stated at that entry: an instance is one OCCURRENCE of
+the pattern found in the wild, a variant is a shape the pattern can take, a
+correction is neither.
+
+### Fourteenth instance: the fail-closed direction nobody tests, because it feels safe
+
+Executor GATE 7 refuses a trade when the market's `end_date` is missing. That is
+the correct direction to fail. A mutant that stopped `scanner._to_candidate`
+carrying `end_date` onto the candidate at all **survived the entire test suite**.
+
+The consequence of that mutant is not a wrong trade. It is EVERY trade refused,
+because the gate fails closed on the field it no longer receives. A total
+outage, wearing the costume of a working safety gate: logs full of
+`horizon_below_minimum`, every refusal individually correct, and the system
+doing nothing at all.
+
+Every test written for that gate asserted a refusal. Refusals were what the gate
+existed to produce, and what the review had asked to be attacked. Nothing
+asserted that the ADMIT path still worked end to end, because an over-refusing
+safety control does not feel like a defect worth a test.
+
+This generalises well past this PR. A fail-closed control has two failure modes
+and only one of them looks like a failure. Wrongly admitting is a breach and
+gets tested. Wrongly refusing is an outage, it presents as the control working,
+and it is the one that ships. **For any fail-closed control, ask what tests the
+admit path, and expect the answer to be nothing.**
+
+Covered now both directly and through `analyse_edge`, so the field has to
+survive the real pipeline rather than a constructor call.
+
+### Fifteenth instance: the original bug became invisible to the tests written to catch it
+
+PR #118's whole subject is that `ScannerCandidate.horizon_days` had to stop
+being an `int`, because pydantic v2 raises `int_from_float` on a fractional
+value and `_to_candidate` runs for every candidate.
+
+Fixing GATE 7 moved its tests onto `end_date`, which is what the gate now reads.
+Correct change. The side effect was that **no test in `tests/test_executor.py`
+passed a `horizon_days` with a fractional part any more**, so a mutant restoring
+`horizon_days: int` survived that entire file. The suite still caught it
+elsewhere, in the model tests, but the money path no longer exercised the
+property at all.
+
+The shape is worth naming because it is not carelessness and not a bad test. It
+is drift: a test file that covered a property incidentally, through fixture
+values chosen for another purpose, and stopped covering it when those values
+changed for a good reason. Nothing in the diff looks like removed coverage.
+Every test still passes. The property is simply no longer asserted anywhere in
+the file whose subject it is.
+
+**Incidental coverage is not coverage.** If a property matters, something has to
+assert it on purpose, or the next well-motivated refactor silently removes it.
+Every real candidate now carries a fractional horizon, so the executor suite
+asserts one flows through `execute()` end to end.
+
+### The harness again, and the false green arriving on schedule
+
+The thirteenth-instance entry above records a `__pycache__` staleness trap and,
+after review, this correction:
+
+> The mechanism is symmetric and nothing in it prefers that direction. The
+> inverse is a false GREEN [...] That direction was not observed here and was
+> not measured.
+
+It was observed about two hours later, by a different mechanism.
+
+The mutation harness restores between mutants with `git checkout -- .`, which
+resets tracked files to HEAD. Run against a tree with uncommitted work, it
+deletes exactly the changes under test. That happened twice in one session,
+once during the F1 fixes and once during F4.
+
+The second time it also produced a wrong answer. After the wipe, mutant F4b
+reported **SURVIVED**, which the harness prints as "test is vacuous". The test
+was not vacuous. It had been deleted by the previous mutant's restore, along
+with the code it covered. The suite ran, passed, and reported a result about
+source that was not the source believed to be on disk.
+
+That is the false green, exactly as described, reached through a working-tree
+reset rather than a bytecode cache. Which is the more useful half of the
+finding: the entry above framed the mechanism as `(mtime, size)` validation, and
+the real invariant is broader.
+
+**A test result is a claim about a specific tree state. Anything that can change
+that state without the runner noticing can invert the result in either
+direction.** A bytecode cache is one such thing. A restore step inside the
+harness is another. Neither is visible in test output.
+
+Both incidents this session were the HARNESS rather than the code under test.
+The code was correct on disk both times. That is the part worth carrying: the
+tool built to establish whether tests can fail was, twice, the only thing
+failing, and in both cases it reported a confident wrong answer rather than an
+error.
+
+Also worth recording plainly rather than softening: "commit before running the
+harness" had already been written down as the safe order, after the first
+incident, by the same session that then did not follow it twice. A lesson
+recorded and not applied is not a lesson, and the fix is structural rather than
+remembered. The harness now refuses to run against a dirty tree:
+
+```
+dirty=$(git status --porcelain | wc -l)
+[ "$dirty" = "0" ] || { echo "REFUSING: mutation restores to HEAD"; exit 1; }
+```
+
+That guard, and the `__pycache__` purge from the thirteenth-instance entry, are
+the two things any mutation harness needs before its output means anything.
+
+### Disposition
+
+All three are fixed in PR #118, which is still draft pending a scoped cold pass
+on the GATE 7 fix. The harness remains a session scratch script; if mutation
+testing becomes standing practice for the trade engine it moves into the repo
+with both guards in it, which is queued as build item 4, half (b).
