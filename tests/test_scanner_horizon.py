@@ -41,6 +41,7 @@ from src.trade_engine.config import (  # noqa: E402
     Config,
     config,
 )
+from src.trade_engine.horizon import horizon_days  # noqa: E402
 from src.trade_engine.models import ScannerCandidate  # noqa: E402
 from src.trade_engine.scanner import (  # noqa: E402
     DEFAULT_HORIZON_DAYS,
@@ -232,6 +233,46 @@ class TradeableFloorTest(unittest.TestCase):
                 os.environ.pop("MIN_HORIZON_TRADEABLE_DAYS", None)
             else:
                 os.environ["MIN_HORIZON_TRADEABLE_DAYS"] = saved
+
+
+class CandidateCarriesEndDateTest(unittest.TestCase):
+    """The scanner must hand the executor what GATE 7 needs to recompute.
+
+    GATE 7 fails closed on a missing end_date, so if _to_candidate stopped
+    carrying it the result would not be a wrong trade, it would be EVERY trade
+    refused: a total outage that looks like a working safety gate. Nothing
+    tested this until a mutant removing the field survived the whole suite.
+    """
+
+    def test_to_candidate_carries_end_date_from_the_scanner_row(self):
+        end_date = "2026-09-30T04:00:00Z"
+        row = {
+            "market_id": "3257355",
+            "condition_id": "0x" + "ab" * 32,
+            "slug": "bitcoin-above-60000",
+            "question": "Will Bitcoin reach $60,000 in September?",
+            "asset": "btc",
+            "yes_price": 0.42,
+            "volume": 279582.74,
+            "horizon_days": 20.333,
+            "end_date": end_date,
+        }
+        candidate = PolymarketScanner._to_candidate(row, 0.14, 0.56)
+        self.assertEqual(candidate.end_date, end_date)
+
+    def test_the_pipeline_produces_a_candidate_the_executor_can_gate(self):
+        """End to end through analyse_edge, so the field survives the real path."""
+        end_date = (datetime.now(timezone.utc) + timedelta(days=10)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        selected = run(PolymarketScanner().analyse_edge([make_market(end_date)]))
+        self.assertEqual(len(selected), 1)
+        candidate = PolymarketScanner._to_candidate(selected[0], 0.14, 0.56)
+        self.assertEqual(candidate.end_date, end_date)
+        # And it is parseable by the same helper GATE 7 uses.
+        self.assertIsNotNone(
+            horizon_days(candidate.end_date, datetime.now(timezone.utc))
+        )
 
 
 class CandidateModelTest(unittest.TestCase):
