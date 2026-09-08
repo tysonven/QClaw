@@ -25985,3 +25985,71 @@ appleboy/ssh-action          v1 unchanged (composite, no node runtime)
 Bumping only the two actions the warning named would have left `setup-python`
 and `pnpm/action-setup` warning. Bumping `upload-artifact` by one major would
 have fixed nothing at all while appearing to.
+
+## 2026-09-08: a workflow killed by a default it never opted into
+
+The first dispatched run of flow-coach-ai's new retention watcher (run
+34256430562, on flow-coach-ai@9cc6b6c) died before any step executed:
+
+```
+Unable to locate executable file: pnpm. Please verify either the file path
+exists or the file can be found within a directory specified by the PATH
+environment variable.
+```
+
+The workflow does not call pnpm anywhere, which is what makes the failure
+worth an entry. The dying step was `actions/setup-node@v5` itself. Its run
+log shows the config it resolved:
+
+```
+with:
+  node-version-file: .nvmrc
+  ...
+  package-manager-cache: true
+```
+
+`package-manager-cache: true` appears in no workflow file in any of the six
+repos. It is a default new in setup-node v5 (v4 had no such input). At that
+default, setup-node reads the `packageManager` field from the target repo's
+package.json and RUNS that tool to resolve its cache store path.
+flow-coach-ai's field says `pnpm@10.4.1`, GitHub runners preinstall npm and
+yarn but not pnpm, and the job was dead before its first step.
+
+Three properties compound here:
+
+**The workflow was authored green and failed on repo state.** ci.yml in the
+same repo uses the identical setup-node@v5 step and passes every run, because
+`pnpm/action-setup` happens to run before it. deploy-drift.yml in
+flowos-sms-delivery is the same shape as the watcher, no pnpm anywhere, and
+passes every run, because that package.json has no `packageManager` field for
+setup-node to read. Same YAML, three different outcomes, decided by files the
+YAML never mentions. A workflow shape proven green in one repo is not
+evidence it works in another, and this entry exists mostly to anchor that
+sentence.
+
+**The arming trigger is a package.json edit, not a workflow edit.** Adding
+`packageManager: pnpm@...` to QClaw, flowos-web, or flowos-sms-delivery today
+would break their setup-node workflows on the next run, without any workflow
+file changing and without CI on the arming commit necessarily noticing
+(scheduled workflows run later, on main). The full exposure table as measured
+2026-09-08 is in LOCATIONS.md under "setup-node v5 arms itself from
+package.json", with the standing rule: whoever adds the field owns checking
+the workflows in the same commit.
+
+**It is the delayed cost of an upgrade recorded as free.** The portfolio
+moved checkout and setup-node from v4 to v5 hours earlier, verified as
+"CI=0, node20-warnings=0" across all six repos. That verification was
+honest and this failure does not contradict it: every existing workflow kept
+passing. What the bump actually changed was the environment for workflows
+not yet written. The first new workflow authored to the v5 convention, in a
+pnpm repo, without the accidental protection of pnpm/action-setup, hit the
+new default within hours.
+
+Disposition: fixed in flow-coach-ai@f598fda with `package-manager-cache:
+false` and the reasoning in a comment at the line. Chosen over adding
+pnpm/action-setup because the watcher installs nothing by design, so there is
+nothing to cache and no reason to couple it to the app toolchain. The second
+dispatch (run 34257851939) went green end to end, which also closed the last
+unproven link in the retention rollout, the Actions secret path. The failure
+direction throughout was the right one: loud, in setup, before the job could
+assert anything.
