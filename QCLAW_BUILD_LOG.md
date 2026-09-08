@@ -25129,6 +25129,31 @@ keyword list, a regex over prose, or a filename pattern. Those are all proxies,
 and a proxy is a claim that the pattern and the property coincide, which is
 usually undocumented and sometimes false.
 
+### The direction NOT measured, which is the worse one
+
+What was observed is a false RED: the cache held the mutant's bytecode, the disk
+held correct source, and correct code reported six failures. That wastes a
+session and it fails safe, because a red suite gets investigated.
+
+The mechanism is symmetric and nothing in it prefers that direction. The inverse
+is a false GREEN: the cache holds bytecode compiled before an edit, and the suite
+reports green about source that never ran. The conditions are the same two, a
+size-preserving edit and a same-second write, and they are more common outside a
+harness than inside one, because ordinary development edits files in place all
+day.
+
+That direction was not observed here and was not measured. It is recorded
+because the observed direction is the benign one, and an entry stopping at "it
+reported failures that were not real" would understate the finding by exactly
+the half that matters. Whether a same-second false green is reachable in
+practice on this repo is unmeasured, and is the obvious first question if this
+is ever scoped.
+
+Inside a mutation harness specifically the inverse presents as a mutant
+appearing to SURVIVE, which the harness reports as "test is vacuous": a false
+alarm rather than a false pass. The harness is the safer place for this bug to
+happen. Nothing else is.
+
 ### Disposition, and what NOT to do
 
 Not fixed here. Loosening a fabrication guard goes to a session that comes to
@@ -25183,3 +25208,702 @@ remote: error: GH006 ... Changes must be made through a pull request.
 Consequence worth stating plainly: 15 of the last 20 commits to QClaw `main`
 reached it as direct pushes. That route is now closed, for every operator and
 every session.
+
+## 2026-09-07: variant 3 corrected, the proxy was leaking as well as over-firing
+
+Amends the "a third vacuity variant" entry above. That entry states, in bold,
+**"Variant 3 fails when it should pass"**, and contrasts it with variants 1 and
+2 which pass when they should fail. That framing is half right and the missing
+half is the more serious one. Fixing the helper in repo `ghl-support-bot`
+(PR #18, merged at `ghl-support-bot@e35603c`) measured both directions, and the
+keyword proxy was leaking real fabrications at the same time as it was failing
+correct answers.
+
+### The measurement
+
+`uiInstructionSteps` was run over a 75-line labelled corpus, built from the two
+failing CI runs, the system prompt's own worked examples, and reconstructed
+fabrications. Counted at `ghl-support-bot@eca85f6` (the keyword version) against
+`ghl-support-bot@e35603c` (the replacement):
+
+| version | flagged correct answers | missed fabrications |
+| --- | --- | --- |
+| keyword match | 10 of 25 | 5 of 40 |
+| clause-position match | 0 of 25 | 0 of 40 |
+
+### What it was leaking
+
+This numbered walkthrough scored **zero** hits on the keyword helper:
+
+```
+2. Select **Security** from the settings menu.
+3. Turn on **Password Protection**.
+```
+
+That is an invented procedure for a feature GoHighLevel does not have, which is
+precisely what Q1 exists to catch. It uses none of `click|toggle|tick|enable|
+disable|switch on|switch off|check the box|drag|drop down`, so the keyword list
+never sees it.
+
+It also cleared the other two assertions in the same test. `ungroundedNavLabels`
+missed it because there is no arrow chain to parse, the labels being spread
+across separate numbered lines. The `numberedSteps(answer).length < 6` ceiling
+missed it because two steps is under six. So the answer would have passed Q1
+outright, on all three assertions, while inventing a navigation path and a
+control that do not exist.
+
+`drop down` deserves a specific note: it is a noun in essentially all UI prose
+("look for a drop down"), so its presence in a list of verbs was never matching
+an action at all. It is gone at `ghl-support-bot@e35603c`.
+
+### Correction to the standing framing
+
+The three variants are better stated as a single failure with two symptoms. A
+check that matches a proxy rather than the property does not fail in a
+consistent direction. It fails wherever the proxy and the property come apart,
+and for a keyword list over natural language that is both directions at once:
+
+- the keyword appears without the property (noun uses, reported questions),
+  which is the false positive that took Q1 red
+- the property appears without the keyword (synonyms, paraphrase), which is the
+  silent leak
+
+The visible half creates pressure to loosen the check. The invisible half is
+what the loosening would then be blamed for. The earlier entry's warning that
+"a fabrication guard loosened under deadline pressure is how a real regression
+gets through later" was right about the risk and wrong about the mechanism: the
+regression was already getting through, before anyone touched the guard.
+
+**Standing review question, restated:** does this check match the property, or a
+proxy? And if a proxy, measure BOTH directions before trusting it. A proxy that
+has only been observed to over-fire has not been shown to be conservative. It
+has been shown to be visible.
+
+### Disposition
+
+Fixed by a session that came to the diff cold, per the standing rule. The
+counter-argument the brief raised, that the model might still be inventing a
+place to look and the prompt should be tightened instead, was tested and
+rejected on three grounds, the decisive one being that the failing line from the
+rerun of GitHub Actions run `34123422286` names no location at all:
+
+```
+3. Check whether there is a password protection toggle or field
+```
+
+Also, the flagged text is what `server/prompts.ts` instructs. Rule 2's worked
+example tells the model to say "In the funnel builder, look for the page
+settings panel", and Rule 3 sanctions "Contact support to ask whether this is
+possible". Both are now pinned as negative controls in the suite, so the guard
+going back to fighting the prompt is a test failure rather than a discovery.
+
+Proven not to weaken the guard rather than asserted safe: the original
+eight-step fabrication is a positive control; replacing the helper with one
+returning `[]` unconditionally fails six tests, verified by making the
+substitution and running it; and the keyword version is retained in the suite
+and asserted to fail the negative controls, so a revert cannot report green.
+
+### The gate ordering trap, worth carrying
+
+`ghl-support-bot` `main` requires the `test` context with `enforce_admins`
+enabled, but `.github/workflows/ci.yml` existed only on PR #17's branch. A
+`pull_request` workflow runs from the head ref, so PR #18, branched off `main`,
+had no workflow, could never produce a `test` check, and reported
+`mergeStateStatus=BLOCKED` permanently. PR #17 was equally stuck, failing on the
+very bug #18 fixed.
+
+Neither PR could merge, and the only routes out were to relax the gate, which
+the brief forbids, or to land the fix onto the branch that carries the workflow.
+Taken: PR #18 was retargeted from `main` to `ci/slice-3-env-assertion-and-workflow`
+and rebase-merged there. The gate was not touched.
+
+Generalisation: **a required status check whose workflow is introduced by the
+same PR it gates cannot be satisfied by any independent fix branched from the
+protected branch.** Land the workflow first, or expect the first fix after it to
+need stacking.
+
+### Verified
+
+GitHub Actions run `34135414616` on `ghl-support-bot@e35603c`, concluded
+`success` at 2026-09-07T14:54:54Z. `server/grounding.eval.test.ts` 35 tests
+passed including the twelve live evals against `claude-haiku-4-5`, Q1 among
+them. 21 test files passed. PR #17 moved to `mergeStateStatus=CLEAN` with
+`test=SUCCESS`, and is left unmerged for Tyson.
+
+Three consecutive local runs of the twelve live evals passed 35/35 before the
+push, on the same tree.
+
+### Open finding: ungroundedNavLabels only sees arrow chains
+
+Not fixed, and not in scope of the brief. `ungroundedNavLabels` extracts
+locations only from an arrow or chevron chain (`A > B > C`, `A -> B`). A
+location named in ordinary prose, comma-separated or joined by "or", is
+invisible to it. From run `34123422286`:
+
+```
+1. **Check the funnel or site builder directly** - look in the page settings
+   or security options while editing your landing page to see if a password
+   protection toggle exists.
+```
+
+`securit` appears zero times in that fixture's `PASSWORD_CONTEXT`, so "security
+options" is ungrounded, and nothing in the suite sees it. It is not fabrication
+under the prompt at `ghl-support-bot@e35603c`, because Rule 2 requires exactly
+this hedging and the model complies. The exposure is that the check does not
+depend on the prompt staying that way: if Rule 2 is ever weakened, the suite
+would not notice ungrounded locations returning in prose form.
+
+Tracked as `ghl-support-bot` issue #19. Same variant-3 shape as the entry above,
+which is the point: this is the second proxy found in one file.
+
+## 2026-09-08: thirteenth instance, and a fourth variant: the code under test was not the code on disk
+
+Found while building the fractional-horizon fix (repo `QClaw`, PR #118, branch
+`fix/fractional-horizon`, head `cf85dc2`). The fix itself is recorded with that
+PR. This entry is only about how its verification lied.
+
+The verification method for #118 was mutation testing: reintroduce each shape of
+the bug, confirm a test goes red, restore. Eight mutants, run by a harness in the
+session scratchpad. The harness reported all eight killed. Then a routine suite
+re-run, against a tree with no mutants in it, reported six failures.
+
+### Corrected: what "thirteenth" is counting
+
+This entry was merged as "eleventh instance" in PR #120. That undercounts by
+two, and the number is corrected here along with the convention that produced
+the error, since the convention is the reusable part.
+
+**An instance is one OCCURRENCE of the pattern found in the wild.** That is what
+the numbered run has been counting: "the tenth instance this week of a claim
+about runtime state that nobody verified" (line 24632). A *variant* is a shape
+the pattern can take, and is a separate axis: three were named on 2026-09-07 and
+this entry adds a fourth. A correction to an existing entry is neither.
+
+"Eleventh" came from counting only entries that explicitly claim a number. Two
+later entries record real occurrences without numbering them, and they are the
+gap:
+
+```
+24920  the console.log grep aimed at the wrong thing     eleventh
+       (27 real eslint no-console violations at 0d4b302)
+25076  the ghl-support-bot keyword guard                 twelfth
+       (grounding eval failing on first execution)
+25187  variant 3 corrected, the proxy was leaking too    NOT an instance:
+       a correction to 25076, not a new finding
+```
+
+Both unnumbered entries introduced a variant, and the variant framing is
+evidently what displaced the instance count in each case. Naming a new shape of
+the pattern and recording a new occurrence of it are separate acts, and an entry
+doing both should do both explicitly.
+
+The gap was found by `tysonvenables-4e` in peer review, which also read the two
+entries as sitting on a different axis and declined to treat that read as
+authoritative. The occurrence reading above is the one the file's own wording at
+24632 supports, so the count moves rather than the definition.
+
+### The wrong answer, verbatim
+
+```
+$ python3 -m unittest tests.test_scanner_horizon
+FAIL: test_env_can_raise_the_floor_but_never_lower_it (tests.test_scanner_horizon.TradeableFloorTest.test_env_can_raise_the_floor_but_never_lower_it) (value='0')
+FAIL: ... (value='0.0')
+FAIL: ... (value='-5')
+FAIL: ... (value='0.5')
+FAIL: ... (value='0.041')
+FAILED (failures=6)
+```
+
+The code on disk at `src/trade_engine/config.py:137-142` was correct and had been
+committed:
+
+```python
+        self.min_horizon_tradeable_days: float = max(
+            DEFAULT_MIN_HORIZON_TRADEABLE_DAYS,
+            self._float_env(
+                "MIN_HORIZON_TRADEABLE_DAYS", DEFAULT_MIN_HORIZON_TRADEABLE_DAYS
+            ),
+        )
+```
+
+Probing the pieces individually agreed it was correct, while the assembled object
+disagreed:
+
+```
+$ MIN_HORIZON_TRADEABLE_DAYS=0.5 python3 -c "... print(Config().min_horizon_tradeable_days)"
+env=0.5 -> 0.5
+
+DEFAULT    = 1.0
+_float_env = 0.5
+max(...)   = 1.0
+```
+
+`max(1.0, 0.5)` evaluated to `1.0` on the same interpreter that had just returned
+`0.5` from the constructor containing it.
+
+### Cause
+
+CPython validates a cached `.pyc` against the source's `(mtime_in_whole_seconds,
+size_in_bytes)`. Both are recorded in the 16-byte pyc header. Neither is a hash
+of the content.
+
+Mutant M8 was `max(` to `min(` at that line. Three characters to three
+characters, so **the file size does not change**. The harness wrote the mutant,
+ran python (which compiled and cached the mutant's bytecode), then restored the
+original with `git checkout -- .`, which set a new mtime. The restore landed
+inside the same whole second as the compile:
+
+```
+pyc records mtime=1788793323 size=11203
+source has  mtime=1788793323 size=11203
+CACHE CONSIDERED VALID: True
+```
+
+Both fields matched, so every subsequent import loaded the mutant's bytecode from
+`src/trade_engine/__pycache__/` while `git status` reported a clean tree and
+every tool that reads the file showed correct source.
+
+### Why this is a fourth variant
+
+The three variants recorded on 2026-09-07 are all about the check being wrong:
+asserts nothing, asserts but looks in the wrong place, asserts in the right place
+but matches a proxy. This one is none of those. The check was correct, looked in
+the right place, and matched the property exactly.
+
+**The artefact it executed was not the artefact under review.** No amount of
+scrutiny of the test or of the source finds it, because both are correct. It is
+invisible in test output by construction: a stale-cache failure is reported in
+exactly the same words as a real one.
+
+The recursive part, and the reason it belongs with the eighth instance rather
+than merely near it: **the harness whose entire purpose is proving that a test
+can fail produced a wrong answer about whether tests fail.** The eighth instance
+was a comment asserting a verification happens, causing a new verification to be
+written in its image. This is the tool that exists to falsify checks, being
+itself unfalsifiable while wrong.
+
+### The M7 consequence, stated plainly
+
+M7 is the mutant that removes executor GATE 7 while leaving the scanner's
+`MIN_HORIZON_TRADEABLE_DAYS` guard fully intact. It is the entire evidence for
+the claim that the two layers are independent controls rather than one control
+tested twice, which is why GATE 7 was built at all.
+
+M7 runs immediately after M6, and **M6 mutates `src/trade_engine/models.py`**,
+restoring `horizon_days: int` on `ScannerCandidate`. Under the cache bug, M7's
+run could have imported M6's stale `models.py` bytecode. `test_executor` would
+then have gone red because pydantic raised `int_from_float` on a fractional
+horizon, not because removing GATE 7 let anything through. The independence proof
+would have been an artefact of the previous mutant.
+
+A proof of independence that was not itself independent.
+
+Not what happened, but only checkable by re-running. The harness now purges
+`__pycache__` on both sides of every mutation, and the full set was re-run from
+scratch:
+
+```
+M1 revert the ceil in _horizon_days                            RED as expected
+M2 remove the MIN_HORIZON_TRADEABLE refusal from the scanner   RED as expected
+M3 invert the dt scaling (drift by sqrt(dt), diffusion by dt)  RED as expected
+M4 pin dt back to 1.0 while keeping the float signature        RED as expected
+M5 steps = int(horizon_days), the empty-array silent-zero path RED as expected
+M6 restore horizon_days: int on ScannerCandidate               RED as expected
+M7 remove executor GATE 7, scanner guard left intact           RED as expected
+M8 let the env lower MIN_HORIZON_TRADEABLE_DAYS below the floor RED as expected
+All mutants killed. No test in this set is vacuous.
+```
+
+On the post-fix run M7 is killed by `test_gate7_refuses_just_under_the_floor` as
+a FAIL, not an ERROR, which is the right shape: with `models.py` clean, a 0.999d
+candidate passes validation and reaches a gate that is no longer there. The
+figures reported in PR #118 are from this run.
+
+### Generalisation, and the standing check
+
+Any mutation harness, in any language with a bytecode or build cache validated on
+metadata rather than content, has this trap. It is not Python-specific and it is
+not test-framework-specific. The conditions are ordinary:
+
+1. the mutation preserves file size (any same-length token swap: `max`/`min`,
+   `>=`/`<=`, `and`/`or`, `+`/`-`, a digit change, a boolean flip)
+2. the restore lands in the same whole second as the compile, which is the normal
+   case for a fast harness on a local disk
+
+Neither is exotic, and the two together are silent.
+
+Python does have a content-addressed alternative, and it is not the default.
+PEP 552 hash-based pycs set bit 0 of the header flags and store a digest of the
+source instead of `(mtime, size)`; they are produced by `py_compile` /
+`compileall --invalidation-mode checked-hash`, never by ordinary import. The pyc
+that caused this was timestamp-based, as every pyc written by a plain
+`python3 -m unittest` run is. So "use hash-based pycs" is not a fix a harness can
+rely on; purging is.
+
+**Standing rule, fourth of four:** a check must execute the artefact under
+review. Ask it wherever a build or bytecode cache sits between the source and the
+run: `__pycache__`, `.tsbuildinfo`, `node_modules/.cache`, `target/`,
+`__pycache__` inside a Docker layer, a Jest transform cache. If a harness mutates
+files in place, it must purge the cache on both sides of the mutation, not merely
+restore the source.
+
+CI is not exposed here: every run is a fresh checkout with no pre-existing cache.
+That is also why this could only ever have been caught locally, and why a green
+CI run would not have contradicted the six local failures.
+
+### Disposition
+
+The harness fix is in the session scratchpad, not in the repo, because the
+harness is not a repo artefact. Queued for **build item 4, half (b)**, when that
+is scoped: if mutation testing becomes a standing practice for the trade engine
+rather than a one-off for #118, the harness needs to live in the repo with the
+cache purge in it, and this entry is the reason why.
+
+Nothing about PR #118's code changed as a result of this. The finding is entirely
+about the evidence for it, which is the point.
+
+## 2026-09-08: fourteenth and fifteenth instances, plus the false green arriving two hours after being recorded as unmeasured
+
+Three findings from the review round on PR #118 (fractional horizon). None came
+from the review itself; all three surfaced from mutation testing the fixes. Two
+are new occurrences of the vacuity pattern, and the third is the harness lying
+again, in the direction the thirteenth-instance entry above said had not been
+observed.
+
+Counting convention as stated at that entry: an instance is one OCCURRENCE of
+the pattern found in the wild, a variant is a shape the pattern can take, a
+correction is neither.
+
+### Fourteenth instance: the fail-closed direction nobody tests, because it feels safe
+
+Executor GATE 7 refuses a trade when the market's `end_date` is missing. That is
+the correct direction to fail. A mutant that stopped `scanner._to_candidate`
+carrying `end_date` onto the candidate at all **survived the entire test suite**.
+
+The consequence of that mutant is not a wrong trade. It is EVERY trade refused,
+because the gate fails closed on the field it no longer receives. A total
+outage, wearing the costume of a working safety gate: logs full of
+`horizon_below_minimum`, every refusal individually correct, and the system
+doing nothing at all.
+
+Every test written for that gate asserted a refusal. Refusals were what the gate
+existed to produce, and what the review had asked to be attacked. Nothing
+asserted that the ADMIT path still worked end to end, because an over-refusing
+safety control does not feel like a defect worth a test.
+
+This generalises well past this PR. A fail-closed control has two failure modes
+and only one of them looks like a failure. Wrongly admitting is a breach and
+gets tested. Wrongly refusing is an outage, it presents as the control working,
+and it is the one that ships. **For any fail-closed control, ask what tests the
+admit path, and expect the answer to be nothing.**
+
+Covered now both directly and through `analyse_edge`, so the field has to
+survive the real pipeline rather than a constructor call.
+
+### Fifteenth instance: the original bug became invisible to the tests written to catch it
+
+PR #118's whole subject is that `ScannerCandidate.horizon_days` had to stop
+being an `int`, because pydantic v2 raises `int_from_float` on a fractional
+value and `_to_candidate` runs for every candidate.
+
+Fixing GATE 7 moved its tests onto `end_date`, which is what the gate now reads.
+Correct change. The side effect was that **no test in `tests/test_executor.py`
+passed a `horizon_days` with a fractional part any more**, so a mutant restoring
+`horizon_days: int` survived that entire file. The suite still caught it
+elsewhere, in the model tests, but the money path no longer exercised the
+property at all.
+
+The shape is worth naming because it is not carelessness and not a bad test. It
+is drift: a test file that covered a property incidentally, through fixture
+values chosen for another purpose, and stopped covering it when those values
+changed for a good reason. Nothing in the diff looks like removed coverage.
+Every test still passes. The property is simply no longer asserted anywhere in
+the file whose subject it is.
+
+**Incidental coverage is not coverage.** If a property matters, something has to
+assert it on purpose, or the next well-motivated refactor silently removes it.
+Every real candidate now carries a fractional horizon, so the executor suite
+asserts one flows through `execute()` end to end.
+
+### The harness again, and the false green arriving on schedule
+
+The thirteenth-instance entry above records a `__pycache__` staleness trap and,
+after review, this correction:
+
+> The mechanism is symmetric and nothing in it prefers that direction. The
+> inverse is a false GREEN [...] That direction was not observed here and was
+> not measured.
+
+It was observed about two hours later, by a different mechanism.
+
+The mutation harness restores between mutants with `git checkout -- .`, which
+resets tracked files to HEAD. Run against a tree with uncommitted work, it
+deletes exactly the changes under test. That happened twice in one session,
+once during the F1 fixes and once during F4.
+
+The second time it also produced a wrong answer. After the wipe, mutant F4b
+reported **SURVIVED**, which the harness prints as "test is vacuous". The test
+was not vacuous. It had been deleted by the previous mutant's restore, along
+with the code it covered. The suite ran, passed, and reported a result about
+source that was not the source believed to be on disk.
+
+That is the false green, exactly as described, reached through a working-tree
+reset rather than a bytecode cache. Which is the more useful half of the
+finding: the entry above framed the mechanism as `(mtime, size)` validation, and
+the real invariant is broader.
+
+**A test result is a claim about a specific tree state. Anything that can change
+that state without the runner noticing can invert the result in either
+direction.** A bytecode cache is one such thing. A restore step inside the
+harness is another. Neither is visible in test output.
+
+Both incidents this session were the HARNESS rather than the code under test.
+The code was correct on disk both times. That is the part worth carrying: the
+tool built to establish whether tests can fail was, twice, the only thing
+failing, and in both cases it reported a confident wrong answer rather than an
+error.
+
+Also worth recording plainly rather than softening: "commit before running the
+harness" had already been written down as the safe order, after the first
+incident, by the same session that then did not follow it twice. A lesson
+recorded and not applied is not a lesson, and the fix is structural rather than
+remembered. The harness now refuses to run against a dirty tree:
+
+```
+dirty=$(git status --porcelain | wc -l)
+[ "$dirty" = "0" ] || { echo "REFUSING: mutation restores to HEAD"; exit 1; }
+```
+
+That guard, and the `__pycache__` purge from the thirteenth-instance entry, are
+the two things any mutation harness needs before its output means anything.
+
+### Disposition
+
+All three are fixed in PR #118, which is still draft pending a scoped cold pass
+on the GATE 7 fix. The harness remains a session scratch script; if mutation
+testing becomes standing practice for the trade engine it moves into the repo
+with both guards in it, which is queued as build item 4, half (b).
+
+---
+
+## 2026-09-08: CI/CD rollout complete across six repos, and upload-then-promote made permanent
+
+Closes the CI/CD brief. Slices 1 through 5.
+
+### Where this started
+
+670 tests existed across five repos and **none ran automatically**. Four repos
+deployed to production within about three seconds of a push with nothing in
+between. Branch protection was unavailable on five of the six, and the checks
+that did exist had a documented habit of passing while asserting nothing.
+
+### Where it ended
+
+All six repos run CI on every pull request and push to `main`, and all six have
+`main` protected with `enforce_admins: true`. Full per-repo detail is in
+`LOCATIONS.md` under "CI and deploy gating"; it is not duplicated here.
+
+Every gate was proven by attacking it rather than by reading its settings back:
+a deliberately failing PR confirmed unmergeable, and both `git push` and
+`git push --force` to `main` confirmed refused with `GH006`, on each repo.
+
+### The decision worth recording: upload-then-promote is permanent
+
+`flowos-sms-delivery` deploys differently from the other five, and the original
+plan had that as a transitional state on the way to `wrangler deploy`. **That
+switch is not going to be made.** Recording the decision rather than leaving it
+as an absence, so nobody finishes the original plan later on momentum.
+
+Merging to `main` uploads a Worker version that takes no traffic, tagged with
+the commit SHA and subject. Promotion is a separate human step.
+
+It earned its keep twice on the day it was built:
+
+1. Applying the `wrangler.toml` routes fix, the manual deploy went out **from a
+   feature branch rather than main**, while `git pull` reported "Already up to
+   date" because local main was behind with the branch checked out. Harmless
+   that time, because the content was identical and the change had been proven
+   config-only. But the deploy went out from whatever tree happened to be
+   checked out, with nothing recording which. That is the failure the audit
+   described, caught in the act.
+2. The first automated upload produced a bundle hash to check **before** traffic
+   moved, which is what made promotion a decision rather than a hope.
+
+The cost is real and should be stated: **every merge now leaves an unpromoted
+version, so production can lag `main` silently.** That is the mirror of the
+problem being fixed, and nothing currently surfaces it. A check comparing the
+serving version's tag against `main`'s HEAD would close it. Not built; recorded
+as not built.
+
+### Sixteenth instance: a check about to be trusted for something it never did
+
+`wrangler deploy --dry-run` validates bundling and config syntax. It does not
+validate that a domain is real:
+
+```
+$ sed -i 's/api.sms.flowos.tech/api.sms.flowos.tecch/' wrangler.toml
+$ npx wrangler deploy --dry-run
+  exit 0
+```
+
+The dry run is not defective; it never claimed to check reachability. The defect
+was in what it was **about to be relied on for**. Automating
+`wrangler triggers deploy` on the strength of "CI validates the config" would
+have let a one-character typo detach the custom domain on the path that takes
+Stripe webhooks, with a customer as the only detector.
+
+This is the variant-3 shape (a proxy standing in for the property) arriving from
+a new direction: not a check written badly, but a correct check about to be
+loaded with a guarantee it was never making. Worth separating, because reviewing
+the check itself would have found nothing wrong with it.
+
+The fix was not a human in the loop. A person reviewing a one-character domain
+diff is the check humans are worst at. It was to make the machine assert the
+outcome: after applying triggers, read the configured custom domains back out of
+`wrangler.toml` and require each to serve `200`, failing loudly with the
+recovery command otherwise. That verification covers the typo case and the
+"experimental command changed semantics" case identically, because it asserts
+the outcome rather than trusting the mechanism.
+
+Related, recorded so it is not discovered under pressure: `wrangler triggers
+deploy` is marked `[experimental]` in wrangler's own help at 4.113.0. There is
+no non-experimental equivalent while using `versions upload`. `npm ci` installs
+the lockfile-pinned version, so behaviour cannot change without a reviewable
+diff, and the verification step catches it if it does.
+
+### The standing review questions, four variants in
+
+The vacuity pattern now has four distinct shapes on record, and the review
+question has widened each time:
+
+1. **Asserts nothing.** Does this check assert anything at all?
+2. **Asserts, but looks where the defect is not.** Does it look where the defect
+   would actually be? A check scoped by an enumeration or a single literal
+   pattern is an undocumented claim about where defects live.
+3. **Asserts, right place, matches a proxy rather than the property.** Does it
+   match the property, or a proxy for it? And a proxy does not fail in a
+   consistent direction: measure both.
+4. **The code under test was not the code on disk.** Is the thing being checked
+   the thing that will run?
+
+And now the question behind all four: **what is this check actually promising,
+and is that what it is being trusted for?** Instances 1 through 4 are ways a
+check can be weaker than it looks. The sixteenth is a check that was exactly as
+strong as it looked, about to be trusted for something adjacent.
+
+## 2026-09-08: a test suite that could not distinguish the property it was written to prove from a plausible regression
+
+Third review pass on PR #118 (fractional horizon), and the sharpest of the
+three. A new variant, and unlike the entries above it is not a check that lies.
+Every check involved was honest, ran, and asserted something true. The suite as
+a whole still could not tell the fix from a regression.
+
+No ordinal on this one. The register is moving to issues, and the numbering has
+been wrong three times in a day: eighth, then eleventh, then thirteenth, each
+arrived at by incrementing from the last entry rather than by counting. A wrong
+number reads as counted, which is worse than no number.
+
+### What was proved, and what was assumed
+
+Executor GATE 7 refuses a trade whose market resolves sooner than the tradeable
+floor. Round-2 review found it was reading `candidate.horizon_days`, a value
+frozen at scan time, and could not see the up-to-2100s of decay between proposal
+and execution. Fixed by recomputing from `end_date` against the clock.
+
+The fix was backed by a sentinel test and a mutant, both built to the finding:
+`test_gate7_refuses_a_market_that_decayed_below_the_floor_since_the_scan`, and a
+mutant putting the frozen field back. Mutant died. Test passed alone. That
+looked like proof.
+
+The round-3 reviewer built a different mutant. GATE 7 keeps its entire shape:
+still calls `horizon_days()`, still compares the floor, still fails closed on an
+absent or unparseable `end_date`. It changes exactly one thing, which clock:
+
+```
+_IMPORT_NOW = datetime.now(timezone.utc)      # module scope, captured once
+...
+remaining = horizon_days(candidate.end_date, _IMPORT_NOW)
+```
+
+**Full suite green, 75/75. The decay sentinel passed alone.** And it is a real
+regression: a process running for any length of time evaluates every trade
+against the clock as it was at import, so at T+2.5s the correct build refuses
+and this one places the order.
+
+### Why every test missed it
+
+Exact, and worth stating precisely because the tests were not careless.
+
+Every gate-7 test built `end_date` relative to the instant the test ran. Under
+that construction an import-time clock and an execution-time clock are
+milliseconds apart, so they agree on every assertion in the file.
+
+The decay sentinel looked like the exception and was not. It moves the END DATE
+back 2100 seconds. It never moves the CLOCK forward. So it separates
+"recomputed from `end_date`" from "reads the frozen `horizon_days`", which is
+the round-2 finding, and it is structurally incapable of separating "recomputed
+at execution" from "recomputed at import", which is the round-3 finding.
+
+The sentinel was written to the shape of the bug that had been found. It proved
+that bug was gone. It could not prove the property that was actually wanted,
+because the property is about WHEN the value is read and the test varied WHAT
+was read.
+
+### The generalisation
+
+**A test asserting behaviour "at time T" must vary T, or it only proves the
+behaviour exists somewhere upstream of T.**
+
+More broadly: a test that varies one input to demonstrate a property proves only
+that the output depends on that input. If the property is really about a second
+variable, the test is silent on it no matter how many assertions it carries. The
+fix is to hold everything else fixed and vary the variable the property is
+about, which for a "reads live state" claim means the clock, or the store, or
+whatever is supposed to be live.
+
+Concretely, for any claim in this codebase that something is re-read live rather
+than cached, the mutant that pins it is: **keep the entire shape and change only
+the source of freshness.** Capture it once at import. If the suite stays green,
+the claim is untested. That mutant is now permanent in the PR #118 harness as
+M11, and it is the shape to reach for whenever a comment says "re-checked
+against live state".
+
+The replacement test holds the candidate fixed byte for byte and moves the
+clock: admitted at t, refused at t+2100s. Under the reviewer's mutant it fails
+and the decay sentinel still passes, which is the finding restated as a
+regression test:
+
+```
+FULL suite under M11        FAILED (failures=1)   <- only the clock test
+decay sentinel alone        OK                    <- cannot see it
+clock test alone            FAILED (failures=1)
+```
+
+### A correction to our own diagnosis, recorded rather than dropped
+
+The round-2 finding argued GATE 7 must re-read live state, by analogy with GATE
+1, which re-reads `trading_config` from Supabase on every call. That reasoning
+is right for the horizon and **vacuous for the floor**.
+
+`config.min_horizon_tradeable_days` is read from the environment ONCE in
+`Config.__init__` at import, is not a `trading_config` column, and nothing
+reloads `Config`. Its import-time and execution-time values are always the same
+number. GATE 7 is therefore not the parallel to GATE 1 it was written to look
+like: half of it is live and half of it needs a process restart.
+
+The gate comment now says which half is which. Worth recording because the
+original argument was half right and read as wholly right, and the half that was
+wrong is the half nobody would check.
+
+### And an ambiguous mutant definition, which this harness can no longer afford
+
+The published anchor for the mutant restoring `ScannerCandidate.horizon_days` to
+`int` was `horizon_days: float`. That string matches `MonteCarloResponse` first,
+which PR #118's own sweep identifies as dead code. Applied literally by anyone
+reading the PR, it mutates nothing that runs and returns a clean SURVIVED,
+implying a vacuous test where none exists.
+
+Pinned to include the class-specific comment line. A mutation harness publishes
+instructions for reproducing its own results, and an ambiguous anchor is a
+result nobody else can check. Given this harness produced two confident wrong
+answers earlier the same day, that is not a stylistic point.
