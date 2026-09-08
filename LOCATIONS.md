@@ -12,7 +12,9 @@ end of this file.
 - QClaw repo: `/root/QClaw` on qclaw server
 - GitHub: `github.com/tysonven/QClaw`
 - Default branch: `main`
-- CI/CD: GitHub Actions auto-deploys on push to main
+- CI/CD: GitHub Actions. `main` is branch-protected and requires four checks
+  before merge; the `deploy` job then auto-deploys on push to main. See
+  "CI and deploy gating" below
 
 ## Identity layer (canonical, rarely changes)
 
@@ -121,6 +123,128 @@ files and are still mutable via the dashboard. Reconciliation TBD.
   - Not decommission-pending: this host is load-bearing for as long as trading runs from a geoblocked region. It appears in no CI config and in no repo sweep, which is how it stayed undocumented until the 2026-08-19 audit.
 
 - n8n Health Dashboard (email alerter): runs in a Manus GCP workspace (external platform, unaudited runtime); code exported 2026-08-18 to `github.com/tysonven/n8n-health-dashboard` (private). Sends "n8n Alert" emails via Gmail app password "n8n dashboard email" (created 2026-03-16, Manus-side env only); polls the n8n REST API every 5 min with the dedicated unscoped key "manus API" (`MYYZFn3DjtKQ43i4`). **DECOMMISSION-PENDING**: revoke the app password and the API key only after the heartbeat-based Telegram alerter is live and proven. Standing rule from this incident: platform-hosted builder workspaces (Manus and similar) get a LOCATIONS.md entry at creation, not at first commit; estate recon cannot enumerate them later.
+## CI and deploy gating (all six repos)
+
+State as of 2026-09-08. Before the CI/CD rollout, 670 tests existed across five
+repos and none ran automatically, four repos deployed within about three seconds
+of a push with nothing in between, and the checks that did exist had a
+documented habit of passing while asserting nothing.
+
+All six repos now run CI on every pull request and push to `main`, and all six
+have `main` branch-protected. Recorded here so the next person does not have to
+rediscover it through the API.
+
+### Branch protection, identical on all six
+
+```
+required_status_checks.strict   true    (branch must be up to date)
+enforce_admins                  true
+required_approving_review_count 0       (single operator; self-approval is theatre)
+allow_force_pushes              false
+allow_deletions                 false
+```
+
+`enforce_admins: true` is deliberate. With a sole admin who can click through,
+"on main means the checks passed" is a habit rather than a property of the repo.
+The cost is that an emergency fix needs protection visibly toggled off rather
+than silently bypassed, which is the intended trade.
+
+Each was proven by attacking it, not by reading the settings back: a PR with a
+deliberately failing test was confirmed unmergeable, and `git push` and
+`git push --force` to `main` were both confirmed refused with `GH006`.
+
+### Per repo
+
+| Repo | Workflow job | Required check | Runtime pinned by | Deploy |
+|---|---|---|---|---|
+| QClaw | `test` (node 20 + 22 matrix), `lint`, `python-test`, `deploy` | `lint`, `python-test`, `test (20)`, `test (22)` | matrix + python 3.12 | Actions, SSH to droplet, `deploy` needs all three |
+| flow-coach-ai | `test` | `test` | `.nvmrc` (20) | Railway auto-deploy on push to main |
+| ghl-support-bot | `test` | `test` | `.nvmrc` (22) | Railway auto-deploy on push to main |
+| flowos-sms-gateway | `test` | `test` | `.python-version` (3.12.7) | Railway auto-deploy on push to main, Nixpacks |
+| flowos-web | `check` | `check` | `.nvmrc` (22) | Vercel git integration on push to main |
+| flowos-sms-delivery | `test`, `deploy` | `test` | `.nvmrc` (22) | Actions uploads a version; promotion is by hand |
+
+`deploy` is deliberately NOT a required context anywhere. It reports `skipped`
+on pull requests, since it is gated on `github.event_name == 'push'`, so
+requiring it would block every PR permanently.
+
+On flowos-web, Vercel's own `Vercel` commit status and `Vercel Preview Comments`
+check are deliberately NOT required. Both report a deployment rather than a
+test, so requiring one would gate a merge on a deploy and make Vercel
+availability a merge dependency. That repo has no tests, so `astro check` plus
+the build is the gate; the typecheck had never run before 2026-09-08 and found
+one real error on its first run.
+
+### Runtime pinning, and why the reasoning differs per repo
+
+- **flow-coach-ai, ghl-support-bot, flowos-web**: `.nvmrc` pins the Node major
+  CI runs, matching production. ghl-support-bot additionally asserts `.nvmrc`
+  agrees with the Dockerfile's `FROM node:` line in
+  `server/nodeVersion.test.ts`, because those are two declarations of one
+  decision and drift between them is silent.
+- **flowos-sms-gateway**: `.python-version` says `3.12.7`, which is what
+  Nixpacks had installed. It is the single source of truth, read by both
+  `actions/setup-python` and Nixpacks, so there is nothing to drift and no
+  guard test is needed. Before this pin nothing fixed the version at all, so
+  the next deploy could have moved the interpreter under a live service.
+  **`.python-version` must stay OUT of `.gitignore`**; it was listed there, and
+  the pin would have been created, ignored, and silently absent from both CI
+  and the build.
+- **flowos-sms-delivery**: `.nvmrc` pins the toolchain that bundles and tests
+  the worker. It does NOT match production, and cannot: production is the
+  Cloudflare Workers runtime, which is V8 rather than Node.
+
+### flowos-sms-delivery deploys differently, permanently
+
+This repo does not auto-deploy, and that is a settled decision rather than a
+transitional state. See the 2026-09-08 build log entry for the reasoning.
+
+- Merging to `main` runs the tests, then **uploads a Worker version that takes
+  no traffic**, tagged with the commit SHA and the commit subject.
+- **Promotion is a separate human step**: `wrangler versions deploy <id>@100`.
+- Before promoting, compare against `wrangler deployments status` and confirm
+  the uploaded bundle hash matches what is expected.
+- Trigger changes (routes, custom domains, cron) are applied by a separate job
+  step, and only when `wrangler.toml` changed, followed by a step that asserts
+  the configured custom domains actually serve. `wrangler deploy --dry-run`
+  does not validate that a domain is real, so that verification is the control,
+  not the dry run.
+- In `wrangler.toml`, **`routes` must stay above every table header**. It sat
+  below `[observability]` and so parsed as `observability.routes`, which meant
+  the config did not manage `api.sms.flowos.tech` at all while appearing to.
+  wrangler warned and exited 0 on every invocation.
+
+### Railway project names
+
+Renamed 2026-09-04 to match their repos. Older notes and any cached CLI links
+may still carry the generated names:
+
+| Now | Was | Serves |
+|---|---|---|
+| `flow-coach-ai` | (unchanged) | flow-coach-ai |
+| `ghl-support-bot` | `wholesome-emotion` | ghl-support-bot, plus its MySQL |
+| `flowos-sms-gateway` | `lucky-serenity` | flowos-sms-gateway |
+| `emma-ai-advisors` | `spectacular-enchantment` | emma-ai-advisors, out of scope, do not touch |
+
+`brilliant-blessing` was deleted as redundant.
+
+**Do not re-link `~/Projects` to any Railway project.** It was linked to Emma's
+advisors project and eighteen directories inherited it, so `railway status`,
+`railway up` and `railway run` from a repo without its own link targeted the
+wrong project. Only `flow-coach-ai` and `ghl-support-bot` hold links.
+
+### Auto-deploy is on, and that is now safe
+
+Railway and Vercel auto-deploy from `main` on every service, and it is
+deliberately left on. Nothing unverified can reach `main` to deploy from, which
+is what merge-gating buys. Railway's `checkSuites` flag stays `false` on every
+service; it is redundant once the gate is at merge rather than at deploy.
+
+Confirmed by observation on 2026-09-08 rather than by querying configuration:
+each repo was merged and its production endpoint watched through the deploy.
+`support.flowos.tech`, `flowos.tech`, the sms gateway and
+`api.sms.flowos.tech` all held `HTTP 200` throughout.
+
 ## Standalone applications (separate infrastructure, NOT on qclaw)
 
 Apps that have their own hosting and their own database. They share
@@ -135,7 +259,8 @@ a database is on the qclaw droplet just because the product is Flow OS.
   - Default branch: `main`. Railway auto-deploys on merge to main, so a
     merged PR is a production deploy. Migrations run at boot via
     `runMigrations()` in `server/_core/index.ts` before the server listens
-  - Host: Railway project `wholesome-emotion`, single `production`
+  - Host: Railway project `ghl-support-bot` (renamed from `wholesome-emotion`
+    on 2026-09-04), single `production`
     environment, services `ghl-support-bot` and `MySQL`
   - Database: Railway MySQL, database `railway`. Internal
     `mysql.railway.internal:3306` (app only, not reachable from a laptop);

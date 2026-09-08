@@ -25683,3 +25683,110 @@ All three are fixed in PR #118, which is still draft pending a scoped cold pass
 on the GATE 7 fix. The harness remains a session scratch script; if mutation
 testing becomes standing practice for the trade engine it moves into the repo
 with both guards in it, which is queued as build item 4, half (b).
+
+---
+
+## 2026-09-08: CI/CD rollout complete across six repos, and upload-then-promote made permanent
+
+Closes the CI/CD brief. Slices 1 through 5.
+
+### Where this started
+
+670 tests existed across five repos and **none ran automatically**. Four repos
+deployed to production within about three seconds of a push with nothing in
+between. Branch protection was unavailable on five of the six, and the checks
+that did exist had a documented habit of passing while asserting nothing.
+
+### Where it ended
+
+All six repos run CI on every pull request and push to `main`, and all six have
+`main` protected with `enforce_admins: true`. Full per-repo detail is in
+`LOCATIONS.md` under "CI and deploy gating"; it is not duplicated here.
+
+Every gate was proven by attacking it rather than by reading its settings back:
+a deliberately failing PR confirmed unmergeable, and both `git push` and
+`git push --force` to `main` confirmed refused with `GH006`, on each repo.
+
+### The decision worth recording: upload-then-promote is permanent
+
+`flowos-sms-delivery` deploys differently from the other five, and the original
+plan had that as a transitional state on the way to `wrangler deploy`. **That
+switch is not going to be made.** Recording the decision rather than leaving it
+as an absence, so nobody finishes the original plan later on momentum.
+
+Merging to `main` uploads a Worker version that takes no traffic, tagged with
+the commit SHA and subject. Promotion is a separate human step.
+
+It earned its keep twice on the day it was built:
+
+1. Applying the `wrangler.toml` routes fix, the manual deploy went out **from a
+   feature branch rather than main**, while `git pull` reported "Already up to
+   date" because local main was behind with the branch checked out. Harmless
+   that time, because the content was identical and the change had been proven
+   config-only. But the deploy went out from whatever tree happened to be
+   checked out, with nothing recording which. That is the failure the audit
+   described, caught in the act.
+2. The first automated upload produced a bundle hash to check **before** traffic
+   moved, which is what made promotion a decision rather than a hope.
+
+The cost is real and should be stated: **every merge now leaves an unpromoted
+version, so production can lag `main` silently.** That is the mirror of the
+problem being fixed, and nothing currently surfaces it. A check comparing the
+serving version's tag against `main`'s HEAD would close it. Not built; recorded
+as not built.
+
+### Sixteenth instance: a check about to be trusted for something it never did
+
+`wrangler deploy --dry-run` validates bundling and config syntax. It does not
+validate that a domain is real:
+
+```
+$ sed -i 's/api.sms.flowos.tech/api.sms.flowos.tecch/' wrangler.toml
+$ npx wrangler deploy --dry-run
+  exit 0
+```
+
+The dry run is not defective; it never claimed to check reachability. The defect
+was in what it was **about to be relied on for**. Automating
+`wrangler triggers deploy` on the strength of "CI validates the config" would
+have let a one-character typo detach the custom domain on the path that takes
+Stripe webhooks, with a customer as the only detector.
+
+This is the variant-3 shape (a proxy standing in for the property) arriving from
+a new direction: not a check written badly, but a correct check about to be
+loaded with a guarantee it was never making. Worth separating, because reviewing
+the check itself would have found nothing wrong with it.
+
+The fix was not a human in the loop. A person reviewing a one-character domain
+diff is the check humans are worst at. It was to make the machine assert the
+outcome: after applying triggers, read the configured custom domains back out of
+`wrangler.toml` and require each to serve `200`, failing loudly with the
+recovery command otherwise. That verification covers the typo case and the
+"experimental command changed semantics" case identically, because it asserts
+the outcome rather than trusting the mechanism.
+
+Related, recorded so it is not discovered under pressure: `wrangler triggers
+deploy` is marked `[experimental]` in wrangler's own help at 4.113.0. There is
+no non-experimental equivalent while using `versions upload`. `npm ci` installs
+the lockfile-pinned version, so behaviour cannot change without a reviewable
+diff, and the verification step catches it if it does.
+
+### The standing review questions, four variants in
+
+The vacuity pattern now has four distinct shapes on record, and the review
+question has widened each time:
+
+1. **Asserts nothing.** Does this check assert anything at all?
+2. **Asserts, but looks where the defect is not.** Does it look where the defect
+   would actually be? A check scoped by an enumeration or a single literal
+   pattern is an undocumented claim about where defects live.
+3. **Asserts, right place, matches a proxy rather than the property.** Does it
+   match the property, or a proxy for it? And a proxy does not fail in a
+   consistent direction: measure both.
+4. **The code under test was not the code on disk.** Is the thing being checked
+   the thing that will run?
+
+And now the question behind all four: **what is this check actually promising,
+and is that what it is being trusted for?** Instances 1 through 4 are ways a
+check can be weaker than it looks. The sixteenth is a check that was exactly as
+strong as it looked, about to be trusted for something adjacent.
