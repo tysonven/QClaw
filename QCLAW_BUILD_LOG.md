@@ -26343,6 +26343,20 @@ the standing rule that platform-hosted workspaces get documented at
 creation: an estate you cannot enumerate is also an estate that can vanish
 without you noticing.
 
-Still owed: the Gmail app password "n8n dashboard email" revocation
-(Tyson-side, Google account); tracked in FLOW_OS_STATE.md and the
-LOCATIONS.md dashboard entry.
+**The last credential was already gone, and the record did not know.** The
+plan's final item, revoking the Gmail app password "n8n dashboard email"
+(created 2026-03-16), ended with Google's app-passwords page showing no app
+passwords at all. When or by what it went is unknown; Google deletes app
+passwords silently on certain account events, such as a password change, so
+absence of a deliberate revocation act is unsurprising. It is recorded as
+FOUND ABSENT, not revoked, because claiming a revocation nobody performed
+would be inventing an event. The instructive part: LOCATIONS.md carried
+"created 2026-03-16, Manus-side env only" as a live credential for however
+long the password has actually been gone. That is a record standing in for
+a state, the same family this log has been collecting all week, this time
+in our own canonical docs rather than in a check. Docs that describe
+credentials are checks that never re-run; the generated-inventory rule from
+2026-08-20 exists for exactly this reason, and this entry extends it: a
+credential entry that cannot be re-verified against the issuer is a claim
+with no expiry, and should be dated as an observation, never stated as a
+standing fact.

@@ -122,7 +122,7 @@ files and are still mutable via the dashboard. Reconciliation TBD.
   - **Key duplication is intentional, not drift.** `POLYMARKET_PRIVATE_KEY` and `POLYMARKET_FUNDER_ADDRESS` remain in qclaw's `.env` because `src/trade_engine/config.py` hard-requires them in `REQUIRED_KEYS` and `src/trading/get_balance.py` uses them. Removing the qclaw copy is deferred to Slice 6. **Rotating the Polymarket key therefore means rotating both hosts**, and qclaw alone is not enough.
   - Not decommission-pending: this host is load-bearing for as long as trading runs from a geoblocked region. It appears in no CI config and in no repo sweep, which is how it stayed undocumented until the 2026-08-19 audit.
 
-- n8n Health Dashboard (email alerter): **GONE, 2026-09-08.** Ran in a Manus GCP workspace; the workspace ceased to exist vendor-side in the Manus platform reboot the same day its decommission was executed. Its n8n API key "manus API" (`MYYZFn3DjtKQ43i4`) was revoked 2026-09-08 (verified: row deleted, the four other keys intact, qclaw's key live-tested after). The Gmail app password "n8n dashboard email" (created 2026-03-16) is still owed a revocation, Tyson-side, in the Google account. Code record survives at `github.com/tysonven/n8n-health-dashboard` (private). Replaced by the heartbeat-based Telegram alerter (Slice 3h). Standing rule from this incident stays: platform-hosted builder workspaces (Manus and similar) get a LOCATIONS.md entry at creation, not at first commit; estate recon cannot enumerate them later.
+- n8n Health Dashboard (email alerter): **GONE, 2026-09-08.** Ran in a Manus GCP workspace; the workspace ceased to exist vendor-side in the Manus platform reboot the same day its decommission was executed. Its n8n API key "manus API" (`MYYZFn3DjtKQ43i4`) was revoked 2026-09-08 (verified: row deleted, the four other keys intact, qclaw's key live-tested after). The Gmail app password "n8n dashboard email" (created 2026-03-16) was FOUND ABSENT 2026-09-08: the Google account lists no app passwords at all. When or by what it went is unknown (Google deletes app passwords silently on certain account events, such as a password change), so this is recorded as found absent, not revoked. Code record survives at `github.com/tysonven/n8n-health-dashboard` (private). Replaced by the heartbeat-based Telegram alerter (Slice 3h). Standing rule from this incident stays: platform-hosted builder workspaces (Manus and similar) get a LOCATIONS.md entry at creation, not at first commit; estate recon cannot enumerate them later.
 ## CI and deploy gating (all six repos)
 
 State as of 2026-09-08. Before the CI/CD rollout, 670 tests existed across five
@@ -544,8 +544,9 @@ without an entry here is the failure mode this log exists to catch.
   rollback note (the Manus deployment it pointed at ceased to exist
   vendor-side in a platform reboot the same day), rewrote the n8n Health
   Dashboard entry as gone, and removed the revoked `manus API` row from the
-  n8n key table. The Gmail app password revocation is recorded in the
-  dashboard entry as still owed.
+  n8n key table. The Gmail app password planned for revocation was found
+  already absent from the Google account (timing and cause unknown), and is
+  recorded that way in the dashboard entry rather than as revoked.
 - **2026-08-20** Documented **Call Intel** (`tysonven/call-intel`) under
   standalone applications. It had never appeared in this file at all. Vercel
   serverless, and the one standalone app that does **not** have its own
