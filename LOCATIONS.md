@@ -194,6 +194,47 @@ one real error on its first run.
   the worker. It does NOT match production, and cannot: production is the
   Cloudflare Workers runtime, which is V8 rather than Node.
 
+### setup-node v5 arms itself from package.json
+
+`actions/setup-node@v5` defaults `package-manager-cache: true` (v4 had no such
+input). At that default it reads the `packageManager` field from package.json
+and RUNS that tool to resolve the cache store path, before any workflow step
+executes. GitHub runners preinstall npm and yarn but not pnpm, so in a repo
+whose field says `pnpm@...`, a setup-node step with neither a prior
+`pnpm/action-setup` step nor `package-manager-cache: false` kills the job in
+setup:
+
+```
+Unable to locate executable file: pnpm. Please verify either the file path
+exists or the file can be found within a directory specified by the PATH
+environment variable.
+```
+
+First hit: flow-coach-ai `retention-watch.yml`, first dispatch (run
+34256430562 on flow-coach-ai@9cc6b6c, 2026-09-08). Fix merged same day as
+flow-coach-ai@f598fda (`package-manager-cache: false`, since that job installs
+nothing on purpose).
+
+Why this is recorded here and not just in that repo: **the same YAML is green
+or dead depending on the target repo's package.json**, so a workflow shape
+proven green in one repo is not evidence it works in another. Exposure as
+measured 2026-09-08:
+
+| Repo | `packageManager` field | setup-node without pnpm/action-setup | State |
+|---|---|---|---|
+| flow-coach-ai | `pnpm@10.4.1` | retention-watch.yml | fixed (`package-manager-cache: false`) |
+| ghl-support-bot | `pnpm@10.4.1` | none (ci.yml runs pnpm/action-setup first) | immune by ordering |
+| QClaw | none | ci.yml (twice) | immune only while the field stays absent |
+| flowos-web | none | ci.yml | immune only while the field stays absent |
+| flowos-sms-delivery | none | ci.yml (twice), deploy-drift.yml | immune only while the field stays absent |
+| flowos-sms-gateway | none | no setup-node | not exposed |
+
+The standing rule that follows: adding a `packageManager: pnpm@...` field to a
+package.json retroactively arms every setup-node step in that repo's
+workflows. Whoever adds the field owns checking the workflows in the same
+commit; whoever writes a new workflow in a pnpm repo either puts
+`pnpm/action-setup` before setup-node or sets `package-manager-cache: false`.
+
 ### flowos-sms-delivery deploys differently, permanently
 
 This repo does not auto-deploy, and that is a settled decision rather than a
