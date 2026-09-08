@@ -163,9 +163,24 @@ class ExchangeMinimumTest(unittest.TestCase):
         s = size(0.6149, 0.279)
         self.assertFalse(s.tradeable)
         for field in ("price=", "edge=", "shares=", "required_shares=",
-                      "min_notional=", "kelly_notional="):
+                      "min_notional=", "sized_notional=", "kelly_debit=",
+                      "clamped_by="):
             self.assertIn(field, s.log_fields())
         self.assertGreater(s.notional, 0, "the computed size is still reported")
+
+    def test_the_log_does_not_call_the_sized_notional_a_kelly_notional(self):
+        """The label used to name the wrong quantity.
+
+        kelly_debit is the PRE-clamp ask; the sized notional is what survives
+        any clamp. They differ whenever clamped_by is set, and a log that calls
+        one by the other's name misreports exactly the case worth reading.
+        """
+        s = size(1.0, 0.50, bankroll=10_000.0)
+        self.assertEqual(s.clamped_by, "max_position_usdc")
+        self.assertNotIn("kelly_notional=", s.log_fields())
+        self.assertIn(f"kelly_debit={s.kelly_debit:.4f}", s.log_fields())
+        self.assertIn("clamped_by=max_position_usdc", s.log_fields())
+        self.assertNotAlmostEqual(s.kelly_debit, s.notional, places=2)
 
     def test_it_never_rounds_up_to_reach_the_minimum(self):
         """The one thing that must not happen.
@@ -215,6 +230,132 @@ class ExchangeMinimumTest(unittest.TestCase):
         self.assertTrue(generous.tradeable)
         self.assertFalse(strict.tradeable)
         self.assertEqual(strict.required_shares, 50.0)
+
+
+class BoundaryTest(unittest.TestCase):
+    """The comparison against the exchange minimum, pinned on BOTH sides.
+
+    Mutants moving it either way survived the suite: `<=` instead of `<`, and
+    admitting 1% under. Nothing sat at the boundary, and the boundary is the
+    entire question this code exists to answer.
+    """
+
+    def shares_for(self, notional, price):
+        return notional / price
+
+    def test_exactly_the_minimum_is_admitted(self):
+        """5.000000 shares trades. GATE 8 uses the same comparison."""
+        price, minimum = 0.20, 5.0
+        # Choose p so the sized notional lands exactly on 5 shares.
+        target_notional = minimum * price
+        lo, hi = price, 1.0
+        for _ in range(200):
+            mid = (lo + hi) / 2
+            if size(mid, price).notional >= target_notional:
+                hi = mid
+            else:
+                lo = mid
+        s = size(hi, price)
+        self.assertGreaterEqual(s.shares, minimum)
+        self.assertTrue(s.tradeable, s.log_fields())
+
+    def test_a_hair_under_the_minimum_is_refused(self):
+        """Kills `shares <= required` and any epsilon slack."""
+        price, minimum = 0.20, 5.0
+        lo, hi = price, 1.0
+        for _ in range(200):
+            mid = (lo + hi) / 2
+            if size(mid, price).shares >= minimum:
+                hi = mid
+            else:
+                lo = mid
+        just_under = size(lo, price)
+        self.assertLess(just_under.shares, minimum)
+        self.assertFalse(just_under.tradeable, just_under.log_fields())
+        self.assertGreater(just_under.shares, minimum * 0.9999,
+                           "must be a HAIR under, or it proves nothing")
+
+    def test_one_percent_under_is_refused(self):
+        """Kills `shares < required * 0.99`, which survived the whole suite."""
+        for fraction in (0.99, 0.995, 0.999):
+            with self.subTest(fraction=fraction):
+                price, minimum = 0.20, 5.0
+                notional = minimum * fraction * price
+                lo, hi = price, 1.0
+                for _ in range(200):
+                    mid = (lo + hi) / 2
+                    if size(mid, price).notional >= notional:
+                        hi = mid
+                    else:
+                        lo = mid
+                s = size(hi, price)
+                if s.shares < minimum:
+                    self.assertFalse(s.tradeable, s.log_fields())
+
+
+class ProbabilityRangeTest(unittest.TestCase):
+    """The headline result depends on p <= 1, so p is range-checked.
+
+    Measured before this existed: p = 1.05 at price 0.98 returned a TRADEABLE
+    $8.74 notional, inside the region this module calls impossible. The old
+    linear ramp clamped every input to $10; Kelly is linear in the edge, so the
+    same unit slip now runs to the ceiling.
+    """
+
+    def test_a_probability_above_one_is_refused(self):
+        for p in (1.0000001, 1.04, 1.05, 70.0):
+            with self.subTest(p=p):
+                s = size(p, 0.40)
+                self.assertFalse(s.tradeable)
+                self.assertEqual(s.refusal, "invalid_probability")
+
+    def test_it_cannot_reopen_the_impossible_region(self):
+        """The specific measured case."""
+        s = size(1.05, 0.98)
+        self.assertFalse(s.tradeable)
+        self.assertEqual(s.notional, 0.0)
+
+    def test_a_negative_probability_is_refused(self):
+        self.assertEqual(size(-0.1, 0.40).refusal, "invalid_probability")
+
+    def test_the_valid_endpoints_are_still_accepted(self):
+        for p in (0.0, 1.0):
+            with self.subTest(p=p):
+                self.assertNotEqual(size(p, 0.40).refusal, "invalid_probability")
+
+    def test_a_bad_kelly_fraction_is_named_correctly(self):
+        """It used to produce a NEGATIVE notional refused as
+        below_exchange_minimum, mislabelling a bad input as a small trade in
+        the very logs decision (c) is mined from."""
+        for fraction in (-0.10, 0.0, float("nan")):
+            with self.subTest(fraction=fraction):
+                s = size(0.60, 0.40, kelly_fraction=fraction)
+                self.assertEqual(s.refusal, "invalid_kelly_fraction")
+                self.assertGreaterEqual(s.notional, 0.0)
+
+
+class EnforcedCeilingTest(unittest.TestCase):
+    """Size against the ceiling the executor enforces FIRST."""
+
+    def test_the_configured_ceiling_binds_before_the_hard_one(self):
+        s = size(1.0, 0.50, bankroll=10_000.0,
+                 max_position_usdc=10.0, absolute_max_usdc=25.0)
+        self.assertAlmostEqual(s.debit, 10.0, places=9)
+        self.assertEqual(s.clamped_by, "max_position_usdc")
+
+    def test_the_hard_ceiling_binds_when_it_is_the_lower(self):
+        s = size(1.0, 0.50, bankroll=10_000.0,
+                 max_position_usdc=100.0, absolute_max_usdc=25.0)
+        self.assertAlmostEqual(s.debit, 25.0, places=9)
+        self.assertEqual(s.clamped_by, "absolute_max_position_usdc")
+
+    def test_it_never_proposes_above_what_gate_5_enforces(self):
+        """A $12 proposal against a $10 configured cap would be refused after
+        approval, putting a figure in front of a human the system will not
+        honour."""
+        s = size(1.0, 0.30, bankroll=10_000.0,
+                 max_position_usdc=10.0, absolute_max_usdc=25.0)
+        self.assertLessEqual(s.debit, 10.0)
 
 
 class FailClosedTest(unittest.TestCase):

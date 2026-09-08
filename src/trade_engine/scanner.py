@@ -34,7 +34,11 @@ import httpx
 
 from src.trade_engine.config import config
 from src.trade_engine.approval import ApprovalGate, ApprovalGateBusy
-from src.trade_engine.database import SupabaseError, write_simulation
+from src.trade_engine.database import (
+    SupabaseError,
+    get_trading_config,
+    write_simulation,
+)
 from src.trade_engine.horizon import horizon_days
 from src.trade_engine.sizing import size_position
 from src.trade_engine.executor import ABSOLUTE_MAX_POSITION_USDC, TradeExecutor
@@ -557,11 +561,18 @@ class PolymarketScanner:
 
             probability = sim.get("probability")
             if probability is None or not isinstance(probability, (int, float)) \
-                    or not math.isfinite(float(probability)):
+                    or isinstance(probability, bool) \
+                    or not math.isfinite(float(probability)) \
+                    or not 0.0 <= float(probability) <= 1.0:
                 # monte_carlo sanitises non-finite floats to null before jsonify.
                 errors += 1
+                # RANGE, not just finiteness. This is a remote HTTP service
+                # with no asserted response schema, and everything downstream
+                # treats the value as a probability: the sizing model's central
+                # result depends on p <= 1. sizing.size_position re-checks it,
+                # because a guard on the money path belongs at both ends.
                 log.warning(
-                    "simulate returned non-finite probability for market %s (%s): %r",
+                    "simulate returned an unusable probability for market %s (%s): %r",
                     candidate["market_id"], candidate["asset"], probability,
                 )
                 continue
@@ -589,6 +600,25 @@ class PolymarketScanner:
         no_edge: list[ScannerCandidate] = []
         neutral_count = 0
 
+        # The ceiling GATE 5 enforces FIRST, read once per run rather than per
+        # candidate. Sizing against the hard 25 while the executor refuses above
+        # trading_config's 10 would propose a figure the system will not honour.
+        # Unreadable config falls back to the hard ceiling and logs: Kelly at
+        # this bankroll tops out at $2.50 so neither bound can bind, and GATE 5
+        # re-reads the real value live before any order regardless.
+        ceiling = ABSOLUTE_MAX_POSITION_USDC
+        try:
+            cfg = await get_trading_config()
+            configured = float(cfg.max_position_usdc or 0)
+            if configured > 0:
+                ceiling = min(configured, ABSOLUTE_MAX_POSITION_USDC)
+        except (SupabaseError, ValueError, TypeError) as exc:
+            log.warning(
+                "could not read max_position_usdc for sizing (%s), sizing "
+                "against the hard ceiling $%.2f; GATE 5 still enforces the "
+                "configured value live", exc, ceiling,
+            )
+
         for row in simulated:
             sim = row["simulation"]
             sim_probability = float(sim["probability"])
@@ -596,9 +626,9 @@ class PolymarketScanner:
             volume = row["volume"]
 
             if edge >= config.high_edge_threshold and volume >= config.min_alert_volume:
-                high_edge.append(self._to_candidate(row, edge, sim_probability))
+                high_edge.append(self._to_candidate(row, edge, sim_probability, ceiling))
             elif edge <= config.no_edge_threshold and volume >= config.min_alert_volume:
-                no_edge.append(self._to_candidate(row, edge, sim_probability))
+                no_edge.append(self._to_candidate(row, edge, sim_probability, ceiling))
             else:
                 neutral_count += 1
 
@@ -622,7 +652,8 @@ class PolymarketScanner:
 
     @staticmethod
     def _to_candidate(
-        row: dict[str, Any], edge: float, sim_probability: float
+        row: dict[str, Any], edge: float, sim_probability: float,
+        ceiling: float = ABSOLUTE_MAX_POSITION_USDC,
     ) -> ScannerCandidate:
         slug = row.get("slug") or ""
         condition_id = row.get("condition_id")
@@ -634,7 +665,8 @@ class PolymarketScanner:
             min_order_size=row.get("min_order_size"),
             bankroll=config.bankroll_usdc,
             kelly_fraction=config.kelly_fraction,
-            max_position_usdc=ABSOLUTE_MAX_POSITION_USDC,
+            max_position_usdc=ceiling,
+            absolute_max_usdc=ABSOLUTE_MAX_POSITION_USDC,
             price_floor=config.sizing_price_floor,
         )
         if not sizing.tradeable:

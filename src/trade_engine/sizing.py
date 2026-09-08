@@ -44,23 +44,48 @@ Ignoring the fee term, clearing that minimum requires
 
 Two consequences, and the second is the one that surprises.
 
-At the 7-point edge floor the condition needs price * (1 - price) <= 0.035, so
-price <= 0.036, which the 0.10 sizing floor excludes. NOTHING sized at the
-minimum qualifying edge can ever be placed.
+FIRST. At the 7-point edge floor the condition needs price * (1 - price) <= 0.035.
+That inequality has TWO roots, and both are stated here deliberately, because an
+earlier version of this derivation reported only one of them and the other is
+where an error lived:
 
-And edge can never exceed (1 - price), since that is the payoff. Requiring
-edge >= 2 * price * (1 - price) therefore requires 2 * price <= 1. **Above
-price 0.5 the minimum is unreachable at ANY edge, including certainty.** At
-p = 1 the notional collapses to KELLY_FRACTION * bankroll = $2.50 whatever the
-price, so shares = 2.50 / price, which crosses 5 at price 0.48. Deep favourites
-are the one region that is arithmetically impossible, not the region that
-survives.
+    price <= 0.036319    excluded by the 0.10 sizing price floor
+    price >= 0.963681    excluded for a DIFFERENT reason, see below
 
-What survives is a narrow band: price in [0.10, ~0.48] with a very large edge.
-Measured against this implementation, the minimum simulated probability that
-clears 5 shares is 0.29 at price 0.10, 0.54 at 0.20, 0.74 at 0.30, 0.90 at 0.40
-and 0.96 at 0.45. For comparison, the largest edge in the four historical
-positions was 0.336 at price 0.279, which needed 0.395.
+The upper root is not a feasible region. At price 0.963681 the largest edge that
+can exist is 1 - price = 0.036319, so an edge of 0.07 is unreachable there: the
+root solves the inequality while violating the constraint edge <= 1 - price. An
+earlier audit reported that root as the surviving region. It is the opposite.
+Nothing sized at the minimum qualifying edge can be placed at any price.
+
+SECOND. Edge can never exceed (1 - price), since that is the whole payoff.
+Requiring edge >= 2 * price * (1 - price) therefore requires 2 * price <= 1, so
+ABOVE PRICE 0.5 THE MINIMUM IS UNREACHABLE AT ANY EDGE, INCLUDING CERTAINTY.
+Deep favourites are the region that is arithmetically impossible, not the region
+that survives.
+
+The exact cut is 0.482521, not 0.5. 0.5 is the FEE-FREE answer; including the
+fee the condition is
+
+    2 * price * (1 + 0.07 * (1 - price)) <= 1
+    0.14 * price^2 - 2.14 * price + 1 >= 0
+    price <= 0.482521
+
+Both numbers are correct for their own model and they are not interchangeable.
+The code is fee-aware, so 0.482521 is the one that describes it, and it is the
+only one quoted elsewhere.
+
+What survives is a narrow band: price in [0.10, 0.482521] with a very large
+edge. The minimum simulated probability that clears 5 shares, from this
+implementation:
+
+    price   0.10   0.15   0.20   0.25   0.30   0.35   0.40   0.45   0.4825
+    p_min   0.291  0.420  0.538  0.645  0.741  0.826  0.900  0.964  1.000
+
+For comparison, the largest edge in the four historical positions was 0.336 at
+price 0.279, which needed 0.4226. (An earlier version of this docstring said
+0.395. That number is wrong and is reproducible by no formula here; it appears
+to be a transcription of min_notional = 5 * 0.279 = 1.395.)
 
 That is arithmetic, not a tuning error. At a $25 bankroll the exchange's share
 granularity is coarser than the entire Kelly budget. NEVER "fix" this by raising
@@ -112,12 +137,16 @@ class PositionSizing(NamedTuple):
 
     def log_fields(self) -> str:
         """One line carrying every number a later capital decision needs."""
+        # sized_notional, not "kelly_notional": this is the figure AFTER any
+        # clamp, and the pre-clamp Kelly ask is kelly_debit. The two differ
+        # whenever clamped_by is set, and the old label named the wrong one.
         return (
             f"price={self.side_price:.4f} edge={self.edge:+.4f} "
-            f"kelly_f={self.kelly_fraction:.5f} kelly_notional={self.notional:.4f} "
-            f"debit={self.debit:.4f} shares={self.shares:.4f} "
-            f"required_shares={self.required_shares:.4f} "
-            f"min_notional={self.min_notional:.4f} min_debit={self.min_debit:.4f}"
+            f"kelly_f={self.kelly_fraction:.5f} kelly_debit={self.kelly_debit:.4f} "
+            f"sized_notional={self.notional:.4f} debit={self.debit:.4f} "
+            f"shares={self.shares:.4f} required_shares={self.required_shares:.4f} "
+            f"min_notional={self.min_notional:.4f} min_debit={self.min_debit:.4f} "
+            f"clamped_by={self.clamped_by or 'none'}"
         )
 
 
@@ -163,6 +192,7 @@ def size_position(
     kelly_fraction: float,
     max_position_usdc: float,
     price_floor: float,
+    absolute_max_usdc: Optional[float] = None,
 ) -> PositionSizing:
     """Size one trade, or refuse it with a reason.
 
@@ -181,6 +211,16 @@ def size_position(
             return _refused("invalid_input")
     if not 0.0 < float(yes_price) < 1.0:
         return _refused("invalid_price")
+    # A PROBABILITY, so range-checked and not merely finite. The whole
+    # "impossible above price 0.5" result rests on edge <= 1 - price, which
+    # rests on p <= 1; nothing upstream enforced it and the Monte Carlo worker
+    # is a remote HTTP service with no asserted response schema. Measured before
+    # this check existed: p = 1.05 at price 0.98 returned a TRADEABLE $8.74
+    # notional, inside the region this module calls arithmetically impossible.
+    # The old linear ramp clamped every input to $10 no matter what; Kelly is
+    # linear in the edge, so the same unit slip now runs to the ceiling.
+    if not 0.0 <= float(sim_probability) <= 1.0:
+        return _refused("invalid_probability")
     if min_order_size is None or not math.isfinite(float(min_order_size)) \
             or float(min_order_size) <= 0:
         # Fail closed. An unknown exchange minimum is refused, never assumed to
@@ -188,6 +228,12 @@ def size_position(
         return _refused("unknown_min_order_size")
     if not math.isfinite(float(bankroll)) or bankroll <= 0:
         return _refused("invalid_bankroll")
+    # A negative fraction produced a NEGATIVE notional refused as
+    # "below_exchange_minimum", which is the wrong diagnosis in the refusal logs
+    # decision (c) is meant to be mined from. GATE 5 caught the negative amount,
+    # so it was fail-closed and mislabelled rather than dangerous.
+    if not math.isfinite(float(kelly_fraction)) or kelly_fraction <= 0:
+        return _refused("invalid_kelly_fraction")
 
     price = side_price_for(direction, float(yes_price))
     true_prob = float(sim_probability) if str(direction).upper() == "YES" \
@@ -217,11 +263,22 @@ def size_position(
     fraction = kelly_fraction * full_kelly
     kelly_debit = fraction * bankroll
 
+    # Size against the ceiling the executor actually ENFORCES FIRST. GATE 5
+    # checks trading_config.max_position_usdc (live value 10) before the hard
+    # ABSOLUTE_MAX_POSITION_USDC (25), so sizing against 25 could propose a $12
+    # position, show that number to a human, and have GATE 5 refuse it after
+    # approval. Same class as the approval-path guard: never put a figure in
+    # front of someone that the system will not honour.
+    ceiling = max_position_usdc
+    ceiling_name = "max_position_usdc"
+    if absolute_max_usdc is not None and absolute_max_usdc < ceiling:
+        ceiling, ceiling_name = absolute_max_usdc, "absolute_max_position_usdc"
+
     cap = kelly_debit
     clamped_by = None
-    if cap > max_position_usdc:
-        cap = max_position_usdc
-        clamped_by = "max_position_usdc"
+    if cap > ceiling:
+        cap = ceiling
+        clamped_by = ceiling_name
 
     # Size on the DEBIT: the wallet pays notional + fee, so solve for the
     # notional whose debit equals the cap.
@@ -242,6 +299,11 @@ def size_position(
         clamped_by=clamped_by,
     )
 
+    # STRICTLY less than. Exactly the minimum is ADMITTED, matching GATE 8's
+    # comparison; the two must agree or a trade the scanner sizes is refused at
+    # execution for a reason the scanner did not anticipate. Mutants moving this
+    # boundary either way, including admitting 1% under, survived the suite
+    # until it was pinned on both sides.
     if shares < required:
         # NEVER round up to reach the minimum. Rounding up would abandon the
         # only property Kelly provides, which is that the stake is proportional

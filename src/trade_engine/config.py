@@ -157,18 +157,34 @@ class Config:
         self.min_alert_volume: float = self._float_env(
             "MIN_ALERT_VOLUME", DEFAULT_MIN_ALERT_VOLUME
         )
+        # CLAMPED, like min_horizon_tradeable_days below, and for the same
+        # reason. The docstring on DEFAULT_BANKROLL_USDC says raising it is a
+        # capital decision and "not a config edit" — which was false while this
+        # was a bare env read: BANKROLL_USDC=200 in /root/.quantumclaw/.env was
+        # exactly a config edit, with no clamp, no ceiling and no log line. Two
+        # paragraphs of prose were the only guard on the number this whole
+        # sizing model rests on.
+        #
+        # Env may only make these MORE conservative. Bankroll may be lowered,
+        # never raised; the Kelly fraction may be lowered, never raised. An
+        # attempt to go the other way is clamped and logged rather than
+        # silently accepted, because a silently ignored override is its own
+        # failure mode.
+        self.bankroll_usdc: float = self._clamped_env(
+            "BANKROLL_USDC", DEFAULT_BANKROLL_USDC, direction="max"
+        )
+        self.kelly_fraction: float = self._clamped_env(
+            "KELLY_FRACTION", DEFAULT_KELLY_FRACTION, direction="max"
+        )
+        # The price floor may only be RAISED: a higher floor proposes fewer,
+        # more liquid markets, which is the conservative direction.
+        self.sizing_price_floor: float = self._clamped_env(
+            "SIZING_PRICE_FLOOR", DEFAULT_SIZING_PRICE_FLOOR, direction="min"
+        )
+
         # Clamped at the floor, never below: an env typo (0, negative, or an
         # over-eager 0.5) must not be able to re-open the sub-day path that
         # cost position e09b82fe. Raising it is allowed, lowering it is not.
-        self.bankroll_usdc: float = self._float_env(
-            "BANKROLL_USDC", DEFAULT_BANKROLL_USDC
-        )
-        self.kelly_fraction: float = self._float_env(
-            "KELLY_FRACTION", DEFAULT_KELLY_FRACTION
-        )
-        self.sizing_price_floor: float = self._float_env(
-            "SIZING_PRICE_FLOOR", DEFAULT_SIZING_PRICE_FLOOR
-        )
         self.min_horizon_tradeable_days: float = max(
             DEFAULT_MIN_HORIZON_TRADEABLE_DAYS,
             self._float_env(
@@ -194,6 +210,30 @@ class Config:
             return float(raw)
         except ValueError as exc:
             raise ConfigError(f"{key} must be a number, got {raw!r}") from exc
+
+    def _clamped_env(self, key: str, default: float, *, direction: str) -> float:
+        """Env override that may only move a value in the SAFE direction.
+
+        direction="max": the default is a ceiling, env may only lower it.
+        direction="min": the default is a floor, env may only raise it.
+
+        A rejected override is LOGGED rather than silently ignored. Silently
+        discarding an operator's setting is its own failure mode: the next
+        person reads the .env, believes it, and reasons from a number that is
+        not in force.
+        """
+        value = self._float_env(key, default)
+        if direction == "max":
+            clamped = min(default, value)
+        else:
+            clamped = max(default, value)
+        if clamped != value:
+            logging.getLogger("trade_engine.config").warning(
+                "%s=%s ignored: clamped to %s. This value may only move in the "
+                "conservative direction; changing it beyond that is a decision, "
+                "not a config edit.", key, value, clamped,
+            )
+        return clamped
 
     @staticmethod
     def _int_env(key: str, default: int) -> int:

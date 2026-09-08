@@ -47,6 +47,9 @@ from src.trade_engine.models import (  # noqa: E402
     ScannerCandidate,
     ScannerRunSummary,
 )
+import src.trade_engine.scanner as scanner_mod  # noqa: E402
+from src.trade_engine.executor import ABSOLUTE_MAX_POSITION_USDC  # noqa: E402
+from src.trade_engine.sizing import size_position  # noqa: E402
 from src.trade_engine.scanner import (  # noqa: E402
     DEFAULT_HORIZON_DAYS,
     HORIZON_MAX_DAYS,
@@ -345,6 +348,114 @@ class ReduceNeverIncreasesTest(unittest.TestCase):
         self.assertIsNone(summary.best_trade.sizing_refusal)
 
 
+class SizingWireThroughTest(unittest.TestCase):
+    """Every value that crosses the module boundary onto the money path.
+
+    THE FINDING THIS CLASS EXISTS FOR. sizing.py had 31 tests and
+    _to_candidate, its only caller and the code that actually puts a number on
+    amount_usdc, had none. Six mutants in that one function survived the entire
+    suite, including amount_usdc=sizing.debit, which is VERBATIM the defect this
+    change was written to fix.
+
+    An arithmetic module tested as a pure function proves the arithmetic. It
+    proves nothing about the values the caller feeds it or the field it writes
+    the answer into. Both halves need asserting, separately.
+    """
+
+    ROW = {
+        "market_id": "3257355", "condition_id": "0x" + "ab" * 32,
+        "slug": "s", "question": "Will Bitcoin reach $60,000 in September?",
+        "asset": "btc", "yes_price": 0.20, "volume": 279582.74,
+        "horizon_days": 20.333, "end_date": "2026-09-30T04:00:00Z",
+        "min_order_size": 5.0,
+    }
+
+    def capture(self, row=None, edge=0.40, probability=0.60, ceiling=10.0):
+        """Call _to_candidate with size_position spied, keeping real behaviour."""
+        captured = {}
+        real = scanner_mod.size_position
+
+        def spy(**kwargs):
+            captured.update(kwargs)
+            return real(**kwargs)
+
+        scanner_mod.size_position = spy
+        try:
+            candidate = PolymarketScanner._to_candidate(
+                dict(row or self.ROW), edge, probability, ceiling
+            )
+        finally:
+            scanner_mod.size_position = real
+        return captured, candidate
+
+    # --- the caller passes what it claims to pass ------------------------
+
+    def test_it_passes_the_configured_bankroll(self):
+        captured, _ = self.capture()
+        self.assertEqual(captured["bankroll"], config.bankroll_usdc)
+        self.assertEqual(captured["bankroll"], 25.0)
+
+    def test_it_passes_the_configured_kelly_fraction(self):
+        captured, _ = self.capture()
+        self.assertEqual(captured["kelly_fraction"], config.kelly_fraction)
+        self.assertEqual(captured["kelly_fraction"], 0.10)
+
+    def test_it_passes_the_configured_price_floor(self):
+        captured, _ = self.capture()
+        self.assertEqual(captured["price_floor"], config.sizing_price_floor)
+        self.assertEqual(captured["price_floor"], 0.10)
+
+    def test_it_passes_the_enforced_ceiling_and_the_hard_one(self):
+        captured, _ = self.capture(ceiling=10.0)
+        self.assertEqual(captured["max_position_usdc"], 10.0)
+        self.assertEqual(captured["absolute_max_usdc"], ABSOLUTE_MAX_POSITION_USDC)
+
+    def test_it_passes_the_markets_own_minimum_and_price(self):
+        captured, _ = self.capture()
+        self.assertEqual(captured["min_order_size"], 5.0)
+        self.assertEqual(captured["yes_price"], 0.20)
+        self.assertEqual(captured["sim_probability"], 0.60)
+
+    def test_it_passes_the_direction_it_derived(self):
+        for edge, expected in ((0.40, "YES"), (-0.40, "NO")):
+            with self.subTest(edge=edge):
+                captured, _ = self.capture(edge=edge)
+                self.assertEqual(captured["direction"], expected)
+
+    # --- the answer lands in the right field -----------------------------
+
+    def test_amount_usdc_is_the_NOTIONAL_not_the_debit(self):
+        """The mutant that survived, and it is this change's own headline bug.
+
+        The wallet pays notional plus fee. Writing the debit into amount_usdc
+        sends the fee-inclusive figure to the relay as the amount to SPEND, so
+        every trade overspends its cap by the fee: exactly what this change was
+        written to stop.
+        """
+        captured, candidate = self.capture()
+        expected = size_position(**captured)
+        self.assertTrue(expected.tradeable, "pick a sizeable case or this is vacuous")
+        self.assertGreater(expected.debit, expected.notional, "the fee must be non-zero")
+        self.assertEqual(candidate.amount_usdc, expected.notional)
+        self.assertNotEqual(candidate.amount_usdc, round(expected.debit, 6))
+
+    def test_the_sizing_refusal_is_recorded_on_the_candidate(self):
+        """select_best_trade filters on this field. Nothing asserted it is ever
+        set, so the K12 defence could be disabled upstream with its own test
+        still green."""
+        row = dict(self.ROW, yes_price=0.05)  # under the sizing price floor
+        _, candidate = self.capture(row=row)
+        self.assertEqual(candidate.sizing_refusal, "price_below_sizing_floor")
+
+    def test_a_sizeable_candidate_records_no_refusal(self):
+        _, candidate = self.capture()
+        self.assertIsNone(candidate.sizing_refusal)
+
+    def test_the_market_minimum_reaches_the_candidate(self):
+        _, candidate = self.capture()
+        self.assertEqual(candidate.min_order_size, 5.0)
+
+
 class SelectSkipsUnsizeableTest(unittest.TestCase):
     """best_trade must never be a candidate that cannot be sized.
 
@@ -405,6 +516,119 @@ class _StubAnalyst:
 
     async def analyse(self, candidate):
         return self._recommendation
+
+
+class ApprovalGuardTest(unittest.TestCase):
+    """An unsizeable best_trade must not reach a human.
+
+    K12's sibling, one function later, in the same change. select_best_trade
+    filters unsizeable candidates, but the Analyst's REDUCE can make a
+    candidate unsizeable AFTER that filter has run, and only this guard stops
+    it. Removing the guard survived the whole suite: the failure direction is
+    "shows a human a button that cannot fire", which reads as harmless and so
+    went untested.
+    """
+
+    def summary_with_refusal(self, refusal):
+        candidate = ScannerCandidate(
+            market_id="1", condition_id="0x" + "ab" * 32, question="q",
+            asset="btc", direction="YES", edge=0.20, sim_probability=0.60,
+            market_probability=0.40, volume=50000.0, horizon_days=5.0,
+            market_url="", amount_usdc=1.5, min_order_size=5.0,
+            sizing_refusal=refusal,
+        )
+        summary = ScannerRunSummary(
+            run_at=datetime.now(timezone.utc), markets_fetched=1,
+            candidates_analysed=1, simulations_run=1, sim_errors=0,
+        )
+        summary.best_trade = candidate
+        summary.analyst_recommendation = AnalystRecommendation(
+            recommendation="proceed", confidence=0.8, reasoning="ok", flags=[],
+        )
+        return summary
+
+    def test_no_approval_is_requested_for_an_unsizeable_trade(self):
+        summary = self.summary_with_refusal("below_exchange_minimum")
+        gate = _RecordingGate()
+        scanner = PolymarketScanner(approval_gate=gate)
+        run(scanner.apply_approval(summary))
+        self.assertEqual(gate.requests, [], "no button for an unplaceable trade")
+        self.assertIsNone(summary.approval_result)
+
+    def test_a_sizeable_trade_still_reaches_the_gate(self):
+        """Or the guard would be indistinguishable from the gate being broken."""
+        summary = self.summary_with_refusal(None)
+        gate = _RecordingGate()
+        scanner = PolymarketScanner(approval_gate=gate)
+        run(scanner.apply_approval(summary))
+        self.assertEqual(len(gate.requests), 1)
+
+
+class _RecordingGate:
+    def __init__(self):
+        self.requests = []
+
+    async def send_approval_request(self, candidate, recommendation):
+        self.requests.append(candidate)
+        return object()
+
+    async def wait_for_decision(self, pending):
+        from src.trade_engine.models import ApprovalResult, ApprovalStatus
+        return ApprovalResult(
+            approval_id="a", status=ApprovalStatus.timeout,
+            candidate=self.requests[-1],
+            recommendation=AnalystRecommendation(
+                recommendation="proceed", confidence=0.8, reasoning="r", flags=[]),
+            decided_at=datetime.now(timezone.utc), decision_source="timeout",
+        )
+
+
+class SizingConfigClampTest(unittest.TestCase):
+    """The sizing dials may only move in the conservative direction.
+
+    DEFAULT_BANKROLL_USDC's docstring says raising it is a capital decision and
+    "not a config edit". That was false while this was a bare env read:
+    BANKROLL_USDC=200 was exactly a config edit, unclamped and unlogged. Two
+    paragraphs of prose were the only guard on the number the whole sizing
+    model rests on.
+    """
+
+    def with_env(self, **env):
+        saved = {k: os.environ.get(k) for k in env}
+        try:
+            for k, v in env.items():
+                os.environ[k] = v
+            return Config()
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+    def test_bankroll_cannot_be_raised_by_env(self):
+        """The $180 that would make Kelly and the exchange compatible is a
+        DEPOSIT, not a config edit. The code now agrees with the comment."""
+        for attempt in ("200", "180", "25.01", "1e9"):
+            with self.subTest(value=attempt):
+                self.assertEqual(self.with_env(BANKROLL_USDC=attempt).bankroll_usdc, 25.0)
+
+    def test_bankroll_can_be_lowered(self):
+        self.assertEqual(self.with_env(BANKROLL_USDC="10").bankroll_usdc, 10.0)
+
+    def test_kelly_fraction_cannot_be_raised_by_env(self):
+        for attempt in ("1.0", "0.5", "5.0"):
+            with self.subTest(value=attempt):
+                self.assertEqual(
+                    self.with_env(KELLY_FRACTION=attempt).kelly_fraction, 0.10
+                )
+
+    def test_kelly_fraction_can_be_lowered(self):
+        self.assertEqual(self.with_env(KELLY_FRACTION="0.05").kelly_fraction, 0.05)
+
+    def test_the_price_floor_can_only_be_RAISED(self):
+        self.assertEqual(self.with_env(SIZING_PRICE_FLOOR="0.0").sizing_price_floor, 0.10)
+        self.assertEqual(self.with_env(SIZING_PRICE_FLOOR="0.25").sizing_price_floor, 0.25)
 
 
 class CandidateModelTest(unittest.TestCase):

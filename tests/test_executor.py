@@ -121,6 +121,28 @@ SUCCESS_STDOUT = json.dumps({
 })
 
 
+class _FakeGamma:
+    """Minimal httpx-shaped client for driving _fetch_market_limits directly."""
+
+    def __init__(self, payload, status=200, raises=None):
+        self._payload, self._status, self._raises = payload, status, raises
+        self.calls = []
+
+    async def get(self, url, params=None, timeout=None):
+        self.calls.append((url, params))
+        return _FakeResponse(self._payload, self._status, self._raises)
+
+
+class _FakeResponse:
+    def __init__(self, payload, status, raises):
+        self._payload, self.status_code, self._raises = payload, status, raises
+
+    def json(self):
+        if self._raises is not None:
+            raise self._raises
+        return self._payload
+
+
 class StubExecutor(TradeExecutor):
     """TradeExecutor with the subprocess and Telegram edges replaced."""
 
@@ -518,13 +540,111 @@ class GateTest(unittest.TestCase):
         self.assertEqual(result.gate_blocked, "below_exchange_minimum")
 
     def test_gate8_fails_closed_when_the_minimum_cannot_be_read(self):
-        """Never assumed to be the usual 5, and never assumed satisfied."""
+        """Never assumed to be the usual 5, and never assumed satisfied.
+
+        The candidate CARRIES a permissive min_order_size, because that is the
+        only case in which a fallback is possible and therefore the only case
+        that tests fail-closed. The previous version of this test used a
+        candidate with min_order_size=None, so a mutant falling back to the
+        candidate's copy whenever the live read failed survived the whole
+        suite: it kept the live fetch, kept live-wins, and broke only this half.
+        """
         ex = StubExecutor(market_limits=None)
         with DBStub():
-            result = run(ex.execute(make_approval(amount_usdc=9.0)))
+            result = run(ex.execute(make_approval(
+                amount_usdc=9.0, market_probability=0.40, min_order_size=1.0
+            )))
         self.assertFalse(result.success)
         self.assertEqual(result.gate_blocked, "below_exchange_minimum")
         self.assertEqual(ex.argv_calls, [])
+
+    def test_gate8_never_falls_back_to_the_candidates_copy(self):
+        """Asserts the docstring's claim, which was asserted nowhere.
+
+        _fetch_market_limits says it "deliberately does NOT fall back to the
+        candidate's scan-time copy". With a candidate whose copy would easily
+        admit the order, an unreadable live value must still refuse.
+        """
+        for copy in (1.0, 0.001, 5.0):
+            with self.subTest(candidate_min=copy):
+                ex = StubExecutor(market_limits=None)
+                with DBStub():
+                    result = run(ex.execute(make_approval(
+                        amount_usdc=9.0, market_probability=0.40,
+                        min_order_size=copy,
+                    )))
+                self.assertFalse(result.success)
+                self.assertEqual(result.gate_blocked, "below_exchange_minimum")
+
+    def test_gate8_uses_the_live_minimum_exactly_not_the_stricter_of_the_two(self):
+        """Kills max(live, candidate): the gate must use the live value, not
+        merely something no weaker than it. A candidate copy STRICTER than live
+        must not tighten the gate either."""
+        ex = StubExecutor(market_limits=(5.0, 0.40))
+        with DBStub():
+            result = run(ex.execute(make_approval(
+                amount_usdc=4.0, market_probability=0.40, min_order_size=500.0
+            )))
+        self.assertTrue(result.success, "10 shares clears the LIVE minimum of 5")
+
+    # --- the boundary, pinned on both sides ------------------------------
+
+    def test_gate8_admits_exactly_the_minimum(self):
+        """5.000000 shares trades, matching sizing.py's comparison."""
+        ex = StubExecutor(market_limits=(5.0, 0.40))
+        with DBStub():
+            result = run(ex.execute(make_approval(
+                amount_usdc=2.0, market_probability=0.40
+            )))
+        self.assertTrue(result.success, "2.00 / 0.40 is exactly 5 shares")
+
+    def test_gate8_refuses_a_hair_under_the_minimum(self):
+        """Kills `<=`, `- 1e-6` slack, and `* 0.99`. Nothing sat at the
+        boundary before, and the boundary is the entire question."""
+        for amount, shares in ((1.999996, 4.99999), (1.98, 4.95), (1.9, 4.75)):
+            with self.subTest(shares=shares):
+                ex = StubExecutor(market_limits=(5.0, 0.40))
+                with DBStub():
+                    result = run(ex.execute(make_approval(
+                        amount_usdc=amount, market_probability=0.40
+                    )))
+                self.assertFalse(result.success, f"{shares} shares must refuse")
+                self.assertEqual(result.gate_blocked, "below_exchange_minimum")
+
+    def test_gate8_converts_at_the_price_of_the_side_being_bought(self):
+        """A NO candidate priced 0.85 YES is bought at 0.15.
+
+        sizing.py complements the price for NO; the gate did not, so it divided
+        a NO notional by the YES price and refused sizeable NO candidates.
+        Unreachable today because best_trade is always YES, which is exactly
+        what the NO branch in sizing.py exists to stop anyone relying on.
+        """
+        ex = StubExecutor(market_limits=(5.0, 0.85))
+        with DBStub():
+            # `edge` is left POSITIVE deliberately. A real NO candidate carries
+            # a negative edge and GATE 4 refuses it long before GATE 8, which is
+            # the sense in which this is unreachable today. Keeping edge
+            # positive isolates GATE 8's price conversion, which is the property
+            # under test; the alternative is asserting nothing about it at all.
+            result = run(ex.execute(make_approval(
+                direction="NO", amount_usdc=1.0, market_probability=0.85,
+                edge=0.30, sim_probability=0.20,
+            )))
+        self.assertTrue(result.success, "1.00 / 0.15 is 6.67 shares, over the minimum")
+
+    def test_gate8_refuses_a_NO_candidate_that_is_genuinely_too_small(self):
+        """The other side of the same conversion: at the NO price of 0.15,
+        $0.50 is 3.3 shares and must refuse. Without the complement it would be
+        0.59 shares and refuse for the wrong reason, so this pins the arithmetic
+        rather than only the verdict."""
+        ex = StubExecutor(market_limits=(5.0, 0.85))
+        with DBStub():
+            result = run(ex.execute(make_approval(
+                direction="NO", amount_usdc=0.50, market_probability=0.85,
+                edge=0.30, sim_probability=0.20,
+            )))
+        self.assertFalse(result.success)
+        self.assertEqual(result.gate_blocked, "below_exchange_minimum")
 
     def test_gate8_fails_closed_with_no_usable_price(self):
         ex = StubExecutor(market_limits=(5.0, None))
@@ -541,6 +661,76 @@ class GateTest(unittest.TestCase):
         self.assert_blocked(
             "below_exchange_minimum", sizing_refusal="below_exchange_minimum"
         )
+
+    def test_gate8_refuses_when_gamma_returns_a_DIFFERENT_market(self):
+        """Fail-open by wrong target.
+
+        Gamma ignores unrecognised query params and returns its default page, so
+        a renamed or misspelled condition_ids filter yields a STRANGER's
+        orderMinSize and a stranger's price, both of which the gate would use.
+        Driven through the real _fetch_market_limits with a stubbed client.
+        """
+        ex = TradeExecutor(client=_FakeGamma([{
+            "conditionId": "0x" + "cd" * 32,          # not what was asked for
+            "orderMinSize": 1, "outcomePrices": '["0.02", "0.98"]',
+        }]), token="t", chat_id="c")
+        self.assertIsNone(run(ex._fetch_market_limits(VALID_CONDITION_ID)))
+
+    def test_fetch_accepts_the_market_it_asked_for(self):
+        ex = TradeExecutor(client=_FakeGamma([{
+            "conditionId": VALID_CONDITION_ID,
+            "orderMinSize": 5, "outcomePrices": '["0.42", "0.58"]',
+        }]), token="t", chat_id="c")
+        self.assertEqual(
+            run(ex._fetch_market_limits(VALID_CONDITION_ID)), (5.0, 0.42)
+        )
+
+    def test_fetch_is_case_insensitive_on_the_identifier(self):
+        ex = TradeExecutor(client=_FakeGamma([{
+            "conditionId": VALID_CONDITION_ID.upper().replace("0X", "0x"),
+            "orderMinSize": 5, "outcomePrices": '["0.42", "0.58"]',
+        }]), token="t", chat_id="c")
+        self.assertIsNotNone(run(ex._fetch_market_limits(VALID_CONDITION_ID)))
+
+    def test_fetch_returns_none_on_every_malformed_shape(self):
+        """The only new network call on the money path, and every gate test
+        stubs it. These drive the real function."""
+        cases = {
+            "http error": _FakeGamma(None, status=503),
+            "non-JSON": _FakeGamma(None, raises=ValueError("no json")),
+            "empty list": _FakeGamma([]),
+            "not a dict": _FakeGamma(["a string"]),
+            "no orderMinSize": _FakeGamma([{"conditionId": VALID_CONDITION_ID}]),
+            "orderMinSize null": _FakeGamma([
+                {"conditionId": VALID_CONDITION_ID, "orderMinSize": None}]),
+            "orderMinSize zero": _FakeGamma([
+                {"conditionId": VALID_CONDITION_ID, "orderMinSize": 0}]),
+            "orderMinSize garbage": _FakeGamma([
+                {"conditionId": VALID_CONDITION_ID, "orderMinSize": "many"}]),
+            "no conditionId": _FakeGamma([{"orderMinSize": 5}]),
+        }
+        for label, client in cases.items():
+            with self.subTest(case=label):
+                ex = TradeExecutor(client=client, token="t", chat_id="c")
+                self.assertIsNone(run(ex._fetch_market_limits(VALID_CONDITION_ID)))
+
+    def test_fetch_survives_a_malformed_price_without_losing_the_minimum(self):
+        """A bad outcomePrices must not discard a good orderMinSize, and must
+        not raise. outcomePrices as an OBJECT used to raise KeyError, escaping
+        to the blanket handler and reporting gate_error instead of
+        below_exchange_minimum: the wrong diagnosis in the refusal logs."""
+        for bad in ('{"yes": 0.4}', "[]", "not json", None, 12345):
+            with self.subTest(outcome_prices=bad):
+                ex = TradeExecutor(client=_FakeGamma([{
+                    "conditionId": VALID_CONDITION_ID,
+                    "orderMinSize": 5, "outcomePrices": bad,
+                }]), token="t", chat_id="c")
+                self.assertEqual(run(ex._fetch_market_limits(VALID_CONDITION_ID)),
+                                 (5.0, None))
+
+    def test_fetch_returns_none_for_a_missing_condition_id(self):
+        ex = TradeExecutor(client=_FakeGamma([]), token="t", chat_id="c")
+        self.assertIsNone(run(ex._fetch_market_limits(None)))
 
     def test_unapproved_status_refused(self):
         for status in (ApprovalStatus.skipped, ApprovalStatus.timeout,
@@ -842,6 +1032,43 @@ class RealFillRecordingTest(unittest.TestCase):
             make_candidate(amount_usdc=10.0), payload
         )
         self.assertAlmostEqual(usdc, 10.0, msg="must fall back to the notional")
+
+    def test_tolerance_has_an_ABSOLUTE_floor_at_small_sizes(self):
+        """The ratio alone was worth fractions of a cent at Kelly sizes.
+
+        A false trip records the NOTIONAL, excluding the fee: cost basis
+        understated, pnl overstated, GATE 3's daily-loss brake under-triggered.
+        That is the unsafe direction, so the floor covers a plausible
+        two-price fill rather than being tight.
+        """
+        # $2 notional at price 0.30: real fee 4.9%, so 2.098. A second maker
+        # fill 2c away moves it by ~0.009, which a 1% ratio (0.02) barely
+        # covers and the absolute floor (0.03) comfortably does.
+        ceiling = executor_mod.TradeExecutor._max_believable_cash_out(2.0, 0.30)
+        self.assertGreater(ceiling, 2.098 + 0.009)
+        self.assertAlmostEqual(ceiling, 2.0 * 1.049 + 0.03, places=6)
+
+    def test_the_floor_dominates_at_the_smallest_positions(self):
+        small = executor_mod.TradeExecutor._max_believable_cash_out(0.25, 0.30)
+        ratio_only = 0.25 * 1.049 + 0.01 * 0.25
+        self.assertGreater(small, ratio_only,
+                           "a 1% ratio on $0.25 is a quarter of a cent")
+
+    def test_the_ratio_takes_over_at_larger_positions(self):
+        big = executor_mod.TradeExecutor._max_believable_cash_out(10.0, 0.30)
+        self.assertAlmostEqual(big, 10.0 * 1.049 + 0.10, places=6)
+
+    def test_the_no_price_fallback_is_the_all_prices_worst_case(self):
+        """Not the old flat 1.5. That drop is a behaviour change and is pinned
+        here because a mutant restoring 1.5 survived the suite."""
+        fallback = executor_mod.TradeExecutor._max_believable_cash_out(10.0, None)
+        self.assertAlmostEqual(fallback, 10.0 * 1.08 + 0.03, places=6)
+        self.assertLess(fallback, 10.0 * 1.5)
+
+    def test_fee_tolerance_constants_are_what_the_reasoning_assumes(self):
+        """Pins both, since a mutant widening the ratio 40x survived."""
+        self.assertEqual(executor_mod.FEE_TOLERANCE_RATIO, 0.01)
+        self.assertEqual(executor_mod.FEE_TOLERANCE_ABS, 0.03)
 
     def test_real_fee_ratio_does_not_trip_the_upper_bound(self):
         """The real f4be9ee8 numbers: 10.501189 vs 10.00 notional is 1.05012x,

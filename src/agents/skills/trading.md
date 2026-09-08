@@ -141,12 +141,24 @@ so the WALLET DEBIT hits the cap: the fee is `0.07 * (1 - price)` of notional,
 so `notional = cap / (1 + 0.07 * (1 - price))`. The largest possible stake at
 this bankroll is therefore $2.50, at certainty.
 
-Polymarket enforces a minimum order size in SHARES (`orderMinSize`, 5). Clearing
-it needs `edge >= 2 * price * (1 - price)`, and since edge can never exceed
-`1 - price`, **no market priced above 0.5 can be placed at any edge, including
-certainty**. Below 0.5 it needs a very large edge: at price 0.10 a simulated
-probability of 0.29, at 0.20 it is 0.54, at 0.40 it is 0.90. All four historical
-positions are refused under this sizing.
+Polymarket enforces a minimum order size in SHARES (`orderMinSize`, 5, read per
+market). Clearing it needs `edge >= 2 * price * (1 - price)`, and since edge can
+never exceed `1 - price`, **no market priced above 0.482521 can be placed at any
+edge, including certainty**.
+
+Quote 0.482521, not 0.5. 0.5 is the fee-free answer; the code is fee-aware and
+the exact cut solves `0.14 * price^2 - 2.14 * price + 1 >= 0`. The band between
+them, 0.4826 to 0.4999, is refused by the code and would be reported as
+tradeable by the coarser number.
+
+Below that it needs a very large edge. Minimum simulated probability by price:
+
+| price | 0.10 | 0.20 | 0.30 | 0.40 | 0.45 | 0.4825 |
+|---|---|---|---|---|---|---|
+| p needed | 0.291 | 0.538 | 0.741 | 0.900 | 0.964 | 1.000 |
+
+All four historical positions are refused. The widest of them was an edge of
+0.336 at price 0.279, which needed **0.4226**.
 
 If Tyson asks why nothing is trading, that is the answer, and it is arithmetic
 rather than a fault. NEVER propose raising `bankroll_usdc` to fix it: 25 comes

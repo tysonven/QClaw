@@ -42,7 +42,7 @@ import httpx
 from src.trade_engine.approval import _scrub
 from src.trade_engine.config import config, install_bot_token_redaction
 from src.trade_engine.horizon import horizon_days
-from src.trade_engine.sizing import FEE_RATE, size_position
+from src.trade_engine.sizing import FEE_RATE, side_price_for
 from src.trade_engine.database import (
     SupabaseError,
     count_open_positions,
@@ -86,11 +86,34 @@ ABSOLUTE_MAX_POSITION_USDC = 25.0
 # more than 70x at high prices, which meant "the fee schedule changed" was only
 # ever detectable on the cheapest markets. FEE_TOLERANCE is headroom for
 # rounding and partial fills, not for a second fee.
-FEE_TOLERANCE = 0.01
+# Tolerance has BOTH a ratio and an absolute floor, and the floor is the one
+# that matters now. A ratio alone was worth half a cent on a $0.25 position and
+# 2.5 cents on a $2.50 one, while the error sources it must absorb do NOT shrink
+# with position size:
+#
+#   - a multi-price fill. The fee is charged per fill at that fill's price, so
+#     an order half-filled at 0.30 and half at 0.32 differs from the
+#     single-price estimate by about 0.07 * dP * shares. At $2 notional and
+#     dP = 0.02 that is roughly $0.009, which a 1% ratio ($0.02) barely covers
+#     and a 1% ratio on a $0.25 order ($0.0025) does not.
+#   - decoder rounding across several ERC1155 transfers.
+#
+# A FALSE TRIP is not harmless: it records the notional, which EXCLUDES the fee,
+# understating cost basis, overstating pnl, and under-triggering GATE 3's
+# daily-loss brake. That is the unsafe direction, so the floor is set to cover a
+# plausible two-price fill with headroom rather than to be tight.
+#
+# 0.03 is about 1.2% of a $2.50 position and 12% of a $0.25 one, deliberately
+# generous at the small end. It is NOT slack in the fee model: that is fitted to
+# eight receipts spanning 1.5c to 90c with a maximum residual of 4e-6 (build log
+# 2026-09-05, "Polymarket's fee, solved"), so model error is ~1e-5 of notional
+# and irrelevant here. The floor exists for fill structure, not for the formula.
+FEE_TOLERANCE_RATIO = 0.01
+FEE_TOLERANCE_ABS = 0.03
 
 # Fallback only, for when no price is available to compute the real bound. The
 # worst case across all admissible prices is 1 + 0.07 * (1 - 0) = 1.07.
-MAX_CASH_OUT_NOTIONAL_FACTOR = 1.07 + FEE_TOLERANCE
+MAX_CASH_OUT_NOTIONAL_FACTOR = 1.07 + FEE_TOLERANCE_RATIO
 
 MAX_CONCURRENT_POSITIONS = 2
 
@@ -384,8 +407,18 @@ class TradeExecutor:
             )
             raise ExecutionGateError("below_exchange_minimum")
 
-        live_minimum, live_price = limits
-        price_for_shares = live_price or candidate.market_probability
+        live_minimum, live_yes_price = limits
+        # Convert at the price of the side ACTUALLY BEING BOUGHT. sizing.py
+        # complements the price for NO; this did not, so it divided a NO
+        # notional by the YES price and refused sizeable NO candidates. Today
+        # best_trade only comes from the high-edge bucket so the direction is
+        # always YES and the bug is unreachable, but "unreachable" is exactly
+        # what the NO branch in sizing.py was written to stop anyone having to
+        # remember.
+        yes_price = live_yes_price or candidate.market_probability
+        price_for_shares = (
+            side_price_for(candidate.direction, float(yes_price)) if yes_price else None
+        )
         if not price_for_shares or not 0 < float(price_for_shares) <= 1:
             log.error(
                 "gate 8: no usable price to convert $%.4f into shares "
@@ -727,10 +760,10 @@ class TradeExecutor:
                     "distrusting it and recording the notional", cash_out, notional,
                 )
                 usdc_amount = notional
-            elif anchor is not None and cash_out > anchor * cls._cash_out_ceiling(price):
-                ceiling = cls._cash_out_ceiling(price)
+            elif anchor is not None and cash_out > cls._max_believable_cash_out(anchor, price):
+                ceiling = cls._max_believable_cash_out(anchor, price)
                 log.error(
-                    "relay cash_out %.6f exceeds %.4fx the %s %.6f (price %s, "
+                    "relay cash_out %.6f exceeds the believable ceiling %.6f for %s %.6f (price %s, "
                     "expected fee ratio %s), distrusting it and recording that "
                     "instead. A persistent residual here means the fee schedule "
                     "changed, not that one decode was wrong",
@@ -795,6 +828,23 @@ class TradeExecutor:
         if not isinstance(market, dict):
             return None
 
+        # IS THIS THE MARKET WE ASKED FOR? Gamma ignores unrecognised query
+        # params and returns its default page, so if `condition_ids` is ever
+        # renamed, deprecated or misspelled this does not fail closed: it
+        # returns a STRANGER's orderMinSize and a stranger's price, and GATE 8
+        # uses both. A returned price of 0.02 against a real 0.40 inflates the
+        # implied share count twentyfold and waves through an order the real
+        # market rejects. Fail-open by wrong target, which is a variant this
+        # repo has already recorded once.
+        returned = str(market.get("conditionId") or "")
+        if returned.lower() != str(condition_id).lower():
+            log.error(
+                "gate 8: gamma returned market %s... for a request for %s..., "
+                "refusing rather than sizing against the wrong market",
+                returned[:12] or "<none>", str(condition_id)[:12],
+            )
+            return None
+
         raw_min = market.get("orderMinSize")
         try:
             minimum = float(raw_min)
@@ -811,23 +861,31 @@ class TradeExecutor:
                 candidate_price = float(prices[0])
                 if 0 < candidate_price <= 1:
                     price = candidate_price
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, KeyError, IndexError):
+            # KeyError/IndexError: outcomePrices arriving as an object, or an
+            # empty list. Previously these escaped to execute()'s blanket
+            # handler and were reported as gate_error rather than
+            # below_exchange_minimum, which is the wrong diagnosis in exactly
+            # the logs decision (c) exists to mine.
             price = None
 
         return minimum, price
 
     @staticmethod
-    def _cash_out_ceiling(price: Optional[float]) -> float:
-        """Largest believable cash_out as a multiple of notional, for this price.
+    def _max_believable_cash_out(anchor: float, price: Optional[float]) -> float:
+        """Largest believable wallet debit for this anchor, in USDC.
 
-        1 + 0.07 * (1 - price) is the exact fee ratio; FEE_TOLERANCE is headroom
-        for rounding and partial fills. Falls back to the all-prices worst case
-        when price is unknown, which is the only case the old flat constant ever
-        described correctly.
+        Absolute rather than a multiplier, because the tolerance has an absolute
+        floor: at the position sizes fractional Kelly now produces, a ratio
+        alone is worth fractions of a cent. See FEE_TOLERANCE_ABS.
+
+        Falls back to the all-prices worst case when price is unknown, which is
+        the only case the old flat constant ever described correctly.
         """
+        tolerance = max(FEE_TOLERANCE_RATIO * anchor, FEE_TOLERANCE_ABS)
         if price is None or not math.isfinite(float(price)) or not 0 < float(price) <= 1:
-            return MAX_CASH_OUT_NOTIONAL_FACTOR
-        return 1.0 + FEE_RATE * (1.0 - float(price)) + FEE_TOLERANCE
+            return anchor * MAX_CASH_OUT_NOTIONAL_FACTOR + FEE_TOLERANCE_ABS
+        return anchor * (1.0 + FEE_RATE * (1.0 - float(price))) + tolerance
 
     @staticmethod
     def _extract_tx_hash(payload: dict[str, Any]) -> Optional[str]:
