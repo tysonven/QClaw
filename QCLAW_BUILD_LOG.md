@@ -25790,3 +25790,120 @@ And now the question behind all four: **what is this check actually promising,
 and is that what it is being trusted for?** Instances 1 through 4 are ways a
 check can be weaker than it looks. The sixteenth is a check that was exactly as
 strong as it looked, about to be trusted for something adjacent.
+
+## 2026-09-08: a test suite that could not distinguish the property it was written to prove from a plausible regression
+
+Third review pass on PR #118 (fractional horizon), and the sharpest of the
+three. A new variant, and unlike the entries above it is not a check that lies.
+Every check involved was honest, ran, and asserted something true. The suite as
+a whole still could not tell the fix from a regression.
+
+No ordinal on this one. The register is moving to issues, and the numbering has
+been wrong three times in a day: eighth, then eleventh, then thirteenth, each
+arrived at by incrementing from the last entry rather than by counting. A wrong
+number reads as counted, which is worse than no number.
+
+### What was proved, and what was assumed
+
+Executor GATE 7 refuses a trade whose market resolves sooner than the tradeable
+floor. Round-2 review found it was reading `candidate.horizon_days`, a value
+frozen at scan time, and could not see the up-to-2100s of decay between proposal
+and execution. Fixed by recomputing from `end_date` against the clock.
+
+The fix was backed by a sentinel test and a mutant, both built to the finding:
+`test_gate7_refuses_a_market_that_decayed_below_the_floor_since_the_scan`, and a
+mutant putting the frozen field back. Mutant died. Test passed alone. That
+looked like proof.
+
+The round-3 reviewer built a different mutant. GATE 7 keeps its entire shape:
+still calls `horizon_days()`, still compares the floor, still fails closed on an
+absent or unparseable `end_date`. It changes exactly one thing, which clock:
+
+```
+_IMPORT_NOW = datetime.now(timezone.utc)      # module scope, captured once
+...
+remaining = horizon_days(candidate.end_date, _IMPORT_NOW)
+```
+
+**Full suite green, 75/75. The decay sentinel passed alone.** And it is a real
+regression: a process running for any length of time evaluates every trade
+against the clock as it was at import, so at T+2.5s the correct build refuses
+and this one places the order.
+
+### Why every test missed it
+
+Exact, and worth stating precisely because the tests were not careless.
+
+Every gate-7 test built `end_date` relative to the instant the test ran. Under
+that construction an import-time clock and an execution-time clock are
+milliseconds apart, so they agree on every assertion in the file.
+
+The decay sentinel looked like the exception and was not. It moves the END DATE
+back 2100 seconds. It never moves the CLOCK forward. So it separates
+"recomputed from `end_date`" from "reads the frozen `horizon_days`", which is
+the round-2 finding, and it is structurally incapable of separating "recomputed
+at execution" from "recomputed at import", which is the round-3 finding.
+
+The sentinel was written to the shape of the bug that had been found. It proved
+that bug was gone. It could not prove the property that was actually wanted,
+because the property is about WHEN the value is read and the test varied WHAT
+was read.
+
+### The generalisation
+
+**A test asserting behaviour "at time T" must vary T, or it only proves the
+behaviour exists somewhere upstream of T.**
+
+More broadly: a test that varies one input to demonstrate a property proves only
+that the output depends on that input. If the property is really about a second
+variable, the test is silent on it no matter how many assertions it carries. The
+fix is to hold everything else fixed and vary the variable the property is
+about, which for a "reads live state" claim means the clock, or the store, or
+whatever is supposed to be live.
+
+Concretely, for any claim in this codebase that something is re-read live rather
+than cached, the mutant that pins it is: **keep the entire shape and change only
+the source of freshness.** Capture it once at import. If the suite stays green,
+the claim is untested. That mutant is now permanent in the PR #118 harness as
+M11, and it is the shape to reach for whenever a comment says "re-checked
+against live state".
+
+The replacement test holds the candidate fixed byte for byte and moves the
+clock: admitted at t, refused at t+2100s. Under the reviewer's mutant it fails
+and the decay sentinel still passes, which is the finding restated as a
+regression test:
+
+```
+FULL suite under M11        FAILED (failures=1)   <- only the clock test
+decay sentinel alone        OK                    <- cannot see it
+clock test alone            FAILED (failures=1)
+```
+
+### A correction to our own diagnosis, recorded rather than dropped
+
+The round-2 finding argued GATE 7 must re-read live state, by analogy with GATE
+1, which re-reads `trading_config` from Supabase on every call. That reasoning
+is right for the horizon and **vacuous for the floor**.
+
+`config.min_horizon_tradeable_days` is read from the environment ONCE in
+`Config.__init__` at import, is not a `trading_config` column, and nothing
+reloads `Config`. Its import-time and execution-time values are always the same
+number. GATE 7 is therefore not the parallel to GATE 1 it was written to look
+like: half of it is live and half of it needs a process restart.
+
+The gate comment now says which half is which. Worth recording because the
+original argument was half right and read as wholly right, and the half that was
+wrong is the half nobody would check.
+
+### And an ambiguous mutant definition, which this harness can no longer afford
+
+The published anchor for the mutant restoring `ScannerCandidate.horizon_days` to
+`int` was `horizon_days: float`. That string matches `MonteCarloResponse` first,
+which PR #118's own sweep identifies as dead code. Applied literally by anyone
+reading the PR, it mutates nothing that runs and returns a clean SURVIVED,
+implying a vacuous test where none exists.
+
+Pinned to include the class-specific comment line. A mutation harness publishes
+instructions for reproducing its own results, and an ambiguous anchor is a
+result nobody else can check. Given this harness produced two confident wrong
+answers earlier the same day, that is not a stylistic point.
