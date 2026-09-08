@@ -25330,3 +25330,174 @@ would not notice ungrounded locations returning in prose form.
 
 Tracked as `ghl-support-bot` issue #19. Same variant-3 shape as the entry above,
 which is the point: this is the second proxy found in one file.
+
+## 2026-09-08: eleventh instance, and a fourth variant: the code under test was not the code on disk
+
+Found while building the fractional-horizon fix (repo `QClaw`, PR #118, branch
+`fix/fractional-horizon`, head `cf85dc2`). The fix itself is recorded with that
+PR. This entry is only about how its verification lied.
+
+The verification method for #118 was mutation testing: reintroduce each shape of
+the bug, confirm a test goes red, restore. Eight mutants, run by a harness in the
+session scratchpad. The harness reported all eight killed. Then a routine suite
+re-run, against a tree with no mutants in it, reported six failures.
+
+### The wrong answer, verbatim
+
+```
+$ python3 -m unittest tests.test_scanner_horizon
+FAIL: test_env_can_raise_the_floor_but_never_lower_it (tests.test_scanner_horizon.TradeableFloorTest.test_env_can_raise_the_floor_but_never_lower_it) (value='0')
+FAIL: ... (value='0.0')
+FAIL: ... (value='-5')
+FAIL: ... (value='0.5')
+FAIL: ... (value='0.041')
+FAILED (failures=6)
+```
+
+The code on disk at `src/trade_engine/config.py:137-142` was correct and had been
+committed:
+
+```python
+        self.min_horizon_tradeable_days: float = max(
+            DEFAULT_MIN_HORIZON_TRADEABLE_DAYS,
+            self._float_env(
+                "MIN_HORIZON_TRADEABLE_DAYS", DEFAULT_MIN_HORIZON_TRADEABLE_DAYS
+            ),
+        )
+```
+
+Probing the pieces individually agreed it was correct, while the assembled object
+disagreed:
+
+```
+$ MIN_HORIZON_TRADEABLE_DAYS=0.5 python3 -c "... print(Config().min_horizon_tradeable_days)"
+env=0.5 -> 0.5
+
+DEFAULT    = 1.0
+_float_env = 0.5
+max(...)   = 1.0
+```
+
+`max(1.0, 0.5)` evaluated to `1.0` on the same interpreter that had just returned
+`0.5` from the constructor containing it.
+
+### Cause
+
+CPython validates a cached `.pyc` against the source's `(mtime_in_whole_seconds,
+size_in_bytes)`. Both are recorded in the 16-byte pyc header. Neither is a hash
+of the content.
+
+Mutant M8 was `max(` to `min(` at that line. Three characters to three
+characters, so **the file size does not change**. The harness wrote the mutant,
+ran python (which compiled and cached the mutant's bytecode), then restored the
+original with `git checkout -- .`, which set a new mtime. The restore landed
+inside the same whole second as the compile:
+
+```
+pyc records mtime=1788793323 size=11203
+source has  mtime=1788793323 size=11203
+CACHE CONSIDERED VALID: True
+```
+
+Both fields matched, so every subsequent import loaded the mutant's bytecode from
+`src/trade_engine/__pycache__/` while `git status` reported a clean tree and
+every tool that reads the file showed correct source.
+
+### Why this is a fourth variant
+
+The three variants recorded on 2026-09-07 are all about the check being wrong:
+asserts nothing, asserts but looks in the wrong place, asserts in the right place
+but matches a proxy. This one is none of those. The check was correct, looked in
+the right place, and matched the property exactly.
+
+**The artefact it executed was not the artefact under review.** No amount of
+scrutiny of the test or of the source finds it, because both are correct. It is
+invisible in test output by construction: a stale-cache failure is reported in
+exactly the same words as a real one.
+
+The recursive part, and the reason it belongs with the eighth instance rather
+than merely near it: **the harness whose entire purpose is proving that a test
+can fail produced a wrong answer about whether tests fail.** The eighth instance
+was a comment asserting a verification happens, causing a new verification to be
+written in its image. This is the tool that exists to falsify checks, being
+itself unfalsifiable while wrong.
+
+### The M7 consequence, stated plainly
+
+M7 is the mutant that removes executor GATE 7 while leaving the scanner's
+`MIN_HORIZON_TRADEABLE_DAYS` guard fully intact. It is the entire evidence for
+the claim that the two layers are independent controls rather than one control
+tested twice, which is why GATE 7 was built at all.
+
+M7 runs immediately after M6, and **M6 mutates `src/trade_engine/models.py`**,
+restoring `horizon_days: int` on `ScannerCandidate`. Under the cache bug, M7's
+run could have imported M6's stale `models.py` bytecode. `test_executor` would
+then have gone red because pydantic raised `int_from_float` on a fractional
+horizon, not because removing GATE 7 let anything through. The independence proof
+would have been an artefact of the previous mutant.
+
+A proof of independence that was not itself independent.
+
+Not what happened, but only checkable by re-running. The harness now purges
+`__pycache__` on both sides of every mutation, and the full set was re-run from
+scratch:
+
+```
+M1 revert the ceil in _horizon_days                            RED as expected
+M2 remove the MIN_HORIZON_TRADEABLE refusal from the scanner   RED as expected
+M3 invert the dt scaling (drift by sqrt(dt), diffusion by dt)  RED as expected
+M4 pin dt back to 1.0 while keeping the float signature        RED as expected
+M5 steps = int(horizon_days), the empty-array silent-zero path RED as expected
+M6 restore horizon_days: int on ScannerCandidate               RED as expected
+M7 remove executor GATE 7, scanner guard left intact           RED as expected
+M8 let the env lower MIN_HORIZON_TRADEABLE_DAYS below the floor RED as expected
+All mutants killed. No test in this set is vacuous.
+```
+
+On the post-fix run M7 is killed by `test_gate7_refuses_just_under_the_floor` as
+a FAIL, not an ERROR, which is the right shape: with `models.py` clean, a 0.999d
+candidate passes validation and reaches a gate that is no longer there. The
+figures reported in PR #118 are from this run.
+
+### Generalisation, and the standing check
+
+Any mutation harness, in any language with a bytecode or build cache validated on
+metadata rather than content, has this trap. It is not Python-specific and it is
+not test-framework-specific. The conditions are ordinary:
+
+1. the mutation preserves file size (any same-length token swap: `max`/`min`,
+   `>=`/`<=`, `and`/`or`, `+`/`-`, a digit change, a boolean flip)
+2. the restore lands in the same whole second as the compile, which is the normal
+   case for a fast harness on a local disk
+
+Neither is exotic, and the two together are silent.
+
+Python does have a content-addressed alternative, and it is not the default.
+PEP 552 hash-based pycs set bit 0 of the header flags and store a digest of the
+source instead of `(mtime, size)`; they are produced by `py_compile` /
+`compileall --invalidation-mode checked-hash`, never by ordinary import. The pyc
+that caused this was timestamp-based, as every pyc written by a plain
+`python3 -m unittest` run is. So "use hash-based pycs" is not a fix a harness can
+rely on; purging is.
+
+**Standing rule, fourth of four:** a check must execute the artefact under
+review. Ask it wherever a build or bytecode cache sits between the source and the
+run: `__pycache__`, `.tsbuildinfo`, `node_modules/.cache`, `target/`,
+`__pycache__` inside a Docker layer, a Jest transform cache. If a harness mutates
+files in place, it must purge the cache on both sides of the mutation, not merely
+restore the source.
+
+CI is not exposed here: every run is a fresh checkout with no pre-existing cache.
+That is also why this could only ever have been caught locally, and why a green
+CI run would not have contradicted the six local failures.
+
+### Disposition
+
+The harness fix is in the session scratchpad, not in the repo, because the
+harness is not a repo artefact. Queued for **build item 4, half (b)**, when that
+is scoped: if mutation testing becomes a standing practice for the trade engine
+rather than a one-off for #118, the harness needs to live in the repo with the
+cache purge in it, and this entry is the reason why.
+
+Nothing about PR #118's code changed as a result of this. The finding is entirely
+about the evidence for it, which is the point.
