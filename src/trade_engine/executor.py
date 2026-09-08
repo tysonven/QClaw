@@ -2,7 +2,7 @@
 """Trade executor — the only component in this repo that spends real money.
 
 Sits behind the approval gate: nothing here runs until a human has tapped
-Execute on a Telegram message. Even then, seven independent gates are re-checked
+Execute on a Telegram message. Even then, eight independent gates are re-checked
 against LIVE state before the order goes out, because the approval may be up to
 30 minutes stale by the time it is acted on and the world moves in between.
 
@@ -30,6 +30,7 @@ well-formed conditionId is refused rather than sent with the wrong identifier.
 import asyncio
 import json
 import logging
+import math
 import re
 import subprocess
 from datetime import datetime, timezone
@@ -41,6 +42,7 @@ import httpx
 from src.trade_engine.approval import _scrub
 from src.trade_engine.config import config, install_bot_token_redaction
 from src.trade_engine.horizon import horizon_days
+from src.trade_engine.sizing import FEE_RATE, size_position
 from src.trade_engine.database import (
     SupabaseError,
     count_open_positions,
@@ -72,14 +74,23 @@ SUBPROCESS_TIMEOUT_SECONDS = 60
 # something absurd, this still refuses. Defence in depth against a bad write.
 ABSOLUTE_MAX_POSITION_USDC = 25.0
 
-# M1 (PR #94 review): the relay's cash_out is sanity-bounded on BOTH sides.
-# Below the matched notional means a negative fee (impossible); above it by
-# more than this factor means the decode over-counted (a batched settlement,
-# a double-transfer chain, a new event shape) and would silently poison pnl
-# and Gate 3. The real 2026-08-20 fee was 5% of notional (10.501189 vs 10.00,
-# a 1.05x ratio), so 1.5x accepts any plausible fee with wide margin while
-# refusing anything that looks like double-counting.
-MAX_CASH_OUT_NOTIONAL_FACTOR = 1.5
+# The relay's cash_out is sanity-bounded on BOTH sides (M1, PR #94 review).
+# Below the matched notional means a negative fee, which is impossible; above
+# the expected fee by more than a tolerance means the decode over-counted (a
+# batched settlement, a double-transfer chain, a new event shape) and would
+# silently poison pnl and Gate 3.
+#
+# The ceiling is now COMPUTED PER TRADE, not flat. The fee is exactly
+# 0.07 * (1 - price) of notional, so the true bound is 1 + 0.07 * (1 - price):
+# 1.063 at price 0.10 but only 1.007 at 0.90. The old flat 1.5 was loose by
+# more than 70x at high prices, which meant "the fee schedule changed" was only
+# ever detectable on the cheapest markets. FEE_TOLERANCE is headroom for
+# rounding and partial fills, not for a second fee.
+FEE_TOLERANCE = 0.01
+
+# Fallback only, for when no price is available to compute the real bound. The
+# worst case across all admissible prices is 1 + 0.07 * (1 - 0) = 1.07.
+MAX_CASH_OUT_NOTIONAL_FACTOR = 1.07 + FEE_TOLERANCE
 
 MAX_CONCURRENT_POSITIONS = 2
 
@@ -100,6 +111,10 @@ APPROVAL_MAX_SKEW_SECONDS = 60
 CONDITION_ID_RE = re.compile(r"0x[0-9a-fA-F]{64}")
 
 TELEGRAM_API_BASE = "https://api.telegram.org"
+GAMMA_MARKETS_URL = "https://gamma-api.polymarket.com/markets"
+
+# Short: a gate must not hang the money path. Failure is a refusal, not a wait.
+MARKET_LIMITS_TIMEOUT_SECONDS = 10.0
 
 
 class TradeExecutor:
@@ -213,7 +228,7 @@ class TradeExecutor:
     # --- gates ------------------------------------------------------------
 
     async def _run_gates(self, candidate: ScannerCandidate) -> None:
-        """Seven checks against live state. Raises ExecutionGateError on refusal.
+        """Eight checks against live state. Raises ExecutionGateError on refusal.
 
         Ordered cheapest-and-most-decisive first: the global brake before the
         per-trade arithmetic, so a disabled system does not spend three
@@ -334,6 +349,66 @@ class TradeExecutor:
         log.debug(
             "gate 7 ok: horizon=%.4fd now (%.4fd at scan) >= %.2fd",
             remaining, candidate.horizon_days, floor,
+        )
+
+        # GATE 8, the order must be large enough for the exchange to accept.
+        #
+        # Polymarket enforces a per-market minimum order size in SHARES
+        # (`orderMinSize`, 5 on every market sampled 2026-09-08), server-side:
+        #
+        #     order 0x... is invalid. Size (1.08) lower than the minimum: 5
+        #
+        # Without this gate a correctly-sized Kelly position of $0.25 passes
+        # every other check, gets approved by a human, commits the money path,
+        # and is refused by the exchange after all of that. Same argument as
+        # GATE 7: the scanner proposes and the executor executes, so the
+        # constraint has to exist in both places.
+        #
+        # The minimum is read LIVE rather than trusted from the candidate. It is
+        # a remote per-market value; hardcoding 5 or trusting a scan-time copy is
+        # the manual-allowlist pattern this codebase has been caught by four
+        # times. Unavailable FAILS CLOSED, and is never assumed to be satisfied.
+        if candidate.sizing_refusal:
+            log.error(
+                "gate 8: candidate was never sizeable (%s), refusing "
+                "(market_id=%s)", candidate.sizing_refusal, candidate.market_id,
+            )
+            raise ExecutionGateError("below_exchange_minimum")
+
+        limits = await self._fetch_market_limits(candidate.condition_id)
+        if limits is None:
+            log.error(
+                "gate 8: could not read live orderMinSize for %s..., refusing "
+                "rather than assuming the usual 5",
+                (candidate.condition_id or "")[:12],
+            )
+            raise ExecutionGateError("below_exchange_minimum")
+
+        live_minimum, live_price = limits
+        price_for_shares = live_price or candidate.market_probability
+        if not price_for_shares or not 0 < float(price_for_shares) <= 1:
+            log.error(
+                "gate 8: no usable price to convert $%.4f into shares "
+                "(market_id=%s), refusing", candidate.amount_usdc, candidate.market_id,
+            )
+            raise ExecutionGateError("below_exchange_minimum")
+
+        implied_shares = candidate.amount_usdc / float(price_for_shares)
+        if implied_shares < live_minimum:
+            # Every number a later capital decision needs, on the refusal line.
+            log.error(
+                "gate 8: order is below the exchange minimum. "
+                "price=%.4f edge=%+.4f notional=%.4f shares=%.4f "
+                "required_shares=%.4f min_notional=%.4f (market_id=%s). "
+                "NOT rounded up: a stake raised to clear an exchange floor is a "
+                "stake chosen by the exchange, not by the edge",
+                float(price_for_shares), candidate.edge, candidate.amount_usdc,
+                implied_shares, live_minimum,
+                live_minimum * float(price_for_shares), candidate.market_id,
+            )
+            raise ExecutionGateError("below_exchange_minimum")
+        log.debug(
+            "gate 8 ok: %.4f shares >= %.4f required", implied_shares, live_minimum,
         )
 
     # --- execution --------------------------------------------------------
@@ -652,13 +727,18 @@ class TradeExecutor:
                     "distrusting it and recording the notional", cash_out, notional,
                 )
                 usdc_amount = notional
-            elif anchor is not None and cash_out > anchor * MAX_CASH_OUT_NOTIONAL_FACTOR:
+            elif anchor is not None and cash_out > anchor * cls._cash_out_ceiling(price):
+                ceiling = cls._cash_out_ceiling(price)
                 log.error(
-                    "relay cash_out %.6f exceeds %.1fx the %s %.6f, "
-                    "distrusting it and recording that instead",
-                    cash_out, MAX_CASH_OUT_NOTIONAL_FACTOR,
+                    "relay cash_out %.6f exceeds %.4fx the %s %.6f (price %s, "
+                    "expected fee ratio %s), distrusting it and recording that "
+                    "instead. A persistent residual here means the fee schedule "
+                    "changed, not that one decode was wrong",
+                    cash_out, ceiling,
                     "matched notional" if notional is not None else "proposed amount",
                     anchor,
+                    f"{price:.4f}" if price else "unknown",
+                    f"{1 + FEE_RATE * (1 - price):.4f}" if price else "unknown",
                 )
                 usdc_amount = anchor
             else:
@@ -678,6 +758,76 @@ class TradeExecutor:
             usdc_amount = requested
 
         return price, shares, usdc_amount
+
+    async def _fetch_market_limits(
+        self, condition_id: Optional[str]
+    ) -> Optional[tuple[float, Optional[float]]]:
+        """Live (orderMinSize, yes_price) from Gamma, or None.
+
+        None means "could not determine", which GATE 8 treats as a refusal. It
+        deliberately does NOT fall back to the candidate's scan-time copy or to
+        a hardcoded 5: an unknown exchange minimum is refused, exactly as an
+        unknown horizon is in GATE 7.
+        """
+        if not condition_id:
+            return None
+        try:
+            response = await self._get_client().get(
+                GAMMA_MARKETS_URL,
+                params={"condition_ids": condition_id},
+                timeout=MARKET_LIMITS_TIMEOUT_SECONDS,
+            )
+            if response.status_code >= 300:
+                log.warning(
+                    "gate 8: gamma HTTP %s for %s...",
+                    response.status_code, condition_id[:12],
+                )
+                return None
+            payload = response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            log.warning(
+                "gate 8: gamma lookup failed for %s...: %s",
+                condition_id[:12], type(exc).__name__,
+            )
+            return None
+
+        market = payload[0] if isinstance(payload, list) and payload else payload
+        if not isinstance(market, dict):
+            return None
+
+        raw_min = market.get("orderMinSize")
+        try:
+            minimum = float(raw_min)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(minimum) or minimum <= 0:
+            return None
+
+        price: Optional[float] = None
+        raw_prices = market.get("outcomePrices")
+        try:
+            prices = json.loads(raw_prices) if isinstance(raw_prices, str) else raw_prices
+            if prices and prices[0] is not None:
+                candidate_price = float(prices[0])
+                if 0 < candidate_price <= 1:
+                    price = candidate_price
+        except (TypeError, ValueError):
+            price = None
+
+        return minimum, price
+
+    @staticmethod
+    def _cash_out_ceiling(price: Optional[float]) -> float:
+        """Largest believable cash_out as a multiple of notional, for this price.
+
+        1 + 0.07 * (1 - price) is the exact fee ratio; FEE_TOLERANCE is headroom
+        for rounding and partial fills. Falls back to the all-prices worst case
+        when price is unknown, which is the only case the old flat constant ever
+        described correctly.
+        """
+        if price is None or not math.isfinite(float(price)) or not 0 < float(price) <= 1:
+            return MAX_CASH_OUT_NOTIONAL_FACTOR
+        return 1.0 + FEE_RATE * (1.0 - float(price)) + FEE_TOLERANCE
 
     @staticmethod
     def _extract_tx_hash(payload: dict[str, Any]) -> Optional[str]:

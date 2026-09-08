@@ -75,6 +75,32 @@ DEFAULT_MIN_ALERT_VOLUME = 5000.0
 # stale by the time it is acted on.
 DEFAULT_MIN_HORIZON_TRADEABLE_DAYS = 1.0
 
+# --- position sizing (fractional Kelly, fee aware) --------------------------
+#
+# BANKROLL_USDC IS A MEASUREMENT, NOT A DIAL. 25 comes from $29.24 of real
+# spendable collateral observed on the funder wallet, rounded down. Raising it
+# sizes Kelly against money that does not exist, which is precisely what turns
+# Kelly from conservative into dangerous.
+#
+# You will be tempted. At this bankroll the exchange's 5-share minimum is
+# coarser than the entire Kelly budget, so almost nothing can be placed (see
+# src/trade_engine/sizing.py for the arithmetic). The number that would make
+# Kelly and the exchange compatible at mid prices is about $180. Getting there
+# is a CAPITAL decision, a deposit of roughly $155, and it belongs to Tyson.
+# It is not a config edit, and editing this constant to reach it would be the
+# same act as deleting the guard.
+DEFAULT_BANKROLL_USDC = 25.0
+
+# Fraction of full Kelly. Full Kelly maximises long-run growth only if the
+# probability estimate is right; ours was 7x wrong six weeks ago, so a tenth.
+DEFAULT_KELLY_FRACTION = 0.10
+
+# Sizing-only price floor, deliberately SEPARATE from scanner.YES_PRICE_MIN
+# (0.01), which governs inclusion. Markets below this are still scanned,
+# simulated, bucketed and reported; they are just never sized or proposed. That
+# keeps "how much flow sits down there" answerable from data later.
+DEFAULT_SIZING_PRICE_FLOOR = 0.10
+
 VERSION = "0.1.0"
 
 
@@ -134,6 +160,15 @@ class Config:
         # Clamped at the floor, never below: an env typo (0, negative, or an
         # over-eager 0.5) must not be able to re-open the sub-day path that
         # cost position e09b82fe. Raising it is allowed, lowering it is not.
+        self.bankroll_usdc: float = self._float_env(
+            "BANKROLL_USDC", DEFAULT_BANKROLL_USDC
+        )
+        self.kelly_fraction: float = self._float_env(
+            "KELLY_FRACTION", DEFAULT_KELLY_FRACTION
+        )
+        self.sizing_price_floor: float = self._float_env(
+            "SIZING_PRICE_FLOOR", DEFAULT_SIZING_PRICE_FLOOR
+        )
         self.min_horizon_tradeable_days: float = max(
             DEFAULT_MIN_HORIZON_TRADEABLE_DAYS,
             self._float_env(

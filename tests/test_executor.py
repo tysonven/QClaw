@@ -124,7 +124,8 @@ SUCCESS_STDOUT = json.dumps({
 class StubExecutor(TradeExecutor):
     """TradeExecutor with the subprocess and Telegram edges replaced."""
 
-    def __init__(self, *, stdout=SUCCESS_STDOUT, returncode=0, raises=None, **kw):
+    def __init__(self, *, stdout=SUCCESS_STDOUT, returncode=0, raises=None,
+                 market_limits=(5.0, None), **kw):
         kw.setdefault("token", "test-token")
         kw.setdefault("chat_id", "1375806243")
         super().__init__(**kw)
@@ -133,6 +134,16 @@ class StubExecutor(TradeExecutor):
         self.raises = raises
         self.argv_calls: list[list[str]] = []
         self.notifications: list[str] = []
+        # GATE 8 reads orderMinSize live from Gamma. Stubbed here so the rest of
+        # the suite does not make network calls; the default (5 shares, use the
+        # candidate's price) matches every market sampled. GATE 8's own tests
+        # override it, including with None to exercise the fail-closed path.
+        self.market_limits = market_limits
+        self.market_limit_calls: list[str] = []
+
+    async def _fetch_market_limits(self, condition_id):
+        self.market_limit_calls.append(condition_id)
+        return self.market_limits
 
     async def _run_script(self, argv):
         self.argv_calls.append(argv)
@@ -455,6 +466,82 @@ class GateTest(unittest.TestCase):
                     "horizon_below_minimum", end_date=bad, horizon_days=21.0
                 )
 
+    # --- GATE 8, the exchange's share minimum -----------------------------
+    #
+    # Polymarket rejects orders under a per-market minimum expressed in SHARES.
+    # These drive it through the executor rather than through sizing.py, because
+    # the property under test is that the EXECUTOR reads the minimum live and
+    # fails closed, not that the arithmetic is right. tests/test_sizing.py owns
+    # the arithmetic.
+
+    def test_gate8_refuses_an_order_below_the_share_minimum(self):
+        """$0.25 at price 0.40 is 0.625 shares. The exchange would reject it
+        after approval and after the money path commits."""
+        self.assert_blocked(
+            "below_exchange_minimum", amount_usdc=0.25, market_probability=0.40
+        )
+
+    def test_gate8_admits_an_order_that_clears_it(self):
+        ex = StubExecutor(market_limits=(5.0, 0.40))
+        with DBStub():
+            result = run(ex.execute(make_approval(
+                amount_usdc=4.0, market_probability=0.40
+            )))
+        self.assertTrue(result.success, "10 shares clears a 5-share minimum")
+
+    def test_gate8_reads_the_LIVE_minimum_not_the_candidates_copy(self):
+        """THE property. Same shape as GATE 7 reading the clock.
+
+        The candidate carries a permissive scan-time minimum. The live market
+        says something much stricter. A gate that trusted the candidate would
+        admit this; the gate must believe the exchange.
+        """
+        ex = StubExecutor(market_limits=(50.0, 0.40))
+        with DBStub():
+            result = run(ex.execute(make_approval(
+                amount_usdc=4.0, market_probability=0.40, min_order_size=1.0
+            )))
+        self.assertFalse(result.success)
+        self.assertEqual(result.gate_blocked, "below_exchange_minimum")
+        self.assertEqual(ex.argv_calls, [])
+        self.assertEqual(ex.market_limit_calls, [VALID_CONDITION_ID],
+                         "the gate must actually go and look")
+
+    def test_gate8_uses_the_live_price_over_the_scan_price(self):
+        """10 shares at the scan price, 2.5 at the live one. Refuse."""
+        ex = StubExecutor(market_limits=(5.0, 0.80))
+        with DBStub():
+            result = run(ex.execute(make_approval(
+                amount_usdc=2.0, market_probability=0.20
+            )))
+        self.assertFalse(result.success)
+        self.assertEqual(result.gate_blocked, "below_exchange_minimum")
+
+    def test_gate8_fails_closed_when_the_minimum_cannot_be_read(self):
+        """Never assumed to be the usual 5, and never assumed satisfied."""
+        ex = StubExecutor(market_limits=None)
+        with DBStub():
+            result = run(ex.execute(make_approval(amount_usdc=9.0)))
+        self.assertFalse(result.success)
+        self.assertEqual(result.gate_blocked, "below_exchange_minimum")
+        self.assertEqual(ex.argv_calls, [])
+
+    def test_gate8_fails_closed_with_no_usable_price(self):
+        ex = StubExecutor(market_limits=(5.0, None))
+        with DBStub():
+            result = run(ex.execute(make_approval(
+                amount_usdc=9.0, market_probability=0
+            )))
+        self.assertFalse(result.success)
+        self.assertEqual(result.gate_blocked, "below_exchange_minimum")
+
+    def test_gate8_refuses_a_candidate_the_scanner_never_sized(self):
+        """Defence in depth: a sizing refusal must not be executable even if
+        something upstream proposed it anyway."""
+        self.assert_blocked(
+            "below_exchange_minimum", sizing_refusal="below_exchange_minimum"
+        )
+
     def test_unapproved_status_refused(self):
         for status in (ApprovalStatus.skipped, ApprovalStatus.timeout,
                        ApprovalStatus.analyst_skip, ApprovalStatus.pending):
@@ -567,7 +654,12 @@ class EntryPriceNullTest(unittest.TestCase):
 
     def test_no_price_anywhere_records_null_not_zero(self):
         stdout = json.dumps({"success": True, "response": {"orderID": "0xo"}})
-        ex = StubExecutor(stdout=stdout)
+        # GATE 8 needs SOME price to convert the notional into shares, and
+        # market_probability=0 removes the candidate's. The live Gamma price
+        # supplies it, which is the real arrangement: the gate reads the market,
+        # the RECORDING path here still has no fill price to work from. Without
+        # this the gate refuses first and this test stops covering _derive_entry.
+        ex = StubExecutor(stdout=stdout, market_limits=(5.0, 0.40))
         with DBStub() as db:
             # market_probability=0 removes the fallback too.
             result = run(ex.execute(make_approval(market_probability=0)))
@@ -724,16 +816,38 @@ class RealFillRecordingTest(unittest.TestCase):
         self.assertAlmostEqual(usdc, 10.0)
 
     def test_cash_out_just_inside_the_upper_bound_is_accepted(self):
-        payload = self.real_payload(cash_out=14.99)  # 1.499x < 1.5x
+        """The bound is PRICE-AWARE now, so "just inside" is much tighter.
+
+        This used to accept 14.99 against a 10.00 notional, because the flat
+        1.5x ceiling was loose by more than 70x at high prices. The real fee
+        ratio is 1 + 0.07*(1-price), so at the payload's 0.284 the ceiling is
+        1 + 0.0501 + 0.01 tolerance = 1.0601, and 10.60 is the most that can be
+        believed.
+        """
+        payload = self.real_payload(cash_out=10.59)
         _, _, usdc = TradeExecutor._derive_entry(
             make_candidate(amount_usdc=10.0), payload
         )
-        self.assertAlmostEqual(usdc, 14.99)
+        self.assertAlmostEqual(usdc, 10.59)
+
+    def test_the_old_flat_ceiling_would_have_believed_a_50_percent_fee(self):
+        """What the tightening actually bought.
+
+        14.99 against a 10.00 notional is a 49.9% fee. The old flat 1.5x
+        accepted it and wrote it straight into pnl, which feeds Gate 3's
+        daily-loss brake. At this price the real fee is 5.01%.
+        """
+        payload = self.real_payload(cash_out=14.99)
+        _, _, usdc = TradeExecutor._derive_entry(
+            make_candidate(amount_usdc=10.0), payload
+        )
+        self.assertAlmostEqual(usdc, 10.0, msg="must fall back to the notional")
 
     def test_real_fee_ratio_does_not_trip_the_upper_bound(self):
-        """The real f4be9ee8 numbers: 10.501189 vs 10.00 notional is 1.05x,
-        comfortably inside the 1.5x ceiling. The bound must never reject a
-        genuine fee."""
+        """The real f4be9ee8 numbers: 10.501189 vs 10.00 notional is 1.05012x,
+        against a computed ceiling of 1.0601 at price 0.284. The bound must
+        never reject a genuine fee, and the tightened one still does not: the
+        margin is 0.0100, which is the tolerance and nothing else."""
         _, _, usdc = TradeExecutor._derive_entry(
             make_candidate(amount_usdc=10.0), self.real_payload()
         )

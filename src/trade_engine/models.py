@@ -243,7 +243,18 @@ class ScannerCandidate(BaseModel):
     # validates; GATE 7 refuses when it is absent rather than assuming.
     end_date: Optional[str] = None
     market_url: str
+    # The NOTIONAL handed to the relay, not the wallet debit. The debit is
+    # amount_usdc * (1 + 0.07 * (1 - price)); sizing solves for the notional
+    # whose debit hits the cap, so this is always slightly under it.
     amount_usdc: float
+    # The market's own orderMinSize, in SHARES, read from Gamma at scan time.
+    # Carried for logging and for the scanner's own refusal; executor GATE 8
+    # re-reads it live and does not trust this copy.
+    min_order_size: Optional[float] = None
+    # None when the trade is sizeable. Otherwise why it was not: one of
+    # price_below_sizing_floor, below_exchange_minimum, no_positive_edge,
+    # unknown_min_order_size, invalid_price, invalid_input, invalid_bankroll.
+    sizing_refusal: Optional[str] = None
 
 
 class AnalystRecommendation(BaseModel):

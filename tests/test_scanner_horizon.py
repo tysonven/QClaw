@@ -42,7 +42,11 @@ from src.trade_engine.config import (  # noqa: E402
     config,
 )
 from src.trade_engine.horizon import horizon_days  # noqa: E402
-from src.trade_engine.models import ScannerCandidate  # noqa: E402
+from src.trade_engine.models import (  # noqa: E402
+    AnalystRecommendation,
+    ScannerCandidate,
+    ScannerRunSummary,
+)
 from src.trade_engine.scanner import (  # noqa: E402
     DEFAULT_HORIZON_DAYS,
     HORIZON_MAX_DAYS,
@@ -273,6 +277,80 @@ class CandidateCarriesEndDateTest(unittest.TestCase):
         self.assertIsNotNone(
             horizon_days(candidate.end_date, datetime.now(timezone.utc))
         )
+
+
+class ReduceNeverIncreasesTest(unittest.TestCase):
+    """The Analyst's REDUCE must reduce.
+
+    It was max(AMOUNT_MIN_USDC, before / 2) with a $3 floor. On a $1.23 Kelly
+    position that returns $3.00: a 2.4x INCREASE, on the exact path where the
+    Analyst has just said it is less confident. A safety inversion, invisible
+    while the old ramp never sized below $3, and live the moment Kelly does.
+    """
+
+    def summary_with(self, amount, price=0.40, minimum=5.0):
+        candidate = ScannerCandidate(
+            market_id="1", condition_id="0x" + "ab" * 32, question="q",
+            asset="btc", direction="YES", edge=0.20, sim_probability=0.60,
+            market_probability=price, volume=50000.0, horizon_days=5.0,
+            market_url="", amount_usdc=amount, min_order_size=minimum,
+        )
+        summary = ScannerRunSummary(
+            run_at=datetime.now(timezone.utc), markets_fetched=1,
+            candidates_analysed=1, simulations_run=1, sim_errors=0,
+        )
+        summary.best_trade = candidate
+        summary.analyst_recommendation = AnalystRecommendation(
+            recommendation="reduce", confidence=0.4, reasoning="thin", flags=[],
+        )
+        return summary
+
+    def reduce_to(self, amount, **kw):
+        summary = self.summary_with(amount, **kw)
+        scanner = PolymarketScanner(analyst=_StubAnalyst(summary.analyst_recommendation))
+        run(scanner.apply_analyst(summary))
+        return summary.best_trade.amount_usdc
+
+    def test_reduce_never_increases_at_any_size(self):
+        """The property, across the whole range including sub-$3 Kelly sizes."""
+        for before in (0.25, 0.5, 1.23, 2.99, 3.0, 5.0, 10.0):
+            with self.subTest(before=before):
+                after = self.reduce_to(before)
+                self.assertLess(after, before, "REDUCE must reduce")
+                self.assertAlmostEqual(after, before / 2, places=6)
+
+    def test_the_old_floor_would_have_tripled_a_kelly_position(self):
+        """Pins the specific defect rather than only the general property."""
+        self.assertLess(self.reduce_to(1.23), 1.23)
+        self.assertAlmostEqual(self.reduce_to(1.23), 0.615, places=6)
+
+    def test_reducing_under_the_exchange_minimum_marks_it_unsizeable(self):
+        """Halving can make a position unplaceable. That is a refusal, not a
+        smaller trade, and nobody should be asked to approve it."""
+        # $3.00 at price 0.40 is 7.5 shares, comfortably over. Halved it is
+        # $1.50, or 3.75 shares, which the exchange would reject.
+        summary = self.summary_with(3.0, price=0.40, minimum=5.0)
+        scanner = PolymarketScanner(analyst=_StubAnalyst(summary.analyst_recommendation))
+        run(scanner.apply_analyst(summary))
+        self.assertEqual(summary.best_trade.amount_usdc, 1.5)
+        self.assertEqual(summary.best_trade.sizing_refusal, "below_exchange_minimum")
+
+    def test_a_reduction_that_still_clears_the_minimum_is_not_marked(self):
+        """Exactly at the minimum is admitted, matching GATE 8's comparison.
+        $4.00 at 0.40 halves to $2.00, which is exactly 5 shares."""
+        summary = self.summary_with(4.0, price=0.40, minimum=5.0)
+        scanner = PolymarketScanner(analyst=_StubAnalyst(summary.analyst_recommendation))
+        run(scanner.apply_analyst(summary))
+        self.assertEqual(summary.best_trade.amount_usdc, 2.0)
+        self.assertIsNone(summary.best_trade.sizing_refusal)
+
+
+class _StubAnalyst:
+    def __init__(self, recommendation):
+        self._recommendation = recommendation
+
+    async def analyse(self, candidate):
+        return self._recommendation
 
 
 class CandidateModelTest(unittest.TestCase):
