@@ -345,6 +345,60 @@ class ReduceNeverIncreasesTest(unittest.TestCase):
         self.assertIsNone(summary.best_trade.sizing_refusal)
 
 
+class SelectSkipsUnsizeableTest(unittest.TestCase):
+    """best_trade must never be a candidate that cannot be sized.
+
+    A mutant removing this filter survived the entire suite: nothing asserted
+    that an unsizeable candidate stays out of best_trade, only that sizing
+    refuses. GATE 8 would catch it at execution, but by then a human has been
+    asked to approve a trade the exchange will reject.
+    """
+
+    def candidate(self, market_id, edge, refusal=None):
+        return ScannerCandidate(
+            market_id=market_id, condition_id="0x" + "cd" * 32, question="q",
+            asset="btc", direction="YES", edge=edge, sim_probability=0.60,
+            market_probability=0.40, volume=50000.0, horizon_days=5.0,
+            market_url="", amount_usdc=2.0, min_order_size=5.0,
+            sizing_refusal=refusal,
+        )
+
+    def summary(self, *candidates):
+        s = ScannerRunSummary(
+            run_at=datetime.now(timezone.utc), markets_fetched=1,
+            candidates_analysed=len(candidates), simulations_run=len(candidates),
+            sim_errors=0,
+        )
+        s.high_edge = list(candidates)
+        return s
+
+    def test_the_widest_edge_is_skipped_when_it_cannot_be_sized(self):
+        """The unsizeable one has the BIGGEST edge, so a filter that is absent
+        picks it. That is what makes this test able to fail."""
+        summary = self.summary(
+            self.candidate("big", 0.40, refusal="below_exchange_minimum"),
+            self.candidate("small", 0.12),
+        )
+        best = PolymarketScanner().select_best_trade(summary)
+        self.assertIsNotNone(best)
+        self.assertEqual(best.market_id, "small")
+
+    def test_none_sizeable_means_no_trade(self):
+        summary = self.summary(
+            self.candidate("a", 0.40, refusal="below_exchange_minimum"),
+            self.candidate("b", 0.30, refusal="price_below_sizing_floor"),
+        )
+        self.assertIsNone(PolymarketScanner().select_best_trade(summary))
+
+    def test_unsizeable_candidates_are_still_REPORTED(self):
+        """They stay in the bucket. The refusal is the measurement."""
+        summary = self.summary(
+            self.candidate("a", 0.40, refusal="below_exchange_minimum"),
+        )
+        PolymarketScanner().select_best_trade(summary)
+        self.assertEqual(len(summary.high_edge), 1)
+
+
 class _StubAnalyst:
     def __init__(self, recommendation):
         self._recommendation = recommendation
