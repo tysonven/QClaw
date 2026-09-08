@@ -182,7 +182,11 @@ class MonteCarloResponse(BaseModel):
     current_price: float
     target: float
     asset: str
-    horizon_days: int
+    # Fractional. See ScannerCandidate.horizon_days for why this must not be
+    # int. NOTE this model is currently unused, nothing constructs it, but it
+    # is kept in step with the wire format rather than left as a stale shape
+    # that would reject a real worker response if it were ever wired up.
+    horizon_days: float
     market_type: str
     question: Optional[str] = None
     simulations: Optional[int] = None
@@ -225,7 +229,19 @@ class ScannerCandidate(BaseModel):
     sim_probability: float
     market_probability: float
     volume: float
-    horizon_days: int
+    # Fractional days to resolution, NOT a whole-day count. This annotation is
+    # load-bearing: pydantic v2 rejects a float with a fractional part for an
+    # int field (`int_from_float`), and _to_candidate below runs for every
+    # high-edge AND no-edge row, so leaving this as int turns the horizon fix
+    # into a ValidationError that takes down the whole scan rather than one
+    # market. Verified against pydantic 2.12.4.
+    horizon_days: float
+    # Market resolution time as Gamma reports it, carried from the scanner row.
+    # horizon_days above is a SNAPSHOT taken at scan time; this is the input
+    # executor GATE 7 uses to recompute the horizon against the clock at
+    # execution. Optional so an ApprovalResult persisted before 2026-09-08 still
+    # validates; GATE 7 refuses when it is absent rather than assuming.
+    end_date: Optional[str] = None
     market_url: str
     amount_usdc: float
 

@@ -16,6 +16,15 @@ python-dotenv>=1.0.0
 # file, so the suite passed on the box and could not even import that module on
 # a bare CI runner.
 requests>=2.31.0
+# numpy is imported by src/trading/monte_carlo.py, which the test suite now
+# covers directly (tests/test_monte_carlo_horizon.py exercises the pricing
+# kernel with fixed parameters and no network). It was present system-wide on
+# qclaw, 2.4.4, alongside flask 3.1.3, yfinance 1.2.0 and scipy 1.17.1, and
+# absent from this file, which is why that module had no tests at all: CI
+# installs only this file, so any test importing it failed at import.
+# CI-only in effect: the deploy job never runs pip install, and this adds no
+# new runtime dependency to the host.
+numpy>=1.26.0
 
 # NOTE: every constraint above is a LOWER BOUND only. CI resolves the newest
 # matching release on each run, so this job can turn red with no repo change,
