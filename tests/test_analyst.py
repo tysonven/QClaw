@@ -205,6 +205,39 @@ class TestHistoryPopulated(unittest.TestCase):
         self.assertNotIn("None", prompt.split("Recent trades")[1])
 
 
+class TestPromptHorizonFormatting(unittest.TestCase):
+    """The horizon line in the Claude prompt, which nothing asserted on.
+
+    approval.py's identical `:.2f` is covered by
+    test_fractional_horizon_renders_readably in tests/test_approval.py, and
+    reverting analyst.py's left the suite green. Same change, same reason, one
+    of them tested. horizon_days is fractional since 2026-09-08, so unformatted
+    it renders as 20.582881944444444: unreadable, and wasted prompt tokens on a
+    money-path decision.
+    """
+
+    def build(self, horizon):
+        patch_history(self, [])
+        analyst = TradeAnalyst(client=StubClient(text=VALID_JSON))
+        ctx = run(analyst.get_trade_history_context())
+        return analyst.build_prompt(make_candidate(horizon_days=horizon), ctx)
+
+    def test_fractional_horizon_is_rounded_for_the_prompt(self):
+        prompt = self.build(20.582881944444444)
+        self.assertIn("Horizon: 20.58 days", prompt)
+        self.assertNotIn("20.582", prompt)
+
+    def test_sub_day_horizon_still_renders_a_value(self):
+        """e09b82fe's own horizon. It must not render as "Horizon: 0 days",
+        which would read to Claude as a market with no time left rather than
+        one with an hour."""
+        prompt = self.build(0.04117943363425926)
+        self.assertIn("Horizon: 0.04 days", prompt)
+
+    def test_whole_day_horizon_is_unsurprising(self):
+        self.assertIn("Horizon: 21.00 days", self.build(21.0))
+
+
 # 4. Happy path parse
 class TestAnalyseParsesJson(unittest.TestCase):
     def test_parses_structured_response(self):

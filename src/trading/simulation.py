@@ -158,6 +158,30 @@ def coerce_horizon(raw):
     return value, None
 
 
+def coerce_target(raw):
+    """Parse a request's target price. Returns (value, error), never raises.
+
+    Lives here rather than inline in monte_carlo.py's route for one reason:
+    importing monte_carlo.py needs flask, yfinance and scipy, none of which CI
+    installs, so a guard written there is unreachable by the test suite. It was
+    written there first, and deleting it left the suite green. A guard CI cannot
+    reach is not a guard.
+
+    Rejects rather than coerces a non-finite target. NaN would propagate
+    silently through every comparison in simulate_paths: `paths >= nan` is
+    all-False, so a touch market would price at P = 0.0 and a close market the
+    same, which is the identical silent-zero failure that int(0.0412) produced
+    on the horizon side.
+    """
+    try:
+        value = float(raw)
+    except (ValueError, TypeError):
+        return None, "target must be numeric"
+    if not math.isfinite(value):
+        return None, "target must be finite"
+    return value, None
+
+
 def steps_for_horizon(horizon_days, steps_per_day=STEPS_PER_DAY):
     """Step count for a horizon, decoupled from the horizon's magnitude.
 

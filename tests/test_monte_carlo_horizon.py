@@ -32,6 +32,7 @@ from src.trading.simulation import (  # noqa: E402
     MIN_HORIZON_MODEL_DAYS,
     STEPS_PER_DAY,
     coerce_horizon,
+    coerce_target,
     simulate_paths,
     steps_for_horizon,
 )
@@ -385,6 +386,50 @@ class ModelFloorTest(unittest.TestCase):
         )
         self.assertLess(out_of_money, 0.01)
         self.assertGreater(in_the_money, 0.99)
+
+
+class CoerceTargetTest(unittest.TestCase):
+    """The finite-target guard, now somewhere the suite can reach it.
+
+    This lived inline in monte_carlo.py's /simulate route, where deleting it
+    left the whole suite green: CI installs neither flask nor yfinance nor
+    scipy, so nothing could import the module it was written in. It is asserted
+    here for the same reason coerce_horizon is.
+    """
+
+    def test_ordinary_targets_pass_through(self):
+        for raw, expected in ((2500.0, 2500.0), (60000, 60000.0), ("1.01", 1.01)):
+            with self.subTest(raw=raw):
+                value, error = coerce_target(raw)
+                self.assertIsNone(error)
+                self.assertEqual(value, expected)
+
+    def test_non_finite_targets_are_refused(self):
+        """NaN is the dangerous one: `paths >= nan` is all-False, so it would
+        price every market at P = 0.0 rather than erroring. That is the same
+        silent-zero shape int(0.0412) produced on the horizon side."""
+        for raw in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(raw=raw):
+                value, error = coerce_target(raw)
+                self.assertIsNone(value)
+                self.assertEqual(error, "target must be finite")
+
+    def test_nan_would_otherwise_price_at_zero(self):
+        """Shows what the guard prevents, rather than only that it fires."""
+        for market_type in ("touch_above", "close_above"):
+            with self.subTest(market_type=market_type):
+                priced = simulate_paths(
+                    SPOT, float("nan"), MU, SIGMA, 5.0, market_type,
+                    num_simulations=1000, rng=rng(),
+                )
+                self.assertEqual(priced.hits, 0, "nan comparisons are all-False")
+
+    def test_garbage_is_refused(self):
+        for raw in (None, "", "abc", [], {}):
+            with self.subTest(raw=raw):
+                value, error = coerce_target(raw)
+                self.assertIsNone(value)
+                self.assertEqual(error, "target must be numeric")
 
 
 class CoerceHorizonTest(unittest.TestCase):

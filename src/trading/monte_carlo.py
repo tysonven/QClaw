@@ -11,7 +11,6 @@ import yfinance as yf
 import numpy as np
 from scipy import stats
 from datetime import datetime, timedelta
-import math
 
 # PM2 runs this file as a SCRIPT (`python3 /root/QClaw/src/trading/monte_carlo.py`,
 # cwd /root/QClaw), which puts src/trading on sys.path but NOT the repo root, so
@@ -25,6 +24,7 @@ try:
         NUM_SIMULATIONS,
         STEPS_PER_DAY,
         coerce_horizon,
+        coerce_target,
         detect_market_type,
         simulate_paths,
         steps_for_horizon,
@@ -37,6 +37,7 @@ except ImportError:  # pragma: no cover - exercised by the PM2 script invocation
         NUM_SIMULATIONS,
         STEPS_PER_DAY,
         coerce_horizon,
+        coerce_target,
         detect_market_type,
         simulate_paths,
         steps_for_horizon,
@@ -186,12 +187,12 @@ def simulate():
         if target is None:
             return jsonify({"error": "target is required"}), 400
 
-        try:
-            target = float(target)
-        except (ValueError, TypeError):
-            return jsonify({"error": "target must be numeric"}), 400
-        if not math.isfinite(target):
-            return jsonify({"error": "target must be finite"}), 400
+        # Both coercions live in simulation.py so the suite can reach them;
+        # see coerce_target's docstring for why an inline guard here was not a
+        # guard at all.
+        target, target_error = coerce_target(target)
+        if target_error:
+            return jsonify({"error": target_error}), 400
 
         # coerce_horizon, NOT int(). See simulation.coerce_horizon for why the
         # int() this replaced was a second, independent truncation that failed
