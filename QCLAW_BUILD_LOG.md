@@ -25907,3 +25907,81 @@ Pinned to include the class-specific comment line. A mutation harness publishes
 instructions for reproducing its own results, and an ambiguous anchor is a
 result nobody else can check. Given this harness produced two confident wrong
 answers earlier the same day, that is not a stylistic point.
+
+---
+
+## 2026-09-08: two identifier-width bugs, and why only one of them was dangerous
+
+A footnote to the CI/CD rollout, recorded because the pair is more instructive
+than either bug alone.
+
+Both are the same defect: an identifier compared or supplied at the wrong width.
+They landed hours apart in the same repo, `flowos-sms-delivery`. Their
+consequences were not remotely comparable, and the reason is the whole point.
+
+**The dangerous one, caught before shipping.** The deploy job tags each uploaded
+Worker version with `${GITHUB_SHA:0:8}`, EIGHT characters: commit `ffb2218` is
+tagged `ffb22182`. The drift check compares that tag against main's HEAD. Had it
+used `git rev-parse --short HEAD` or `git log --oneline`, both of which produce
+SEVEN characters by default, the comparison would never have matched. The check
+would have reported drift permanently, on a repo where drift is expected after
+every merge, and it would have been ignored inside a week. A check everyone
+ignores asserts nothing, which is the defect the whole rollout removed.
+
+Nothing would have failed. Nothing would have logged. The check would have run
+daily, green or red as designed, and been wrong every time.
+
+**The annoying one, hit in practice.** Promoting a version needs the full UUID.
+Supplying the 8-character prefix gets:
+
+```
+The requested Worker version could not be found
+```
+
+Same class. Opposite outcome. The system named the problem immediately, nobody
+was misled, and the cost was a few seconds.
+
+### What separates them
+
+Not severity, and not how carefully either was written. **Whether the wrong
+answer was distinguishable from the right one.**
+
+A prefix passed to `wrangler versions deploy` either resolves or it does not, so
+being wrong is loud by construction. A string comparison between two identifiers
+of different widths returns `false`, which is a perfectly valid answer that
+happens to be the answer the check is designed to produce sometimes. The failure
+hides inside the check's own normal output.
+
+That generalises past identifiers. **A check is dangerous in proportion to how
+much its failure mode resembles its success mode.** Worth asking of anything
+that compares two values derived by different routes: if this were wrong, what
+would it look like, and would that be distinguishable from it being right?
+
+The 7-versus-8 comparison now carries a comment at the line itself, not only
+here, because that is where someone would reintroduce it by tidying. It is also
+asserted in `test/deploy-drift.test.js`, so a future edit fails rather than goes
+quiet. The comment explains, the test enforces, and neither alone would be
+enough.
+
+### Related, from the same pass: actions off Node 20
+
+Every workflow in all six repos was emitting `Node.js 20 is deprecated ... forced
+to run on Node.js 24`. Advisory now, breaking when GitHub drops the shim.
+
+Bumped to the minimum major that actually reports `using: node24`, verified per
+action against its `action.yml` rather than assumed. That verification mattered,
+because two are not what a one-major bump would suggest:
+
+```
+actions/checkout             v4 -> v5
+actions/setup-node           v4 -> v5
+actions/setup-python         v5 -> v6     (v5 is node20)
+pnpm/action-setup            v4 -> v5     (v4 is node20)
+actions/upload-artifact      v4 -> v6     (v5 is STILL node20)
+softprops/action-gh-release  v2 -> v3
+appleboy/ssh-action          v1 unchanged (composite, no node runtime)
+```
+
+Bumping only the two actions the warning named would have left `setup-python`
+and `pnpm/action-setup` warning. Bumping `upload-artifact` by one major would
+have fixed nothing at all while appearing to.

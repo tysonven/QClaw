@@ -11,20 +11,20 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Build Cognee venv
         run: |
           bash scripts/build-cognee-venv.sh
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: cognee-venv-arm64
           path: /tmp/cognee-venv-arm64.tar.xz
 
       - name: Attach to release
         if: github.event_name == 'release'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: /tmp/cognee-venv-arm64.tar.xz
