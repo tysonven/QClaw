@@ -26096,3 +26096,172 @@ The general point is not "write more tests". It is that **an invariant that
 looks too obvious to assert is exactly the one an implementation can quietly
 break**, because nobody re-reads code to check something they already believe.
 The assertion was written for completeness and earned its place immediately.
+
+## 2026-09-08: a workflow killed by a default it never opted into
+
+The first dispatched run of flow-coach-ai's new retention watcher (run
+34256430562, on flow-coach-ai@9cc6b6c) died before any step executed:
+
+```
+Unable to locate executable file: pnpm. Please verify either the file path
+exists or the file can be found within a directory specified by the PATH
+environment variable.
+```
+
+The workflow does not call pnpm anywhere, which is what makes the failure
+worth an entry. The dying step was `actions/setup-node@v5` itself. Its run
+log shows the config it resolved:
+
+```
+with:
+  node-version-file: .nvmrc
+  ...
+  package-manager-cache: true
+```
+
+`package-manager-cache: true` appears in no workflow file in any of the six
+repos. It is a default new in setup-node v5 (v4 had no such input). At that
+default, setup-node reads the `packageManager` field from the target repo's
+package.json and RUNS that tool to resolve its cache store path.
+flow-coach-ai's field says `pnpm@10.4.1`, GitHub runners preinstall npm and
+yarn but not pnpm, and the job was dead before its first step.
+
+Three properties compound here:
+
+**The workflow was authored green and failed on repo state.** ci.yml in the
+same repo uses the identical setup-node@v5 step and passes every run, because
+`pnpm/action-setup` happens to run before it. deploy-drift.yml in
+flowos-sms-delivery is the same shape as the watcher, no pnpm anywhere, and
+passes every run, because that package.json has no `packageManager` field for
+setup-node to read. Same YAML, three different outcomes, decided by files the
+YAML never mentions. A workflow shape proven green in one repo is not
+evidence it works in another, and this entry exists mostly to anchor that
+sentence.
+
+**The arming trigger is a package.json edit, not a workflow edit.** Adding
+`packageManager: pnpm@...` to QClaw, flowos-web, or flowos-sms-delivery today
+would break their setup-node workflows on the next run, without any workflow
+file changing and without CI on the arming commit necessarily noticing
+(scheduled workflows run later, on main). The full exposure table as measured
+2026-09-08 is in LOCATIONS.md under "setup-node v5 arms itself from
+package.json", with the standing rule: whoever adds the field owns checking
+the workflows in the same commit.
+
+**It is the delayed cost of an upgrade recorded as free.** The portfolio
+moved checkout and setup-node from v4 to v5 hours earlier, verified as
+"CI=0, node20-warnings=0" across all six repos. That verification was
+honest and this failure does not contradict it: every existing workflow kept
+passing. What the bump actually changed was the environment for workflows
+not yet written. The first new workflow authored to the v5 convention, in a
+pnpm repo, without the accidental protection of pnpm/action-setup, hit the
+new default within hours.
+
+Disposition: fixed in flow-coach-ai@f598fda with `package-manager-cache:
+false` and the reasoning in a comment at the line. Chosen over adding
+pnpm/action-setup because the watcher installs nothing by design, so there is
+nothing to cache and no reason to couple it to the app toolchain. The second
+dispatch (run 34257851939) went green end to end, which also closed the last
+unproven link in the retention rollout, the Actions secret path. The failure
+direction throughout was the right one: loud, in setup, before the job could
+assert anything.
+
+## 2026-09-08: three consecutive reviews found the tests, not the code
+
+Third cold review in a row on the trade engine, and the third where the defect
+was in the test suite rather than in the implementation. That is now a pattern
+rather than three coincidences, and it has a shape worth naming.
+
+### The three
+
+**PR #118, round 2.** `test_gate7_admits_exactly_the_floor` asserted that a
+market at exactly the tradeable-horizon floor passes the executor gate. The
+implementation read a scan-time snapshot, so a market at the floor when proposed
+was below it when executed and the gate admitted it. The test asserted the
+defect.
+
+**PR #118, round 3.** The replacement sentinel moved the END DATE and never
+moved the CLOCK, so it could not distinguish "recomputed at execution" from
+"recomputed at import". A mutant capturing the clock once at module scope passed
+the full suite, 75/75.
+
+**PR #127, round 3.** `sizing.py` had 31 tests. `_to_candidate`, its only caller
+and the code that actually puts a number on `amount_usdc`, had none. Six mutants
+inside that one function survived the entire suite:
+
+```
+bankroll=250.0          10x the measured bankroll        SURVIVED
+kelly_fraction=1.0      full Kelly, not a tenth          SURVIVED
+price_floor=0.0         the sizing floor removed         SURVIVED
+amount_usdc=debit       the fee-inclusive figure sent    SURVIVED
+sizing_refusal=None     the refusal never recorded       SURVIVED
+max_position_usdc=1e9   the ceiling removed              SURVIVED
+```
+
+The fourth is the one to sit with. Writing the DEBIT into `amount_usdc` sends
+the fee-inclusive number to the relay as the amount to spend, so every trade
+overspends its cap by the fee. **That is verbatim the defect the PR was written
+to fix**, restatable as a one-line mutation of the fix itself, against a green
+suite.
+
+### The shape
+
+> An arithmetic module tested as a pure function proves the arithmetic. It
+> proves nothing about the values the caller feeds it, or the field it writes
+> the answer into.
+
+The pure function attracts the tests. It is easy to test, satisfying to test,
+and the tests read well: 31 of them, covering Kelly, the fee, the ceiling, the
+exchange minimum, both directions, every fail-closed path. None of that was
+wrong. All of it was about a function that cannot spend money.
+
+The boundary attracts none, and three things conspire to hide that:
+
+1. **Line coverage says it is covered.** `_to_candidate` WAS executed by two
+   existing tests. They asserted `end_date` and nothing else. A coverage report
+   shows the function green while every sizing value it passes is unasserted.
+2. **The wiring looks too simple to be wrong.** `bankroll=config.bankroll_usdc`
+   is not an algorithm. It is a line nobody re-reads, which is the same reason
+   the shares-rounding defect survived: an invariant that looks too obvious to
+   assert is exactly the one an implementation can quietly break.
+3. **The mutants were aimed at the interesting code.** Twelve mutants were
+   written for this change and every one targeted `sizing.py` or the gate logic.
+   Not one targeted the six-line call site. The harness inherited the same bias
+   as the tests.
+
+### The rule
+
+**Every value that crosses a module boundary onto the money path needs a
+wire-through test asserting the caller passes what it claims to pass.** Not that
+the callee handles it correctly, which is a separate test, but that the value
+arriving is the configured one.
+
+Mechanically, for this codebase: spy the callee, call the caller, assert the
+captured kwargs equal the config values, and separately assert the returned
+figure lands in the field the caller claims to write. That kills all six of the
+above and is about forty lines.
+
+The corresponding mutant class, to sit alongside the "capture the source of
+freshness once at import" mutant from the #118 entry:
+
+> For any caller that passes configured values into a computation, replace each
+> one with a plausible wrong constant. If the suite stays green, the wiring is
+> untested no matter how well the computation is.
+
+### A recurrence worth noting separately
+
+The same review concluded the fee model was "verified at exactly one price" and
+called its price-dependence "extrapolation from a single point". The model is
+fitted to eight receipts from 1.5c to 90c with a maximum residual of 4e-6, in
+the build log entry of 2026-09-05.
+
+The reviewer was reading the PR body, which cited one receipt. So the criticism
+was a correct reading of the artefact and wrong about the world, and the fault
+is the artefact's. This is exactly the self-sufficiency failure #118 was
+corrected for: evidence that exists but is unreachable from the thing under
+review. A cold reader cannot be expected to search the build log for the
+justification of a constant, and a reviewer who assumes the evidence exists
+somewhere is not reviewing.
+
+Fixed by putting the evidence base in the PR body, including the caveat the
+original entry attached to it: treat 0.07 as a monitored hypothesis with a
+residual check, not a constant.
