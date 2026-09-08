@@ -192,7 +192,7 @@ class SendApprovalRequestTest(unittest.TestCase):
         self.assertIn("Will Bitcoin reach $100,000 in July?", text)
         self.assertIn("Direction: BUY YES", text)
         self.assertIn("Edge: +18.0% (Sim: 36.0% vs Market: 18.0%)", text)
-        self.assertIn("Volume: $26,352 | Horizon: 4d", text)
+        self.assertIn("Volume: $26,352 | Horizon: 4.00d", text)
         self.assertIn("Position: $10.00", text)
         self.assertIn("📊 Analyst: PROCEED (72% confidence)", text)
         self.assertIn('"Edge is wide and the horizon is short."', text)
@@ -214,6 +214,21 @@ class SendApprovalRequestTest(unittest.TestCase):
 
         self.assertEqual(pending.message_id, 4201)
         self.assertEqual(gate.pending_count, 1)
+
+    def test_fractional_horizon_renders_readably(self):
+        """horizon_days is fractional since 2026-09-07.
+
+        This is the number a human reads while deciding whether to spend money,
+        so an unformatted 20.582881944444444d is not a cosmetic problem. The
+        message must stay scannable at both ends of the range.
+        """
+        gate = StubGate()
+        run(gate.send_approval_request(
+            make_candidate(horizon_days=20.58289546928241), make_recommendation()
+        ))
+        text = gate.calls_to("sendMessage")[0]["text"]
+        self.assertIn("Horizon: 20.58d", text)
+        self.assertNotIn("20.582", text)
 
     def test_negative_edge_renders_signed_not_double_signed(self):
         gate = StubGate()

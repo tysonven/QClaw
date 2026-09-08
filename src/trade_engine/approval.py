@@ -247,7 +247,10 @@ class ApprovalGate:
             f"Market: {candidate.market_probability:.1%})\n"
             f"{market_now}"
             f"Volume: ${candidate.volume:,.0f} | "
-            f"Horizon: {candidate.horizon_days}d\n"
+            # .2f, not bare: horizon_days is fractional now, and an
+            # unformatted 20.582881944444444d in the message a human reads
+            # while deciding whether to spend money is worse than useless.
+            f"Horizon: {candidate.horizon_days:.2f}d\n"
             f"Position: ${candidate.amount_usdc:.2f}\n"
             "\n"
             f"📊 Analyst: {verdict} ({recommendation.confidence:.0%} confidence)\n"

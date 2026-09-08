@@ -2,7 +2,7 @@
 """Trade executor — the only component in this repo that spends real money.
 
 Sits behind the approval gate: nothing here runs until a human has tapped
-Execute on a Telegram message. Even then, six independent gates are re-checked
+Execute on a Telegram message. Even then, seven independent gates are re-checked
 against LIVE state before the order goes out, because the approval may be up to
 30 minutes stale by the time it is acted on and the world moves in between.
 
@@ -40,6 +40,7 @@ import httpx
 
 from src.trade_engine.approval import _scrub
 from src.trade_engine.config import config, install_bot_token_redaction
+from src.trade_engine.horizon import horizon_days
 from src.trade_engine.database import (
     SupabaseError,
     count_open_positions,
@@ -212,7 +213,7 @@ class TradeExecutor:
     # --- gates ------------------------------------------------------------
 
     async def _run_gates(self, candidate: ScannerCandidate) -> None:
-        """Six checks against live state. Raises ExecutionGateError on refusal.
+        """Seven checks against live state. Raises ExecutionGateError on refusal.
 
         Ordered cheapest-and-most-decisive first: the global brake before the
         per-trade arithmetic, so a disabled system does not spend three
@@ -281,6 +282,59 @@ class TradeExecutor:
             )
             raise ExecutionGateError("invalid_market_identifier")
         log.debug("gate 6 ok: conditionId well-formed")
+
+        # GATE 7, the market must STILL be long enough to price, measured now.
+        #
+        # This RECOMPUTES the horizon from end_date against the current clock.
+        # It deliberately does not read candidate.horizon_days, which is a
+        # snapshot taken during the scan and is stale by the time this runs:
+        # APPROVAL_TIMEOUT_SECONDS (1800) plus APPROVAL_MAX_AGE_SECONDS (300)
+        # is 2100s, so a market at exactly the 1.00d floor when it was proposed
+        # is 0.976d when the order goes out. Reading the frozen field passes it,
+        # and 0.976d is intraday by exactly the argument the floor exists for:
+        # daily_sigma comes from 21 daily closes and is not calibrated for a
+        # sub-day window.
+        #
+        # This is also what makes the gate an independent control rather than a
+        # second copy of the scanner's check. The scanner evaluates the horizon
+        # at scan time; this evaluates it at execution time. They can disagree,
+        # and when they do this one wins.
+        #
+        # PRECISELY WHICH HALF IS LIVE, because the obvious reading is wrong.
+        # Only the horizon is. `floor` below is config.min_horizon_tradeable_days,
+        # which is read from the environment ONCE in Config.__init__ at import
+        # and is NOT a trading_config column, so nothing reloads it and its
+        # import-time and execution-time values are always the same number. This
+        # gate is therefore NOT the parallel to GATE 1 that it looks like: GATE 1
+        # re-reads trading_config from Supabase on every call and can genuinely
+        # change under it. Changing the floor here needs a process restart.
+        #
+        # Stated because an earlier version of this comment implied both halves
+        # were live, and a review found the floor half of that claim vacuous.
+        #
+        # Fails CLOSED on absent or unparseable end_date, matching gates 1-6.
+        # An unknown resolution time is refused, never waved through, and in
+        # particular is never backfilled from the stale snapshot.
+        floor = config.min_horizon_tradeable_days
+        remaining = horizon_days(candidate.end_date, datetime.now(timezone.utc))
+        if remaining is None:
+            log.error(
+                "gate 7: candidate has no usable end_date (market_id=%s, value=%r), "
+                "refusing rather than trusting the scan-time horizon %r",
+                candidate.market_id, candidate.end_date, candidate.horizon_days,
+            )
+            raise ExecutionGateError("horizon_below_minimum")
+        if remaining < floor:
+            log.error(
+                "gate 7: horizon is %.4fd now (was %.4fd at scan), below the "
+                "%.2fd tradeable floor (market_id=%s), refusing",
+                remaining, candidate.horizon_days, floor, candidate.market_id,
+            )
+            raise ExecutionGateError("horizon_below_minimum")
+        log.debug(
+            "gate 7 ok: horizon=%.4fd now (%.4fd at scan) >= %.2fd",
+            remaining, candidate.horizon_days, floor,
+        )
 
     # --- execution --------------------------------------------------------
 

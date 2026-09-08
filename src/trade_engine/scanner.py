@@ -35,6 +35,7 @@ import httpx
 from src.trade_engine.config import config
 from src.trade_engine.approval import ApprovalGate, ApprovalGateBusy
 from src.trade_engine.database import SupabaseError, write_simulation
+from src.trade_engine.horizon import horizon_days
 from src.trade_engine.executor import TradeExecutor
 from src.trade_engine.models import (
     ApprovalStatus,
@@ -111,6 +112,11 @@ WEEKEND_ASSETS = {"btc", "eth", "sol", "xrp"}
 
 MIN_PRESIM_VOLUME = 20000
 HORIZON_MAX_DAYS = 35
+
+# Fallback horizon when endDate is absent or unparseable. 30.0, not 30: every
+# horizon downstream of _horizon_days is a float now, and a bare int here would
+# be the one path that still fed an integer into the simulator.
+DEFAULT_HORIZON_DAYS = 30.0
 YES_PRICE_MIN = 0.01
 YES_PRICE_MAX = 0.99
 RUNGS_PER_EVENT = 3
@@ -341,6 +347,7 @@ class PolymarketScanner:
 
         results: list[dict[str, Any]] = []
         seen: set[str] = set()
+        short_horizon = 0
 
         for market in markets:
             question = (market.get("question") or "").lower()
@@ -382,6 +389,21 @@ class PolymarketScanner:
             if horizon_days <= 0 or horizon_days > HORIZON_MAX_DAYS:
                 continue
 
+            # Hard refusal, not a scoring penalty. Dropped here, before the
+            # /simulate call, so a sub-day market is never priced, never
+            # bucketed and never proposed. Making the horizon arithmetic exact
+            # does not make daily_sigma (21 daily closes) valid intraday; see
+            # DEFAULT_MIN_HORIZON_TRADEABLE_DAYS in config.py. Executor GATE 7
+            # re-checks the same floor against live state before the order.
+            if horizon_days < config.min_horizon_tradeable_days:
+                short_horizon += 1
+                log.info(
+                    "refusing %s: horizon %.4fd below tradeable floor %.2fd (%s)",
+                    market_id, horizon_days, config.min_horizon_tradeable_days,
+                    market.get("question"),
+                )
+                continue
+
             yes_price = _outcome_yes_price(market)
             if yes_price is None or yes_price < YES_PRICE_MIN or yes_price > YES_PRICE_MAX:
                 continue
@@ -409,23 +431,40 @@ class PolymarketScanner:
 
         selected = self._select_rungs(results)
         log.info(
-            "analyse_edge: %d markets in, %d passed filters, %d after rung/cap selection",
+            "analyse_edge: %d markets in, %d passed filters, %d after rung/cap "
+            "selection (%d refused below the %.2fd tradeable horizon floor)",
             len(markets), len(results), len(selected),
+            short_horizon, config.min_horizon_tradeable_days,
         )
         return selected
 
     @staticmethod
-    def _horizon_days(end_date: Optional[str], now: datetime) -> int:
-        """Math.ceil((endDate - now) / 86400000); absent endDate defaults to 30."""
-        if not end_date:
-            return 30
-        try:
-            parsed = datetime.fromisoformat(str(end_date).replace("Z", "+00:00"))
-        except ValueError:
-            return 30
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        return math.ceil((parsed - now).total_seconds() / 86400.0)
+    def _horizon_days(end_date: Optional[str], now: datetime) -> float:
+        """Exact time to resolution in days, fractional. Absent endDate -> 30.0.
+
+        This used to be Math.ceil((endDate - now) / 86400000), ported verbatim
+        from n8n. The rounding was not conservative, it was systematically
+        wrong in ONE direction. A shorter real horizon rounded UP means the
+        simulator diffuses the price for longer than the market actually has,
+        which overstates the probability of reaching the target, which inflates
+        the edge, which maximises position size. On 2026-08-31 a 3,558-second
+        market (0.0412d) was priced as a full day: P 0.0648 -> 0.4834, edge
+        +3.9pts -> +45.8pts, and position e09b82fe fired at the $10 cap for a
+        total loss.
+
+        NOTE the two downstream guards are unaffected, which is why they are
+        left exactly as they are: ceil(T) <= 0 iff T <= 0, and ceil(T) <= 35 iff
+        T <= 35, so the `horizon_days <= 0` rejection, HORIZON_MAX_DAYS and
+        monte_carlo's 21-vs-90-day lookback selector all keep their old
+        behaviour. The only thing this changes is the VALUE handed downstream.
+        """
+        value = horizon_days(end_date, now)
+        # None means the end date is absent or unparseable. The SCANNER treats
+        # that as a 30-day market, which is the behaviour this has always had.
+        # Executor GATE 7 makes the opposite choice on the same None and
+        # refuses; see src/trade_engine/horizon.py for why that asymmetry is
+        # deliberate rather than an inconsistency.
+        return DEFAULT_HORIZON_DAYS if value is None else value
 
     @staticmethod
     def _select_rungs(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -593,6 +632,12 @@ class PolymarketScanner:
             market_probability=row["yes_price"],
             volume=row["volume"],
             horizon_days=row["horizon_days"],
+            # Carried so the executor can RECOMPUTE the horizon at execution
+            # time. horizon_days above is frozen at scan time and decays by up
+            # to 2100s (approval timeout + max approval age) before the order
+            # goes out, which is enough to carry a market from exactly the
+            # floor to below it.
+            end_date=row.get("end_date"),
             market_url=POLYMARKET_MARKET_URL.format(slug=slug) if slug else "",
             amount_usdc=_amount_usdc(edge),
         )
@@ -875,7 +920,16 @@ def simulation_rows(summary_source: list[dict[str, Any]]) -> list[dict[str, Any]
                 "polymarket_condition_id": row.get("condition_id"),
                 "question": row["question"],
                 "target": row["target"],
+                # Fractional since 2026-09-07. Rows written before then carry a
+                # ceil()-rounded integer, so a calibration query spanning that
+                # date is comparing two different quantities. The three fields
+                # below are what the simulator actually discretised, recorded
+                # because the absence of exactly this made the ceil() bug
+                # invisible in 5,649 stored rows.
                 "horizon_days": row["horizon_days"],
+                "horizon_days_model": sim.get("horizon_days_model"),
+                "steps": sim.get("steps"),
+                "steps_per_day": sim.get("steps_per_day"),
                 "end_date": row["end_date"],
                 "volume": row["volume"],
                 "source": row["source"],

@@ -209,7 +209,7 @@ class TradeAnalyst:
             f"Edge: {candidate.edge:.1%} (Sim: {candidate.sim_probability:.1%} vs "
             f"Market: {candidate.market_probability:.1%})",
             f"Volume: ${candidate.volume:,.0f}",
-            f"Horizon: {candidate.horizon_days} days",
+            f"Horizon: {candidate.horizon_days:.2f} days",
             f"Proposed position: ${candidate.amount_usdc:.2f}",
             "",
             f"TRADE HISTORY ({history['total_trades']} resolved trades):",
