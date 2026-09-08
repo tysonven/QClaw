@@ -26265,3 +26265,107 @@ somewhere is not reviewing.
 Fixed by putting the evidence base in the PR body, including the caveat the
 original entry attached to it: treat 0.07 as a monitored hypothesis with a
 residual check, not a constant.
+
+## 2026-09-08: Manus decommission, P1-1 closed by proof, and the vendor closed step 3 for us
+
+The 2026-08-19 audit's P1-1: both GHL webhook capability URLs sat in
+flow-coach-ai's git history from commits 117b161 and 709a263 until 3d791eb,
+authored on and by Manus, giving anyone with repo history read access
+unauthenticated write access to the Flow OS contact store. Rotation was
+deferred to decommission deliberately, so the DNS rollback path kept working
+webhooks. That reasoning expired when the rollback window closed, and this
+entry records the closure actually happening rather than being declared.
+
+**The rotation, proven from both sides.** Both triggers regenerated in the
+GHL builder, new URLs pasted into Railway only (fingerprints
+33f8460b to dbb2288f lead, f92d03a7 to 3153e64c day-progress). Positive
+control ran through the LIVE app path, not a simulation of it:
+leads.register on flowcoach.flowos.tech created the GHL contact 12 seconds
+later, and chat.trackDay put tag flow-coach-day-1 plus four custom fields
+(day, event, day_label "Day 1 - Find the Leaks", source) on that contact, a
+concrete diff. Negative control: the exact app payloads POSTed to both OLD
+URLs with a dedicated marker identity, then the CRM swept settled minutes
+later. Zero contacts. All test contacts and the test lead row deleted after;
+the store ended the day byte-identical in count to where it started.
+
+**THE RULE, because the observation is not enough: a 200 from a GHL
+capability URL proves nothing. Re-verification of a rotation must check the
+response body and the CRM, not the status code.** The old URLs did not go
+non-2xx after regeneration, and the criterion "old URLs must return non-2xx"
+was simply wrong. A dead trigger URL answers:
+
+```
+200 {"status":"Success: test request received"}
+```
+
+while a live one answers:
+
+```
+200 {"status":"Success: request sent to trigger execution server","id":"..."}
+```
+
+Same status code, opposite meanings, distinguished only by body and by
+whether a contact exists afterwards. Anyone re-verifying this rotation, or
+performing the next one, who checks only the status code will conclude the
+leaked URLs still work when they do not, or that a rotation succeeded when
+it did not. Same family as the vacuity variants this log keeps collecting:
+a green signal that does not assert the thing it appears to assert, this
+time issued by a third party's API rather than our own tests. A related
+trap in the same session: GHL contact search lags creation by a minute or
+two, so a zero-match immediately after a POST proves nothing either;
+absence claims must be asserted settled.
+
+**The rotation-day leak, recorded because P1-1 is exactly this class.** The
+first regenerated lead URL was pasted into a Claude chat by mistake. Not
+git, but a third place a third party holds, which is precisely what P1-1 is
+about. Handled correctly: both triggers regenerated a second time, burning
+the pasted URL the same way the git-history ones were burned, and the final
+URLs went into Railway without transiting the chat. Capability URLs are
+unredactable once they leave your hands; the only fix is to make the leaked
+value worthless.
+
+**The key revocation, fingerprinted first.** The n8n key labelled
+"manus API" (id MYYZFn3DjtKQ43i4, created 2026-03-16) was deleted from
+user_api_keys with a RETURNING clause proving it was that row and only that
+row, but only after sha256 fingerprints proved it was NOT the key qclaw
+runs on (that is "quantum claw api v2", a different fingerprint), and after
+reading the exported dashboard code to confirm a revoked key produces
+silence, not false alert emails (runAlertCheck throws on the first 401
+before any email logic). qclaw's key was live-tested 200 after the delete.
+
+**Step 3 closed itself, dishonorably.** The plan said "retire the Manus
+project". There was nothing left to retire: Manus rebooted its platform,
+deleted user data, and now presents a restore-by-upload screen. Recorded
+honestly as "asset ceased to exist vendor-side" rather than as a completed
+retirement. The rollback path deliberately preserved for three weeks was
+destroyed by the vendor without notice, which is its own argument that
+migrating off the platform was the right call, and a second argument for
+the standing rule that platform-hosted workspaces get documented at
+creation: an estate you cannot enumerate is also an estate that can vanish
+without you noticing.
+
+**The last credential was already gone, and the record did not know.** The
+plan's final item, revoking the Gmail app password "n8n dashboard email"
+(created 2026-03-16), ended with Google's app-passwords page showing no app
+passwords at all. Tyson had revoked it himself around the time
+decommissioning was first being discussed (after the 2026-08-19 exit plan
+raised it; the exact date was not recorded), and the action never reached
+the docs. So LOCATIONS.md carried the password as a live credential for
+roughly two weeks after its owner destroyed it, and the decommission
+checklist kept owing a revocation that had already been performed. A record
+standing in for a state, the same family this log has been collecting all
+week, this time in our own canonical docs rather than in a check.
+
+The correction itself then demonstrated the family twice. The first fix
+recorded the password as "found absent, cause unknown, Google deletes these
+silently on some account events": a plausible mechanism reasoned from the
+absence, stating a mystery where there had been a deliberate action, wrong
+in exactly the way the entry it was correcting was wrong. Two rules come
+out, one per failure. For actions: an out-of-band credential change that is
+not written down at the time it is made will be discovered as a
+contradiction later, so record the act when performed, even one line. For
+observations: docs that describe credentials are checks that never re-run;
+a credential entry that cannot be re-verified against the issuer is a claim
+with no expiry, so date it as an observation, never state it as a standing
+fact, and when the cause of a state is not known, say "not recorded" rather
+than reaching for the most available explanation.
