@@ -276,9 +276,10 @@ $97/month Starter Plan, but this app touches no billing or entitlement.
      2026-08-19 audit; cleared in repo PR #17, deployed at baa7908).
      Two pnpm overrides (`express>qs`, `mysql2`) carry the reasoning
      for the next person and are droppable when upstream catches up.
-  (The Gmail app password item that briefly stood here was found
-  already absent from the Google account on 2026-09-08; see the n8n
-  Health Dashboard entry in LOCATIONS.md. Nothing is owed.)
+  (The Gmail app password item that briefly stood here was already
+  handled: Tyson revoked it around the time decommissioning was first
+  discussed, unrecorded at the time; confirmed absent 2026-09-08. See
+  the n8n Health Dashboard entry in LOCATIONS.md. Nothing is owed.)
 - **History:** built on Manus 2026-03-17, existed undocumented in every
   canonical doc until the 2026-08-19 audit; decoupled and cut over
   across Phase 2 slices 1-4 (five adversarial review rounds on the

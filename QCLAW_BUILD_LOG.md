@@ -26265,6 +26265,7 @@ somewhere is not reviewing.
 Fixed by putting the evidence base in the PR body, including the caveat the
 original entry attached to it: treat 0.07 as a monitored hypothesis with a
 residual check, not a constant.
+
 ## 2026-09-08: Manus decommission, P1-1 closed by proof, and the vendor closed step 3 for us
 
 The 2026-08-19 audit's P1-1: both GHL webhook capability URLs sat in
@@ -26346,17 +26347,25 @@ without you noticing.
 **The last credential was already gone, and the record did not know.** The
 plan's final item, revoking the Gmail app password "n8n dashboard email"
 (created 2026-03-16), ended with Google's app-passwords page showing no app
-passwords at all. When or by what it went is unknown; Google deletes app
-passwords silently on certain account events, such as a password change, so
-absence of a deliberate revocation act is unsurprising. It is recorded as
-FOUND ABSENT, not revoked, because claiming a revocation nobody performed
-would be inventing an event. The instructive part: LOCATIONS.md carried
-"created 2026-03-16, Manus-side env only" as a live credential for however
-long the password has actually been gone. That is a record standing in for
-a state, the same family this log has been collecting all week, this time
-in our own canonical docs rather than in a check. Docs that describe
-credentials are checks that never re-run; the generated-inventory rule from
-2026-08-20 exists for exactly this reason, and this entry extends it: a
-credential entry that cannot be re-verified against the issuer is a claim
-with no expiry, and should be dated as an observation, never stated as a
-standing fact.
+passwords at all. Tyson had revoked it himself around the time
+decommissioning was first being discussed (after the 2026-08-19 exit plan
+raised it; the exact date was not recorded), and the action never reached
+the docs. So LOCATIONS.md carried the password as a live credential for
+roughly two weeks after its owner destroyed it, and the decommission
+checklist kept owing a revocation that had already been performed. A record
+standing in for a state, the same family this log has been collecting all
+week, this time in our own canonical docs rather than in a check.
+
+The correction itself then demonstrated the family twice. The first fix
+recorded the password as "found absent, cause unknown, Google deletes these
+silently on some account events": a plausible mechanism reasoned from the
+absence, stating a mystery where there had been a deliberate action, wrong
+in exactly the way the entry it was correcting was wrong. Two rules come
+out, one per failure. For actions: an out-of-band credential change that is
+not written down at the time it is made will be discovered as a
+contradiction later, so record the act when performed, even one line. For
+observations: docs that describe credentials are checks that never re-run;
+a credential entry that cannot be re-verified against the issuer is a claim
+with no expiry, so date it as an observation, never state it as a standing
+fact, and when the cause of a state is not known, say "not recorded" rather
+than reaching for the most available explanation.
