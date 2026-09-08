@@ -239,8 +239,12 @@ $97/month Starter Plan, but this app touches no billing or entitlement.
 
 - **Status:** LIVE on Railway at `flowcoach.flowos.tech` since the
   2026-08-21 DNS cutover. Fully Manus-free (verified zero vendor
-  artefacts on the live page, bundles, and headers). Manus deployment
-  retained purely as DNS rollback until decommission.
+  artefacts on the live page, bundles, and headers). Manus decommission
+  completed 2026-09-08: webhooks rotated and proven (old URLs dead, new
+  ones delivering through the live app), the "manus API" n8n key
+  revoked, and the Manus deployment itself ceased to exist vendor-side
+  (platform reboot deleted all user data) rather than being retired.
+  No rollback path exists or is needed.
 - **Owner:** Tyson.
 - **Distribution:** the access link goes out in the first challenge
   email and sits in the challenge channel in the community hub. Volume
@@ -256,26 +260,34 @@ $97/month Starter Plan, but this app touches no billing or entitlement.
   deploys, customer-facing copy about pricing, and CRM writes.
   Revisit once CI and preview deploys exist.
 - **Known issues / owed:**
-  1. Decommission checklist (blocks retiring Manus): regenerate both
-     GHL webhook triggers, update Railway env, re-verify delivery
-     GHL-side; revoke the "manus API" key; then retire the Manus
-     project. Regeneration deferred to decommission deliberately so the
-     DNS rollback path keeps working webhooks.
+  1. Gmail app password "n8n dashboard email" still active in the
+     Google account; the system it served is gone (see the n8n Health
+     Dashboard entry in LOCATIONS.md). Revocation is Tyson's, owed.
   2. Privacy disclosure gap: Meta receives challenge signup data via
      the GHL-side fb-retarget tag, and needs to appear in the privacy
      policy alongside the open Clarity consent item. Meta tracking
      itself stays per Tyson.
-  3. No CI / no headless browser tier: deploys are manual railway up;
-     validation matrix at repo docs/validation-matrix.md, browser tier
-     manual. Playwright is the recorded fix.
+  3. No headless browser tier: validation matrix at repo
+     docs/validation-matrix.md, browser tier manual; Playwright is the
+     recorded fix. (CI itself exists since 2026-09-08: required `test`
+     check plus branch protection, and Railway auto-deploys main, so
+     "no CI / manual railway up" is no longer true and is retired from
+     this item.)
   4. Landing page corrections proposed, not shipped (customGPT bullet,
      canonical tag): ~/Projects/flow-coach-ai-audit/SLICE5-LANDING-PROPOSALS.md
-  5. Residual dependency advisories: 43 (7 low / 30 moderate / 6 high)
-     as of 2026-08-21, concentrated in transitive UI deps.
+  5. Dependency advisories: 0 as of 2026-09-08 (from 76 at the
+     2026-08-19 audit; cleared in repo PR #17, deployed at baa7908).
+     Two pnpm overrides (`express>qs`, `mysql2`) carry the reasoning
+     for the next person and are droppable when upstream catches up.
 - **History:** built on Manus 2026-03-17, existed undocumented in every
   canonical doc until the 2026-08-19 audit; decoupled and cut over
   across Phase 2 slices 1-4 (five adversarial review rounds on the
-  security slices). Full trail in QCLAW_BUILD_LOG.md.
+  security slices). Manus decommissioned 2026-09-08, closing audit
+  finding P1-1 (leaked webhook capability URLs) by rotation with the
+  old URLs proven dead; the vendor deleted the deployment in a platform
+  reboot the same day, destroying without notice the rollback path that
+  had been deliberately preserved for three weeks. Full trail in
+  QCLAW_BUILD_LOG.md.
 
 ### Flow States Collective
 

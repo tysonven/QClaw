@@ -122,7 +122,7 @@ files and are still mutable via the dashboard. Reconciliation TBD.
   - **Key duplication is intentional, not drift.** `POLYMARKET_PRIVATE_KEY` and `POLYMARKET_FUNDER_ADDRESS` remain in qclaw's `.env` because `src/trade_engine/config.py` hard-requires them in `REQUIRED_KEYS` and `src/trading/get_balance.py` uses them. Removing the qclaw copy is deferred to Slice 6. **Rotating the Polymarket key therefore means rotating both hosts**, and qclaw alone is not enough.
   - Not decommission-pending: this host is load-bearing for as long as trading runs from a geoblocked region. It appears in no CI config and in no repo sweep, which is how it stayed undocumented until the 2026-08-19 audit.
 
-- n8n Health Dashboard (email alerter): runs in a Manus GCP workspace (external platform, unaudited runtime); code exported 2026-08-18 to `github.com/tysonven/n8n-health-dashboard` (private). Sends "n8n Alert" emails via Gmail app password "n8n dashboard email" (created 2026-03-16, Manus-side env only); polls the n8n REST API every 5 min with the dedicated unscoped key "manus API" (`MYYZFn3DjtKQ43i4`). **DECOMMISSION-PENDING**: revoke the app password and the API key only after the heartbeat-based Telegram alerter is live and proven. Standing rule from this incident: platform-hosted builder workspaces (Manus and similar) get a LOCATIONS.md entry at creation, not at first commit; estate recon cannot enumerate them later.
+- n8n Health Dashboard (email alerter): **GONE, 2026-09-08.** Ran in a Manus GCP workspace; the workspace ceased to exist vendor-side in the Manus platform reboot the same day its decommission was executed. Its n8n API key "manus API" (`MYYZFn3DjtKQ43i4`) was revoked 2026-09-08 (verified: row deleted, the four other keys intact, qclaw's key live-tested after). The Gmail app password "n8n dashboard email" (created 2026-03-16) is still owed a revocation, Tyson-side, in the Google account. Code record survives at `github.com/tysonven/n8n-health-dashboard` (private). Replaced by the heartbeat-based Telegram alerter (Slice 3h). Standing rule from this incident stays: platform-hosted builder workspaces (Manus and similar) get a LOCATIONS.md entry at creation, not at first commit; estate recon cannot enumerate them later.
 ## CI and deploy gating (all six repos)
 
 State as of 2026-09-08. Before the CI/CD rollout, 670 tests existed across five
@@ -383,8 +383,10 @@ a database is on the qclaw droplet just because the product is Flow OS.
     rebuild, not just a variable edit
   - GHL: posts to two Flow OS sub-account (2NszMTudEJyVXCzQjNTo)
     workflow webhooks (lead + day progress). Touches NO n8n workflow
-  - Rollback: restore the Cloudflare CNAME for `flowcoach` to
-    `cname.manus.space` (Manus deployment retained until decommission)
+  - Rollback: none, and none possible. The Manus deployment held as the DNS
+    rollback target ceased to exist vendor-side on 2026-09-08 (platform
+    reboot, all user data deleted). Webhook URLs rotated and the old ones
+    proven dead the same day; see the build log entry.
 
 ## Secrets and credentials
 
@@ -502,7 +504,6 @@ n8n Postgres `user_api_keys` on `157.230.216.158`
 
 | Key | Purpose |
 |---|---|
-| `manus API` | Unscoped key polled every 5 min by the Manus-hosted n8n Health Dashboard. **DECOMMISSION-PENDING**: revoke once the heartbeat Telegram alerter is proven. Created 2026-03-16. |
 | `MCP Server API Key` | [needs Tyson input]. Created 2026-01-02. |
 | `n8n mcp` | [needs Tyson input]. Created 2025-07-15, the oldest key in the store. |
 | `n8n query key v2` | [needs Tyson input]. Created 2026-04-20. |
@@ -539,6 +540,12 @@ When migrating any location (e.g. file-based log → Supabase table):
 Append-only record of what changed in this file and why. A location that moved
 without an entry here is the failure mode this log exists to catch.
 
+- **2026-09-08** Manus decommission executed: removed the flow-coach-ai DNS
+  rollback note (the Manus deployment it pointed at ceased to exist
+  vendor-side in a platform reboot the same day), rewrote the n8n Health
+  Dashboard entry as gone, and removed the revoked `manus API` row from the
+  n8n key table. The Gmail app password revocation is recorded in the
+  dashboard entry as still owed.
 - **2026-08-20** Documented **Call Intel** (`tysonven/call-intel`) under
   standalone applications. It had never appeared in this file at all. Vercel
   serverless, and the one standalone app that does **not** have its own
