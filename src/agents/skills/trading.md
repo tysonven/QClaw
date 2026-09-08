@@ -91,7 +91,12 @@ Verified in code 2026-08-14:
   7 percentage points).
 - High-edge floor: **0.07** (`scanner.AMOUNT_EDGE_FLOOR`).
 - Pre-simulation volume floor: **20,000 USDC** (`scanner.MIN_PRESIM_VOLUME`).
-- Horizon cap: **35 days** (`scanner.HORIZON_MAX_DAYS`).
+- Horizon window: **1.0 to 35 days**. Upper bound `scanner.HORIZON_MAX_DAYS`;
+  lower bound `config.min_horizon_tradeable_days`, enforced twice, in
+  `scanner.analyse_edge` at scan time and again in executor GATE 7 against the
+  clock at execution. Horizons are FRACTIONAL days as of 2026-09-08; they used
+  to be rounded up to whole days, which is what priced position e09b82fe into a
+  maximum-size loss.
 - No-edge band and the alert volume floor come from
   `config.no_edge_threshold` and `config.min_alert_volume`, both read from the
   environment. Historically −0.20 and 5,000 USDC, but these are NOT hardcoded:
@@ -110,8 +115,8 @@ Monte Carlo worker — http://localhost:4001 (PM2: trading-worker):
 
 Trade execution path (rewritten 2026-08-14): execution belongs entirely to the
 standalone trade engine, src/trade_engine/executor.py, which invokes
-src/trading/execute_trade.py as a subprocess behind SIX pre-flight gates.
-Verified against the code 2026-08-14. Every one of these can refuse a trade
+src/trading/execute_trade.py as a subprocess behind SEVEN pre-flight gates.
+Verified against the code 2026-09-08. Every one of these can refuse a trade
 the Analyst and Tyson have already approved, so check them before telling
 Tyson a trade "will" go through:
 
@@ -123,10 +128,20 @@ Tyson a trade "will" go through:
 | 4 | edge_below_threshold | `candidate.edge < min_edge_threshold / 100` | 7% |
 | 5 | invalid_amount | size ≤ 0, above config, or above a hard ceiling | `max_position_usdc` (10) AND **ABSOLUTE_MAX_POSITION_USDC = 25.0** (hardcoded ceiling that config cannot raise) |
 | 6 | invalid_market_identifier | no well-formed Polymarket conditionId | — |
+| 7 | horizon_below_minimum | the market resolves too soon, RECOMPUTED from `end_date` at execution, or `end_date` is missing/unparseable | **MIN_HORIZON_TRADEABLE_DAYS = 1.0** (`config`; env may raise it, never lower it) |
 
 Gates 2 and 5's hard limits are code constants, not database config: raising
 `max_position_usdc` above 25 does NOT raise the real ceiling, and there is no
 config key for the 2-position cap.
+
+**Gate 7 uses the clock, not the candidate.** It recomputes days-to-resolution
+from `end_date` at the moment of execution rather than reading the horizon the
+scanner recorded. Those differ by up to 2100 seconds (the approval timeout plus
+the maximum approval age), which is enough to carry a market from exactly the
+1.00d floor to 0.976d. So a trade the scanner proposed can be refused here with
+nothing having changed except time passing, and that is correct rather than a
+bug. If asked why a trade was blocked as `horizon_below_minimum` when the
+proposal looked fine, this is the answer.
 
 **Gate 3 depends on manual logging (changed 2026-08-20).** The Position Monitor
 no longer writes a close when a stop-loss or take-profit threshold fires: it
@@ -250,7 +265,7 @@ Credentials: POLYMARKET_PRIVATE_KEY + POLYMARKET_FUNDER_ADDRESS
    markets below this edge.
 7. There is no HTTP execution route and no TRADING_WEBHOOK_SECRET path any
    more (both retired 2026-08-14). Execution runs only through the trade
-   engine's executor, behind its six gates plus the Telegram approval gate.
+   engine's executor, behind its seven gates plus the Telegram approval gate.
    Never propose reinstating an HTTP execution route.
 8. The Monte Carlo worker must be running (PM2: trading-worker) before any
    simulation or execution calls.

@@ -61,6 +61,13 @@ def make_candidate(**overrides) -> ScannerCandidate:
         market_probability=0.0875,
         volume=37494.25,
         horizon_days=1,
+        # GATE 7 recomputes the horizon from end_date against the live clock,
+        # so every candidate needs one. Far future by default; the GATE 7 tests
+        # below override it to put the market at a specific distance from the
+        # floor.
+        end_date=(datetime.now(timezone.utc) + timedelta(days=21)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        ),
         market_url="https://polymarket.com/market/eth-above-1900",
         amount_usdc=5.0,
     )
@@ -282,12 +289,16 @@ class GateTest(unittest.TestCase):
 
     # --- GATE 7, the tradeable-horizon floor ------------------------------
     #
-    # These deliberately DO NOT go through the scanner. The scanner refuses
-    # sub-day markets too, but the whole point of gate 7 is that the executor
-    # refuses independently: a candidate can reach execute() from a 30-minute-
-    # old approval, from a persisted ApprovalResult, or from a scanner running
-    # older code. Constructing the candidate directly is what proves the two
-    # layers are independent rather than one guard tested twice.
+    # GATE 7 RECOMPUTES the horizon from end_date against the clock at
+    # execution. It does not read candidate.horizon_days, which is frozen at
+    # scan time. These tests drive it by end_date for that reason, and the
+    # decay test below is the one that distinguishes the two.
+
+    @staticmethod
+    def ends_in(**delta):
+        return (datetime.now(timezone.utc) + timedelta(**delta)).strftime(
+            "%Y-%m-%dT%H:%M:%S.%fZ"
+        )
 
     def test_gate7_refuses_the_e09b82fe_horizon(self):
         """0.0412d, the 3,558-second market that cost $10.69.
@@ -295,29 +306,80 @@ class GateTest(unittest.TestCase):
         Edge is left at the fixture's healthy 0.2164 on purpose: this must be
         refused on horizon ALONE, with nothing wrong with the edge.
         """
-        self.assert_blocked("horizon_below_minimum", horizon_days=0.041181)
+        self.assert_blocked("horizon_below_minimum", end_date=self.ends_in(seconds=3558))
 
     def test_gate7_refuses_just_under_the_floor(self):
-        self.assert_blocked("horizon_below_minimum", horizon_days=0.999)
+        self.assert_blocked("horizon_below_minimum", end_date=self.ends_in(days=0.999))
 
-    def test_gate7_admits_exactly_the_floor(self):
-        """1.0d is tradeable, the floor is a minimum, not an exclusive bound."""
+    def test_gate7_refuses_a_market_that_has_already_resolved(self):
+        self.assert_blocked("horizon_below_minimum", end_date=self.ends_in(days=-1))
+
+    def test_gate7_admits_a_market_with_headroom(self):
+        """The gate refuses SHORT markets, not fractional ones."""
         ex = StubExecutor()
         with DBStub():
-            result = run(ex.execute(make_approval(horizon_days=1.0)))
+            result = run(ex.execute(make_approval(end_date=self.ends_in(days=20.58))))
         self.assertTrue(result.success)
 
-    def test_gate7_admits_a_fractional_horizon_above_the_floor(self):
-        """20.58d must trade normally; this gate refuses SHORT, not FRACTIONAL."""
-        ex = StubExecutor()
-        with DBStub():
-            result = run(ex.execute(make_approval(horizon_days=20.582881944)))
-        self.assertTrue(result.success)
+    # --- the decay case, which is the whole reason GATE 7 exists -----------
 
-    def test_gate7_fails_closed_on_non_finite_horizon(self):
-        for bad in (float("nan"), float("inf"), float("-inf")):
-            with self.subTest(horizon=bad):
-                self.assert_blocked("horizon_below_minimum", horizon_days=bad)
+    def test_gate7_refuses_a_market_that_decayed_below_the_floor_since_the_scan(self):
+        """THE independence test. The scanner admitted it; the executor must not.
+
+        A market at EXACTLY the 1.00d floor when the scanner proposed it is
+        0.976d by the time the order can go out: APPROVAL_TIMEOUT_SECONDS
+        (1800) plus APPROVAL_MAX_AGE_SECONDS (300) is 2100s of decay. Reading
+        the frozen candidate.horizon_days passes it. Recomputing refuses it.
+
+        The candidate carries horizon_days=1.0, the honest scan-time value, so
+        this fails the moment the gate goes back to trusting that field. That is
+        what makes the two layers independent rather than one check written
+        twice: they evaluate the same property against different clocks.
+        """
+        decay = executor_mod.APPROVAL_MAX_AGE_SECONDS + 1800
+        self.assertEqual(decay, 2100)
+        scan_time = datetime.now(timezone.utc) - timedelta(seconds=decay)
+        end_date = (scan_time + timedelta(days=1.0)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+        # The scanner, at scan time, would have admitted this: exactly the floor.
+        at_scan = PolymarketScanner._horizon_days(end_date, scan_time)
+        self.assertAlmostEqual(at_scan, 1.0, places=6)
+        self.assertGreaterEqual(at_scan, executor_mod.config.min_horizon_tradeable_days)
+
+        # The executor, now, must refuse it.
+        self.assert_blocked(
+            "horizon_below_minimum", end_date=end_date, horizon_days=at_scan
+        )
+
+    def test_gate7_uses_the_clock_not_the_frozen_field(self):
+        """Same property from the other side: a stale field must not save it.
+
+        horizon_days claims a healthy 21 days. end_date says 10 minutes. The
+        gate must believe end_date.
+        """
+        self.assert_blocked(
+            "horizon_below_minimum",
+            end_date=self.ends_in(minutes=10),
+            horizon_days=21.0,
+        )
+
+    # --- fail closed -------------------------------------------------------
+
+    def test_gate7_fails_closed_on_missing_end_date(self):
+        """An unknown resolution time is refused, never backfilled from the
+        scan-time snapshot."""
+        for absent in (None, ""):
+            with self.subTest(end_date=absent):
+                self.assert_blocked(
+                    "horizon_below_minimum", end_date=absent, horizon_days=21.0
+                )
+
+    def test_gate7_fails_closed_on_unparseable_end_date(self):
+        for bad in ("not-a-date", "2026-13-45T99:99:99Z", "soon"):
+            with self.subTest(end_date=bad):
+                self.assert_blocked(
+                    "horizon_below_minimum", end_date=bad, horizon_days=21.0
+                )
 
     def test_unapproved_status_refused(self):
         for status in (ApprovalStatus.skipped, ApprovalStatus.timeout,

@@ -787,8 +787,12 @@ async def execute(result: ApprovalResult) -> JSONResponse:
     THIS SPENDS REAL MONEY. It bypasses the scanner, the Analyst and the
     approval gate, so the ApprovalResult in the body is the only evidence of
     consent — which is why the executor re-checks `status == approved` itself
-    rather than trusting the caller, and re-runs all six financial gates
+    rather than trusting the caller, and re-runs all seven financial gates
     against live Supabase state before anything is sent to Polymarket.
+
+    GATE 7 recomputes the horizon from end_date against the clock, so replaying
+    an old ApprovalResult here can be refused as horizon_below_minimum even
+    though it was valid when it was approved. That is the gate working.
 
     No auth, in the same sense as /scan and /config: the process binds
     127.0.0.1 only. That is the whole access control story — do not expose this

@@ -35,6 +35,7 @@ import httpx
 from src.trade_engine.config import config
 from src.trade_engine.approval import ApprovalGate, ApprovalGateBusy
 from src.trade_engine.database import SupabaseError, write_simulation
+from src.trade_engine.horizon import horizon_days
 from src.trade_engine.executor import TradeExecutor
 from src.trade_engine.models import (
     ApprovalStatus,
@@ -457,15 +458,13 @@ class PolymarketScanner:
         monte_carlo's 21-vs-90-day lookback selector all keep their old
         behaviour. The only thing this changes is the VALUE handed downstream.
         """
-        if not end_date:
-            return DEFAULT_HORIZON_DAYS
-        try:
-            parsed = datetime.fromisoformat(str(end_date).replace("Z", "+00:00"))
-        except ValueError:
-            return DEFAULT_HORIZON_DAYS
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        return (parsed - now).total_seconds() / 86400.0
+        value = horizon_days(end_date, now)
+        # None means the end date is absent or unparseable. The SCANNER treats
+        # that as a 30-day market, which is the behaviour this has always had.
+        # Executor GATE 7 makes the opposite choice on the same None and
+        # refuses; see src/trade_engine/horizon.py for why that asymmetry is
+        # deliberate rather than an inconsistency.
+        return DEFAULT_HORIZON_DAYS if value is None else value
 
     @staticmethod
     def _select_rungs(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -633,6 +632,12 @@ class PolymarketScanner:
             market_probability=row["yes_price"],
             volume=row["volume"],
             horizon_days=row["horizon_days"],
+            # Carried so the executor can RECOMPUTE the horizon at execution
+            # time. horizon_days above is frozen at scan time and decays by up
+            # to 2100s (approval timeout + max approval age) before the order
+            # goes out, which is enough to carry a market from exactly the
+            # floor to below it.
+            end_date=row.get("end_date"),
             market_url=POLYMARKET_MARKET_URL.format(slug=slug) if slug else "",
             amount_usdc=_amount_usdc(edge),
         )

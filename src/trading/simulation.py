@@ -91,7 +91,9 @@ MIN_HORIZON_MODEL_DAYS = 0.01
 # What the kernel actually priced, carried back so a persisted simulation row
 # records its own discretisation. The ceil() bug survived 5,649 stored rows
 # partly because none of them recorded the effective horizon or the step count.
-PricedPaths = namedtuple("PricedPaths", "hits total steps dt horizon_days_model")
+PricedPaths = namedtuple(
+    "PricedPaths", "hits total steps dt horizon_days_model steps_per_day"
+)
 
 
 def wilson_interval(successes, total, z=1.96):
@@ -208,4 +210,6 @@ def simulate_paths(current_price, target, mu, sigma, horizon_days, market_type,
     else:  # touch_below
         hits = np.any(paths <= target, axis=1).sum()
 
-    return PricedPaths(int(hits), num_simulations, steps, dt, horizon_model)
+    return PricedPaths(
+        int(hits), num_simulations, steps, dt, horizon_model, steps_per_day
+    )

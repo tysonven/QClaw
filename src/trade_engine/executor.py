@@ -30,7 +30,6 @@ well-formed conditionId is refused rather than sent with the wrong identifier.
 import asyncio
 import json
 import logging
-import math
 import re
 import subprocess
 from datetime import datetime, timezone
@@ -41,6 +40,7 @@ import httpx
 
 from src.trade_engine.approval import _scrub
 from src.trade_engine.config import config, install_bot_token_redaction
+from src.trade_engine.horizon import horizon_days
 from src.trade_engine.database import (
     SupabaseError,
     count_open_positions,
@@ -283,34 +283,46 @@ class TradeExecutor:
             raise ExecutionGateError("invalid_market_identifier")
         log.debug("gate 6 ok: conditionId well-formed")
 
-        # GATE 7, the market must still be long enough to price.
-        # PolymarketScanner.analyse_edge already refuses anything under this
-        # floor, so in a healthy pipeline this gate never fires. That is the
-        # point: the scanner PROPOSES and the executor EXECUTES, and a control
-        # that lives in one layer only is not a control. GATE 1 re-reads the
-        # global brake here for the same reason, the candidate in hand may
-        # have been selected up to 30 minutes ago, by a scanner running older
-        # code, or reconstructed from a persisted approval.
+        # GATE 7, the market must STILL be long enough to price, measured now.
         #
-        # Fails CLOSED on a missing or non-finite value, matching gates 1-6:
-        # an unknown horizon is refused, never waved through.
-        horizon = candidate.horizon_days
+        # This RECOMPUTES the horizon from end_date against the current clock.
+        # It deliberately does not read candidate.horizon_days, which is a
+        # snapshot taken during the scan and is stale by the time this runs:
+        # APPROVAL_TIMEOUT_SECONDS (1800) plus APPROVAL_MAX_AGE_SECONDS (300)
+        # is 2100s, so a market at exactly the 1.00d floor when it was proposed
+        # is 0.976d when the order goes out. Reading the frozen field passes it,
+        # and 0.976d is intraday by exactly the argument the floor exists for:
+        # daily_sigma comes from 21 daily closes and is not calibrated for a
+        # sub-day window.
+        #
+        # This is also what makes the gate an independent control rather than a
+        # second copy of the scanner's check. The scanner evaluates the horizon
+        # at scan time; this evaluates it at execution time. They can disagree,
+        # and when they do this one wins.
+        #
+        # Fails CLOSED on absent or unparseable end_date, matching gates 1-6.
+        # An unknown resolution time is refused, never waved through, and in
+        # particular is never backfilled from the stale snapshot.
         floor = config.min_horizon_tradeable_days
-        if horizon is None or not isinstance(horizon, (int, float)) \
-                or isinstance(horizon, bool) or not math.isfinite(float(horizon)):
+        remaining = horizon_days(candidate.end_date, datetime.now(timezone.utc))
+        if remaining is None:
             log.error(
-                "gate 7: candidate has no usable horizon (market_id=%s, value=%r)",
-                candidate.market_id, horizon,
+                "gate 7: candidate has no usable end_date (market_id=%s, value=%r), "
+                "refusing rather than trusting the scan-time horizon %r",
+                candidate.market_id, candidate.end_date, candidate.horizon_days,
             )
             raise ExecutionGateError("horizon_below_minimum")
-        if float(horizon) < floor:
+        if remaining < floor:
             log.error(
-                "gate 7: horizon %.4fd is below the %.2fd tradeable floor "
-                "(market_id=%s), refusing",
-                float(horizon), floor, candidate.market_id,
+                "gate 7: horizon is %.4fd now (was %.4fd at scan), below the "
+                "%.2fd tradeable floor (market_id=%s), refusing",
+                remaining, candidate.horizon_days, floor, candidate.market_id,
             )
             raise ExecutionGateError("horizon_below_minimum")
-        log.debug("gate 7 ok: horizon=%.4fd >= %.2fd", float(horizon), floor)
+        log.debug(
+            "gate 7 ok: horizon=%.4fd now (%.4fd at scan) >= %.2fd",
+            remaining, candidate.horizon_days, floor,
+        )
 
     # --- execution --------------------------------------------------------
 

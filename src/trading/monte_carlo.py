@@ -159,7 +159,12 @@ def run_simulation(asset, target, horizon_days=30.0, question=''):
         # can be re-derived later instead of guessed at.
         "horizon_days_model": priced.horizon_days_model,
         "steps": priced.steps,
-        "steps_per_day": STEPS_PER_DAY,
+        # priced.steps_per_day, NOT the module constant. simulate_paths takes
+        # steps_per_day as an argument, so the constant is only the default;
+        # reporting it would make a persisted row claim a density that was not
+        # used the moment anything passes an override. Issue #119 is exactly
+        # that change.
+        "steps_per_day": priced.steps_per_day,
         "market_type": market_type_used,
         "question": question or f"Will {asset} hit ${target}?",
         "simulations": NUM_SIMULATIONS,

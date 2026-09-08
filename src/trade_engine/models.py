@@ -236,6 +236,12 @@ class ScannerCandidate(BaseModel):
     # into a ValidationError that takes down the whole scan rather than one
     # market. Verified against pydantic 2.12.4.
     horizon_days: float
+    # Market resolution time as Gamma reports it, carried from the scanner row.
+    # horizon_days above is a SNAPSHOT taken at scan time; this is the input
+    # executor GATE 7 uses to recompute the horizon against the clock at
+    # execution. Optional so an ApprovalResult persisted before 2026-09-08 still
+    # validates; GATE 7 refuses when it is absent rather than assuming.
+    end_date: Optional[str] = None
     market_url: str
     amount_usdc: float
 

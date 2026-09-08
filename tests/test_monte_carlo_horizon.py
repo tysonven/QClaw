@@ -299,6 +299,44 @@ class StepPolicyTest(unittest.TestCase):
             with self.subTest(days=days):
                 self.assertEqual(steps_for_horizon(float(days)), days)
 
+    def test_steps_for_horizon_rounds_UP_not_to_nearest(self):
+        """ceil, not round. The whole-day cases above cannot tell them apart.
+
+        Every value there has no fractional part, so `round` passes all of them
+        and the distinction only shows on a fraction below 0.5. That matters
+        because steps is the sizing lever: rounding to nearest gives a 20.333d
+        market 20 barrier observations instead of 21, and fewer observations
+        means a lower touch probability, a smaller edge and a smaller position.
+        Silent, and in the direction that looks like caution.
+
+        20.333 and 11.416 are the real horizons of positions 71f8a608 and
+        f4be9ee8 from the re-baseline table, both of which `round` gets wrong.
+        """
+        for horizon, ceil_steps, round_steps in (
+            (20.333, 21, 20),   # 71f8a608, BTC touch_below
+            (11.416, 12, 11),   # f4be9ee8, ETH touch_above
+            (4.2, 5, 4),
+            (1.001, 2, 1),
+            (0.0412, 1, 0),     # `round` gives 0 here: the empty-array path
+        ):
+            with self.subTest(horizon=horizon):
+                self.assertNotEqual(
+                    ceil_steps, round_steps, "test case cannot distinguish them"
+                )
+                self.assertEqual(steps_for_horizon(horizon), ceil_steps)
+
+    def test_steps_for_horizon_reports_the_density_it_used(self):
+        """PricedPaths carries steps_per_day so a persisted row cannot claim a
+        density that was not used. See issue #119."""
+        for spd in (1, 4, 24):
+            with self.subTest(steps_per_day=spd):
+                priced = simulate_paths(
+                    SPOT, TARGET, MU, SIGMA, 5.0, MARKET_TYPE,
+                    num_simulations=100, steps_per_day=spd, rng=rng(),
+                )
+                self.assertEqual(priced.steps_per_day, spd)
+                self.assertEqual(priced.steps, steps_for_horizon(5.0, spd))
+
     def test_steps_for_horizon_is_capped(self):
         self.assertEqual(steps_for_horizon(35.0, steps_per_day=10_000), MAX_STEPS)
 
