@@ -315,10 +315,18 @@ class GateTest(unittest.TestCase):
         self.assert_blocked("horizon_below_minimum", end_date=self.ends_in(days=-1))
 
     def test_gate7_admits_a_market_with_headroom(self):
-        """The gate refuses SHORT markets, not fractional ones."""
+        """The gate refuses SHORT markets, not fractional ones.
+
+        horizon_days is fractional here as well as end_date, because every real
+        candidate carries one since 2026-09-08 and the money path must accept it
+        end to end. Without this the executor suite passes with
+        ScannerCandidate.horizon_days back as an int.
+        """
         ex = StubExecutor()
         with DBStub():
-            result = run(ex.execute(make_approval(end_date=self.ends_in(days=20.58))))
+            result = run(ex.execute(make_approval(
+                end_date=self.ends_in(days=20.58), horizon_days=20.582881944,
+            )))
         self.assertTrue(result.success)
 
     # --- the decay case, which is the whole reason GATE 7 exists -----------
