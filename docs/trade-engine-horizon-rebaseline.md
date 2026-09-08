@@ -11,7 +11,7 @@ Two things are separated here on purpose:
    days instead of `math.ceil`, and the simulator derives `dt = horizon/steps`
    instead of hardwiring `dt = 1.0`.
 2. **The step density** (NOT shipped). `STEPS_PER_DAY` stays at 1. Raising it
-   is an exposure decision and is tracked separately.
+   is an exposure decision and is tracked separately as issue #119.
 
 ## Method, and what it cannot tell you
 

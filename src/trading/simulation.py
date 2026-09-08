@@ -51,7 +51,8 @@ NUM_SIMULATIONS = 10_000
 # 6.13 to 6.80 points, i.e. 0.2 points short of qualifying. On that sample it
 # roughly doubles the population of markets that would propose while barely
 # resizing the ones already taken. That is an exposure change wearing the
-# costume of an accuracy fix.
+# costume of an accuracy fix. Tracked with the full table as issue #119;
+# docs/trade-engine-horizon-rebaseline.md has the method.
 #
 # close_above / close_below are unaffected by this constant either way: summing
 # n increments of N(nu*dt, sigma^2*dt) gives N(nu*T, sigma^2*T) for any n, so

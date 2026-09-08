@@ -242,7 +242,7 @@ class StepPolicyTest(unittest.TestCase):
         a 7-point floor and roughly doubles the population of markets that
         would qualify. That is an exposure decision requiring sign-off, not a
         tuning change. If you are changing this, the approval comes first and
-        this assertion changes with it.
+        this assertion changes with it. Tracked as issue #119.
         """
         self.assertEqual(STEPS_PER_DAY, 1)
 
