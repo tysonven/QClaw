@@ -300,6 +300,18 @@ class TradeExecutor:
         # at scan time; this evaluates it at execution time. They can disagree,
         # and when they do this one wins.
         #
+        # PRECISELY WHICH HALF IS LIVE, because the obvious reading is wrong.
+        # Only the horizon is. `floor` below is config.min_horizon_tradeable_days,
+        # which is read from the environment ONCE in Config.__init__ at import
+        # and is NOT a trading_config column, so nothing reloads it and its
+        # import-time and execution-time values are always the same number. This
+        # gate is therefore NOT the parallel to GATE 1 that it looks like: GATE 1
+        # re-reads trading_config from Supabase on every call and can genuinely
+        # change under it. Changing the floor here needs a process restart.
+        #
+        # Stated because an earlier version of this comment implied both halves
+        # were live, and a review found the floor half of that claim vacuous.
+        #
         # Fails CLOSED on absent or unparseable end_date, matching gates 1-6.
         # An unknown resolution time is refused, never waved through, and in
         # particular is never backfilled from the stale snapshot.
