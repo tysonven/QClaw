@@ -26369,3 +26369,154 @@ a credential entry that cannot be re-verified against the issuer is a claim
 with no expiry, so date it as an observation, never state it as a standing
 fact, and when the cause of a state is not known, say "not recorded" rather
 than reaching for the most available explanation.
+
+## 2026-09-09: the same fixture defect three times in one session, each found only after the last was closed
+
+Recorded as one entry rather than three because the recursion is the finding.
+Each instance was fixed, verified against mutants, and the next was found by
+re-running the same mutant class one layer over.
+
+### The rule, and the three times it was broken
+
+> A test comparing against a constant proves the constant, not the behaviour.
+> The gap is invisible whenever the value equals its default, which in a test
+> environment is always.
+
+**One.** Wire-through tests written to prove the scanner passes configured
+values into sizing asserted:
+
+```python
+self.assertEqual(captured["bankroll"], config.bankroll_usdc)
+self.assertEqual(captured["bankroll"], 25.0)
+```
+
+Both are the same number in a test environment, so a call site hardcoding
+`25.0` passed. Five mutants survived. Fixed by varying config and asserting the
+captured value tracks it.
+
+**Two.** With that fixed, `"min_order_size": 5.0` hardcoded in `analyse_edge`'s
+row builder still survived, because the rewritten tests hand a row DIRECTLY to
+the function under test and nothing exercised the code that builds the row. The
+fix had been applied at the layer where the defect was observed, not at every
+layer of the same shape. Fixed by driving `analyse_edge` end to end with market
+minimums of 1, 12, 50 and 2.5.
+
+**Three.** A narrow review of the arithmetic module then found
+`required_shares={5.0:.4f}` surviving in the log formatter, because both
+fixtures in the newly-written value-pinning test used the default minimum of 5.
+The test written to fix instance two reproduced instance two.
+
+### The generalisation, which is sharper than the rule it came from
+
+The recurring value was 5, the exchange's `orderMinSize`, which is 5 on every
+market ever sampled. So the fixture said 5, the plausible hardcode said 5, and
+the assertion compared 5 to 5.
+
+> A test for a remote value must use a value the remote never returns. If the
+> fixture agrees with the plausible hardcode, the test cannot tell them apart.
+
+And, for choosing mutants at all:
+
+> Mutants that look wrong to a human are the ones a literal-comparison test
+> already catches. The survivors are the ones that look right. A mutant table
+> full of `250.0`, `1.0` and `1e9` proves the easy half and reads as if it
+> proved the class.
+
+### Why it kept moving rather than staying fixed
+
+Each fix was verified against the mutants that had been named, and each time the
+naming was the limit. Closing an instance is not closing a class. **The evidence
+that a class is closed is that the mutant fails at every layer it could live at,
+not that it fails where it was found.** In practice that means: after fixing,
+re-run the same mutant one call deeper and one call shallower.
+
+---
+
+## 2026-09-09: the log that is the instrument was asserted by its own format string
+
+The fractional-Kelly sizing work rests on a decision to size correctly and
+therefore almost never trade. The whole justification for accepting near-total
+suppression is that every refusal is logged with its arithmetic, so the
+suppression rate becomes measured data rather than a guess. That log is the only
+instrument the decision has.
+
+Its test asserted:
+
+```python
+for field in ("price=", "edge=", "shares=", "required_shares=", ...):
+    self.assertIn(field, s.log_fields())
+```
+
+Those are substrings of the implementation's own f-string. Nine mutants
+survived. Every numeric value in the line could be replaced with zero and the
+suite stayed green:
+
+```
+price= edge= kelly_f= kelly_debit=1.1647 sized_notional= debit= shares=
+required_shares= min_notional= min_debit= clamped_by=none
+```
+
+That is the entire measurement, emptied, with a passing test.
+
+Worse: a second test existed specifically to catch a mislabelled field, named
+for that defect class, and it did not detect `sized_notional` printing
+`kelly_debit`. It asserted the absent label, two other fields, and a comparison
+of an object to itself, and never asserted what `sized_notional` prints.
+
+**Asserting a label is asserting the format string. The label is written by the
+same line that writes the value, so it cannot witness it.**
+
+Two things were needed to fix it properly, and the first attempt only did one:
+
+1. Pin every field to its own value.
+2. Pin them at fixtures where the values DIFFER. When nothing clamps,
+   `debit == kelly_debit` by construction, so a swap between those two is
+   invisible at a single fixture. Values are now pinned at both a clamped and an
+   unclamped case, and a separate test asserts the fixture's numbers are
+   distinct so a swap is detectable at all.
+
+The general form, for any diagnostic output that something downstream depends
+on: **if the log is the instrument, the log needs the same test discipline as
+the calculation.** It usually gets less, because it reads as reporting rather
+than logic.
+
+---
+
+## 2026-09-09: a PR based on a non-main branch gets no CI, and retargeting does not fix it
+
+Corrected from a first write-up that claimed "stacked PRs are silently
+unchecked", which was too broad and pointed at the wrong fix.
+
+`ci.yml` filters on the BASE branch:
+
+```yaml
+pull_request:
+  branches: [main]
+```
+
+Three facts, all observed on QClaw PR #135 rather than inferred:
+
+- A PR based on a non-main branch gets no checks, and `gh pr checks` reports
+  `no checks reported`, which is indistinguishable from "queued".
+- **Retargeting to `main` does not trigger a run.** #135 was retargeted and
+  stayed unchecked. The run fired on the next push to the branch.
+- There is no draft filter. Draft status was never involved; a draft PR based on
+  `main` is checked normally. The first write-up did not claim this, but it is
+  the natural wrong guess.
+
+The second point is the sharper half and was missing from the original. The
+obvious remedy for an unchecked PR is to retarget it, and doing so appears to
+fix nothing, because no event fires.
+
+**Unchecked code cannot reach `main` this way.** Branch protection requires four
+checks with `strict: true`, and merging a stacked PR into its base updates that
+base's PR head, which fires `synchronize` and runs CI on the combined result.
+So this is a review-integrity and feedback-latency problem, not a hole in the
+merge gate. Being precise about that matters because it changes the fix: there
+is no urgency, and the right change is the one that removes the ambiguity rather
+than one that adds a blocking gate.
+
+Tracked as issue #136. The leaning is to drop the `branches: [main]` filter
+under `pull_request`, with the caveat that `deploy`'s `push`-only gating must be
+re-read afterwards rather than assumed, since widening the trigger must not make
+it reachable from a pull request.
