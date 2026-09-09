@@ -79,6 +79,93 @@ class KellyArithmeticTest(unittest.TestCase):
             previous = s.notional
 
 
+class ParametersAreUsedNotAssumedTest(unittest.TestCase):
+    """Every parameter must TRACK its argument, not equal a hardcoded default.
+
+    Two parameters could be discarded entirely and replaced with the shipped
+    constant, and the suite stayed green:
+
+        fraction = 0.10 * full_kelly      # kelly_fraction ignored
+        if price < 0.10:                  # price_floor ignored
+
+    Invisible because 0.10 IS the live value on both, so every assertion
+    comparing against it passes either way. Same shape as a wire-through test
+    whose expected value is a literal that also appears at the call site: it
+    proves the constant, not that the argument is used.
+
+    The mutants that DO die are the ones substituting an obviously wrong value.
+    Those are the easy ones. The survivor is the one that looks right.
+
+    Every test here passes a value that is NOT the default and asserts the
+    output moves with it.
+    """
+
+    def test_kelly_fraction_is_used(self):
+        """Halving the fraction must halve the stake."""
+        base = size(0.80, 0.20, kelly_fraction=0.10)
+        half = size(0.80, 0.20, kelly_fraction=0.05)
+        quarter = size(0.80, 0.20, kelly_fraction=0.025)
+        self.assertAlmostEqual(half.kelly_debit, base.kelly_debit / 2, places=9)
+        self.assertAlmostEqual(quarter.kelly_debit, base.kelly_debit / 4, places=9)
+        self.assertAlmostEqual(half.notional, base.notional / 2, places=6)
+
+    def test_kelly_fraction_tracks_across_valid_values(self):
+        for fraction in (0.02, 0.05, 0.10, 0.25, 1.0):
+            with self.subTest(kelly_fraction=fraction):
+                s = size(0.80, 0.20, kelly_fraction=fraction)
+                expected = fraction * (0.80 - 0.20) / (1 - 0.20)
+                self.assertAlmostEqual(s.kelly_fraction, expected, places=12)
+
+    def test_a_larger_fraction_produces_a_larger_stake(self):
+        previous = 0.0
+        for fraction in (0.02, 0.05, 0.10, 0.25):
+            stake = size(0.80, 0.20, kelly_fraction=fraction).notional
+            self.assertGreater(stake, previous)
+            previous = stake
+
+    def test_price_floor_is_used(self):
+        """A market at 0.15 is refused under a 0.20 floor and sized under 0.10.
+
+        Neither probe is the default, so a hardcoded 0.10 fails the first and a
+        hardcoded 0.20 fails the second.
+        """
+        under = size(0.60, 0.15, price_floor=0.20)
+        self.assertEqual(under.refusal, "price_below_sizing_floor")
+        over = size(0.60, 0.15, price_floor=0.10)
+        self.assertNotEqual(over.refusal, "price_below_sizing_floor")
+
+    def test_price_floor_tracks_across_valid_values(self):
+        price = 0.25
+        for floor, refused in ((0.05, False), (0.20, False),
+                               (0.30, True), (0.50, True)):
+            with self.subTest(price_floor=floor):
+                s = size(0.80, price, price_floor=floor)
+                self.assertEqual(
+                    s.refusal == "price_below_sizing_floor", refused,
+                    f"floor {floor} against price {price}",
+                )
+
+    def test_bankroll_is_used(self):
+        base = size(0.80, 0.20, bankroll=25.0)
+        half = size(0.80, 0.20, bankroll=12.5)
+        self.assertAlmostEqual(half.kelly_debit, base.kelly_debit / 2, places=9)
+
+    def test_min_order_size_is_used(self):
+        """Already covered by the exchange-minimum tests, asserted here as a
+        parameter so all four sit together and none can regress alone."""
+        for minimum in (1.0, 7.5, 50.0):
+            with self.subTest(min_order_size=minimum):
+                s = size(0.80, 0.20, minimum=minimum)
+                self.assertEqual(s.required_shares, minimum)
+                self.assertAlmostEqual(s.min_notional, minimum * 0.20, places=12)
+
+    def test_the_ceilings_are_used(self):
+        for ceiling in (1.0, 6.0, 13.5):
+            with self.subTest(max_position_usdc=ceiling):
+                s = size(1.0, 0.50, bankroll=10_000.0, max_position_usdc=ceiling)
+                self.assertAlmostEqual(s.debit, ceiling, places=9)
+
+
 class FeeAwareTest(unittest.TestCase):
     """The cap is the DEBIT, not the notional."""
 
@@ -158,15 +245,72 @@ class ExchangeMinimumTest(unittest.TestCase):
                 self.assertEqual(s.refusal, "below_exchange_minimum")
                 self.assertLess(s.shares, MIN_SHARES)
 
-    def test_refusal_still_carries_the_arithmetic(self):
-        """A refusal is a measurement. Item (c) needs these numbers."""
-        s = size(0.6149, 0.279)
-        self.assertFalse(s.tradeable)
-        for field in ("price=", "edge=", "shares=", "required_shares=",
-                      "min_notional=", "sized_notional=", "kelly_debit=",
-                      "clamped_by="):
-            self.assertIn(field, s.log_fields())
+    def test_refusal_carries_the_arithmetic_BY_VALUE(self):
+        """A refusal is a measurement. Item (c) needs these numbers.
+
+        Asserting the LABELS is not asserting the numbers. An earlier version
+        of this test checked `assertIn("price=", ...)` and friends, which are
+        substrings of the implementation's own f-string, so every value in the
+        line could be zeroed and the suite stayed green. The whole log could be
+        emptied to bare labels and nothing noticed.
+
+        That is the same defect as a wire-through test comparing against a
+        literal: it proves the format string, not the data. This log IS the
+        deliverable of the sizing decision, so every field is pinned to its
+        own value here.
+        """
+        # minimum=12.0 on one fixture, deliberately NOT the shipped 5. Both
+        # fixtures previously used 5, so `required_shares={5.0:.4f}` (the value
+        # hardcoded) matched them and survived. A fixture that agrees with the
+        # plausible hardcode cannot tell it from the real thing, which is the
+        # same reason the per-market minimum needs a non-default probe.
+        for s in (size(0.6149, 0.279, minimum=12.0),          # refused, unclamped
+                  size(1.0, 0.50, bankroll=10_000.0)):        # tradeable, clamped
+            with self.subTest(clamped=s.clamped_by):
+                self.assert_every_field_pinned(s)
+
+    def assert_every_field_pinned(self, s):
+        line = s.log_fields()
+        for label, value in (
+            ("price", f"{s.side_price:.4f}"),
+            ("edge", f"{s.edge:+.4f}"),
+            ("kelly_f", f"{s.kelly_fraction:.5f}"),
+            ("kelly_debit", f"{s.kelly_debit:.4f}"),
+            ("sized_notional", f"{s.notional:.4f}"),
+            ("debit", f"{s.debit:.4f}"),
+            ("shares", f"{s.shares:.4f}"),
+            ("required_shares", f"{s.required_shares:.4f}"),
+            ("min_notional", f"{s.min_notional:.4f}"),
+            ("min_debit", f"{s.min_debit:.4f}"),
+        ):
+            with self.subTest(field=label):
+                self.assertIn(f"{label}={value}", line)
         self.assertGreater(s.notional, 0, "the computed size is still reported")
+
+    def test_every_logged_number_is_distinct_so_a_swap_is_visible(self):
+        """Pinning values only helps if the values differ.
+
+        If two fields happen to be equal, printing one under the other's label
+        passes. This picks a case where price, edge, notional, debit, shares and
+        the two minima are all different, so any swap shows.
+        """
+        s = size(0.6149, 0.279, minimum=12.0)
+        # kelly_debit is EXCLUDED here: when nothing clamps it equals debit by
+        # construction, which is the "cap IS the debit" invariant rather than a
+        # coincidence. The clamped fixture in the test above is what
+        # distinguishes those two, and it is why the value pinning runs over
+        # both a clamped and an unclamped case.
+        values = [s.side_price, s.edge, s.kelly_fraction, s.notional, s.debit,
+                  s.shares, s.required_shares, s.min_notional, s.min_debit]
+        rounded = [round(v, 4) for v in values]
+        self.assertEqual(len(set(rounded)), len(rounded),
+                         f"fixture makes a swap invisible: {rounded}")
+
+        clamped = size(1.0, 0.50, bankroll=10_000.0)
+        self.assertNotAlmostEqual(
+            clamped.kelly_debit, clamped.debit, places=2,
+            msg="the clamped fixture must separate kelly_debit from debit",
+        )
 
     def test_the_log_does_not_call_the_sized_notional_a_kelly_notional(self):
         """The label used to name the wrong quantity.
@@ -177,10 +321,35 @@ class ExchangeMinimumTest(unittest.TestCase):
         """
         s = size(1.0, 0.50, bankroll=10_000.0)
         self.assertEqual(s.clamped_by, "max_position_usdc")
-        self.assertNotIn("kelly_notional=", s.log_fields())
-        self.assertIn(f"kelly_debit={s.kelly_debit:.4f}", s.log_fields())
-        self.assertIn("clamped_by=max_position_usdc", s.log_fields())
+        line = s.log_fields()
+        self.assertNotIn("kelly_notional=", line)
+        self.assertIn(f"kelly_debit={s.kelly_debit:.4f}", line)
+        self.assertIn("clamped_by=max_position_usdc", line)
+        # THE POINT: sized_notional must carry the notional, not the pre-clamp
+        # ask. This test was named for that defect and did not detect it,
+        # because it never asserted what sized_notional actually prints.
+        self.assertIn(f"sized_notional={s.notional:.4f}", line)
+        self.assertNotIn(f"sized_notional={s.kelly_debit:.4f}", line)
         self.assertNotAlmostEqual(s.kelly_debit, s.notional, places=2)
+        self.assertNotAlmostEqual(s.kelly_debit, s.notional, places=2)
+
+    def test_the_two_minima_are_exact(self):
+        """min_notional and min_debit are what the caller needs to know how far
+        short it fell. Pinned exactly: min_notional was only ever asserted from
+        BELOW (doubling it strengthened the assertion), and min_debit was never
+        asserted at any value, so dropping its fee term survived."""
+        for p, price, minimum in ((0.6149, 0.279, 5.0), (0.35, 0.10, 12.0)):
+            with self.subTest(price=price, minimum=minimum):
+                s = size(p, price, minimum=minimum)
+                self.assertAlmostEqual(s.min_notional, minimum * price, places=12)
+                self.assertAlmostEqual(
+                    s.min_debit, minimum * price * (1 + fee_ratio(price)),
+                    places=12,
+                )
+                self.assertGreater(
+                    s.min_debit, s.min_notional,
+                    "min_debit must include the fee, or it is min_notional",
+                )
 
     def test_it_never_rounds_up_to_reach_the_minimum(self):
         """The one thing that must not happen.
@@ -289,8 +458,12 @@ class BoundaryTest(unittest.TestCase):
                     else:
                         lo = mid
                 s = size(hi, price)
-                if s.shares < minimum:
-                    self.assertFalse(s.tradeable, s.log_fields())
+                # Unconditional. Wrapping the assertion in `if s.shares <
+                # minimum` made it pass vacuously for any mutant that lifted
+                # shares above the floor, which is the mutant class it exists
+                # to catch.
+                self.assertLess(s.shares, minimum, "probe landed above the floor")
+                self.assertFalse(s.tradeable, s.log_fields())
 
 
 class ProbabilityRangeTest(unittest.TestCase):
