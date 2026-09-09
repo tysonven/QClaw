@@ -34,9 +34,14 @@ import httpx
 
 from src.trade_engine.config import config
 from src.trade_engine.approval import ApprovalGate, ApprovalGateBusy
-from src.trade_engine.database import SupabaseError, write_simulation
+from src.trade_engine.database import (
+    SupabaseError,
+    get_trading_config,
+    write_simulation,
+)
 from src.trade_engine.horizon import horizon_days
-from src.trade_engine.executor import TradeExecutor
+from src.trade_engine.sizing import size_position
+from src.trade_engine.executor import ABSOLUTE_MAX_POSITION_USDC, TradeExecutor
 from src.trade_engine.models import (
     ApprovalStatus,
     ScannerCandidate,
@@ -122,11 +127,10 @@ YES_PRICE_MAX = 0.99
 RUNGS_PER_EVENT = 3
 GLOBAL_CAP = 30
 
-# Position sizing: $3 at the high-edge threshold, $10 at edge 0.15+.
-AMOUNT_MIN_USDC = 3.0
-AMOUNT_MAX_USDC = 10.0
-AMOUNT_EDGE_FLOOR = 0.07
-AMOUNT_EDGE_CEILING = 0.15
+# Position sizing is fractional Kelly on the DEBIT, in sizing.py. The linear
+# $3-to-$10 ramp on edge that used to live here is gone: it had no relationship
+# to bankroll or to what the trade could lose, and it sized the notional while
+# the wallet pays notional plus fee. AMOUNT_EDGE_FLOOR/CEILING went with it.
 
 # Session 5 will enforce this before any execution; here it only gates the
 # best_trade suggestion.
@@ -195,18 +199,23 @@ def _outcome_yes_price(market: dict[str, Any]) -> Optional[float]:
     return None
 
 
-def _amount_usdc(edge: float) -> float:
-    """Linear $3-$10 on edge magnitude, clamped.
+def _market_min_order_size(market: dict[str, Any]) -> Optional[float]:
+    """The market's own orderMinSize, in SHARES, from the Gamma payload.
 
-    Uses abs(edge) so a NO-side candidate sizes on conviction too. For the
-    high-edge bucket (edge > 0) this is identical to the briefed formula; only
-    best_trade ever drives money, and best_trade only comes from high_edge.
+    Read per market rather than hardcoded to 5. It is a REMOTE value: baking a
+    copy into the code is the manual-allowlist pattern this codebase has been
+    caught by repeatedly, and it would silently size against the wrong floor the
+    day Polymarket changes it for one market. Absent means unknown, which
+    sizing.size_position fails closed on.
     """
-    span = AMOUNT_EDGE_CEILING - AMOUNT_EDGE_FLOOR
-    scaled = AMOUNT_MIN_USDC + (abs(edge) - AMOUNT_EDGE_FLOOR) / span * (
-        AMOUNT_MAX_USDC - AMOUNT_MIN_USDC
-    )
-    return round(max(AMOUNT_MIN_USDC, min(AMOUNT_MAX_USDC, scaled)), 2)
+    raw = market.get("orderMinSize")
+    if raw is None:
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) and value > 0 else None
 
 
 class PolymarketScanner:
@@ -423,6 +432,10 @@ class PolymarketScanner:
                 "horizon_days": horizon_days,
                 "end_date": end_date,
                 "volume": volume,
+                # The exchange's per-market share minimum, read from the Gamma
+                # payload we already have. None when absent, which sizing fails
+                # closed on rather than assuming the usual 5.
+                "min_order_size": _market_min_order_size(market),
                 "needs_simulation": True,
                 "source": market.get("source") or "polymarket",
                 "event_slug": market.get("event_slug"),
@@ -548,11 +561,18 @@ class PolymarketScanner:
 
             probability = sim.get("probability")
             if probability is None or not isinstance(probability, (int, float)) \
-                    or not math.isfinite(float(probability)):
+                    or isinstance(probability, bool) \
+                    or not math.isfinite(float(probability)) \
+                    or not 0.0 <= float(probability) <= 1.0:
                 # monte_carlo sanitises non-finite floats to null before jsonify.
                 errors += 1
+                # RANGE, not just finiteness. This is a remote HTTP service
+                # with no asserted response schema, and everything downstream
+                # treats the value as a probability: the sizing model's central
+                # result depends on p <= 1. sizing.size_position re-checks it,
+                # because a guard on the money path belongs at both ends.
                 log.warning(
-                    "simulate returned non-finite probability for market %s (%s): %r",
+                    "simulate returned an unusable probability for market %s (%s): %r",
                     candidate["market_id"], candidate["asset"], probability,
                 )
                 continue
@@ -580,6 +600,25 @@ class PolymarketScanner:
         no_edge: list[ScannerCandidate] = []
         neutral_count = 0
 
+        # The ceiling GATE 5 enforces FIRST, read once per run rather than per
+        # candidate. Sizing against the hard 25 while the executor refuses above
+        # trading_config's 10 would propose a figure the system will not honour.
+        # Unreadable config falls back to the hard ceiling and logs: Kelly at
+        # this bankroll tops out at $2.50 so neither bound can bind, and GATE 5
+        # re-reads the real value live before any order regardless.
+        ceiling = ABSOLUTE_MAX_POSITION_USDC
+        try:
+            cfg = await get_trading_config()
+            configured = float(cfg.max_position_usdc or 0)
+            if configured > 0:
+                ceiling = min(configured, ABSOLUTE_MAX_POSITION_USDC)
+        except (SupabaseError, ValueError, TypeError) as exc:
+            log.warning(
+                "could not read max_position_usdc for sizing (%s), sizing "
+                "against the hard ceiling $%.2f; GATE 5 still enforces the "
+                "configured value live", exc, ceiling,
+            )
+
         for row in simulated:
             sim = row["simulation"]
             sim_probability = float(sim["probability"])
@@ -587,9 +626,9 @@ class PolymarketScanner:
             volume = row["volume"]
 
             if edge >= config.high_edge_threshold and volume >= config.min_alert_volume:
-                high_edge.append(self._to_candidate(row, edge, sim_probability))
+                high_edge.append(self._to_candidate(row, edge, sim_probability, ceiling))
             elif edge <= config.no_edge_threshold and volume >= config.min_alert_volume:
-                no_edge.append(self._to_candidate(row, edge, sim_probability))
+                no_edge.append(self._to_candidate(row, edge, sim_probability, ceiling))
             else:
                 neutral_count += 1
 
@@ -613,10 +652,32 @@ class PolymarketScanner:
 
     @staticmethod
     def _to_candidate(
-        row: dict[str, Any], edge: float, sim_probability: float
+        row: dict[str, Any], edge: float, sim_probability: float,
+        ceiling: float = ABSOLUTE_MAX_POSITION_USDC,
     ) -> ScannerCandidate:
         slug = row.get("slug") or ""
         condition_id = row.get("condition_id")
+        direction = "YES" if edge > 0 else "NO"
+        sizing = size_position(
+            sim_probability=sim_probability,
+            yes_price=row["yes_price"],
+            direction=direction,
+            min_order_size=row.get("min_order_size"),
+            bankroll=config.bankroll_usdc,
+            kelly_fraction=config.kelly_fraction,
+            max_position_usdc=ceiling,
+            absolute_max_usdc=ABSOLUTE_MAX_POSITION_USDC,
+            price_floor=config.sizing_price_floor,
+        )
+        if not sizing.tradeable:
+            # Measurement, not noise. Item (c) of the sizing decision is to find
+            # out how often correct sizing lands under the exchange floor and at
+            # what prices, because that is the input to any future capital
+            # decision. Every refusal carries its own arithmetic.
+            log.info(
+                "not sizeable (%s): %s | %s",
+                sizing.refusal, row.get("question"), sizing.log_fields(),
+            )
         return ScannerCandidate(
             market_id=str(row["market_id"]),
             # Carried separately from market_id because they are different
@@ -626,7 +687,7 @@ class PolymarketScanner:
             condition_id=str(condition_id) if condition_id else None,
             question=row["question"] or "",
             asset=row["asset"],
-            direction="YES" if edge > 0 else "NO",
+            direction=direction,
             edge=edge,
             sim_probability=sim_probability,
             market_probability=row["yes_price"],
@@ -639,7 +700,9 @@ class PolymarketScanner:
             # floor to below it.
             end_date=row.get("end_date"),
             market_url=POLYMARKET_MARKET_URL.format(slug=slug) if slug else "",
-            amount_usdc=_amount_usdc(edge),
+            amount_usdc=sizing.notional,
+            min_order_size=row.get("min_order_size"),
+            sizing_refusal=sizing.refusal,
         )
 
     # --- select -----------------------------------------------------------
@@ -653,13 +716,24 @@ class PolymarketScanner:
         """
         if not summary.high_edge:
             return None
+        # A candidate that could not be sized is not a trade. It stays in the
+        # high_edge bucket and is still reported, because the sizing refusal is
+        # the measurement we want; it just cannot be proposed.
+        sizeable = [c for c in summary.high_edge if not c.sizing_refusal]
+        if not sizeable:
+            log.info(
+                "%d high-edge candidate(s), none sizeable: %s",
+                len(summary.high_edge),
+                ", ".join(sorted({c.sizing_refusal or "?" for c in summary.high_edge})),
+            )
+            return None
         if summary.open_positions >= MAX_CONCURRENT_POSITIONS:
             log.info(
                 "position cap reached (%d open >= %d), no best_trade selected",
                 summary.open_positions, MAX_CONCURRENT_POSITIONS,
             )
             return None
-        return max(summary.high_edge, key=lambda c: abs(c.edge))
+        return max(sizeable, key=lambda c: abs(c.edge))
 
     # --- analyst ----------------------------------------------------------
 
@@ -684,9 +758,28 @@ class PolymarketScanner:
             log.info("Analyst PASS: %s", recommendation.reasoning)
         elif recommendation.recommendation == "reduce":
             before = summary.best_trade.amount_usdc
-            summary.best_trade.amount_usdc = round(
-                max(AMOUNT_MIN_USDC, before / 2), 2
-            )
+            # REDUCE MUST NEVER INCREASE. This was max(AMOUNT_MIN_USDC, before/2)
+            # with a $3 floor, which on a $1.23 Kelly position returned $3.00: a
+            # 2.4x increase, on the exact path where the Analyst has just said
+            # it is less confident. A safety inversion, masked only because the
+            # old ramp never sized below $3. min() makes it structural rather
+            # than a property of the numbers.
+            summary.best_trade.amount_usdc = min(before, round(before / 2, 6))
+
+            # Halving can push a position under the exchange's share minimum.
+            # That is a refusal, not a smaller trade, and it is recorded here so
+            # nobody is asked to approve something that cannot be placed.
+            price = summary.best_trade.market_probability
+            minimum = summary.best_trade.min_order_size
+            if price and minimum:
+                side = summary.best_trade.amount_usdc / price
+                if side < float(minimum):
+                    summary.best_trade.sizing_refusal = "below_exchange_minimum"
+                    log.warning(
+                        "Analyst REDUCE put the position under the exchange "
+                        "minimum: %.4f shares < %.4f required, not tradeable",
+                        side, float(minimum),
+                    )
             log.info(
                 "Analyst REDUCE: %s, new size $%.2f (was $%.2f)",
                 recommendation.reasoning, summary.best_trade.amount_usdc, before,
@@ -762,6 +855,17 @@ class PolymarketScanner:
         summary.approval_result = None
 
         if summary.best_trade is None:
+            return
+
+        if summary.best_trade.sizing_refusal:
+            # Reachable when the Analyst's REDUCE pushed it under the exchange
+            # minimum. Executor GATE 8 would refuse it anyway; stopping here
+            # avoids putting a one-tap Execute button on a trade that cannot be
+            # placed.
+            log.info(
+                "best_trade is not sizeable (%s), no approval requested",
+                summary.best_trade.sizing_refusal,
+            )
             return
 
         recommendation = summary.analyst_recommendation

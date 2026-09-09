@@ -21,6 +21,7 @@ Run:
 """
 
 import asyncio
+import contextlib
 import math
 import os
 import sys
@@ -42,7 +43,16 @@ from src.trade_engine.config import (  # noqa: E402
     config,
 )
 from src.trade_engine.horizon import horizon_days  # noqa: E402
-from src.trade_engine.models import ScannerCandidate  # noqa: E402
+from src.trade_engine.database import SupabaseError  # noqa: E402
+from src.trade_engine.models import (  # noqa: E402
+    AnalystRecommendation,
+    ScannerCandidate,
+    ScannerRunSummary,
+    TradingConfig,
+)
+import src.trade_engine.scanner as scanner_mod  # noqa: E402
+from src.trade_engine.executor import ABSOLUTE_MAX_POSITION_USDC  # noqa: E402
+from src.trade_engine.sizing import size_position  # noqa: E402
 from src.trade_engine.scanner import (  # noqa: E402
     DEFAULT_HORIZON_DAYS,
     HORIZON_MAX_DAYS,
@@ -74,6 +84,7 @@ def make_market(end_date, **overrides):
         "endDate": end_date,
         "outcomePrices": '["0.50", "0.50"]',
         "volume": "279582.74",
+        "orderMinSize": 5,
         "event_slug": "what-price-will-bitcoin-hit",
     }
     market.update(overrides)
@@ -273,6 +284,551 @@ class CandidateCarriesEndDateTest(unittest.TestCase):
         self.assertIsNotNone(
             horizon_days(candidate.end_date, datetime.now(timezone.utc))
         )
+
+
+class ReduceNeverIncreasesTest(unittest.TestCase):
+    """The Analyst's REDUCE must reduce.
+
+    It was max(AMOUNT_MIN_USDC, before / 2) with a $3 floor. On a $1.23 Kelly
+    position that returns $3.00: a 2.4x INCREASE, on the exact path where the
+    Analyst has just said it is less confident. A safety inversion, invisible
+    while the old ramp never sized below $3, and live the moment Kelly does.
+    """
+
+    def summary_with(self, amount, price=0.40, minimum=5.0):
+        candidate = ScannerCandidate(
+            market_id="1", condition_id="0x" + "ab" * 32, question="q",
+            asset="btc", direction="YES", edge=0.20, sim_probability=0.60,
+            market_probability=price, volume=50000.0, horizon_days=5.0,
+            market_url="", amount_usdc=amount, min_order_size=minimum,
+        )
+        summary = ScannerRunSummary(
+            run_at=datetime.now(timezone.utc), markets_fetched=1,
+            candidates_analysed=1, simulations_run=1, sim_errors=0,
+        )
+        summary.best_trade = candidate
+        summary.analyst_recommendation = AnalystRecommendation(
+            recommendation="reduce", confidence=0.4, reasoning="thin", flags=[],
+        )
+        return summary
+
+    def reduce_to(self, amount, **kw):
+        summary = self.summary_with(amount, **kw)
+        scanner = PolymarketScanner(analyst=_StubAnalyst(summary.analyst_recommendation))
+        run(scanner.apply_analyst(summary))
+        return summary.best_trade.amount_usdc
+
+    def test_reduce_never_increases_at_any_size(self):
+        """The property, across the whole range including sub-$3 Kelly sizes."""
+        for before in (0.25, 0.5, 1.23, 2.99, 3.0, 5.0, 10.0):
+            with self.subTest(before=before):
+                after = self.reduce_to(before)
+                self.assertLess(after, before, "REDUCE must reduce")
+                self.assertAlmostEqual(after, before / 2, places=6)
+
+    def test_the_old_floor_would_have_tripled_a_kelly_position(self):
+        """Pins the specific defect rather than only the general property."""
+        self.assertLess(self.reduce_to(1.23), 1.23)
+        self.assertAlmostEqual(self.reduce_to(1.23), 0.615, places=6)
+
+    def test_reducing_under_the_exchange_minimum_marks_it_unsizeable(self):
+        """Halving can make a position unplaceable. That is a refusal, not a
+        smaller trade, and nobody should be asked to approve it."""
+        # $3.00 at price 0.40 is 7.5 shares, comfortably over. Halved it is
+        # $1.50, or 3.75 shares, which the exchange would reject.
+        summary = self.summary_with(3.0, price=0.40, minimum=5.0)
+        scanner = PolymarketScanner(analyst=_StubAnalyst(summary.analyst_recommendation))
+        run(scanner.apply_analyst(summary))
+        self.assertEqual(summary.best_trade.amount_usdc, 1.5)
+        self.assertEqual(summary.best_trade.sizing_refusal, "below_exchange_minimum")
+
+    def test_a_reduction_that_still_clears_the_minimum_is_not_marked(self):
+        """Exactly at the minimum is admitted, matching GATE 8's comparison.
+        $4.00 at 0.40 halves to $2.00, which is exactly 5 shares."""
+        summary = self.summary_with(4.0, price=0.40, minimum=5.0)
+        scanner = PolymarketScanner(analyst=_StubAnalyst(summary.analyst_recommendation))
+        run(scanner.apply_analyst(summary))
+        self.assertEqual(summary.best_trade.amount_usdc, 2.0)
+        self.assertIsNone(summary.best_trade.sizing_refusal)
+
+
+class SizingWireThroughTest(unittest.TestCase):
+    """Every value that crosses the module boundary onto the money path.
+
+    ASSERT THAT THE VALUE TRACKS, NEVER THAT IT EQUALS A LITERAL.
+
+    The first version of this class did the latter:
+
+        self.assertEqual(captured["bankroll"], config.bankroll_usdc)
+        self.assertEqual(captured["bankroll"], 25.0)
+
+    In the test environment those are the same number, so the first assertion is
+    vacuous and the second is satisfied by a call site that HARDCODES 25.0. It
+    killed every mutant substituting a value different from the shipped default
+    and none substituting the default itself. `min_order_size=5.0` was the worst
+    survivor: verbatim the hardcode-a-remote-value pattern four docstrings in
+    this module warn against, so a market whose real orderMinSize is 50 would be
+    sized tradeable and proposed to a human.
+
+    A test comparing against a constant proves the constant, not the wiring, and
+    the gap is invisible precisely when the config value equals its default,
+    which is always in a test environment.
+
+    So every test here VARIES the source and asserts the captured value MOVES
+    with it. A hardcoded call site fails them all.
+    """
+
+    ROW = {
+        "market_id": "3257355", "condition_id": "0x" + "ab" * 32,
+        "slug": "s", "question": "Will Bitcoin reach $60,000 in September?",
+        "asset": "btc", "yes_price": 0.20, "volume": 279582.74,
+        "horizon_days": 20.333, "end_date": "2026-09-30T04:00:00Z",
+        "min_order_size": 5.0,
+    }
+
+    def capture(self, row=None, edge=0.40, probability=0.60, ceiling=10.0):
+        captured = {}
+        real = scanner_mod.size_position
+
+        def spy(**kwargs):
+            captured.update(kwargs)
+            return real(**kwargs)
+
+        scanner_mod.size_position = spy
+        try:
+            candidate = PolymarketScanner._to_candidate(
+                dict(row or self.ROW), edge, probability, ceiling
+            )
+        finally:
+            scanner_mod.size_position = real
+        return captured, candidate
+
+    @contextlib.contextmanager
+    def config_value(self, attribute, value):
+        """Move a config attribute and put it back."""
+        original = getattr(scanner_mod.config, attribute)
+        setattr(scanner_mod.config, attribute, value)
+        try:
+            yield
+        finally:
+            setattr(scanner_mod.config, attribute, original)
+
+    def assert_tracks(self, attribute, kwarg, values):
+        """The captured kwarg must FOLLOW the config attribute, not match a
+        literal. Two distinct non-default values, so a hardcode of either the
+        default or one probe still fails."""
+        seen = []
+        for value in values:
+            with self.config_value(attribute, value):
+                captured, _ = self.capture()
+            self.assertEqual(
+                captured[kwarg], value,
+                f"{kwarg} did not track config.{attribute}: expected {value}, "
+                f"got {captured[kwarg]}. A hardcoded call site looks like this.",
+            )
+            seen.append(captured[kwarg])
+        self.assertEqual(len(set(seen)), len(values), "the value never moved")
+
+    # --- configured values must TRACK config ------------------------------
+
+    def test_bankroll_tracks_config(self):
+        self.assert_tracks("bankroll_usdc", "bankroll", [7.5, 19.25])
+
+    def test_kelly_fraction_tracks_config(self):
+        self.assert_tracks("kelly_fraction", "kelly_fraction", [0.03, 0.075])
+
+    def test_price_floor_tracks_config(self):
+        self.assert_tracks("sizing_price_floor", "price_floor", [0.11, 0.185])
+
+    # --- per-market values must track the ROW, not a constant -------------
+
+    def test_min_order_size_tracks_the_market(self):
+        """THE worst survivor. 5 is what every sampled market happens to
+        return, so a hardcoded 5.0 is invisible against a fixture that also
+        says 5. A market requiring 50 must be sized against 50."""
+        for minimum in (1.0, 50.0, 12.5):
+            with self.subTest(orderMinSize=minimum):
+                captured, candidate = self.capture(
+                    row=dict(self.ROW, min_order_size=minimum)
+                )
+                self.assertEqual(captured["min_order_size"], minimum)
+                self.assertEqual(candidate.min_order_size, minimum)
+
+    def test_a_stricter_market_minimum_actually_refuses(self):
+        """Tracking is only meaningful if it changes the verdict."""
+        loose = self.capture(row=dict(self.ROW, min_order_size=1.0))[1]
+        strict = self.capture(row=dict(self.ROW, min_order_size=50.0))[1]
+        self.assertIsNone(loose.sizing_refusal)
+        self.assertEqual(strict.sizing_refusal, "below_exchange_minimum")
+
+    def test_an_unknown_market_minimum_fails_closed_through_the_caller(self):
+        _, candidate = self.capture(row=dict(self.ROW, min_order_size=None))
+        self.assertEqual(candidate.sizing_refusal, "unknown_min_order_size")
+
+    def test_price_and_probability_track_their_inputs(self):
+        for price, probability in ((0.20, 0.60), (0.33, 0.81), (0.47, 0.99)):
+            with self.subTest(price=price):
+                captured, _ = self.capture(
+                    row=dict(self.ROW, yes_price=price), probability=probability
+                )
+                self.assertEqual(captured["yes_price"], price)
+                self.assertEqual(captured["sim_probability"], probability)
+
+    def test_the_ceiling_tracks_the_argument(self):
+        for ceiling in (4.0, 9.5, 17.0):
+            with self.subTest(ceiling=ceiling):
+                captured, _ = self.capture(ceiling=ceiling)
+                self.assertEqual(captured["max_position_usdc"], ceiling)
+                self.assertEqual(
+                    captured["absolute_max_usdc"], ABSOLUTE_MAX_POSITION_USDC
+                )
+
+    def test_it_passes_the_direction_it_derived(self):
+        for edge, expected in ((0.40, "YES"), (-0.40, "NO")):
+            with self.subTest(edge=edge):
+                captured, _ = self.capture(edge=edge)
+                self.assertEqual(captured["direction"], expected)
+
+    # --- the answer lands in the right field -----------------------------
+
+    def test_amount_usdc_is_the_NOTIONAL_not_the_debit(self):
+        """Also asserted across varying config, so it cannot pass by landing on
+        a value that happens to match at the default bankroll."""
+        # orderMinSize 1.0 so the candidate stays SIZEABLE at both bankrolls;
+        # at the shipped minimum of 5 the smaller bankroll refuses and the
+        # notional-vs-debit distinction stops being exercised.
+        row = dict(self.ROW, min_order_size=1.0)
+        for bankroll in (25.0, 12.0):
+            with self.subTest(bankroll=bankroll):
+                with self.config_value("bankroll_usdc", bankroll):
+                    captured, candidate = self.capture(row=row)
+                expected = size_position(**captured)
+                self.assertTrue(expected.tradeable, "pick a sizeable case")
+                self.assertGreater(expected.debit, expected.notional)
+                self.assertEqual(candidate.amount_usdc, expected.notional)
+                self.assertNotEqual(candidate.amount_usdc, round(expected.debit, 6))
+
+    def test_amount_usdc_moves_when_the_bankroll_moves(self):
+        """A hardcoded notional cannot do this."""
+        with self.config_value("bankroll_usdc", 25.0):
+            big = self.capture()[1].amount_usdc
+        with self.config_value("bankroll_usdc", 12.5):
+            small = self.capture()[1].amount_usdc
+        self.assertAlmostEqual(small, big / 2, places=5)
+
+    def test_the_sizing_refusal_is_recorded_on_the_candidate(self):
+        row = dict(self.ROW, yes_price=0.05)
+        _, candidate = self.capture(row=row)
+        self.assertEqual(candidate.sizing_refusal, "price_below_sizing_floor")
+
+    def test_a_sizeable_candidate_records_no_refusal(self):
+        _, candidate = self.capture()
+        self.assertIsNone(candidate.sizing_refusal)
+
+
+class RunSummaryCeilingTest(unittest.TestCase):
+    """build_run_summary reads the ceiling GATE 5 enforces. Untested until now.
+
+    Neither build_run_summary nor its trading_config lookup appeared in any test
+    file, so five mutants survived, including one turning `edge` into
+    `abs(edge)`, which makes every NO-edge market a proposed YES.
+    """
+
+    def rows(self, sim_probability=0.60, yes_price=0.20):
+        return [{
+            "market_id": "1", "condition_id": "0x" + "ab" * 32, "slug": "s",
+            "question": "q", "asset": "btc", "yes_price": yes_price,
+            "volume": 279582.74, "horizon_days": 20.333,
+            "end_date": "2026-09-30T04:00:00Z", "min_order_size": 1.0,
+            "simulation": {"probability": sim_probability},
+        }]
+
+    def summarise(self, rows, config_value=10.0, raises=None):
+        captured = {}
+        real_size, real_cfg = scanner_mod.size_position, scanner_mod.get_trading_config
+
+        def spy(**kw):
+            captured.update(kw)
+            return real_size(**kw)
+
+        async def fake_config():
+            if raises is not None:
+                raise raises
+            return TradingConfig(id=1, max_position_usdc=config_value)
+
+        scanner_mod.size_position = spy
+        scanner_mod.get_trading_config = fake_config
+        try:
+            summary = run(PolymarketScanner().build_run_summary(
+                rows, markets_fetched=1, candidates_analysed=1,
+                sim_errors=0, open_positions=0,
+            ))
+        finally:
+            scanner_mod.size_position = real_size
+            scanner_mod.get_trading_config = real_cfg
+        return captured, summary
+
+    def test_the_configured_ceiling_reaches_sizing(self):
+        for configured in (4.0, 10.0, 17.0):
+            with self.subTest(configured=configured):
+                captured, _ = self.summarise(self.rows(), config_value=configured)
+                self.assertEqual(captured["max_position_usdc"], configured)
+
+    def test_the_hard_ceiling_bounds_an_absurd_config(self):
+        """min(configured, ABSOLUTE_MAX). A trading_config edited to 10000 must
+        not raise the real ceiling."""
+        captured, _ = self.summarise(self.rows(), config_value=10_000.0)
+        self.assertEqual(captured["max_position_usdc"], ABSOLUTE_MAX_POSITION_USDC)
+
+    def test_an_unreadable_config_falls_back_to_the_hard_ceiling(self):
+        captured, _ = self.summarise(
+            self.rows(), raises=SupabaseError("GET", "/c", 500, "boom")
+        )
+        self.assertEqual(captured["max_position_usdc"], ABSOLUTE_MAX_POSITION_USDC)
+
+    def test_a_zero_or_absent_config_falls_back_rather_than_sizing_to_zero(self):
+        captured, _ = self.summarise(self.rows(), config_value=0.0)
+        self.assertEqual(captured["max_position_usdc"], ABSOLUTE_MAX_POSITION_USDC)
+
+    def test_edge_keeps_its_SIGN(self):
+        """abs(edge) survived the suite and is the worst of the five.
+
+        With it, a market priced ABOVE the simulation becomes a high-edge YES
+        candidate: the system proposes buying the side it believes is
+        overpriced.
+        """
+        _, summary = self.summarise(self.rows(sim_probability=0.05, yes_price=0.60))
+        self.assertEqual(summary.high_edge, [], "a negative edge is not high edge")
+        self.assertEqual(len(summary.no_edge), 1)
+        self.assertLess(summary.no_edge[0].edge, 0)
+        self.assertEqual(summary.no_edge[0].direction, "NO")
+
+
+class MarketMinimumIsReadNotAssumedTest(unittest.TestCase):
+    """analyse_edge must put the MARKET's orderMinSize on the row.
+
+    The wire-through tests hand a row straight to _to_candidate, so they cover
+    the second half of the journey and not the first. A mutant hardcoding 5.0
+    in the row builder survived them all: the gap simply moved one level up,
+    which is the same class of miss a third time.
+
+    5 is what every sampled market returns, so a hardcoded 5 is invisible
+    against any fixture that also says 5. Every test here uses a value that is
+    NOT 5.
+    """
+
+    def analyse(self, *markets):
+        return run(PolymarketScanner().analyse_edge(list(markets)))
+
+    def end_in(self, **delta):
+        return (datetime.now(timezone.utc) + timedelta(**delta)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+
+    def test_the_row_carries_the_markets_own_minimum(self):
+        for minimum in (1, 12, 50, 2.5):
+            with self.subTest(orderMinSize=minimum):
+                market = make_market(self.end_in(days=10), orderMinSize=minimum)
+                selected = self.analyse(market)
+                self.assertEqual(len(selected), 1)
+                self.assertEqual(selected[0]["min_order_size"], float(minimum))
+
+    def test_an_absent_minimum_becomes_None_not_five(self):
+        """Fail-closed depends on this. Defaulting to the usual 5 would size
+        against a floor nobody read."""
+        market = make_market(self.end_in(days=10))
+        market.pop("orderMinSize")
+        self.assertIsNone(self.analyse(market)[0]["min_order_size"])
+
+    def test_a_malformed_minimum_becomes_None(self):
+        for bad in ("many", None, 0, -5, float("nan")):
+            with self.subTest(orderMinSize=bad):
+                market = make_market(self.end_in(days=10), orderMinSize=bad)
+                self.assertIsNone(self.analyse(market)[0]["min_order_size"])
+
+    def test_a_numeric_string_is_accepted(self):
+        market = make_market(self.end_in(days=10), orderMinSize="12")
+        self.assertEqual(self.analyse(market)[0]["min_order_size"], 12.0)
+
+    def test_the_helper_reads_the_field_it_claims_to(self):
+        self.assertEqual(scanner_mod._market_min_order_size({"orderMinSize": 50}), 50.0)
+        self.assertIsNone(scanner_mod._market_min_order_size({}))
+        self.assertIsNone(scanner_mod._market_min_order_size({"minOrderSize": 50}))
+
+
+class SelectSkipsUnsizeableTest(unittest.TestCase):
+    """best_trade must never be a candidate that cannot be sized.
+
+    A mutant removing this filter survived the entire suite: nothing asserted
+    that an unsizeable candidate stays out of best_trade, only that sizing
+    refuses. GATE 8 would catch it at execution, but by then a human has been
+    asked to approve a trade the exchange will reject.
+    """
+
+    def candidate(self, market_id, edge, refusal=None):
+        return ScannerCandidate(
+            market_id=market_id, condition_id="0x" + "cd" * 32, question="q",
+            asset="btc", direction="YES", edge=edge, sim_probability=0.60,
+            market_probability=0.40, volume=50000.0, horizon_days=5.0,
+            market_url="", amount_usdc=2.0, min_order_size=5.0,
+            sizing_refusal=refusal,
+        )
+
+    def summary(self, *candidates):
+        s = ScannerRunSummary(
+            run_at=datetime.now(timezone.utc), markets_fetched=1,
+            candidates_analysed=len(candidates), simulations_run=len(candidates),
+            sim_errors=0,
+        )
+        s.high_edge = list(candidates)
+        return s
+
+    def test_the_widest_edge_is_skipped_when_it_cannot_be_sized(self):
+        """The unsizeable one has the BIGGEST edge, so a filter that is absent
+        picks it. That is what makes this test able to fail."""
+        summary = self.summary(
+            self.candidate("big", 0.40, refusal="below_exchange_minimum"),
+            self.candidate("small", 0.12),
+        )
+        best = PolymarketScanner().select_best_trade(summary)
+        self.assertIsNotNone(best)
+        self.assertEqual(best.market_id, "small")
+
+    def test_none_sizeable_means_no_trade(self):
+        summary = self.summary(
+            self.candidate("a", 0.40, refusal="below_exchange_minimum"),
+            self.candidate("b", 0.30, refusal="price_below_sizing_floor"),
+        )
+        self.assertIsNone(PolymarketScanner().select_best_trade(summary))
+
+    def test_unsizeable_candidates_are_still_REPORTED(self):
+        """They stay in the bucket. The refusal is the measurement."""
+        summary = self.summary(
+            self.candidate("a", 0.40, refusal="below_exchange_minimum"),
+        )
+        PolymarketScanner().select_best_trade(summary)
+        self.assertEqual(len(summary.high_edge), 1)
+
+
+class _StubAnalyst:
+    def __init__(self, recommendation):
+        self._recommendation = recommendation
+
+    async def analyse(self, candidate):
+        return self._recommendation
+
+
+class ApprovalGuardTest(unittest.TestCase):
+    """An unsizeable best_trade must not reach a human.
+
+    K12's sibling, one function later, in the same change. select_best_trade
+    filters unsizeable candidates, but the Analyst's REDUCE can make a
+    candidate unsizeable AFTER that filter has run, and only this guard stops
+    it. Removing the guard survived the whole suite: the failure direction is
+    "shows a human a button that cannot fire", which reads as harmless and so
+    went untested.
+    """
+
+    def summary_with_refusal(self, refusal):
+        candidate = ScannerCandidate(
+            market_id="1", condition_id="0x" + "ab" * 32, question="q",
+            asset="btc", direction="YES", edge=0.20, sim_probability=0.60,
+            market_probability=0.40, volume=50000.0, horizon_days=5.0,
+            market_url="", amount_usdc=1.5, min_order_size=5.0,
+            sizing_refusal=refusal,
+        )
+        summary = ScannerRunSummary(
+            run_at=datetime.now(timezone.utc), markets_fetched=1,
+            candidates_analysed=1, simulations_run=1, sim_errors=0,
+        )
+        summary.best_trade = candidate
+        summary.analyst_recommendation = AnalystRecommendation(
+            recommendation="proceed", confidence=0.8, reasoning="ok", flags=[],
+        )
+        return summary
+
+    def test_no_approval_is_requested_for_an_unsizeable_trade(self):
+        summary = self.summary_with_refusal("below_exchange_minimum")
+        gate = _RecordingGate()
+        scanner = PolymarketScanner(approval_gate=gate)
+        run(scanner.apply_approval(summary))
+        self.assertEqual(gate.requests, [], "no button for an unplaceable trade")
+        self.assertIsNone(summary.approval_result)
+
+    def test_a_sizeable_trade_still_reaches_the_gate(self):
+        """Or the guard would be indistinguishable from the gate being broken."""
+        summary = self.summary_with_refusal(None)
+        gate = _RecordingGate()
+        scanner = PolymarketScanner(approval_gate=gate)
+        run(scanner.apply_approval(summary))
+        self.assertEqual(len(gate.requests), 1)
+
+
+class _RecordingGate:
+    def __init__(self):
+        self.requests = []
+
+    async def send_approval_request(self, candidate, recommendation):
+        self.requests.append(candidate)
+        return object()
+
+    async def wait_for_decision(self, pending):
+        from src.trade_engine.models import ApprovalResult, ApprovalStatus
+        return ApprovalResult(
+            approval_id="a", status=ApprovalStatus.timeout,
+            candidate=self.requests[-1],
+            recommendation=AnalystRecommendation(
+                recommendation="proceed", confidence=0.8, reasoning="r", flags=[]),
+            decided_at=datetime.now(timezone.utc), decision_source="timeout",
+        )
+
+
+class SizingConfigClampTest(unittest.TestCase):
+    """The sizing dials may only move in the conservative direction.
+
+    DEFAULT_BANKROLL_USDC's docstring says raising it is a capital decision and
+    "not a config edit". That was false while this was a bare env read:
+    BANKROLL_USDC=200 was exactly a config edit, unclamped and unlogged. Two
+    paragraphs of prose were the only guard on the number the whole sizing
+    model rests on.
+    """
+
+    def with_env(self, **env):
+        saved = {k: os.environ.get(k) for k in env}
+        try:
+            for k, v in env.items():
+                os.environ[k] = v
+            return Config()
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+    def test_bankroll_cannot_be_raised_by_env(self):
+        """The $180 that would make Kelly and the exchange compatible is a
+        DEPOSIT, not a config edit. The code now agrees with the comment."""
+        for attempt in ("200", "180", "25.01", "1e9"):
+            with self.subTest(value=attempt):
+                self.assertEqual(self.with_env(BANKROLL_USDC=attempt).bankroll_usdc, 25.0)
+
+    def test_bankroll_can_be_lowered(self):
+        self.assertEqual(self.with_env(BANKROLL_USDC="10").bankroll_usdc, 10.0)
+
+    def test_kelly_fraction_cannot_be_raised_by_env(self):
+        for attempt in ("1.0", "0.5", "5.0"):
+            with self.subTest(value=attempt):
+                self.assertEqual(
+                    self.with_env(KELLY_FRACTION=attempt).kelly_fraction, 0.10
+                )
+
+    def test_kelly_fraction_can_be_lowered(self):
+        self.assertEqual(self.with_env(KELLY_FRACTION="0.05").kelly_fraction, 0.05)
+
+    def test_the_price_floor_can_only_be_RAISED(self):
+        self.assertEqual(self.with_env(SIZING_PRICE_FLOOR="0.0").sizing_price_floor, 0.10)
+        self.assertEqual(self.with_env(SIZING_PRICE_FLOOR="0.25").sizing_price_floor, 0.25)
 
 
 class CandidateModelTest(unittest.TestCase):
