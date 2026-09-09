@@ -26369,3 +26369,115 @@ a credential entry that cannot be re-verified against the issuer is a claim
 with no expiry, so date it as an observation, never state it as a standing
 fact, and when the cause of a state is not known, say "not recorded" rather
 than reaching for the most available explanation.
+
+## 2026-09-09: a wire-through test whose expected value was a literal that also appeared at the call site
+
+The fix for the previous entry's finding was itself an instance of it. Recorded
+because the recursion is the useful part: the correction was written, reviewed by
+its author against the stated lesson, and still reproduced the defect one layer
+down.
+
+### The previous finding, and the fix for it
+
+The 2026-09-08 entry recorded that `sizing.py` had 31 tests while
+`_to_candidate`, its only caller and the code that actually sets `amount_usdc`,
+had none, and that six mutants inside that one function survived the whole
+suite. The stated rule was that every value crossing a module boundary onto the
+money path needs a wire-through test asserting the caller passes what it claims
+to pass.
+
+Wire-through tests were duly written. They read:
+
+```python
+self.assertEqual(captured["bankroll"], config.bankroll_usdc)
+self.assertEqual(captured["bankroll"], 25.0)
+```
+
+Both assertions are on the same line of reasoning and neither does the job. In
+a test environment `config.bankroll_usdc` IS 25.0, so the first comparison is
+between two names for the same number, and the second is satisfied by a call
+site that has abandoned config entirely:
+
+```python
+bankroll=25.0,                    # mutant: hardcoded
+```
+
+That mutant, and four more like it, survived the full suite. So did
+`kelly_fraction=0.10`, `price_floor=0.10`, and, worst,
+`min_order_size=5.0`.
+
+### Why the mutant table looked convincing and was not
+
+The tests were verified against a mutant table, and the table passed. It used
+`bankroll=250.0`, `kelly_fraction=1.0`, `price_floor=0.0`,
+`max_position_usdc=1e9`. Every entry substitutes a value clearly DIFFERENT from
+the shipped default, and every one dies.
+
+The conclusion drawn was "fixed as a class, not six instances". The truth was
+"fixed for values that differ from the default, and for nothing else". The
+mutants were chosen to look wrong to a human reading them, and a value that
+looks wrong to a human is exactly the value a literal-comparison test can
+catch. The ones it cannot catch are the ones that look right.
+
+**A test comparing against a constant proves the constant, not the wiring, and
+the gap is invisible whenever the value equals its default**, which, in a test
+environment, is always.
+
+### The `min_order_size` case, which is the sharpest
+
+`orderMinSize` is a per-market value read from Polymarket. Four separate
+docstrings in that change warn against hardcoding it, naming it as the
+manual-allowlist pattern this codebase has been caught by repeatedly. The
+hardcoded `5.0` survived every one of those warnings and every test.
+
+It survived because **5 is what every market sampled returns**, so the fixture
+said 5, the mutant said 5, and the assertion compared 5 to 5. A market whose
+real `orderMinSize` is 50 would have been sized as tradeable and put in front of
+a human for approval.
+
+The generalisation:
+
+> A test for a remote value must use a value the remote never returns. If the
+> fixture agrees with the plausible hardcode, the test cannot tell them apart.
+
+### The recursion, which is the part worth carrying
+
+The tests were rewritten to VARY config and assert the captured value tracks it,
+with two distinct non-default probes so a hardcode of either still fails. All
+six mutants then died.
+
+Re-running the set immediately afterwards found `"min_order_size": 5.0`
+surviving again, one level up. The rewritten tests hand a row directly to
+`_to_candidate`, so they cover the second half of the journey and not the first:
+nothing exercised `analyse_edge` BUILDING that row, and hardcoding the value
+there was invisible to all of them.
+
+The reviewer who found the original had predicted exactly this, writing that the
+gap "has simply moved up one level". It had, and it did so again after the fix,
+because the fix was applied at the layer where the defect was observed rather
+than at every layer of the same shape.
+
+Three occurrences of one class, each found only after the previous was closed:
+`sizing.py` tested and its caller not; the caller tested by literal comparison;
+the caller's own input untested. **Closing an instance is not closing a class,
+and the evidence that a class is closed is that the mutant fails at every layer
+it could live at, not that it fails where it was found.**
+
+### What was changed
+
+Every wire-through assertion now moves the source and asserts the captured value
+moves with it. Per-market values are tested with 1, 12, 50 and 2.5, never 5.
+`analyse_edge` is driven end to end with markets whose `orderMinSize` differs
+from the default, and with the field absent, malformed and given as a numeric
+string.
+
+### Also recorded: the instruction had the same defect
+
+The instruction that produced the first fix named six mutants and asked that
+they die. They died. Naming mutants rather than the property is the same defect
+as specifying a test instead of a behaviour, and it appeared earlier in this
+register as M7 on the horizon work, where a mutant was specified that proved a
+second static assertion existed rather than that two layers were independent.
+
+An instruction that names the check gets the check. An instruction that names
+the property gets the property, and the mutants fall out of it.

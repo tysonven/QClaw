@@ -53,6 +53,18 @@ Shapes worth injecting, chosen from what the test claims to catch:
   wrongly-admitting feels like a defect; wrongly-refusing is an outage wearing
   the costume of the control working, and it is the one that ships. Ask what
   tests the admit path, and expect the answer to be nothing.
+- Hardcode the default. For any value a caller passes through from config or
+  from remote data, replace it with the literal it usually equals. A test
+  comparing against a constant proves the constant, not the wiring, and the gap
+  is invisible whenever the value equals its default, which in a test
+  environment is always. Assert that the value TRACKS its source: move the
+  source, assert the captured value moves. And a test for a REMOTE value must
+  use a value the remote never returns, or the fixture agrees with the hardcode
+  and cannot tell them apart.
+
+Choosing mutants that look wrong to a human is the trap in all of this. Those
+are the ones a literal-comparison test already catches. The survivors are the
+ones that look right.
 
 This works at suite scale: stash the patch and rerun against the pre-patch
 tree, proving the suite depends on the patch rather than that it is green. And
