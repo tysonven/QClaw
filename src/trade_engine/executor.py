@@ -174,10 +174,13 @@ def _book_observed_at(raw: Any) -> datetime:
 class OrderConstraints(NamedTuple):
     """What the exchange will actually do with this order, read live.
 
-    `shares` and `fill_price` come from walking the ask side for the notional,
-    so they are the size and average price a fill-or-kill market buy would get
-    AS OF `observed_at`. Not a promise about the book the order hits; see
-    _fetch_order_constraints for why that residual is accepted.
+    `shares` and `fill_price` come from walking the ask side for the notional
+    the way the relay's client does: `fill_price` is the MARGINAL ask, the price
+    of the level at which cumulative depth first covers the notional, and
+    `shares` is the whole-cent notional divided by it. That is the size a
+    fill-or-kill market buy would submit AS OF `observed_at`. Not a promise
+    about the book the order hits; see _fetch_order_constraints for why that
+    residual is accepted.
     """
 
     minimum: float
@@ -989,13 +992,24 @@ class TradeExecutor:
         # fail-open-by-wrong-value shape as trading against the wrong
         # conditionId: a market whose outcomes are ordered ["No", "Yes"] would
         # have been sized against the complement without erroring.
-        # An explicit refusal for an unrecognised direction. DIAGNOSTIC, not
-        # behavioural: the token lookup below already refuses these, because no
-        # token's outcome matches a string like "buy" or "yes " either. A review
-        # flagged the previous `"yes" if ... else "no"` as a fail-open and it was
-        # not one; checked by execution rather than accepted. What this adds is a
-        # named reason in the log instead of the misleading "no YES token on
-        # market", which matters because these refusals are the measurement.
+        #
+        # An explicit refusal for an unrecognised direction. BEHAVIOURAL, not
+        # diagnostic. Until 7bec45d this line read
+        #
+        #     wanted = "yes" if str(direction).upper() == "YES" else "no"
+        #
+        # which maps every string that is not exactly YES onto the NO side
+        # BEFORE the token lookup, so the lookup always found the No token and
+        # the gate sized "BUY", "yes ", "", None and "MAYBE" against the NO
+        # book. That was a fail-open, as the 2026-09-09 review said. A rebuttal
+        # claimed the lookup already refused these and that it had been checked
+        # by execution; it had been checked against the test suite, whose fake
+        # CLOB served the YES book for every token id, so the asset_id identity
+        # check below masked the fallback and the mutant survived for the wrong
+        # reason. Executed against a fake that serves each token its own book,
+        # the old line ADMITS all five. The CLI's argparse would still have
+        # refused the order, so no money moved, but the gate's verdict was
+        # wrong, and a verdict is what this gate is for.
         #
         # Worth knowing: outcome labels are NOT always Yes/No. Live markets
         # return "Over"/"Under", team names, and others. GATE 8 permanently
@@ -1029,41 +1043,48 @@ class TradeExecutor:
             return None
 
         # IS THIS THE BOOK WE ASKED FOR? The market call above is identity
-        # checked and this one was not, which is the same fail-open one call
-        # over: a cache, a routing change or a renamed param and the gate sizes
-        # against another outcome's liquidity and reports it as fact. The
-        # payload carries both, verified against the live API 2026-09-09:
-        # asset_id is the token, market is the conditionId.
+        # checked, and so is this one, STRICTLY: every field is required, not
+        # checked-if-present. The first version skipped a missing or empty
+        # asset_id, market or min_order_size, which is the absent-means-pass
+        # shape one call over: a payload that dropped the field would have
+        # disabled the check silently, and an empty string passed outright. The
+        # live API carries all three, verified 2026-09-09: asset_id is the
+        # token, market is the conditionId, min_order_size is the same minimum
+        # the market endpoint reports.
         returned_token = str(book.get("asset_id") or "")
-        if returned_token and returned_token != str(token_id):
+        if returned_token != str(token_id):
             log.error(
-                "gate 8: CLOB returned the book for token %s... when asked for "
-                "%s..., refusing", returned_token[:12], str(token_id)[:12],
+                "gate 8: CLOB returned the book for token %s when asked for "
+                "%s..., refusing", returned_token[:12] or "<none>", str(token_id)[:12],
             )
             return None
         returned_market = str(book.get("market") or "")
-        if returned_market and returned_market.lower() != str(condition_id).lower():
+        if returned_market.lower() != str(condition_id).lower():
             log.error(
-                "gate 8: book belongs to market %s..., not %s..., refusing",
-                returned_market[:12], str(condition_id)[:12],
+                "gate 8: book belongs to market %s, not %s..., refusing",
+                returned_market[:12] or "<none>", str(condition_id)[:12],
             )
             return None
 
-        # The book carries its own minimum. Free cross-check against the market
-        # endpoint; a disagreement means one of the two is stale and neither can
-        # be trusted to gate an order.
-        book_minimum = book.get("min_order_size")
-        if book_minimum is not None:
-            try:
-                if float(book_minimum) != minimum:
-                    log.error(
-                        "gate 8: market endpoint says minimum %s, book says %s "
-                        "for %s..., refusing rather than picking one",
-                        minimum, book_minimum, str(condition_id)[:12],
-                    )
-                    return None
-            except (TypeError, ValueError):
-                return None
+        # The book carries its own minimum. Cross-checked against the market
+        # endpoint and REQUIRED: a disagreement means one of the two is stale,
+        # an absence means the payload is not the shape this was written
+        # against, and neither can be trusted to gate an order.
+        try:
+            book_minimum = float(book.get("min_order_size"))
+        except (TypeError, ValueError):
+            log.error(
+                "gate 8: book for %s... carries no usable min_order_size (%r), "
+                "refusing", str(condition_id)[:12], book.get("min_order_size"),
+            )
+            return None
+        if book_minimum != minimum:
+            log.error(
+                "gate 8: market endpoint says minimum %s, book says %s for "
+                "%s..., refusing rather than picking one",
+                minimum, book_minimum, str(condition_id)[:12],
+            )
+            return None
 
         # THE BOOK'S OWN TIMESTAMP where it gives one, not wall-clock-at-read.
         # A quiet market can return a book whose last mutation was minutes ago;
@@ -1102,6 +1123,20 @@ class TradeExecutor:
             minimum=minimum, shares=shares, fill_price=fill_price,
             observed_at=observed_at,
         )
+
+    async def read_order_constraints(
+        self, condition_id: Optional[str], direction: str, notional: float
+    ) -> Optional["OrderConstraints"]:
+        """The scanner's entry point to GATE 8's book read.
+
+        The scanner sizes every proposable candidate against THE SAME read the
+        gate performs, so it does not propose what the gate will refuse: same
+        two calls, same identity checks, same walk, same minimum. Public so the
+        coupling is stated rather than reached through a private name; the
+        gate itself keeps calling _fetch_order_constraints, and a test double
+        that overrides that one method is honoured on both paths.
+        """
+        return await self._fetch_order_constraints(condition_id, direction, notional)
 
     async def _clob_get(
         self, path: str, condition_id: str, params: Optional[dict[str, str]] = None

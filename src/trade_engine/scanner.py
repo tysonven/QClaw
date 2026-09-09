@@ -40,7 +40,7 @@ from src.trade_engine.database import (
     write_simulation,
 )
 from src.trade_engine.horizon import horizon_days
-from src.trade_engine.sizing import size_position
+from src.trade_engine.sizing import maker_amount, side_price_for, size_position
 from src.trade_engine.executor import ABSOLUTE_MAX_POSITION_USDC, TradeExecutor
 from src.trade_engine.models import (
     ApprovalStatus,
@@ -632,6 +632,14 @@ class PolymarketScanner:
             else:
                 neutral_count += 1
 
+        # THE SAME BOOK GATE 8 WALKS, for every candidate that could be
+        # proposed. The pass above sized at Gamma's quoted price, which is what
+        # the edge was measured against and not what the order fills at; see
+        # _size_against_book. no_edge candidates are never proposed and stay at
+        # the quoted price, and their log line says so.
+        for candidate in high_edge:
+            await self._size_against_book(candidate, ceiling)
+
         summary = ScannerRunSummary(
             run_at=datetime.now(timezone.utc),
             markets_fetched=markets_fetched,
@@ -673,9 +681,12 @@ class PolymarketScanner:
             # Measurement, not noise. Item (c) of the sizing decision is to find
             # out how often correct sizing lands under the exchange floor and at
             # what prices, because that is the input to any future capital
-            # decision. Every refusal carries its own arithmetic.
+            # decision. Every refusal carries its own arithmetic. "At the quoted
+            # price" because this is the provisional pass: proposable
+            # candidates are re-sized against the live book in
+            # _size_against_book, and THAT line is the measurement for them.
             log.info(
-                "not sizeable (%s): %s | %s",
+                "not sizeable at the quoted price (%s): %s | %s",
                 sizing.refusal, row.get("question"), sizing.log_fields(),
             )
         return ScannerCandidate(
@@ -704,6 +715,111 @@ class PolymarketScanner:
             min_order_size=row.get("min_order_size"),
             sizing_refusal=sizing.refusal,
         )
+
+    async def _size_against_book(
+        self, candidate: ScannerCandidate, ceiling: float
+    ) -> None:
+        """Re-size a proposable candidate against the live order book, in place.
+
+        _to_candidate sizes at Gamma's quoted price, which is the price the edge
+        was measured against but not the price the order fills at. Executor
+        GATE 8 walks the live CLOB book and divides the whole-cent notional by
+        the MARGINAL ASK. Across 24 live markets on 2026-09-09 the ask ran a
+        median of 1.8% and a maximum of 22% above the quote, and three markets
+        quoted ABOVE their own ask, so a verdict at the quoted price is
+        provisional in both directions. Left there, a candidate admitted at the
+        quote and refused at the ask got an Execute button the gate then
+        refused, and the refusal log under-counted the suppression it exists to
+        measure.
+
+        So this performs THE SAME READ GATE 8 performs, through the executor,
+        for the same notional, and re-runs sizing with the walked fill price and
+        the CLOB's own minimum. The notional does not change (Kelly is not re-run
+        at the fill); the share count, the minima and the verdict do. The gate
+        walks the book again at execution, and any disagreement between the two
+        is now exactly "the book moved", never "the scanner used a different
+        number".
+
+        Fails closed: no executor, or a read the gate would refuse, is a named
+        refusal (order_book_unread) and the candidate is not proposed. Mutates
+        the candidate in place, the way apply_analyst does, so the object in
+        the bucket is the one select_best_trade and the approval gate see.
+        """
+        if candidate.sizing_refusal not in (None, "below_exchange_minimum"):
+            # Refused before the arithmetic ran (price floor, no edge, bad
+            # input): there is no notional to walk and nothing to re-check.
+            return
+        if not candidate.amount_usdc > 0 or not candidate.condition_id:
+            return
+        if self.executor is None:
+            log.error(
+                "no executor configured, so the order book cannot be read for "
+                "%s; not proposing a trade sized at the quoted price alone",
+                candidate.question,
+            )
+            candidate.sizing_refusal = "order_book_unread"
+            return
+
+        constraints = await self.executor.read_order_constraints(
+            candidate.condition_id, candidate.direction, candidate.amount_usdc,
+        )
+        if constraints is None:
+            # GATE 8 would refuse this exact order, and it logged why. Named
+            # separately from below_exchange_minimum so the measurement can
+            # tell "under the floor" from "could not read the book".
+            log.info(
+                "not sizeable against the book (order_book_unread): %s | "
+                "notional=%.4f direction=%s",
+                candidate.question, candidate.amount_usdc, candidate.direction,
+            )
+            candidate.sizing_refusal = "order_book_unread"
+            return
+
+        if candidate.min_order_size is not None \
+                and float(candidate.min_order_size) != constraints.minimum:
+            log.warning(
+                "Gamma orderMinSize %s disagrees with the CLOB minimum %s for "
+                "%s; the CLOB's value is the one the exchange enforces",
+                candidate.min_order_size, constraints.minimum, candidate.question,
+            )
+
+        sizing = size_position(
+            sim_probability=candidate.sim_probability,
+            yes_price=candidate.market_probability,
+            direction=candidate.direction,
+            min_order_size=constraints.minimum,
+            bankroll=config.bankroll_usdc,
+            kelly_fraction=config.kelly_fraction,
+            max_position_usdc=ceiling,
+            absolute_max_usdc=ABSOLUTE_MAX_POSITION_USDC,
+            price_floor=config.sizing_price_floor,
+            fill_price=constraints.fill_price,
+        )
+        refusal = sizing.refusal
+        # The two arithmetic paths must land on the same share count, or the
+        # property this method exists for does not hold. Logged rather than
+        # raised, and the CONSERVATIVE verdict is taken: refused if either side
+        # says the order is under the minimum.
+        if abs(sizing.shares - constraints.shares) > 1e-9 \
+                or sizing.notional != candidate.amount_usdc:
+            log.error(
+                "scanner and GATE 8 disagree on %s: sizing says %.6f shares on "
+                "notional %.4f, the gate's walk says %.6f on %.4f",
+                candidate.question, sizing.shares, sizing.notional,
+                constraints.shares, candidate.amount_usdc,
+            )
+            if refusal is None and constraints.shares < constraints.minimum:
+                refusal = "below_exchange_minimum"
+
+        log.info(
+            "%s against the book: %s | %s as of %s",
+            "sizeable" if refusal is None else f"not sizeable ({refusal})",
+            candidate.question, sizing.log_fields(),
+            constraints.observed_at.isoformat(),
+        )
+        candidate.sizing_refusal = refusal
+        candidate.min_order_size = constraints.minimum
+        candidate.fill_price = constraints.fill_price
 
     # --- select -----------------------------------------------------------
 
@@ -764,15 +880,33 @@ class PolymarketScanner:
             # it is less confident. A safety inversion, masked only because the
             # old ramp never sized below $3. min() makes it structural rather
             # than a property of the numbers.
-            summary.best_trade.amount_usdc = min(before, round(before / 2, 6))
+            # Floored to whole cents, to the fixed point of the client's own
+            # floor, for the reason sizing.maker_amount gives: the relay hands
+            # this number to py-clob-client-v2, which floors it again.
+            summary.best_trade.amount_usdc = min(before, maker_amount(before / 2))
 
             # Halving can push a position under the exchange's share minimum.
             # That is a refusal, not a smaller trade, and it is recorded here so
             # nobody is asked to approve something that cannot be placed.
-            price = summary.best_trade.market_probability
+            #
+            # Checked the way GATE 8 checks it: the whole-cent amount divided by
+            # the price the order FILLS at. That is the marginal ask carried
+            # from the book read at scan time when there was one, else the
+            # quoted price of the side actually bought. A NO candidate is bought
+            # at 1 - yes_price; the first version divided by the YES price for
+            # both sides, which on a NO candidate at yes_price 0.80 counted
+            # 1.375 shares where the order would buy 5.5. The carried ask was
+            # walked for the LARGER notional, and a smaller order can only fill
+            # at the same or a cheaper level, so this under-counts if anything:
+            # it may withhold a placeable halved trade, never propose one the
+            # gate would refuse.
             minimum = summary.best_trade.min_order_size
-            if price and minimum:
-                side = summary.best_trade.amount_usdc / price
+            quoted = summary.best_trade.market_probability
+            divisor = summary.best_trade.fill_price or (
+                side_price_for(summary.best_trade.direction, quoted) if quoted else None
+            )
+            if divisor and minimum:
+                side = summary.best_trade.amount_usdc / divisor
                 if side < float(minimum):
                     summary.best_trade.sizing_refusal = "below_exchange_minimum"
                     log.warning(

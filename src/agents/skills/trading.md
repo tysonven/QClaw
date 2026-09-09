@@ -129,11 +129,19 @@ Tyson a trade "will" go through:
 | 5 | invalid_amount | size ≤ 0, above config, or above a hard ceiling | `max_position_usdc` (10) AND **ABSOLUTE_MAX_POSITION_USDC = 25.0** (hardcoded ceiling that config cannot raise) |
 | 6 | invalid_market_identifier | no well-formed Polymarket conditionId | — |
 | 7 | horizon_below_minimum | the market resolves too soon, RECOMPUTED from `end_date` at execution, or `end_date` is missing/unparseable | **MIN_HORIZON_TRADEABLE_DAYS = 1.0** (`config`; env may raise it, never lower it) |
-| 8 | below_exchange_minimum | the order is under the market's own `orderMinSize`, in SHARES, read LIVE from Gamma at execution; or that value cannot be read | **5 shares** on every market sampled, but read per market, never hardcoded |
+| 8 | below_exchange_minimum | the order is under the market's own minimum, in SHARES, read LIVE from the CLOB at execution (two calls: `/markets/<conditionId>` for the minimum, the accepting flag and the tokens, then `/book` for the asks); shares = whole-cent notional / the MARGINAL ask from walking the book, exactly as the relay's client submits it; or either read fails, the market is not accepting orders, or the book is empty, too thin, or not the one asked for | **5 shares** on every market sampled, but read per market, never hardcoded |
 
 Gates 2 and 5's hard limits are code constants, not database config: raising
 `max_position_usdc` above 25 does NOT raise the real ceiling, and there is no
 config key for the 2-position cap.
+
+Gate 8 does NOT read Gamma. Gamma's price is not a mid with bounded error: on
+2026-09-09 three of 24 live markets quoted a Gamma price ABOVE their own best
+ask, worst case 0.265 against 0.070. The scanner sizes every proposable
+candidate against the same CLOB book walk, so a trade it proposes is one the
+gate admits on the same book; if the gate still refuses, the book moved between
+scan and execution, and the refusal line's `as of <timestamp>` is the book's own
+last-mutation time for telling those apart.
 
 **Gate 8 is why almost nothing trades, and that is correct.** Position size is
 fractional Kelly (`KELLY_FRACTION` 0.10) against a `bankroll_usdc` of 25, sized

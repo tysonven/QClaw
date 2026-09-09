@@ -122,10 +122,23 @@ SUCCESS_STDOUT = json.dumps({
 
 
 class _FakeClob:
-    """httpx-shaped client returning a scripted payload per CLOB path."""
+    """httpx-shaped client returning a scripted payload per CLOB path.
 
-    def __init__(self, market=None, book=None, status=200, raises=None):
-        self._market, self._book = market, book
+    Books are keyed by the token id REQUESTED, and a token with no book gets
+    the live API's 404 rather than someone else's book. The first version
+    served one book payload for every token id, which made every wrong-token
+    path indistinguishable from a refusal: the asset_id identity check caught
+    the foreign book, so a guard that merely routed to the wrong token (the
+    old direction fallback, a tokens[0] fallback) was invisible to the suite
+    and a mutant restoring the fallback survived all 129 tests. A fake that
+    answers a request with the payload for a different request is a mask for
+    whatever sits between them.
+    """
+
+    NOT_FOUND = {"error": "No orderbook exists for the requested token id"}
+
+    def __init__(self, market=None, books=None, status=200, raises=None):
+        self._market, self._books = market, books or {}
         self._status, self._raises = status, raises
         self.calls = []
         self.timeouts = []
@@ -133,12 +146,12 @@ class _FakeClob:
     async def get(self, url, params=None, timeout=None):
         self.calls.append((url, params))
         self.timeouts.append(timeout)
-        payload = self._book if "/book" in url else self._market
-        return _FakeResponse(payload, self._status, self._raises)
-
-
-def _client_calls(self):
-    return self._client.calls
+        if "/book" in url:
+            token_id = str((params or {}).get("token_id"))
+            if token_id not in self._books:
+                return _FakeResponse(dict(self.NOT_FOUND), 404, self._raises)
+            return _FakeResponse(self._books[token_id], self._status, self._raises)
+        return _FakeResponse(self._market, self._status, self._raises)
 
 
 class _FakeResponse:
@@ -165,10 +178,12 @@ class StubExecutor(TradeExecutor):
         self.argv_calls: list[list[str]] = []
         self.notifications: list[str] = []
         # GATE 8 walks the live CLOB book. Stubbed here so the rest of the suite
-        # makes no network calls. Given as (minimum, fill_price); shares are
-        # DERIVED from the notional, so a test changing the amount changes the
-        # verdict the way the real gate would. None exercises the fail-closed
-        # path. The walk itself and the HTTP layer have their own direct tests.
+        # makes no network calls. Given as (minimum, fill_price); shares come
+        # from the REAL walk against a single deep level at fill_price, so the
+        # stub carries the gate's cent floor and a test changing the amount
+        # changes the verdict exactly the way the real gate would. None
+        # exercises the fail-closed path. The walk itself and the HTTP layer
+        # have their own direct tests.
         self.order_constraints = order_constraints
         self.constraint_calls: list[tuple] = []
 
@@ -177,8 +192,12 @@ class StubExecutor(TradeExecutor):
         if self.order_constraints is None:
             return None
         minimum, fill_price = self.order_constraints
+        walked = TradeExecutor._shares_for_notional([(fill_price, 1e9)], notional)
+        if walked is None:
+            return None
+        shares, price = walked
         return executor_mod.OrderConstraints(
-            minimum=minimum, shares=notional / fill_price, fill_price=fill_price,
+            minimum=minimum, shares=shares, fill_price=price,
             observed_at=datetime.now(timezone.utc),
         )
 
@@ -610,6 +629,17 @@ class GateTest(unittest.TestCase):
             "below_exchange_minimum", sizing_refusal="below_exchange_minimum"
         )
 
+    def test_unapproved_status_refused(self):
+        for status in (ApprovalStatus.skipped, ApprovalStatus.timeout,
+                       ApprovalStatus.analyst_skip, ApprovalStatus.pending):
+            ex = StubExecutor()
+            with DBStub():
+                result = run(ex.execute(make_approval(status=status)))
+            self.assertFalse(result.success)
+            self.assertEqual(result.gate_blocked, "not_approved")
+            self.assertEqual(ex.argv_calls, [])
+
+
 class Gate8LogValuesTest(unittest.TestCase):
     """The refusal log is the deliverable, so its NUMBERS are asserted.
 
@@ -779,11 +809,11 @@ class OrderConstraintsFetchTest(unittest.TestCase):
         m.update(over)
         return m
 
-    def book(self, asks):
+    def book(self, asks, token_id="111"):
         return {
             "asks": [{"price": str(p), "size": str(s)} for p, s in asks],
             "bids": [{"price": "0.39", "size": "100"}],
-            "asset_id": "111",
+            "asset_id": token_id,
             "market": VALID_CONDITION_ID,
             "min_order_size": "12",
             "timestamp": "1757416800000",
@@ -794,15 +824,26 @@ class OrderConstraintsFetchTest(unittest.TestCase):
     #: silently exercised the default and asserted nothing.
     DEFAULT = object()
 
-    def fetch(self, market=DEFAULT, book=DEFAULT, direction="YES", notional=2.0, **kw):
+    def fetch(self, market=DEFAULT, book=DEFAULT, no_book=DEFAULT,
+              direction="YES", notional=2.0, **kw):
+        """`book` is the YES token's book and `no_book` the NO token's. The
+        two carry DIFFERENT asks (0.40 and 0.60) so a path that reads the
+        wrong side produces a visibly different number, not a refusal."""
+        books = {
+            "111": self.book([(0.40, 10_000.0)]) if book is self.DEFAULT else book,
+            "222": (self.book([(0.60, 10_000.0)], token_id="222")
+                    if no_book is self.DEFAULT else no_book),
+        }
         ex = TradeExecutor(
             client=_FakeClob(
                 market=self.market() if market is self.DEFAULT else market,
-                book=self.book([(0.40, 10_000.0)]) if book is self.DEFAULT else book,
-                **kw),
+                books=books, **kw),
             token="t", chat_id="c",
         )
         return ex, run(ex._fetch_order_constraints(VALID_CONDITION_ID, direction, notional))
+
+    def book_calls(self, ex):
+        return [p["token_id"] for u, p in ex.client_calls if "/book" in u]
 
     def test_it_returns_the_walked_fill_price_and_shares(self):
         _, c = self.fetch()
@@ -860,13 +901,25 @@ class OrderConstraintsFetchTest(unittest.TestCase):
         _, c = self.fetch(book=book)
         self.assertIsNone(c)
 
-    def test_an_unrecognised_direction_is_refused(self):
-        """Regression guard, not a fix. The token lookup already refuses these
-        because no outcome matches; the explicit check only improves the log."""
-        for direction in ("", "yes ", "BUY", "Y", None, "MAYBE"):
+    def test_an_unrecognised_direction_is_refused_before_any_book_is_read(self):
+        """A fail-open until 7bec45d, and a regression this suite could not see
+        until the fake served each token its own book.
+
+        The old line, `"yes" if direction.upper() == "YES" else "no"`, put
+        every one of these on the NO side BEFORE the lookup, so the lookup
+        found the No token and the gate sized them against the NO book. With
+        this fake, restoring that line ADMITS every case below on the NO book
+        (3.33 shares at 0.60) and this test fails. The old fake served the YES
+        book for the NO token too, so the identity check refused it and the
+        mutant survived for the wrong reason. Asserting that no book is read
+        at all pins the refusal to the direction check itself, which no
+        fallback can satisfy.
+        """
+        for direction in ("", "yes ", "BUY", "Y", None, "MAYBE", "buy", "NO "):
             with self.subTest(direction=direction):
-                _, c = self.fetch(direction=direction)
+                ex, c = self.fetch(direction=direction)
                 self.assertIsNone(c)
+                self.assertEqual(self.book_calls(ex), [], "refused before any book was read")
 
     def test_the_gate_bounds_its_own_network_calls(self):
         """A gate must not hang the money path. Nothing asserted the timeout was
@@ -910,13 +963,21 @@ class OrderConstraintsFetchTest(unittest.TestCase):
         ])
         ex, c = self.fetch(market=reversed_market, direction="YES")
         self.assertIsNotNone(c)
-        book_call = [p for u, p in ex.client_calls if "/book" in u][0]
-        self.assertEqual(book_call["token_id"], "111", "must ask for the YES token")
+        self.assertEqual(self.book_calls(ex), ["111"], "must ask for the YES token")
+        self.assertAlmostEqual(c.fill_price, 0.40, places=9,
+                               msg="the YES book's ask, not the NO book's 0.60")
 
-    def test_the_NO_side_asks_for_the_NO_token(self):
+    def test_the_NO_side_is_sized_from_the_NO_book(self):
+        """The NO admit path. Before the fake served per-token books this
+        returned None in the test named for it, refused by the identity check
+        against the YES book, so nothing covered a NO order being sized."""
         ex, c = self.fetch(direction="NO")
-        book_call = [p for u, p in ex.client_calls if "/book" in u][0]
-        self.assertEqual(book_call["token_id"], "222")
+        self.assertEqual(self.book_calls(ex), ["222"])
+        self.assertIsNotNone(c, "the NO side must be sizeable, not refused by a fixture")
+        self.assertAlmostEqual(c.fill_price, 0.60, places=9,
+                               msg="the NO book's ask, not the YES book's")
+        self.assertAlmostEqual(c.shares, 2.0 / 0.60, places=9)
+        self.assertAlmostEqual(c.minimum, 12.0)
 
     def test_a_market_not_accepting_orders_is_refused(self):
         """A live fail-open before this change: a closed market with a valid
@@ -946,10 +1007,14 @@ class OrderConstraintsFetchTest(unittest.TestCase):
                 _, c = self.fetch(market=self.market(minimum_order_size=bad))
                 self.assertIsNone(c)
 
-    def test_a_missing_token_for_the_side_is_refused(self):
-        _, c = self.fetch(market=self.market(tokens=[
+    def test_a_missing_token_for_the_side_is_refused_without_reading_a_book(self):
+        """A tokens[0] fallback would fetch the No token's book here and, with
+        a fake that serves it faithfully, be ADMITTED on it. The relay has
+        exactly that fallback; the gate must not."""
+        ex, c = self.fetch(market=self.market(tokens=[
             {"outcome": "No", "token_id": "222", "price": 0.60}]), direction="YES")
         self.assertIsNone(c)
+        self.assertEqual(self.book_calls(ex), [], "no fallback to another token's book")
 
     def test_transport_and_shape_failures_are_refused(self):
         for label, kw in (("http error", dict(status=503)),
@@ -967,6 +1032,19 @@ class OrderConstraintsFetchTest(unittest.TestCase):
         self.assertIsNone(run(ex._fetch_order_constraints(None, "YES", 2.0)))
         self.assertEqual(ex._client.calls, [])
 
+    def test_the_scanners_entry_point_is_the_gates_own_read(self):
+        """read_order_constraints is what the scanner sizes against. It must be
+        the same read GATE 8 makes, not a second implementation, and a test
+        double overriding the private method must be honoured on both."""
+        ex, direct = self.fetch(book=self.book([(0.50, 10_000.0)]))
+        via_scanner = run(ex.read_order_constraints(VALID_CONDITION_ID, "YES", 2.0))
+        self.assertEqual(via_scanner, direct)
+        self.assertAlmostEqual(via_scanner.fill_price, 0.50, places=9)
+        stub = StubExecutor(order_constraints=(7.0, 0.40))
+        c = run(stub.read_order_constraints(VALID_CONDITION_ID, "YES", 2.0))
+        self.assertEqual((c.minimum, c.shares, c.fill_price), (7.0, 5.0, 0.40))
+        self.assertEqual(stub.constraint_calls, [(VALID_CONDITION_ID, "YES", 2.0)])
+
     def test_it_makes_TWO_calls_the_market_then_the_book(self):
         """Documented as deliberate. If someone collapses this to one call the
         fill price is gone and only a mid remains."""
@@ -976,16 +1054,42 @@ class OrderConstraintsFetchTest(unittest.TestCase):
         self.assertIn("/markets/", paths[0])
         self.assertIn("/book", paths[1])
 
+    # --- the book's identity is REQUIRED, not checked-if-present ----------
 
-    def test_unapproved_status_refused(self):
-        for status in (ApprovalStatus.skipped, ApprovalStatus.timeout,
-                       ApprovalStatus.analyst_skip, ApprovalStatus.pending):
-            ex = StubExecutor()
-            with DBStub():
-                result = run(ex.execute(make_approval(status=status)))
-            self.assertFalse(result.success)
-            self.assertEqual(result.gate_blocked, "not_approved")
-            self.assertEqual(ex.argv_calls, [])
+    def test_a_book_without_its_identity_fields_is_refused(self):
+        """STRICT. Absent, None or empty asset_id, market or min_order_size is
+        a refusal, not a skipped check. The first version checked these only
+        when present, which is absent-means-pass one call over from the D2
+        finding: a payload that dropped the field disabled the check silently,
+        and an empty string passed outright."""
+        for key in ("asset_id", "market", "min_order_size"):
+            for absent in ("missing", None, ""):
+                with self.subTest(field=key, value=absent):
+                    book = self.book([(0.40, 10_000.0)])
+                    if absent == "missing":
+                        del book[key]
+                    else:
+                        book[key] = absent
+                    _, c = self.fetch(book=book)
+                    self.assertIsNone(c)
+
+    def test_a_book_minimum_that_cannot_be_parsed_is_refused(self):
+        for bad in ("many", [], {}, "5 shares"):
+            with self.subTest(min_order_size=bad):
+                _, c = self.fetch(book=dict(self.book([(0.40, 10_000.0)]), min_order_size=bad))
+                self.assertIsNone(c)
+
+    def test_a_token_with_no_book_is_refused(self):
+        """The live API answers 404 for a token it has no book for; the fake
+        does the same, so a lookup that lands on an unknown token is refused
+        rather than served a neighbour's book."""
+        market = self.market(tokens=[
+            {"outcome": "Yes", "token_id": "333", "price": 0.40},
+            {"outcome": "No", "token_id": "222", "price": 0.60},
+        ])
+        ex, c = self.fetch(market=market, direction="YES")
+        self.assertIsNone(c)
+        self.assertEqual(self.book_calls(ex), ["333"])
 
 
 class StalenessTest(unittest.TestCase):
@@ -1615,6 +1719,57 @@ class ScannerWiringTest(unittest.TestCase):
         with DBStub():
             run(scanner.apply_execution(summary))
         self.assertIsNone(summary.execution_result)
+
+    def test_the_scanner_proposes_only_what_gate_8_admits_on_the_same_book(self):
+        """THE property this round exists for, end to end.
+
+        One executor stands in for both the scanner's book read and GATE 8, so
+        both see the same book. Whatever the scanner marks sizeable must pass
+        the gate, and whatever the gate refuses the scanner must already have
+        refused. Before this, the scanner sized at Gamma's quote and the gate at
+        the ask, and at the scanner's minimum tradeable probability the gate
+        refused at the median live spread at every price in the band.
+        """
+        from src.trade_engine import scanner as scanner_mod
+
+        async def fake_config():
+            return TradingConfig(id=1, max_position_usdc=10.0)
+
+        end_date = (datetime.now(timezone.utc) + timedelta(days=21)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        rows = [{
+            "market_id": "3158105", "condition_id": VALID_CONDITION_ID, "slug": "s",
+            "question": "q", "asset": "eth", "yes_price": 0.20, "volume": 50_000.0,
+            "horizon_days": 21.0, "end_date": end_date, "min_order_size": 5.0,
+            "simulation": {"probability": 0.90},
+        }]
+        real_cfg = scanner_mod.get_trading_config
+        scanner_mod.get_trading_config = fake_config
+        try:
+            verdicts = {}
+            for fill in (0.15, 0.20, 0.29, 0.40, 0.41, 0.45, 0.60):
+                with self.subTest(fill=fill):
+                    ex = StubExecutor(order_constraints=(5.0, fill))
+                    scanner = PolymarketScanner(executor=ex)
+                    summary = run(scanner.build_run_summary(
+                        rows, markets_fetched=1, candidates_analysed=1,
+                        sim_errors=0, open_positions=0,
+                    ))
+                    candidate = summary.high_edge[0]
+                    approval = make_approval()
+                    approval.candidate = candidate
+                    with DBStub():
+                        result = run(ex.execute(approval))
+                    verdicts[fill] = candidate.sizing_refusal is None
+                    if candidate.sizing_refusal is None:
+                        self.assertTrue(result.success, f"scanner proposed, gate refused at {fill}")
+                    else:
+                        self.assertEqual(result.gate_blocked, "below_exchange_minimum")
+            self.assertIn(True, verdicts.values(), "some fill must be admitted")
+            self.assertIn(False, verdicts.values(), "some fill must be refused")
+        finally:
+            scanner_mod.get_trading_config = real_cfg
 
     def test_condition_id_survives_to_candidate(self):
         """The scanner must carry condition_id, or gate 6 refuses everything."""

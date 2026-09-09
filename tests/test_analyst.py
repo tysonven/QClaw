@@ -35,6 +35,7 @@ from src.trade_engine.models import (  # noqa: E402
     TradePosition,
 )
 from src.trade_engine.scanner import PolymarketScanner  # noqa: E402
+from src.trade_engine.sizing import maker_amount  # noqa: E402
 
 
 def run(coro):
@@ -380,7 +381,8 @@ class TestScannerAppliesReduce(unittest.TestCase):
                 run(scanner.apply_analyst(summary))
                 after = summary.best_trade.amount_usdc
                 self.assertLess(after, before, "REDUCE must never increase")
-                self.assertAlmostEqual(after, before / 2, places=6)
+                # Half, at the whole cent the relay's client will submit.
+                self.assertEqual(after, maker_amount(before / 2))
 
 
 # 8. pass sets analyst_skip

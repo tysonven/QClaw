@@ -22,6 +22,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from src.trade_engine.sizing import (  # noqa: E402
     FEE_RATE,
     fee_ratio,
+    maker_amount,
     side_price_for,
     size_position,
 )
@@ -39,6 +40,12 @@ HISTORICAL = [
     ("b3cecdef SOL", 0.7062, 0.396),
 ]
 
+# The most the cent floor can take off a notional: maker_amount iterates to the
+# fixed point of the client's floor, and consecutive whole-cent values can all
+# be float hazards (1.13 through 1.16 are), so the drop can exceed one cent.
+# MakerAmountTest measures the real worst case over every cent up to $25.
+MAX_FLOOR_DROP = 0.06
+
 
 def size(p, price, direction="YES", minimum=MIN_SHARES, **over):
     kw = dict(LIVE)
@@ -47,6 +54,28 @@ def size(p, price, direction="YES", minimum=MIN_SHARES, **over):
         sim_probability=p, yes_price=price, direction=direction,
         min_order_size=minimum, **kw,
     )
+
+
+def assert_debit_fills_the_cap(test, s, cap):
+    """The debit is the cap less at most the cent floor: never above it, and
+    exactly what the whole-cent notional costs at the fee."""
+    test.assertLessEqual(s.debit, cap + 1e-9)
+    test.assertEqual(s.notional, maker_amount(cap / (1 + fee_ratio(s.side_price))))
+    test.assertEqual(s.debit, round(s.notional * (1 + fee_ratio(s.fill_price)), 6))
+    test.assertLess(cap - s.debit, MAX_FLOOR_DROP * (1 + FEE_RATE))
+
+
+def probability_for_exact_minimum(price, minimum, **over):
+    """The smallest p whose whole-cent notional is exactly `minimum * price`."""
+    target = minimum * price
+    lo, hi = price, 1.0
+    for _ in range(200):
+        mid = (lo + hi) / 2
+        if size(mid, price, minimum=minimum, **over).notional >= target:
+            hi = mid
+        else:
+            lo = mid
+    return hi
 
 
 class KellyArithmeticTest(unittest.TestCase):
@@ -107,7 +136,9 @@ class ParametersAreUsedNotAssumedTest(unittest.TestCase):
         quarter = size(0.80, 0.20, kelly_fraction=0.025)
         self.assertAlmostEqual(half.kelly_debit, base.kelly_debit / 2, places=9)
         self.assertAlmostEqual(quarter.kelly_debit, base.kelly_debit / 4, places=9)
-        self.assertAlmostEqual(half.notional, base.notional / 2, places=6)
+        # The notional is whole cents at the client's fixed point, so it
+        # tracks to within the floor rather than to six places.
+        self.assertAlmostEqual(half.notional, base.notional / 2, delta=MAX_FLOOR_DROP)
 
     def test_kelly_fraction_tracks_across_valid_values(self):
         for fraction in (0.02, 0.05, 0.10, 0.25, 1.0):
@@ -163,7 +194,7 @@ class ParametersAreUsedNotAssumedTest(unittest.TestCase):
         for ceiling in (1.0, 6.0, 13.5):
             with self.subTest(max_position_usdc=ceiling):
                 s = size(1.0, 0.50, bankroll=10_000.0, max_position_usdc=ceiling)
-                self.assertAlmostEqual(s.debit, ceiling, places=9)
+                assert_debit_fills_the_cap(self, s, ceiling)
 
 
 class FeeAwareTest(unittest.TestCase):
@@ -173,9 +204,9 @@ class FeeAwareTest(unittest.TestCase):
         """10.501189 debited against 10.00 notional at price 0.284."""
         self.assertAlmostEqual(1 + fee_ratio(0.284), 10.501189 / 10.0, places=4)
 
-    def test_debit_equals_the_cap_and_notional_is_below_it(self):
+    def test_debit_fills_the_cap_to_the_cent_and_notional_is_below_it(self):
         s = size(1.0, 0.50)  # kelly_debit is the binding cap here
-        self.assertAlmostEqual(s.debit, s.kelly_debit, places=9)
+        assert_debit_fills_the_cap(self, s, s.kelly_debit)
         self.assertLess(s.notional, s.debit, "the fee is charged on top")
 
     def test_sizing_the_notional_to_the_cap_would_overspend(self):
@@ -187,25 +218,31 @@ class FeeAwareTest(unittest.TestCase):
         s = size(1.0, 0.10)
         naive_debit = s.kelly_debit * (1 + fee_ratio(0.10))
         self.assertGreater(naive_debit - s.kelly_debit, 0.15)
-        self.assertAlmostEqual(s.debit, s.kelly_debit, places=9)
+        assert_debit_fills_the_cap(self, s, s.kelly_debit)
 
     def test_shares_are_derived_from_the_notional_actually_sent(self):
-        """Not from an unrounded intermediate.
+        """Not from an unrounded intermediate, and not from a 6dp figure.
 
-        The relay is sent the ROUNDED notional, and the exchange divides that by
-        price to get the order size. Deriving shares from anything else means
-        the count checked against the minimum is not the count the exchange
-        computes, which at the boundary is the difference between a clean
-        refusal and a rejected order.
+        The relay hands amount_usdc to py-clob-client-v2, which submits
+        round_down(amount, 2) / marginal_ask. So the notional is whole cents,
+        at the fixed point of that floor (a value the client's floor leaves
+        unchanged), and shares and debit are derived from it. An earlier
+        version of this test asserted a 6dp rounding and said the exchange
+        divided that by price; it does not, and sizing at 6dp produced sub-cent
+        notionals whose share count was systematically above the one the
+        exchange computed. At the boundary that is the difference between a
+        clean refusal and an order rejected after a human approved it.
         """
         for p_true, price in ((0.90, 0.20), (0.35, 0.10), (0.60, 0.40)):
             with self.subTest(price=price):
                 s = size(p_true, price)
-                self.assertEqual(s.notional, round(s.notional, 6))
+                self.assertEqual(s.notional, math.floor(s.notional * 100.0) / 100.0,
+                                 "a fixed point of the client's floor")
+                self.assertEqual(s.notional, maker_amount(s.notional))
                 self.assertAlmostEqual(s.shares, s.notional / price, places=12)
                 self.assertEqual(
                     s.debit, round(s.notional * (1 + fee_ratio(price)), 6),
-                    "debit must follow the rounded notional, not an intermediate",
+                    "debit must follow the whole-cent notional, not an intermediate",
                 )
 
 
@@ -215,7 +252,7 @@ class CeilingTest(unittest.TestCase):
     def test_ceiling_binds_and_is_recorded(self):
         s = size(1.0, 0.50, bankroll=10_000.0)
         self.assertEqual(s.clamped_by, "max_position_usdc")
-        self.assertAlmostEqual(s.debit, LIVE["max_position_usdc"], places=9)
+        assert_debit_fills_the_cap(self, s, LIVE["max_position_usdc"])
 
     def test_ceiling_does_not_bind_at_the_live_bankroll(self):
         """At $25 and a tenth of Kelly the largest possible stake is $2.50, so
@@ -273,6 +310,7 @@ class ExchangeMinimumTest(unittest.TestCase):
         line = s.log_fields()
         for label, value in (
             ("price", f"{s.side_price:.4f}"),
+            ("fill_price", f"{s.fill_price:.4f}"),
             ("edge", f"{s.edge:+.4f}"),
             ("kelly_f", f"{s.kelly_fraction:.5f}"),
             ("kelly_debit", f"{s.kelly_debit:.4f}"),
@@ -311,6 +349,13 @@ class ExchangeMinimumTest(unittest.TestCase):
             clamped.kelly_debit, clamped.debit, places=2,
             msg="the clamped fixture must separate kelly_debit from debit",
         )
+
+        # fill_price equals side_price whenever no fill is given, so a swap
+        # between the two labels is invisible at the fixtures above. A fixture
+        # WITH a fill price separates them, and both must print as themselves.
+        filled = size(0.6149, 0.279, minimum=12.0, fill_price=0.30)
+        self.assertNotAlmostEqual(filled.fill_price, filled.side_price, places=4)
+        self.assertIn("price=0.2790 fill_price=0.3000", filled.log_fields())
 
     def test_the_log_does_not_call_the_sized_notional_a_kelly_notional(self):
         """The label used to name the wrong quantity.
@@ -429,40 +474,45 @@ class BoundaryTest(unittest.TestCase):
         self.assertTrue(s.tradeable, s.log_fields())
 
     def test_a_hair_under_the_minimum_is_refused(self):
-        """Kills `shares <= required` and any epsilon slack."""
+        """Kills `shares <= required` and any epsilon slack.
+
+        The notional moves in whole cents now, so a hair cannot be produced
+        through p: the nearest step below 5.000 shares at price 0.20 is 4.95.
+        The fill price is continuous, so the hair is produced there: exactly
+        $1.00 against an ask one part in a million above the quote.
+        """
         price, minimum = 0.20, 5.0
-        lo, hi = price, 1.0
-        for _ in range(200):
-            mid = (lo + hi) / 2
-            if size(mid, price).shares >= minimum:
-                hi = mid
-            else:
-                lo = mid
-        just_under = size(lo, price)
+        p = probability_for_exact_minimum(price, minimum)
+        exact = size(p, price)
+        self.assertAlmostEqual(exact.shares, minimum, places=9, msg="pick the exact case")
+        just_under = size(p, price, fill_price=price * (1 + 1e-6))
         self.assertLess(just_under.shares, minimum)
         self.assertFalse(just_under.tradeable, just_under.log_fields())
         self.assertGreater(just_under.shares, minimum * 0.9999,
                            "must be a HAIR under, or it proves nothing")
 
     def test_one_percent_under_is_refused(self):
-        """Kills `shares < required * 0.99`, which survived the whole suite."""
+        """Kills `shares < required * 0.99`, which survived the whole suite.
+
+        Two probes. The notional moves in whole cents, so the largest notional
+        under $1.00 at the quote is $0.99, which is exactly 1% under; and the
+        fill price is continuous, so 0.5% and 0.1% under are produced there.
+        """
+        price, minimum = 0.20, 5.0
+        p = probability_for_exact_minimum(price, minimum)
+        one_cent_under = size(p, price, bankroll=LIVE["bankroll"] * 0.995)
+        self.assertEqual(one_cent_under.notional, 0.99, "the step below $1.00")
+        self.assertLess(one_cent_under.shares, minimum)
+        self.assertFalse(one_cent_under.tradeable, one_cent_under.log_fields())
         for fraction in (0.99, 0.995, 0.999):
             with self.subTest(fraction=fraction):
-                price, minimum = 0.20, 5.0
-                notional = minimum * fraction * price
-                lo, hi = price, 1.0
-                for _ in range(200):
-                    mid = (lo + hi) / 2
-                    if size(mid, price).notional >= notional:
-                        hi = mid
-                    else:
-                        lo = mid
-                s = size(hi, price)
+                s = size(p, price, fill_price=price / fraction)
                 # Unconditional. Wrapping the assertion in `if s.shares <
                 # minimum` made it pass vacuously for any mutant that lifted
                 # shares above the floor, which is the mutant class it exists
                 # to catch.
                 self.assertLess(s.shares, minimum, "probe landed above the floor")
+                self.assertAlmostEqual(s.shares, minimum * fraction, places=9)
                 self.assertFalse(s.tradeable, s.log_fields())
 
 
@@ -513,13 +563,13 @@ class EnforcedCeilingTest(unittest.TestCase):
     def test_the_configured_ceiling_binds_before_the_hard_one(self):
         s = size(1.0, 0.50, bankroll=10_000.0,
                  max_position_usdc=10.0, absolute_max_usdc=25.0)
-        self.assertAlmostEqual(s.debit, 10.0, places=9)
+        assert_debit_fills_the_cap(self, s, 10.0)
         self.assertEqual(s.clamped_by, "max_position_usdc")
 
     def test_the_hard_ceiling_binds_when_it_is_the_lower(self):
         s = size(1.0, 0.50, bankroll=10_000.0,
                  max_position_usdc=100.0, absolute_max_usdc=25.0)
-        self.assertAlmostEqual(s.debit, 25.0, places=9)
+        assert_debit_fills_the_cap(self, s, 25.0)
         self.assertEqual(s.clamped_by, "absolute_max_position_usdc")
 
     def test_it_never_proposes_above_what_gate_5_enforces(self):
@@ -606,6 +656,133 @@ class NoSideTest(unittest.TestCase):
 
     def test_fee_uses_the_side_actually_bought(self):
         self.assertAlmostEqual(fee_ratio(0.70), FEE_RATE * 0.30, places=12)
+
+
+class MakerAmountTest(unittest.TestCase):
+    """maker_amount mirrors py-clob-client-v2 1.1.0's round_down(amount, 2), to
+    its fixed point. Read from the wheel, not assumed: floor(x * 100) / 100 in
+    IEEE doubles, applied once by the client to whatever it is sent."""
+
+    def test_every_cent_value_is_a_fixed_point_of_the_clients_floor(self):
+        """The property. For every whole-cent value up to $25, the result is
+        left unchanged by the client's floor, never exceeds the input, and the
+        float hazard costs a bounded number of cents."""
+        worst, hazards = 0.0, 0
+        for cents in range(1, 2501):
+            x = cents / 100
+            m = maker_amount(x)
+            self.assertEqual(math.floor(m * 100.0) / 100.0, m, f"{x} -> {m} is not a fixed point")
+            self.assertLessEqual(m, x, "never rounds up")
+            worst = max(worst, x - m)
+            hazards += m != x
+        self.assertGreater(hazards, 0, "the hazard is real; some cent values are not fixed points")
+        self.assertLess(worst, MAX_FLOOR_DROP, f"worst drop {worst:.4f} exceeds the documented bound")
+
+    def test_the_hazard_values_are_pinned(self):
+        """0.29 * 100 is 28.999999999999996 in a double, so the client floors
+        0.29 to 0.28, and 0.58 goes to 0.57 and then to 0.56. Pinned so that a
+        "simpler" single floor, which would return 0.57 for 0.58, fails."""
+        self.assertEqual(maker_amount(0.29), 0.28)
+        self.assertEqual(maker_amount(0.58), 0.56)
+        self.assertEqual(maker_amount(2.01), 2.00)
+        self.assertEqual(maker_amount(0.28), 0.28)
+        self.assertEqual(maker_amount(2.00), 2.00)
+
+    def test_sub_cent_amounts_floor_and_never_round_up(self):
+        for raw, expected_at_most in ((1.875, 1.87), (2.399232, 2.39), (0.999, 0.99)):
+            with self.subTest(raw=raw):
+                m = maker_amount(raw)
+                self.assertLessEqual(m, expected_at_most)
+                self.assertGreater(m, expected_at_most - MAX_FLOOR_DROP)
+        self.assertEqual(maker_amount(0.009), 0.0)
+
+    def test_garbage_is_zero_not_an_exception(self):
+        for bad in (0.0, -1.0, float("nan"), float("inf")):
+            with self.subTest(x=bad):
+                self.assertEqual(maker_amount(bad), 0.0)
+
+    def test_sizing_sends_a_fixed_point(self):
+        """What is sent survives the client's floor unchanged, so the figure a
+        human approves, the figure the relay receives and the figure the client
+        submits are one number."""
+        for p, price in ((0.90, 0.20), (0.6149, 0.279), (1.0, 0.50), (0.35, 0.10)):
+            with self.subTest(p=p, price=price):
+                n = size(p, price).notional
+                self.assertEqual(math.floor(n * 100.0) / 100.0, n)
+
+
+class FillPriceTest(unittest.TestCase):
+    """The divisor is the price the order FILLS at, when the caller has it.
+
+    Executor GATE 8 divides the whole-cent notional by the marginal ask from
+    the live book. Sizing at the quoted price alone was systematically
+    optimistic: across 24 live markets on 2026-09-09 the ask ran a median of
+    1.8% above the quote, so a candidate sized to exactly the minimum at the
+    quote was refused by the gate at every price in the band, after a human
+    had been asked to approve it. The scanner now passes the walked fill price
+    in, and this class pins what that changes and what it must not.
+    """
+
+    def test_shares_divide_by_the_fill_price(self):
+        s = size(0.90, 0.20, fill_price=0.25)
+        self.assertEqual(s.fill_price, 0.25)
+        self.assertAlmostEqual(s.shares, s.notional / 0.25, places=12)
+        self.assertNotAlmostEqual(s.shares, s.notional / 0.20, places=6)
+
+    def test_the_notional_does_not_move_with_the_fill_price(self):
+        """Kelly is NOT re-run at the fill. The notional is the budget for the
+        edge measured at the quote; letting the fill move it would move the
+        walk that produced the fill, and the two would chase each other."""
+        quoted = size(0.90, 0.20)
+        for fill in (0.15, 0.20, 0.25, 0.45):
+            with self.subTest(fill=fill):
+                s = size(0.90, 0.20, fill_price=fill)
+                self.assertEqual(s.notional, quoted.notional)
+                self.assertEqual(s.side_price, 0.20)
+                self.assertAlmostEqual(s.edge, quoted.edge, places=12)
+                self.assertAlmostEqual(s.kelly_debit, quoted.kelly_debit, places=12)
+
+    def test_exactly_the_minimum_at_the_quote_is_refused_at_the_median_ask(self):
+        """The defect, stated as a number. Sized to 5.000 shares at a 0.20
+        quote; the median live spread puts the ask at 0.2036, which is 4.91
+        shares, and the gate refuses that."""
+        p = probability_for_exact_minimum(price=0.20, minimum=5.0)
+        at_quote = size(p, 0.20)
+        self.assertAlmostEqual(at_quote.shares, 5.0, places=9)
+        self.assertTrue(at_quote.tradeable)
+        at_ask = size(p, 0.20, fill_price=0.2036)
+        self.assertLess(at_ask.shares, 5.0)
+        self.assertFalse(at_ask.tradeable)
+        self.assertEqual(at_ask.refusal, "below_exchange_minimum")
+
+    def test_an_ask_below_the_quote_admits_what_the_quote_refused(self):
+        """Measured live 2026-09-09: Gamma 0.265 against a best ask of 0.070.
+        A verdict at the quote is wrong in both directions, which is why the
+        scanner walks every proposable candidate rather than only the ones the
+        quote admits."""
+        refused = size(0.6149, 0.279)      # f4be9ee8, historical, refused
+        self.assertFalse(refused.tradeable)
+        admitted = size(0.6149, 0.279, fill_price=0.07)
+        self.assertTrue(admitted.tradeable, admitted.log_fields())
+        self.assertEqual(admitted.notional, refused.notional)
+
+    def test_the_minima_and_the_fee_use_the_fill_price(self):
+        s = size(0.90, 0.20, minimum=12.0, fill_price=0.25)
+        self.assertAlmostEqual(s.min_notional, 12.0 * 0.25, places=12)
+        self.assertAlmostEqual(
+            s.min_debit, 12.0 * 0.25 * (1 + fee_ratio(0.25)), places=12
+        )
+        self.assertEqual(s.debit, round(s.notional * (1 + fee_ratio(0.25)), 6))
+
+    def test_an_unusable_fill_price_is_refused_by_name(self):
+        for bad in (0.0, 1.0, -0.2, 1.5, float("nan"), float("inf"), "0.25", True):
+            with self.subTest(fill_price=bad):
+                self.assertEqual(size(0.90, 0.20, fill_price=bad).refusal, "invalid_fill_price")
+
+    def test_absent_means_the_quoted_price_stands_in(self):
+        s = size(0.90, 0.20)
+        self.assertEqual(s.fill_price, s.side_price)
+        self.assertIn("fill_price=0.2000", s.log_fields())
 
 
 if __name__ == "__main__":

@@ -51,8 +51,12 @@ from src.trade_engine.models import (  # noqa: E402
     TradingConfig,
 )
 import src.trade_engine.scanner as scanner_mod  # noqa: E402
-from src.trade_engine.executor import ABSOLUTE_MAX_POSITION_USDC  # noqa: E402
-from src.trade_engine.sizing import size_position  # noqa: E402
+from src.trade_engine.executor import (  # noqa: E402
+    ABSOLUTE_MAX_POSITION_USDC,
+    OrderConstraints,
+    TradeExecutor,
+)
+from src.trade_engine.sizing import maker_amount, size_position  # noqa: E402
 from src.trade_engine.scanner import (  # noqa: E402
     DEFAULT_HORIZON_DAYS,
     HORIZON_MAX_DAYS,
@@ -295,12 +299,14 @@ class ReduceNeverIncreasesTest(unittest.TestCase):
     while the old ramp never sized below $3, and live the moment Kelly does.
     """
 
-    def summary_with(self, amount, price=0.40, minimum=5.0):
+    def summary_with(self, amount, price=0.40, minimum=5.0, direction="YES",
+                     fill_price=None):
         candidate = ScannerCandidate(
             market_id="1", condition_id="0x" + "ab" * 32, question="q",
-            asset="btc", direction="YES", edge=0.20, sim_probability=0.60,
+            asset="btc", direction=direction, edge=0.20, sim_probability=0.60,
             market_probability=price, volume=50000.0, horizon_days=5.0,
             market_url="", amount_usdc=amount, min_order_size=minimum,
+            fill_price=fill_price,
         )
         summary = ScannerRunSummary(
             run_at=datetime.now(timezone.utc), markets_fetched=1,
@@ -312,11 +318,14 @@ class ReduceNeverIncreasesTest(unittest.TestCase):
         )
         return summary
 
-    def reduce_to(self, amount, **kw):
+    def reduce(self, amount, **kw):
         summary = self.summary_with(amount, **kw)
         scanner = PolymarketScanner(analyst=_StubAnalyst(summary.analyst_recommendation))
         run(scanner.apply_analyst(summary))
-        return summary.best_trade.amount_usdc
+        return summary.best_trade
+
+    def reduce_to(self, amount, **kw):
+        return self.reduce(amount, **kw).amount_usdc
 
     def test_reduce_never_increases_at_any_size(self):
         """The property, across the whole range including sub-$3 Kelly sizes."""
@@ -324,12 +333,34 @@ class ReduceNeverIncreasesTest(unittest.TestCase):
             with self.subTest(before=before):
                 after = self.reduce_to(before)
                 self.assertLess(after, before, "REDUCE must reduce")
-                self.assertAlmostEqual(after, before / 2, places=6)
+                # Half, at the whole cent the relay's client will submit; see
+                # sizing.maker_amount for why the floor is iterated.
+                self.assertEqual(after, maker_amount(before / 2))
 
     def test_the_old_floor_would_have_tripled_a_kelly_position(self):
         """Pins the specific defect rather than only the general property."""
         self.assertLess(self.reduce_to(1.23), 1.23)
-        self.assertAlmostEqual(self.reduce_to(1.23), 0.615, places=6)
+        self.assertEqual(self.reduce_to(1.23), 0.61)
+
+    def test_reduce_on_a_NO_candidate_divides_by_the_side_price(self):
+        """The first version divided by the YES price for both sides. A NO
+        candidate at yes_price 0.80 is bought at 0.20: $1.10 is 5.5 shares,
+        placeable, and was being marked unsizeable at 1.375."""
+        best = self.reduce(2.2, price=0.80, direction="NO")
+        self.assertEqual(best.amount_usdc, 1.1)
+        self.assertIsNone(best.sizing_refusal)
+        # The inverse: bought at 0.80, $1.10 is 1.375 shares, not 5.5.
+        best = self.reduce(2.2, price=0.20, direction="NO")
+        self.assertEqual(best.sizing_refusal, "below_exchange_minimum")
+
+    def test_reduce_divides_by_the_carried_fill_price_not_the_quote(self):
+        """$4.00 at a 0.40 quote halves to $2.00, exactly 5 shares at the
+        quote. The book said the order fills at 0.45, which is 4.44 shares,
+        and that is the number GATE 8 will compute."""
+        best = self.reduce(4.0, price=0.40, fill_price=0.45)
+        self.assertEqual(best.amount_usdc, 2.0)
+        self.assertEqual(best.sizing_refusal, "below_exchange_minimum")
+        self.assertIsNone(self.reduce(4.0, price=0.40, fill_price=0.40).sizing_refusal)
 
     def test_reducing_under_the_exchange_minimum_marks_it_unsizeable(self):
         """Halving can make a position unplaceable. That is a refusal, not a
@@ -514,7 +545,10 @@ class SizingWireThroughTest(unittest.TestCase):
             big = self.capture()[1].amount_usdc
         with self.config_value("bankroll_usdc", 12.5):
             small = self.capture()[1].amount_usdc
-        self.assertAlmostEqual(small, big / 2, places=5)
+        # Whole cents at the client's fixed point, so within the floor's
+        # worst case rather than to five places; see tests/test_sizing.py.
+        self.assertAlmostEqual(small, big / 2, delta=0.06)
+        self.assertLess(small, big)
 
     def test_the_sizing_refusal_is_recorded_on_the_candidate(self):
         row = dict(self.ROW, yes_price=0.05)
@@ -559,7 +593,10 @@ class RunSummaryCeilingTest(unittest.TestCase):
         scanner_mod.size_position = spy
         scanner_mod.get_trading_config = fake_config
         try:
-            summary = run(PolymarketScanner().build_run_summary(
+            # A book that agrees with the quote, so the ceiling is the only
+            # thing under test here; BookBasisTest varies the book.
+            executor = _StubBookExecutor(minimum=1.0, fill_price=0.20)
+            summary = run(PolymarketScanner(executor=executor).build_run_summary(
                 rows, markets_fetched=1, candidates_analysed=1,
                 sim_errors=0, open_positions=0,
             ))
@@ -602,6 +639,178 @@ class RunSummaryCeilingTest(unittest.TestCase):
         self.assertEqual(len(summary.no_edge), 1)
         self.assertLess(summary.no_edge[0].edge, 0)
         self.assertEqual(summary.no_edge[0].direction, "NO")
+
+
+class _StubBookExecutor:
+    """Stands in for TradeExecutor.read_order_constraints.
+
+    One deep ask level at `fill_price` and a live minimum of `minimum`, walked
+    with the REAL walk so the share count carries the gate's cent floor. None
+    (unreadable=True) is the read the gate would refuse.
+    """
+
+    def __init__(self, minimum=5.0, fill_price=0.20, unreadable=False):
+        self.minimum, self.fill_price, self.unreadable = minimum, fill_price, unreadable
+        self.calls = []
+
+    async def read_order_constraints(self, condition_id, direction, notional):
+        self.calls.append((condition_id, direction, notional))
+        if self.unreadable:
+            return None
+        walked = TradeExecutor._shares_for_notional([(self.fill_price, 1e9)], notional)
+        if walked is None:
+            return None
+        shares, price = walked
+        return OrderConstraints(
+            minimum=self.minimum, shares=shares, fill_price=price,
+            observed_at=datetime.now(timezone.utc),
+        )
+
+
+class BookBasisTest(unittest.TestCase):
+    """The scanner sizes against the SAME book walk GATE 8 performs.
+
+    The first pass sizes at Gamma's quoted price. The gate divides the
+    whole-cent notional by the marginal ASK from the live book, and across 24
+    live markets on 2026-09-09 the ask ran a median of 1.8% and a maximum of
+    22% above the quote, with three markets quoting ABOVE their own ask. A
+    candidate admitted at the quote and refused at the ask got an Execute
+    button the gate then refused, and the refusal log under-counted the
+    suppression it is the only instrument for. Now every proposable candidate
+    is re-sized against the book before the summary is built, through the
+    executor's own read, so the two cannot disagree on the same book.
+
+    Numbers, at the shipped bankroll and a 0.20 quote: p = 0.90 gives a Kelly
+    debit of 2.1875, a raw notional of 2.0715, and a whole-cent notional of
+    2.06 (2.07 is a float hazard the client's floor takes to 2.06), which is
+    10.3 shares at the quote; p = 0.53 gives 0.97 and 4.85 shares, refused at
+    the quote.
+    """
+
+    CID = "0x" + "ab" * 32
+
+    def rows(self, sim_probability, yes_price=0.20, gamma_minimum=5.0):
+        return [{
+            "market_id": "1", "condition_id": self.CID, "slug": "s",
+            "question": "q", "asset": "btc", "yes_price": yes_price,
+            "volume": 279582.74, "horizon_days": 20.333,
+            "end_date": "2026-09-30T04:00:00Z", "min_order_size": gamma_minimum,
+            "simulation": {"probability": sim_probability},
+        }]
+
+    def build(self, rows, executor):
+        real_cfg = scanner_mod.get_trading_config
+
+        async def fake_config():
+            return TradingConfig(id=1, max_position_usdc=10.0)
+
+        scanner_mod.get_trading_config = fake_config
+        try:
+            return run(PolymarketScanner(executor=executor).build_run_summary(
+                rows, markets_fetched=1, candidates_analysed=1,
+                sim_errors=0, open_positions=0,
+            ))
+        finally:
+            scanner_mod.get_trading_config = real_cfg
+
+    def test_admitted_at_the_quote_refused_at_a_wider_ask(self):
+        stub = _StubBookExecutor(minimum=5.0, fill_price=0.45)
+        summary = self.build(self.rows(0.90), stub)
+        c = summary.high_edge[0]
+        self.assertEqual(c.amount_usdc, 2.06, "the notional does not move with the fill")
+        self.assertEqual(c.sizing_refusal, "below_exchange_minimum", "4.58 shares at 0.45")
+        self.assertEqual(c.fill_price, 0.45)
+        self.assertIsNone(PolymarketScanner().select_best_trade(summary))
+
+    def test_admitted_when_the_ask_matches_the_quote(self):
+        """Or the walk would be indistinguishable from a gate that refuses
+        everything."""
+        summary = self.build(self.rows(0.90), _StubBookExecutor(minimum=5.0, fill_price=0.20))
+        c = summary.high_edge[0]
+        self.assertIsNone(c.sizing_refusal)
+        self.assertEqual(c.fill_price, 0.20)
+        self.assertIsNotNone(PolymarketScanner().select_best_trade(summary))
+
+    def test_an_ask_below_the_quote_admits_what_the_quote_refused(self):
+        """The measured anomaly: Gamma 0.265 against a best ask of 0.070. A
+        verdict at the quote is wrong in BOTH directions, so the first pass
+        cannot be used as a filter; every proposable candidate is walked."""
+        at_quote = PolymarketScanner._to_candidate(dict(self.rows(0.53)[0]), 0.33, 0.53, 10.0)
+        self.assertEqual(at_quote.sizing_refusal, "below_exchange_minimum",
+                         "pick a case the quote refuses")
+        summary = self.build(self.rows(0.53), _StubBookExecutor(minimum=5.0, fill_price=0.15))
+        c = summary.high_edge[0]
+        self.assertIsNone(c.sizing_refusal)
+        self.assertEqual(c.amount_usdc, 0.97)
+        self.assertEqual(c.fill_price, 0.15)
+
+    def test_the_live_minimum_replaces_gammas(self):
+        stub = _StubBookExecutor(minimum=12.0, fill_price=0.20)
+        summary = self.build(self.rows(0.90, gamma_minimum=5.0), stub)
+        c = summary.high_edge[0]
+        self.assertEqual(c.min_order_size, 12.0)
+        self.assertEqual(c.sizing_refusal, "below_exchange_minimum",
+                         "10.3 shares against a live minimum of 12")
+
+    def test_an_unreadable_book_is_a_named_refusal_not_a_proposal(self):
+        summary = self.build(self.rows(0.90), _StubBookExecutor(unreadable=True))
+        self.assertEqual(summary.high_edge[0].sizing_refusal, "order_book_unread")
+        self.assertIsNone(PolymarketScanner().select_best_trade(summary))
+
+    def test_no_executor_means_nothing_is_proposed(self):
+        summary = self.build(self.rows(0.90), None)
+        self.assertEqual(summary.high_edge[0].sizing_refusal, "order_book_unread")
+
+    def test_the_walk_is_for_the_notional_the_gate_will_walk(self):
+        stub = _StubBookExecutor(minimum=5.0, fill_price=0.20)
+        summary = self.build(self.rows(0.90), stub)
+        self.assertEqual(stub.calls, [(self.CID, "YES", summary.high_edge[0].amount_usdc)])
+
+    def test_no_edge_candidates_are_not_walked(self):
+        stub = _StubBookExecutor()
+        summary = self.build(self.rows(0.05, yes_price=0.60), stub)
+        self.assertEqual(len(summary.no_edge), 1)
+        self.assertEqual(stub.calls, [])
+        self.assertIsNone(summary.no_edge[0].fill_price)
+
+    def test_candidates_refused_before_the_arithmetic_are_not_walked(self):
+        stub = _StubBookExecutor()
+        summary = self.build(self.rows(0.90, yes_price=0.05), stub)
+        self.assertEqual(summary.high_edge[0].sizing_refusal, "price_below_sizing_floor")
+        self.assertEqual(stub.calls, [])
+
+
+class ScannerGateAgreementTest(unittest.TestCase):
+    """The property behind BookBasisTest, stated on the arithmetic alone.
+
+    Sizing with a fill price and GATE 8's walk must land on the same share
+    count and the same verdict for the same notional on the same book. If this
+    fails, the scanner can propose what the gate refuses, however faithfully
+    the scanner reads the book.
+    """
+
+    def test_share_counts_and_verdicts_agree_across_the_band(self):
+        walk = TradeExecutor._shares_for_notional
+        for p in (0.53, 0.55, 0.60, 0.75, 0.90, 1.0):
+            for price in (0.15, 0.20, 0.29, 0.333, 0.45):
+                for ratio in (0.9, 1.0, 1.0178, 1.0556, 1.2211):
+                    fill = round(price * ratio, 4)
+                    with self.subTest(p=p, price=price, fill=fill):
+                        s = size_position(
+                            sim_probability=p, yes_price=price, direction="YES",
+                            min_order_size=5.0, bankroll=25.0, kelly_fraction=0.10,
+                            max_position_usdc=10.0, absolute_max_usdc=25.0,
+                            price_floor=0.10, fill_price=fill,
+                        )
+                        walked = walk([(fill, 1e9)], s.notional)
+                        if walked is None:
+                            self.assertFalse(s.tradeable)
+                            self.assertEqual(s.notional, 0.0)
+                            continue
+                        shares, marginal = walked
+                        self.assertEqual(marginal, fill)
+                        self.assertEqual(s.shares, shares, "the same division, exactly")
+                        self.assertEqual(s.tradeable, shares >= 5.0)
 
 
 class MarketMinimumIsReadNotAssumedTest(unittest.TestCase):

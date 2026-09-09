@@ -123,16 +123,19 @@ class PositionSizing(NamedTuple):
 
     tradeable: bool
     refusal: Optional[str]
-    notional: float           # what the relay is told to spend (amount_usdc)
+    notional: float           # what the relay is told to spend (amount_usdc),
+                              # in WHOLE CENTS, see maker_amount()
     debit: float              # what actually leaves the wallet, notional + fee
-    shares: float             # notional / side_price
+    shares: float             # notional / fill_price
     required_shares: float    # the exchange's orderMinSize for this market
-    side_price: float         # price of the side being bought
+    side_price: float         # quoted price of the side being bought
+    fill_price: float         # price the order FILLS at: the marginal ask when
+                              # the caller walked the book, else side_price
     edge: float               # true_prob - side_price, for the side being bought
     kelly_fraction: float     # fraction of bankroll after KELLY_FRACTION scaling
     kelly_debit: float        # debit Kelly asked for, before any clamp
     clamped_by: Optional[str] # set when the hard ceiling bound the size down
-    min_notional: float       # required_shares * side_price
+    min_notional: float       # required_shares * fill_price
     min_debit: float          # the same, including fee
 
     def log_fields(self) -> str:
@@ -141,7 +144,8 @@ class PositionSizing(NamedTuple):
         # clamp, and the pre-clamp Kelly ask is kelly_debit. The two differ
         # whenever clamped_by is set, and the old label named the wrong one.
         return (
-            f"price={self.side_price:.4f} edge={self.edge:+.4f} "
+            f"price={self.side_price:.4f} fill_price={self.fill_price:.4f} "
+            f"edge={self.edge:+.4f} "
             f"kelly_f={self.kelly_fraction:.5f} kelly_debit={self.kelly_debit:.4f} "
             f"sized_notional={self.notional:.4f} debit={self.debit:.4f} "
             f"shares={self.shares:.4f} required_shares={self.required_shares:.4f} "
@@ -153,7 +157,7 @@ class PositionSizing(NamedTuple):
 def _refused(reason: str, **kw) -> PositionSizing:
     base = dict(
         tradeable=False, refusal=reason, notional=0.0, debit=0.0, shares=0.0,
-        required_shares=0.0, side_price=0.0, edge=0.0, kelly_fraction=0.0,
+        required_shares=0.0, side_price=0.0, fill_price=0.0, edge=0.0, kelly_fraction=0.0,
         kelly_debit=0.0, clamped_by=None, min_notional=0.0, min_debit=0.0,
     )
     base.update(kw)
@@ -182,6 +186,36 @@ def side_price_for(direction: str, yes_price: float) -> float:
     return yes_price if str(direction).upper() == "YES" else 1.0 - yes_price
 
 
+def maker_amount(notional: float) -> float:
+    """The whole-cent amount the CLOB client will actually submit for `notional`.
+
+    py-clob-client-v2 1.1.0, the version the relay pins, builds a market BUY as
+    round_down(amount, 2) / marginal_ask, where round_down is
+    floor(x * 100) / 100 in IEEE doubles. That floor has a float hazard:
+    0.29 * 100 is 28.999999999999996, so round_down(0.29, 2) is 0.28, and 0.58
+    goes to 0.57 and then to 0.56. Applying the floor here once is therefore
+    not enough, because the value this function returns is what gets SENT, and
+    the client floors it again on arrival: a value that is not a fixed point of
+    the floor loses a cent on the way through and the share count checked here
+    is not the one the exchange computes.
+
+    So this iterates to the fixed point: the returned value satisfies
+    round_down(value, 2) == value, which is the only way "what we send", "what
+    GATE 8 walks" (it applies the client's single floor to amount_usdc) and
+    "what the client submits" are the same number. Never rounds up; a notional
+    under a cent is 0.0, which no minimum admits.
+    """
+    value = float(notional)
+    if not math.isfinite(value) or value <= 0:
+        return 0.0
+    for _ in range(8):
+        floored = math.floor(value * 100.0) / 100.0
+        if floored == value:
+            return value
+        value = floored
+    return value
+
+
 def size_position(
     *,
     sim_probability: float,
@@ -193,6 +227,7 @@ def size_position(
     max_position_usdc: float,
     price_floor: float,
     absolute_max_usdc: Optional[float] = None,
+    fill_price: Optional[float] = None,
 ) -> PositionSizing:
     """Size one trade, or refuse it with a reason.
 
@@ -203,6 +238,18 @@ def size_position(
 
     `max_position_usdc` bounds the DEBIT, not the notional. It sits ABOVE Kelly
     and only ever binds downward; when it binds, `clamped_by` records it.
+
+    `fill_price` is the price the order would actually FILL at: the marginal ask
+    from walking the live book for this notional, which is what executor GATE 8
+    divides by. When the caller has it, the share count, the two minima and the
+    fee are computed against it, so the scanner's verdict is the gate's verdict
+    on the same book. When it is None the quoted `side_price` stands in, which
+    is a first pass only: across 24 live markets the ask ran a median of 1.8%
+    and a maximum of 22% above Gamma's quote, and three quoted ABOVE the ask, so
+    no verdict at the quoted price should be shown to a human. Kelly itself is
+    NOT re-run at the fill price: the notional is the budget for the edge that
+    was measured at the quote, and letting the fill move the notional would move
+    the walk that produced the fill.
     """
     # Inputs first, so a refusal never carries arithmetic derived from garbage.
     for name, value in (("sim_probability", sim_probability), ("yes_price", yes_price)):
@@ -211,6 +258,13 @@ def size_position(
             return _refused("invalid_input")
     if not 0.0 < float(yes_price) < 1.0:
         return _refused("invalid_price")
+    # A fill price is remote data too (it comes off the CLOB book), so it gets
+    # the same treatment as yes_price rather than being trusted as a float.
+    if fill_price is not None and (
+        not isinstance(fill_price, (int, float)) or isinstance(fill_price, bool)
+        or not math.isfinite(float(fill_price)) or not 0.0 < float(fill_price) < 1.0
+    ):
+        return _refused("invalid_fill_price")
     # A PROBABILITY, so range-checked and not merely finite. The whole
     # "impossible above price 0.5" result rests on edge <= 1 - price, which
     # rests on p <= 1; nothing upstream enforced it and the Monte Carlo worker
@@ -236,15 +290,18 @@ def size_position(
         return _refused("invalid_kelly_fraction")
 
     price = side_price_for(direction, float(yes_price))
+    # What the order fills at. The minima, the share count and the fee are all
+    # functions of THIS price, because it is the one the exchange uses.
+    fill = float(fill_price) if fill_price is not None else price
     true_prob = float(sim_probability) if str(direction).upper() == "YES" \
         else 1.0 - float(sim_probability)
     edge = true_prob - price
     required = float(min_order_size)
-    min_notional = required * price
-    min_debit = min_notional * (1.0 + fee_ratio(price))
+    min_notional = required * fill
+    min_debit = min_notional * (1.0 + fee_ratio(fill))
 
     common = dict(
-        side_price=price, edge=edge, required_shares=required,
+        side_price=price, fill_price=fill, edge=edge, required_shares=required,
         min_notional=min_notional, min_debit=min_debit,
     )
 
@@ -281,17 +338,23 @@ def size_position(
         clamped_by = ceiling_name
 
     # Size on the DEBIT: the wallet pays notional + fee, so solve for the
-    # notional whose debit equals the cap.
+    # notional whose debit equals the cap, at the quoted price the edge was
+    # measured against.
     #
-    # Round FIRST, then derive shares and debit from the rounded figure. The
-    # rounded notional is what is actually sent to the relay, so it is what the
-    # exchange divides by price to get the order size; deriving shares from the
-    # unrounded value would mean the share count checked against the minimum is
-    # not the share count the exchange computes. At the boundary that is the
-    # difference between a refusal and a rejected order.
-    notional = round(cap / (1.0 + fee_ratio(price)), 6)
-    shares = notional / price
-    debit = notional * (1.0 + fee_ratio(price))
+    # FLOOR TO WHOLE CENTS FIRST, to the fixed point of the client's own floor,
+    # and derive shares and debit from THAT figure. The relay hands amount_usdc
+    # to py-clob-client-v2, which submits round_down(amount, 2) / marginal_ask.
+    # An earlier version of this comment said the relay is sent a 6dp-rounded
+    # notional and the exchange divides that by price; it is not and it does
+    # not. Sizing at 6dp produced sub-cent notionals as a matter of course, so
+    # the share count checked here was systematically above the one the
+    # exchange computed, and at the boundary that is the difference between a
+    # clean refusal and an order the exchange rejects after a human approved it.
+    # Executor GATE 8 applies the identical floor to amount_usdc, so the two
+    # agree by construction rather than by coincidence.
+    notional = maker_amount(cap / (1.0 + fee_ratio(price)))
+    shares = notional / fill
+    debit = notional * (1.0 + fee_ratio(fill))
 
     sized = dict(
         common, notional=notional, debit=round(debit, 6),
@@ -299,11 +362,16 @@ def size_position(
         clamped_by=clamped_by,
     )
 
-    # STRICTLY less than. Exactly the minimum is ADMITTED, matching GATE 8's
-    # comparison; the two must agree or a trade the scanner sizes is refused at
-    # execution for a reason the scanner did not anticipate. Mutants moving this
-    # boundary either way, including admitting 1% under, survived the suite
-    # until it was pinned on both sides.
+    # STRICTLY less than. Exactly the minimum is ADMITTED, and GATE 8 makes the
+    # same comparison on the same two numbers: the whole-cent notional divided
+    # by the marginal ask, against the exchange's minimum. The scanner supplies
+    # `fill_price` from the same book walk GATE 8 performs, so a trade the
+    # scanner sizes is refused at execution only if the book moved in between,
+    # never for a reason the scanner did not anticipate. Without a fill price
+    # the quoted price stands in, and that verdict is provisional: the scanner
+    # re-runs this against the book before anything is proposed. Mutants moving
+    # this boundary either way, including admitting 1% under, survived the
+    # suite until it was pinned on both sides.
     if shares < required:
         # NEVER round up to reach the minimum. Rounding up would abandon the
         # only property Kelly provides, which is that the stake is proportional

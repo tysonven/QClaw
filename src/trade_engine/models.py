@@ -245,16 +245,26 @@ class ScannerCandidate(BaseModel):
     market_url: str
     # The NOTIONAL handed to the relay, not the wallet debit. The debit is
     # amount_usdc * (1 + 0.07 * (1 - price)); sizing solves for the notional
-    # whose debit hits the cap, so this is always slightly under it.
+    # whose debit hits the cap, so this is always slightly under it. Whole
+    # cents, at the fixed point of the CLOB client's own floor, so what is
+    # approved, what is sent and what the client submits are one number.
     amount_usdc: float
-    # The market's own orderMinSize, in SHARES, read from Gamma at scan time.
+    # The market's own orderMinSize, in SHARES. Gamma's copy at scan time, then
+    # REPLACED by the CLOB's live value once the scanner has walked the book.
     # Carried for logging and for the scanner's own refusal; executor GATE 8
     # re-reads it live and does not trust this copy.
     min_order_size: Optional[float] = None
     # None when the trade is sizeable. Otherwise why it was not: one of
-    # price_below_sizing_floor, below_exchange_minimum, no_positive_edge,
-    # unknown_min_order_size, invalid_price, invalid_input, invalid_bankroll.
+    # price_below_sizing_floor, below_exchange_minimum, order_book_unread,
+    # no_positive_edge, unknown_min_order_size, invalid_price,
+    # invalid_fill_price, invalid_probability, invalid_kelly_fraction,
+    # invalid_input, invalid_bankroll.
     sizing_refusal: Optional[str] = None
+    # The marginal ask the order would fill at, from the same live book walk
+    # GATE 8 performs, read at scan time. None until the scanner has walked the
+    # book for this candidate (no_edge candidates never are). Carried so the
+    # Analyst's REDUCE re-check divides by the price the order fills at.
+    fill_price: Optional[float] = None
 
 
 class AnalystRecommendation(BaseModel):
