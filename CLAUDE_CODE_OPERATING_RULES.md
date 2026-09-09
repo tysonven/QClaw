@@ -76,6 +76,7 @@ This is the audit-first reflex applied at the implementation layer. Discoveries 
 
 Before any commit:
 
+- Before trusting any check as evidence (a test, a grep, a probe, a dry run): apply `src/agents/skills/verification-discipline.md`, the estate's standing reference on checks that pass while measuring nothing. It is written for whoever writes or runs the check, in any session, not only for Charlie.
 - For code changes: run relevant tests, linters, smoke checks
 - For doc changes: read the file back after writing to confirm it's correct
 - For config or infra changes: verify the change took effect with a probe (e.g. PM2 reload + status check)
