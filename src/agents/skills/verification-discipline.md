@@ -2,173 +2,190 @@
 name: verification-discipline
 category: always-on
 surface: prompt
-description: What makes a check trustworthy: prove it can fail, run it rather than read it, cross the boundary the real request crosses, and never report PASS while measuring nothing
+description: What makes a check trustworthy: prove it can fail, run it where it counts, execute the artefact under review; a check whose failure would look like success is the hazard
 ---
 
 # Verification Discipline
 
-In the two weeks to 2026-08-28, four checks in this estate reported something
-other than the truth. Three were caught by reasoning about the check instead of
-by running it. One only surfaced in production. Adversarial review caught none
-of them, because none of them were reasoning failures. The logic was sound in
-every case, and the check still did not measure the thing it named.
+**A check is dangerous in proportion to how much its failure mode resembles
+its success mode.** The checks that burn this estate are never the ones that
+fail loudly. They are the skipped suite that exits 0, the grep pointed away
+from the defects, the fail-closed gate whose outage presents as the gate
+working, the stale bytecode whose failure reads like a real one.
+Every rule here is that principle applied somewhere specific.
 
-That is now the most common defect class here, so it gets a rule rather than a
-habit.
+Roughly seventeen occurrences were found across four repos between late
+August and 2026-09-08. The full record, with SHAs and repro commands, is in
+`QCLAW_BUILD_LOG.md`; this file carries the distillation. That count is
+dated, not maintained.
 
-`verification-reflexes` governs what you are allowed to claim. This file governs
-whether the check behind that claim is worth anything. The two failure modes are
-different: claiming without a check is caught by the gates, while trusting a
-check that measures nothing is caught by nobody. A false PASS is worse than a
-missing check, because a missing check leaves an open question and a false PASS
-closes it.
+`verification-reflexes` governs what you are allowed to claim. This file
+governs whether the check behind the claim is worth anything. Claiming without
+a check is caught by the gates; trusting a check that measures nothing is
+caught by nobody. A false PASS is worse than a missing check, because a
+missing check leaves an open question and a false PASS closes it.
 
 ## Rule 1: a test that has not failed has not been tested
 
 A passing test proves the code and the test agree. It does not prove the test
-can tell them apart. Before a test counts as evidence, break the thing it guards
-and confirm it goes red.
+can tell them apart. Before a test counts as evidence, break the thing it
+guards and confirm it goes red.
 
-The loop is: inject the defect, run, see FAIL, revert, run, see PASS. Then state
-which shapes you injected, because "I proved it fails" is a claim like any other
-and the shapes are its citation.
+The loop is: inject the defect, run, see FAIL, revert, run, see PASS. Then
+state which shapes you injected, because "I proved it fails" is a claim like
+any other and the shapes are its citation: `proven against 3 injected defects:
+removed the invalidation call (FAIL), returned the stale row (FAIL), deleted
+the helper (FAIL)`.
 
 Shapes worth injecting, chosen from what the test claims to catch:
 
 - Delete the guard, call, or filter the test exists to protect.
 - Return a wrong value: off by one, stale, swapped argument, wrong branch.
 - Delete the function or field entirely. This catches tests that pass because
-  the assertion was never reached at all.
+  the assertion was never reached.
 - Feed empty input. This catches assertions that iterate over zero items.
 - Invert a boolean or a comparison.
+- Pin the source of freshness. For any "re-read live, not cached" claim (a
+  clock, a config row), capture it once at import and change nothing else. If
+  the suite stays green, the claim is untested. A test asserting behaviour at
+  time T must vary T, or it only proves the behaviour exists upstream of T.
+- Starve a fail-closed gate: stop the field it reads from arriving. Only
+  wrongly-admitting feels like a defect; wrongly-refusing is an outage wearing
+  the costume of the control working, and it is the one that ships. Ask what
+  tests the admit path, and expect the answer to be nothing.
 
-Report it as: `proven against 3 injected defects: removed the cache
-invalidation call (FAIL), returned the stale row (FAIL), deleted the helper
-entirely (FAIL)`.
-
-If you cannot make it fail, you have not written a strong test. You have written
-something that does not depend on the code.
+This works at suite scale: stash the patch and rerun against the pre-patch
+tree, proving the suite depends on the patch rather than that it is green. And
+incidental coverage is not coverage: a property exercised only through fixture
+values chosen for another purpose stops being exercised the day those values
+change for a good reason, with every test still green. If a property matters,
+something must assert it on purpose.
 
 ## Rule 2: "verified" means executed
 
-Reading the code is analysis. Running something that resembles the real path is
-analysis. "The script would do X" is analysis. None of them are verification.
+Reading the code is analysis. Running something that resembles the real path
+is analysis. "The script would do X" is analysis. Verified means a command
+ran, in the place it needs to run, and you read the output. Anything short of
+that gets said out loud: "I read this and it looks right. I have not run it."
 
-Verified means a command ran, in the place it needs to run, and you read the
-output. Anything short of that gets said out loud:
-
-- "I read this and it looks right. I have not run it."
-- "I ran the query by hand. I have not run the script that wraps it."
-
-Those sentences cost nothing and are always available. Reporting done without
-one of them is the failure, not the not-having-run.
-
-The sharpest version of this trap: you check a step by hand in a friendlier
-environment than the one the script runs in, it works, and you report the script
-as verified. The hand check and the script are two different artifacts with two
-different failure surfaces. Verifying one says nothing about the other.
+The sharpest trap: you check a step by hand in a friendlier environment
+than the one the script runs in, it works, and you report the script as
+verified. The hand check and the script are two different artifacts
+(a `curl | grep -q` script died under `pipefail` while the same greps passed
+by hand in a shell without it). Verifying one says nothing about the other.
 
 ## Rule 3: cross the boundary the real request crosses
 
 Failures collect at boundaries: serialization, transport, auth, process,
-filesystem layout, build output. A check that stays on one side of a boundary is
-structurally blind to everything on the other side, and it will pass with total
-confidence while doing it.
+filesystem layout, build output. A check that stays on one side of a boundary
+is structurally blind to everything on the other side.
 
 Substitutes that are not the real path:
 
 - An in-process caller instead of an HTTP request. Skips the serializer, the
-  middleware, the auth layer, the error mapping.
-- A hardcoded fixture instead of the live corpus. Tests the prompt or the logic,
-  and is blind by construction to the data.
-- An ad-hoc shell command instead of the script. Different shell options,
-  different quoting, different working directory, different exit handling.
-- A local build instead of the deployed artifact. Different paths, different
-  environment, different files present.
+  middleware, the auth layer (how `appRouter.createCaller` passed twice while
+  the real path was broken in the transformer).
+- A hardcoded fixture instead of the live corpus. Tests the prompt or the
+  logic, blind by construction to the data.
+- An ad-hoc shell command instead of the script, or a local build instead of
+  the deployed artifact: different options, quoting, paths, environment.
 
-When you report, name both halves: "this exercised the router and the database.
-It did not cross HTTP or the transformer." A gap you name is a gap someone can
-close. A gap you leave implicit reads as covered.
+When you report, name both halves: "this exercised the router and the
+database. It did not cross HTTP." A gap you name is a gap someone can close. A
+gap you leave implicit reads as covered.
 
-## Rule 4: a PASS that measures nothing is worse than no check
+## Rule 4: four ways a check is weaker than it looks
 
-There are two shapes and both are quiet:
+Each of these shapes passed review in this estate. They are review
+questions, asked of every check before it is trusted:
 
-**Vacuous pass.** The assertion never ran. A skip branch was taken, the
-collection was empty, a glob matched nothing, a directory no longer exists, the
-setup failed without saying so.
+1. **Asserts nothing.** Does it assert anything at all? A skip branch taken,
+   an empty collection, a glob matching nothing, setup failing silently. Make
+   emptiness loud: a check that finds nothing to check must fail or shout,
+   never pass quietly.
+2. **Asserts, but looks where the defect is not.** Does it look where the
+   defect would actually be? A check scoped by an enumeration or a single
+   literal pattern is an undocumented claim about where defects live, and
+   that claim is usually wrong.
+3. **Matches a proxy rather than the property.** Keyword lists, regexes over
+   prose, filename patterns are all proxies, and a proxy fails wherever it
+   and the property come apart, in both directions at once. The false
+   positives are visible and create pressure to loosen it; the leaks are
+   silent, and already leaking before anyone touches it. Measure both
+   directions.
+4. **The artefact executed was not the artefact under review.** Rule 5. It
+   gets its own rule because the check itself is blameless.
 
-**Right answer, wrong reason.** The assertion ran and passed on something other
-than what it claims to measure. A status code that would be identical on an
-error page. A substring present in both the correct and the broken output. A
-default value returned from an error path inside a 2xx.
+Behind all four: **what is this check actually promising, and is that what it
+is being trusted for?** `wrangler deploy --dry-run` validates bundling and
+syntax; trusted to prove a custom domain real, it would have let a
+one-character typo detach the Stripe webhook route with a customer as the
+only detector. The check was exactly as strong as it looked; the failure was
+the guarantee about to be loaded onto it. Assert the outcome, not the
+mechanism, and assert a positive marker of the right thing, never the absence
+of an error: an unrelated failure also leaves no error.
 
-Two habits close both:
+## Rule 5: a check must execute the artefact under review
 
-- Every check must be able to name a concrete input that produces FAIL. If you
-  cannot state one, it is not a check.
-- Make emptiness loud. A skip, a zero-length list, a glob with no matches, a
-  missing directory: fail, or shout. Never pass quietly.
+A correct test over correct source can still report a wrong answer if what
+actually ran was neither. A test result is a claim about a specific tree
+state; anything that can change that state without the runner noticing can
+invert the result in either direction, and none of it is visible in output: a
+stale-cache failure reads exactly like a real one.
 
-And assert on a positive marker of the right thing rather than on the absence of
-an error, because the absence of an error is also what an unrelated failure
-looks like.
+Ask this wherever a build or bytecode cache sits between source and run:
+`__pycache__`, `.tsbuildinfo`, `node_modules/.cache`, `target/`, a Jest
+transform cache. CPython validates a `.pyc` on (mtime in whole seconds, size
+in bytes), so a same-length edit restored within the same second runs the old
+bytecode while every tool that reads the file shows the new source. That
+exact trap served a `min(` mutant's bytecode against a clean tree, making the
+harness built to prove tests can fail itself unfalsifiable while wrong.
+
+Any mutation harness needs two guards before its output means anything: purge
+the cache on both sides of every mutation, not merely restore the source; and
+refuse to run against a dirty tree, because a restore that resets to HEAD
+deletes the changes under test. CI is not exposed (fresh checkout, no cache),
+so only a local run can catch this, and green CI does not contradict a local
+failure.
 
 ## The incidents
 
-These are the evidence, not illustrations. Each one passed review.
+These are evidence, not illustrations; each passed review. The fourth
+shape's incident is told inside Rule 5.
 
-**`appRouter.createCaller` on `listCuratedDocs`.** Passed end to end twice while
-the real path was broken. The caller never crossed the superjson transformer,
-which is exactly where the failure lived. Rule 3.
+**Asserts nothing.** CSP tests gated on `it.runIf(built)` while `dist/` was
+gitignored and nothing built first: a clean clone reported 5 passed, 5
+skipped, exit 0. Two of the five skips were the anti-vacuity guards
+themselves.
 
-**`curl | grep -q` under `set -uo pipefail`.** Reported FAIL against a correct
-410. `grep -q` exits on first match and closes the pipe, `curl` died with exit
-56 and 39KB unwritten, and `pipefail` promoted curl's death to the pipeline's
-status. The check failed for a reason that had nothing to do with the subject.
-It was then "verified" with ad-hoc greps in a shell that had no `pipefail` set,
-and reported as done without the script ever being run. Rules 2 and 4. The fix
-is to capture first and match second: `body=$(curl ...)` then `[[ $body == *pat* ]]`.
+**Looks where the defect is not.** A `console.log` lint grep returned 23
+results, not one a true positive, and missed all 8 real defects at any
+exclusion-list setting, because the defects used `console.error` and
+`console.warn` and it matched only `console.log`.
 
-**A verify block deriving slugs from `dist/post/*/`.** Once that directory
-stopped existing the glob matched nothing, the block took its SKIP branch, and
-it reported PASS while asserting nothing at all. Rule 4, vacuous.
-
-**A status-only assertion against a removed deployment.** It would have passed
-against Vercel's canned "The deployment has been removed" body, because it
-checked the status and never checked what was served alongside it. Rule 4, right
-answer for the wrong reason.
-
-**`grounding.eval.test.ts`.** Uses hardcoded fixture contexts, so it tests the
-prompt and is blind by construction to the corpus. Treating it as the acceptance
-gate for a corpus change would have returned a clean false negative. Rule 3.
-
-## What the rules look like when they are applied
-
-**The `searchKnowledgeDocs` invariant test caught a real defect,** and it did so
-only because it had been proven against three injected defects first. One of
-those injections was a function that did not exist when the test was written.
-That is rule 1 doing the work it exists to do.
-
-**The `selfGrant` patch was stashed and the suite rerun against the pre-patch
-tree.** 21 of 30 tests failed. That is rule 1 at suite scale: proof the suite
-actually depends on the patch, rather than proof that it is green.
-
-**The invalidation invariant was defect-injected before being trusted,** rather
-than trusted because it was green.
-
-The shared move in all three is the same: make the check fail on purpose before
-you let it tell you anything.
+**Proxy, not property.** A fabrication guard flagged numbered lines
+containing UI keywords. Over a 75-line labelled corpus it flagged 10 of 25
+correct answers and missed 5 of 40 real fabrications, one an invented
+two-step procedure using none of its keywords. Both directions, at once.
 
 ## Before you write "verified"
 
-Answer these in the report, not just in your head:
+Answer these in the report, not just in your head. Each is a rule at the moment
+it matters:
 
-1. What did I run, and where did it run?
-2. What did I inject to prove it can fail, and did it fail?
-3. Which boundary did this cross, and which did it not?
-4. What input would make this report FAIL? If none, say so and downgrade the
-   claim.
+1. What did I run, and where did it run? Not read, not reasoned about: ran.
+2. What did I inject to prove it can fail, and did it go red?
+3. Which boundary did this cross, and which did it not? Name the uncrossed
+   one.
+4. What concrete input would make this report FAIL? If I cannot state one,
+   this is not a check.
+5. Where would the defect actually live, and is that where this looks?
+6. Is this matching the property, or a proxy for it? If a proxy, have I
+   measured the silent leaks as well as the visible false alarms?
+7. Was the thing that ran the thing on disk? What sat between them: a cache,
+   a restore step, a build?
+8. What is this check being trusted for, and is that what it actually
+   promises?
 
-If any answer is missing, the honest word is not "verified". It is "I checked X,
-I did not check Y."
+If any answer is missing, the honest word is not "verified". It is "I checked
+X, I did not check Y."
