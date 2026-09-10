@@ -26560,17 +26560,26 @@ present" cannot distinguish 45s from 15s. What kills it is intercepting
 Same shape as the GATE 8 lesson: keep the entire shape and change only the
 source of the substance.
 
-**CI green and local red, explained rather than declared.** Five test files
-failed locally and passed in CI. Four were native bindings, from installing with
-`--ignore-scripts`: three `better_sqlite3` and one `canvas`. The fifth was not.
+**Two environments executing different branches, neither of them the branch
+under test.** Five test files failed locally and passed in CI. Four were native
+bindings, from installing with `--ignore-scripts`: three `better_sqlite3` and
+one `canvas`. The fifth was not, and it is a new variant worth naming.
 
 `tests/probes.test.js` asserts that any probe returning `ok: false` carries an
-error string. The pm2 probe's final return, the one reached when the process
-list parses cleanly, has no `error` key at all. It is reached whenever
-`allOnline` is false, which is precisely the condition the probe exists to
-detect. CI passes because pm2 is not installed there, so `execSync` throws and
-the catch path, which does set `error`, runs instead. The two environments were
-executing different branches, and neither was the correct one.
+error string. The pm2 probe has two failure returns. The `execSync` catch sets
+an error. The final return, reached when the process list parses cleanly, has no
+`error` key, and it is reached exactly when a process is down, which is the
+condition the probe exists for.
+
+CI passes because pm2 is absent there, so the throw path runs and that path sets
+an error. A developer machine has pm2 but none of the six processes, so the list
+parses, the final return runs, and the assertion fails. Each environment ran a
+different branch of the same function and **neither ran the branch under test**.
+Nobody was testing the probe's actual job.
+
+> Green here and red there is not a verdict on either environment. Find which
+> branch each one runs, because the answer can be "neither runs the one that
+> matters".
 
 Reproduced on the host without touching pm2: a shim on `PATH` emitted the real
 `pm2 jlist` output with one status flipped to `stopped`, and the probe returned
@@ -26578,8 +26587,13 @@ Reproduced on the host without touching pm2: a shim on `PATH` emitted the real
 afterwards. The consumer at `bootstrap.js` renders
 `probe pm2_processes failed: no detail`, and the name of the stopped process,
 which the probe does put in `detail.offline`, is dropped by both the warning
-line and the markdown renderer. So the bootstrap reports an outage without
-saying what is down, at the moment something is down.
+line and the markdown renderer. So the bootstrap reported an outage without
+saying what was down, at the moment something was down, on the host that runs
+the trade engine.
+
+Tracked as issue #146 and fixed in PR #147, which also makes the branch
+reachable from a test: the result-building logic became a pure function the
+tests drive with fixtures identical in both environments.
 
 > Two environments disagreeing is the signal. Declaring one of them correct
 > without explaining the disagreement discards it.
