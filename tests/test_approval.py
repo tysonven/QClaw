@@ -193,7 +193,8 @@ class SendApprovalRequestTest(unittest.TestCase):
         self.assertIn("Direction: BUY YES", text)
         self.assertIn("Edge: +18.0% (Sim: 36.0% vs Market: 18.0%)", text)
         self.assertIn("Volume: $26,352 | Horizon: 4.00d", text)
-        self.assertIn("Position: $10.00", text)
+        # notional 10.00 at price 0.18 -> debit 10.00 * (1 + 0.07*0.82) = 10.57
+        self.assertIn("Position: $10.57 ($10.00 + fee)", text)
         self.assertIn("📊 Analyst: PROCEED (72% confidence)", text)
         self.assertIn('"Edge is wide and the horizon is short."', text)
         self.assertIn(candidate.market_url, text)
@@ -214,6 +215,31 @@ class SendApprovalRequestTest(unittest.TestCase):
 
         self.assertEqual(pending.message_id, 4201)
         self.assertEqual(gate.pending_count, 1)
+
+    def test_the_approval_shows_the_DEBIT_not_just_the_notional(self):
+        """The figure a human reads before tapping Execute must be the figure
+        the wallet pays. The notional excludes the fee, which is 5-6% across
+        the tradeable band, and the debit is what sizing actually capped."""
+        gate = StubGate()
+        run(gate.send_approval_request(
+            make_candidate(amount_usdc=1.00, market_probability=0.20),
+            make_recommendation(),
+        ))
+        text = gate.calls_to("sendMessage")[0]["text"]
+        # 1.00 * (1 + 0.07 * 0.80) = 1.056
+        self.assertIn("Position: $1.06 ($1.00 + fee)", text)
+
+    def test_the_debit_uses_the_side_actually_bought(self):
+        """A NO candidate is bought at (1 - yes_price), so its fee differs."""
+        gate = StubGate()
+        run(gate.send_approval_request(
+            make_candidate(direction="NO", amount_usdc=1.00,
+                           market_probability=0.80, edge=-0.10),
+            make_recommendation(),
+        ))
+        text = gate.calls_to("sendMessage")[0]["text"]
+        # side price 0.20 -> 1.00 * (1 + 0.07 * 0.80) = 1.056
+        self.assertIn("Position: $1.06", text)
 
     def test_fractional_horizon_renders_readably(self):
         """horizon_days is fractional since 2026-09-07.

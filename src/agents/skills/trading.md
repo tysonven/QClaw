@@ -115,7 +115,7 @@ Monte Carlo worker — http://localhost:4001 (PM2: trading-worker):
 
 Trade execution path (rewritten 2026-08-14): execution belongs entirely to the
 standalone trade engine, src/trade_engine/executor.py, which invokes
-src/trading/execute_trade.py as a subprocess behind SEVEN pre-flight gates.
+src/trading/execute_trade.py as a subprocess behind EIGHT pre-flight gates.
 Verified against the code 2026-09-08. Every one of these can refuse a trade
 the Analyst and Tyson have already approved, so check them before telling
 Tyson a trade "will" go through:
@@ -129,10 +129,50 @@ Tyson a trade "will" go through:
 | 5 | invalid_amount | size ≤ 0, above config, or above a hard ceiling | `max_position_usdc` (10) AND **ABSOLUTE_MAX_POSITION_USDC = 25.0** (hardcoded ceiling that config cannot raise) |
 | 6 | invalid_market_identifier | no well-formed Polymarket conditionId | — |
 | 7 | horizon_below_minimum | the market resolves too soon, RECOMPUTED from `end_date` at execution, or `end_date` is missing/unparseable | **MIN_HORIZON_TRADEABLE_DAYS = 1.0** (`config`; env may raise it, never lower it) |
+| 8 | below_exchange_minimum | the order is under the market's own minimum, in SHARES, read LIVE from the CLOB at execution (two calls: `/markets/<conditionId>` for the minimum, the accepting flag and the tokens, then `/book` for the asks); shares = whole-cent notional / the MARGINAL ask from walking the book, exactly as the relay's client submits it; or either read fails, the market is not accepting orders, or the book is empty, too thin, or not the one asked for | **5 shares** on every market sampled, but read per market, never hardcoded |
 
 Gates 2 and 5's hard limits are code constants, not database config: raising
 `max_position_usdc` above 25 does NOT raise the real ceiling, and there is no
 config key for the 2-position cap.
+
+Gate 8 does NOT read Gamma. Gamma's price is not a mid with bounded error: on
+2026-09-09 three of 24 live markets quoted a Gamma price ABOVE their own best
+ask, worst case 0.265 against 0.070. The scanner sizes every proposable
+candidate against the same CLOB book walk, so a trade it proposes is one the
+gate admits on the same book; if the gate still refuses, the book moved between
+scan and execution, and the refusal line's `as of <timestamp>` is the book's own
+last-mutation time for telling those apart.
+
+**Gate 8 is why almost nothing trades, and that is correct.** Position size is
+fractional Kelly (`KELLY_FRACTION` 0.10) against a `bankroll_usdc` of 25, sized
+so the WALLET DEBIT hits the cap: the fee is `0.07 * (1 - price)` of notional,
+so `notional = cap / (1 + 0.07 * (1 - price))`. The largest possible stake at
+this bankroll is therefore $2.50, at certainty.
+
+Polymarket enforces a minimum order size in SHARES (`orderMinSize`, 5, read per
+market). Clearing it needs `edge >= 2 * price * (1 - price)`, and since edge can
+never exceed `1 - price`, **no market priced above 0.482521 can be placed at any
+edge, including certainty**.
+
+Quote 0.482521, not 0.5. 0.5 is the fee-free answer; the code is fee-aware and
+the exact cut solves `0.14 * price^2 - 2.14 * price + 1 >= 0`. The band between
+them, 0.4826 to 0.4999, is refused by the code and would be reported as
+tradeable by the coarser number.
+
+Below that it needs a very large edge. Minimum simulated probability by price:
+
+| price | 0.10 | 0.20 | 0.30 | 0.40 | 0.45 | 0.4825 |
+|---|---|---|---|---|---|---|
+| p needed | 0.291 | 0.538 | 0.741 | 0.900 | 0.964 | 1.000 |
+
+All four historical positions are refused. The widest of them was an edge of
+0.336 at price 0.279, which needed **0.4226**.
+
+If Tyson asks why nothing is trading, that is the answer, and it is arithmetic
+rather than a fault. NEVER propose raising `bankroll_usdc` to fix it: 25 comes
+from $29.24 of measured spendable collateral, and the ~$180 that would make
+Kelly and the exchange compatible at mid prices is a DEPOSIT of about $155, a
+capital decision for Tyson, not a config edit.
 
 **Gate 7 uses the clock, not the candidate.** It recomputes days-to-resolution
 from `end_date` at the moment of execution rather than reading the horizon the
@@ -256,7 +296,9 @@ Credentials: POLYMARKET_PRIVATE_KEY + POLYMARKET_FUNDER_ADDRESS
 3. Judge armed state from the trade engine, never from n8n. If the engine is
    down, surface that and stop; do not conclude trading is safe because an n8n
    workflow is inactive.
-4. Max position is $10 USDC (`max_position_usdc`), with a hardcoded
+4. Position size is FRACTIONAL KELLY on the debit, not a fixed amount. See
+   the sizing section below before quoting any number. Max position is $10 USDC
+   (`max_position_usdc`), with a hardcoded
    $25 ceiling that config cannot exceed. Never suggest or execute trades
    above the config value without approval.
 5. Daily loss limit is $20 USDC. If this is hit, trading must stop for the day.
@@ -265,7 +307,7 @@ Credentials: POLYMARKET_PRIVATE_KEY + POLYMARKET_FUNDER_ADDRESS
    markets below this edge.
 7. There is no HTTP execution route and no TRADING_WEBHOOK_SECRET path any
    more (both retired 2026-08-14). Execution runs only through the trade
-   engine's executor, behind its seven gates plus the Telegram approval gate.
+   engine's executor, behind its eight gates plus the Telegram approval gate.
    Never propose reinstating an HTTP execution route.
 8. The Monte Carlo worker must be running (PM2: trading-worker) before any
    simulation or execution calls.

@@ -2,7 +2,7 @@
 """Trade executor — the only component in this repo that spends real money.
 
 Sits behind the approval gate: nothing here runs until a human has tapped
-Execute on a Telegram message. Even then, seven independent gates are re-checked
+Execute on a Telegram message. Even then, eight independent gates are re-checked
 against LIVE state before the order goes out, because the approval may be up to
 30 minutes stale by the time it is acted on and the world moves in between.
 
@@ -30,17 +30,19 @@ well-formed conditionId is refused rather than sent with the wrong identifier.
 import asyncio
 import json
 import logging
+import math
 import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
 
 import httpx
 
 from src.trade_engine.approval import _scrub
 from src.trade_engine.config import config, install_bot_token_redaction
 from src.trade_engine.horizon import horizon_days
+from src.trade_engine.sizing import FEE_RATE
 from src.trade_engine.database import (
     SupabaseError,
     count_open_positions,
@@ -72,14 +74,59 @@ SUBPROCESS_TIMEOUT_SECONDS = 60
 # something absurd, this still refuses. Defence in depth against a bad write.
 ABSOLUTE_MAX_POSITION_USDC = 25.0
 
-# M1 (PR #94 review): the relay's cash_out is sanity-bounded on BOTH sides.
-# Below the matched notional means a negative fee (impossible); above it by
-# more than this factor means the decode over-counted (a batched settlement,
-# a double-transfer chain, a new event shape) and would silently poison pnl
-# and Gate 3. The real 2026-08-20 fee was 5% of notional (10.501189 vs 10.00,
-# a 1.05x ratio), so 1.5x accepts any plausible fee with wide margin while
-# refusing anything that looks like double-counting.
-MAX_CASH_OUT_NOTIONAL_FACTOR = 1.5
+# The relay's cash_out is sanity-bounded on BOTH sides (M1, PR #94 review).
+# Below the matched notional means a negative fee, which is impossible; above
+# the expected fee by more than a tolerance means the decode over-counted (a
+# batched settlement, a double-transfer chain, a new event shape) and would
+# silently poison pnl and Gate 3.
+#
+# The ceiling is now COMPUTED PER TRADE, not flat. The fee is exactly
+# 0.07 * (1 - price) of notional, so the true bound is 1 + 0.07 * (1 - price):
+# 1.063 at price 0.10 but only 1.007 at 0.90. The old flat 1.5 was loose by
+# more than 70x at high prices, which meant "the fee schedule changed" was only
+# ever detectable on the cheapest markets. FEE_TOLERANCE is headroom for
+# rounding and partial fills, not for a second fee.
+# Tolerance has BOTH a ratio and an absolute floor. The floor exists because a
+# ratio alone shrinks with position size while some error sources do not.
+#
+# THE ARITHMETIC BELOW REPLACES A JUSTIFICATION THAT WAS WRONG BY 200x. The
+# earlier version claimed a two-price fill dP apart moves the fee by about
+# 0.07 * dP * shares. It does not, because _derive_entry sets price to the VWAP
+# (makingAmount / takingAmount), which cancels the first-order term. For a
+# symmetric two-price fill the estimator error is second order:
+#
+#   error = 0.07 * shares * (dP/2)^2
+#
+# Measured: $2 notional filled half at 0.30 and half at 0.32 gives a true fee of
+# 0.09660000 against an estimate of 0.09664516, an error of 0.000045, not the
+# 0.009 previously claimed.
+#
+# Worst plausible absolute error at the largest position this sizing produces
+# ($2.50 debit, so ~5.5 shares at price 0.45):
+#
+#   two-price fill a full 10c apart   0.07 * 5.5 * 0.05^2  = 0.00097
+#   fee-model residual, 4e-6 of notional                   = 0.00001
+#   USDC quantisation across ~4 ERC1155 transfers          = 0.000004
+#   ---------------------------------------------------------------
+#   total                                                  ~ 0.00099
+#
+# 0.005 is about 5x that, which is headroom for a fill structure nobody has seen
+# yet without being so wide that a fee-schedule change hides inside it. At a
+# $1.00 notional and price 0.30 the real fee is 0.049, so this still detects
+# drift above roughly 10% of the fee. The old 0.03 was 30x the worst plausible
+# error and would have concealed a +245% schedule change at the smallest
+# positions, which defeats the purpose: this ceiling IS the residual check the
+# fee model's own record asks for.
+#
+# A FALSE TRIP records the notional, EXCLUDING the fee, understating cost basis
+# and pnl. That is why the floor is set generously against real error rather
+# than tightly against the model.
+FEE_TOLERANCE_RATIO = 0.01
+FEE_TOLERANCE_ABS = 0.005
+
+# Fallback only, for when no price is available to compute the real bound. The
+# worst case across all admissible prices is 1 + 0.07 * (1 - 0) = 1.07.
+MAX_CASH_OUT_NOTIONAL_FACTOR = 1.07 + FEE_TOLERANCE_RATIO
 
 MAX_CONCURRENT_POSITIONS = 2
 
@@ -100,6 +147,50 @@ APPROVAL_MAX_SKEW_SECONDS = 60
 CONDITION_ID_RE = re.compile(r"0x[0-9a-fA-F]{64}")
 
 TELEGRAM_API_BASE = "https://api.telegram.org"
+
+
+def _book_observed_at(raw: Any) -> datetime:
+    """The book's own last-mutation time, or now if it did not give a usable one.
+
+    Polymarket returns `timestamp` as epoch MILLISECONDS in a string. Falling
+    back to now is the pessimistic direction for this field's purpose: it claims
+    the book is fresher than it may be, which is what the previous code always
+    did, so the fallback is never worse than the old behaviour.
+    """
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return datetime.now(timezone.utc)
+    if not math.isfinite(value) or value <= 0:
+        return datetime.now(timezone.utc)
+    if value > 1e11:          # milliseconds
+        value /= 1000.0
+    try:
+        return datetime.fromtimestamp(value, tz=timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return datetime.now(timezone.utc)
+
+
+class OrderConstraints(NamedTuple):
+    """What the exchange will actually do with this order, read live.
+
+    `shares` and `fill_price` come from walking the ask side for the notional
+    the way the relay's client does: `fill_price` is the MARGINAL ask, the price
+    of the level at which cumulative depth first covers the notional, and
+    `shares` is the whole-cent notional divided by it. That is the size a
+    fill-or-kill market buy would submit AS OF `observed_at`. Not a promise
+    about the book the order hits; see _fetch_order_constraints for why that
+    residual is accepted.
+    """
+
+    minimum: float
+    shares: float
+    fill_price: float
+    observed_at: datetime
+CLOB_BASE_URL = "https://clob.polymarket.com"
+
+# Short: a gate must not hang the money path. Failure is a refusal, not a wait.
+MARKET_LIMITS_TIMEOUT_SECONDS = 10.0
 
 
 class TradeExecutor:
@@ -123,6 +214,11 @@ class TradeExecutor:
         self._token = token if token is not None else config.approval_bot_token
         self._chat_id = chat_id if chat_id is not None else config.owner_telegram_chat_id
         self._script_path = script_path or EXECUTE_TRADE_SCRIPT
+
+    @property
+    def client_calls(self) -> list:
+        """Test seam: the (url, params) pairs the injected client saw."""
+        return getattr(self._client, "calls", [])
 
     async def aclose(self) -> None:
         if self._owns_client and self._client is not None:
@@ -213,7 +309,7 @@ class TradeExecutor:
     # --- gates ------------------------------------------------------------
 
     async def _run_gates(self, candidate: ScannerCandidate) -> None:
-        """Seven checks against live state. Raises ExecutionGateError on refusal.
+        """Eight checks against live state. Raises ExecutionGateError on refusal.
 
         Ordered cheapest-and-most-decisive first: the global brake before the
         per-trade arithmetic, so a disabled system does not spend three
@@ -334,6 +430,67 @@ class TradeExecutor:
         log.debug(
             "gate 7 ok: horizon=%.4fd now (%.4fd at scan) >= %.2fd",
             remaining, candidate.horizon_days, floor,
+        )
+
+        # GATE 8, the exchange must actually accept this order.
+        #
+        # Polymarket enforces a per-market minimum order size in SHARES
+        # (`minimum_order_size`), server-side:
+        #
+        #     order 0x... is invalid. Size (1.08) lower than the minimum: 5
+        #
+        # Without this gate a correctly-sized Kelly position of $0.25 passes
+        # every other check, gets approved by a human, commits the money path,
+        # and is refused by the exchange after all of that.
+        #
+        # The share count is computed by WALKING THE BOOK, because that is what
+        # the exchange does: the relay posts price=0 and py-clob-client derives
+        # the size from the marketable asks. Reading a mid instead, from Gamma
+        # or from the CLOB market endpoint, systematically overstates the size
+        # in the unsafe direction. See _fetch_order_constraints.
+        #
+        # Everything here is read LIVE and every failure is a refusal. An
+        # unknown minimum, an unreadable book, a market not accepting orders and
+        # a book too thin to fill are all refusals, never defaults.
+        if candidate.sizing_refusal:
+            log.error(
+                "gate 8: candidate was never sizeable (%s), refusing "
+                "(market_id=%s)", candidate.sizing_refusal, candidate.market_id,
+            )
+            raise ExecutionGateError("below_exchange_minimum")
+
+        constraints = await self._fetch_order_constraints(
+            candidate.condition_id, candidate.direction, candidate.amount_usdc,
+        )
+        if constraints is None:
+            log.error(
+                "gate 8: could not read live order constraints for %s..., "
+                "refusing rather than assuming them",
+                (candidate.condition_id or "")[:12],
+            )
+            raise ExecutionGateError("below_exchange_minimum")
+
+        if constraints.shares < constraints.minimum:
+            # Every number a later capital decision needs, on the refusal line.
+            # "as of" rather than a bare figure: the book moves, and if the
+            # relay ever rejects on size despite this gate passing, this
+            # timestamp is what separates "the book moved" from "the gate is
+            # wrong".
+            log.error(
+                "gate 8: order is below the exchange minimum. notional=%.4f "
+                "fill_price=%.4f shares=%.4f required_shares=%.4f "
+                "min_notional=%.4f as of %s (market_id=%s). NOT rounded up: a "
+                "stake raised to clear an exchange floor is a stake chosen by "
+                "the exchange, not by the edge",
+                candidate.amount_usdc, constraints.fill_price, constraints.shares,
+                constraints.minimum, constraints.minimum * constraints.fill_price,
+                constraints.observed_at.isoformat(), candidate.market_id,
+            )
+            raise ExecutionGateError("below_exchange_minimum")
+        log.info(
+            "gate 8 ok: %.4f shares at fill price %.4f as of %s >= %.4f required",
+            constraints.shares, constraints.fill_price,
+            constraints.observed_at.isoformat(), constraints.minimum,
         )
 
     # --- execution --------------------------------------------------------
@@ -652,13 +809,18 @@ class TradeExecutor:
                     "distrusting it and recording the notional", cash_out, notional,
                 )
                 usdc_amount = notional
-            elif anchor is not None and cash_out > anchor * MAX_CASH_OUT_NOTIONAL_FACTOR:
+            elif anchor is not None and cash_out > cls._max_believable_cash_out(anchor, price):
+                ceiling = cls._max_believable_cash_out(anchor, price)
                 log.error(
-                    "relay cash_out %.6f exceeds %.1fx the %s %.6f, "
-                    "distrusting it and recording that instead",
-                    cash_out, MAX_CASH_OUT_NOTIONAL_FACTOR,
+                    "relay cash_out %.6f exceeds the believable ceiling %.6f for %s %.6f (price %s, "
+                    "expected fee ratio %s), distrusting it and recording that "
+                    "instead. A persistent residual here means the fee schedule "
+                    "changed, not that one decode was wrong",
+                    cash_out, ceiling,
                     "matched notional" if notional is not None else "proposed amount",
                     anchor,
+                    f"{price:.4f}" if price else "unknown",
+                    f"{1 + FEE_RATE * (1 - price):.4f}" if price else "unknown",
                 )
                 usdc_amount = anchor
             else:
@@ -678,6 +840,344 @@ class TradeExecutor:
             usdc_amount = requested
 
         return price, shares, usdc_amount
+
+    @staticmethod
+    def _shares_for_notional(
+        asks: list[tuple[float, float]], notional: float
+    ) -> Optional[tuple[float, float]]:
+        """Shares a fill-or-kill market BUY of `notional` USDC would receive.
+
+        MIRRORS py-clob-client-v2 1.1.0, which is what the relay pins. Read from
+        the package rather than assumed, because an earlier version of this
+        function modelled a different exchange:
+
+          client.calculate_market_price -> builder.calculate_buy_market_price
+              walks reversed(asks) accumulating price*size and returns the
+              price of THE LEVEL AT WHICH the cumulative notional first reaches
+              `amount`. That is the MARGINAL price, not the average.
+
+          builder.get_market_order_amounts (BUY)
+              raw_maker_amt = round_down(amount, round_config.size)   # size=2
+              raw_taker_amt = raw_maker_amt / raw_price
+
+        So the submitted size is floor(notional, 2dp) / marginal_price, and both
+        halves matter:
+
+        MARGINAL, NOT VWAP. The first version returned the volume-weighted
+        average, which is what a human means by "the price it fills at" and is
+        NOT what the client submits. VWAP <= marginal whenever the order spans
+        levels, so it OVERSTATED the share count, in the same unsafe direction
+        as the Gamma mid this gate was written to replace, just smaller. On a
+        book of 3 shares at 0.45 then depth at 0.55, a $2.50 order gets 4.55
+        shares and the exchange refuses it; the VWAP model said 5.09 and passed.
+
+        FLOOR TO CENTS. round_config.size is 2 for every tick size in the
+        client's table. A $1.875 notional is submitted as $1.87, so at price
+        0.375 the order is 4.9867 shares, not 5.0, and is refused. Sizing
+        routinely produces sub-cent notionals (sizing.py rounds to 6dp), and
+        markets with a 0.001 tick exist, so this is not a corner case.
+
+        None means the book cannot reach `notional` at all. The client raises
+        "no match" for a FOK order in exactly that case, so a partial fill is
+        not the alternative: the order simply does not happen.
+        """
+        # round_down(amount, 2). Not round(): the client floors, and rounding up
+        # here would re-introduce the overstatement this function exists to stop.
+        maker_amount = math.floor(notional * 100.0) / 100.0
+        if maker_amount <= 0:
+            return None
+
+        total = 0.0
+        for price, size in sorted(asks):
+            if price <= 0 or size <= 0:
+                continue
+            total += price * size
+            if total >= notional:
+                # The walk threshold uses the RAW notional, matching
+                # calculate_market_price; the division uses the FLOORED maker
+                # amount, matching get_market_order_amounts. They are different
+                # quantities in the client and are kept different here.
+                return maker_amount / price, price
+        return None
+
+    async def _fetch_order_constraints(
+        self, condition_id: Optional[str], direction: str, notional: float
+    ) -> Optional["OrderConstraints"]:
+        """Live exchange constraints from the CLOB, or None.
+
+        TWO CALLS, DELIBERATELY. Do not "optimise" this back to one without
+        reading the rest of this docstring, because the second call is the
+        entire point of the gate.
+
+          /markets/<conditionId>  gives minimum_order_size, accepting_orders,
+                                  and tokens[] with outcome labels
+          /book?token_id=...      gives the ask side, which is the only place
+                                  the price the exchange will actually charge
+                                  can be found
+
+        The market endpoint's tokens[].price is a MID and is therefore useless
+        here; it is the same quantity Gamma reports and has the same defect.
+
+        WHY NOT GAMMA, AND WHY NOT A MARGIN. This gate used to divide the
+        notional by Gamma's outcomePrices[0]. The relay posts price=0, so the
+        exchange sizes the order off the marketable ask, and ask >= mid for a
+        buy: the gate's share count was always at least the real one, erring in
+        the unsafe direction, and at the minimum a single tick flips the
+        verdict.
+
+        A fixed margin above the minimum was considered and rejected on
+        measurement, not preference. Across 24 live markets inside the tradeable
+        band on 2026-09-09, ask/mid had a median of 1.0178, a p90 of 1.0556 and
+        a maximum of 1.2211, so a margin covering the worst observed would be
+        22% and would refuse most genuinely tradeable orders. The decisive
+        finding was different: THREE of those markets returned an ask BELOW
+        Gamma's price, worst case a Gamma price of 0.265 against a best ask of
+        0.070. Gamma's figure is therefore not a mid with bounded error, it is a
+        different number that sometimes tracks the book, and no fixed margin in
+        either direction can be safe against that.
+
+        The cost accepted in exchange: two calls where there was one. Same host,
+        the failure MODE is unchanged because both fail closed exactly as the
+        single Gamma call did, and the failure RATE rises slightly. That trade
+        was made knowingly.
+
+        WHAT THIS STILL CANNOT PROMISE. The book read here is the book moments
+        before the relay places the order, not the book the order hits. That
+        residual is unavoidable and is far smaller than the mid-versus-ask error
+        it replaces, which is why `observed_at` is carried and logged: if the
+        relay ever reports a size rejection despite this gate passing, the
+        timestamp is what distinguishes "the book moved" from "the gate is
+        wrong".
+        """
+        if not condition_id or notional <= 0:
+            return None
+
+        market = await self._clob_get(f"/markets/{condition_id}", condition_id)
+        if not isinstance(market, dict):
+            return None
+
+        returned = str(market.get("condition_id") or market.get("conditionId") or "")
+        if returned.lower() != str(condition_id).lower():
+            log.error(
+                "gate 8: CLOB returned market %s... for a request for %s..., "
+                "refusing rather than sizing against the wrong market",
+                returned[:12] or "<none>", str(condition_id)[:12],
+            )
+            return None
+
+        # Never read before this change, so a market that had stopped accepting
+        # orders but still carried a valid minimum_order_size passed the gate.
+        # A live fail-open, not a theoretical one.
+        if market.get("accepting_orders") is not True:
+            log.error(
+                "gate 8: market %s... is not accepting orders (accepting_orders=%r), "
+                "refusing", str(condition_id)[:12], market.get("accepting_orders"),
+            )
+            return None
+
+        try:
+            minimum = float(market.get("minimum_order_size"))
+        except (TypeError, ValueError):
+            log.error(
+                "gate 8: no usable minimum_order_size for %s... (%r), refusing "
+                "rather than assuming the usual 5",
+                str(condition_id)[:12], market.get("minimum_order_size"),
+            )
+            return None
+        if not math.isfinite(minimum) or minimum <= 0:
+            return None
+
+        # tokens[].outcome resolves YES/NO explicitly. The previous code read
+        # outcomePrices[0] and ASSUMED index 0 was YES, which is the same
+        # fail-open-by-wrong-value shape as trading against the wrong
+        # conditionId: a market whose outcomes are ordered ["No", "Yes"] would
+        # have been sized against the complement without erroring.
+        #
+        # An explicit refusal for an unrecognised direction. BEHAVIOURAL, not
+        # diagnostic. Until 111521f (the commit that introduced this check)
+        # this line read
+        #
+        #     wanted = "yes" if str(direction).upper() == "YES" else "no"
+        #
+        # which maps every string that is not case-insensitively YES onto the
+        # NO side BEFORE the token lookup, so the lookup always found the No token and
+        # the gate sized "BUY", "yes ", "", None and "MAYBE" against the NO
+        # book. That was a fail-open, as the 2026-09-09 review said. A rebuttal
+        # claimed the lookup already refused these and that it had been checked
+        # by execution; it had been checked against the test suite, whose fake
+        # CLOB served the YES book for every token id, so the asset_id identity
+        # check below masked the fallback and the mutant survived for the wrong
+        # reason. Executed against a fake that serves each token its own book,
+        # the old line ADMITS all five. The CLI's argparse would still have
+        # refused the order, so no money moved, but the gate's verdict was
+        # wrong, and a verdict is what this gate is for.
+        #
+        # Worth knowing: outcome labels are NOT always Yes/No. Live markets
+        # return "Over"/"Under", team names, and others. GATE 8 permanently
+        # refuses those, which is fail-closed and correct here, but it means
+        # whole market families can never trade. The scanner only proposes
+        # crypto and commodity markets, so none should reach this gate.
+        side = str(direction).upper()
+        if side not in ("YES", "NO"):
+            log.error(
+                "gate 8: unrecognised direction %r for %s..., refusing rather "
+                "than defaulting to a side", direction, str(condition_id)[:12],
+            )
+            return None
+        wanted = side.lower()
+        token_id = None
+        for token in market.get("tokens") or []:
+            if isinstance(token, dict) and str(token.get("outcome", "")).lower() == wanted:
+                token_id = token.get("token_id")
+                break
+        if not token_id:
+            log.error(
+                "gate 8: no %s token on market %s..., refusing",
+                wanted.upper(), str(condition_id)[:12],
+            )
+            return None
+
+        book = await self._clob_get(
+            "/book", condition_id, params={"token_id": str(token_id)}
+        )
+        if not isinstance(book, dict):
+            return None
+
+        # IS THIS THE BOOK WE ASKED FOR? The market call above is identity
+        # checked, and so is this one, STRICTLY: every field is required, not
+        # checked-if-present. The first version skipped a missing or empty
+        # asset_id, market or min_order_size, which is the absent-means-pass
+        # shape one call over: a payload that dropped the field would have
+        # disabled the check silently, and an empty string passed outright. The
+        # live API carries all three, verified 2026-09-09: asset_id is the
+        # token, market is the conditionId, min_order_size is the same minimum
+        # the market endpoint reports.
+        returned_token = str(book.get("asset_id") or "")
+        if returned_token != str(token_id):
+            log.error(
+                "gate 8: CLOB returned the book for token %s when asked for "
+                "%s..., refusing", returned_token[:12] or "<none>", str(token_id)[:12],
+            )
+            return None
+        returned_market = str(book.get("market") or "")
+        if returned_market.lower() != str(condition_id).lower():
+            log.error(
+                "gate 8: book belongs to market %s, not %s..., refusing",
+                returned_market[:12] or "<none>", str(condition_id)[:12],
+            )
+            return None
+
+        # The book carries its own minimum. Cross-checked against the market
+        # endpoint and REQUIRED: a disagreement means one of the two is stale,
+        # an absence means the payload is not the shape this was written
+        # against, and neither can be trusted to gate an order.
+        try:
+            book_minimum = float(book.get("min_order_size"))
+        except (TypeError, ValueError):
+            log.error(
+                "gate 8: book for %s... carries no usable min_order_size (%r), "
+                "refusing", str(condition_id)[:12], book.get("min_order_size"),
+            )
+            return None
+        if book_minimum != minimum:
+            log.error(
+                "gate 8: market endpoint says minimum %s, book says %s for "
+                "%s..., refusing rather than picking one",
+                minimum, book_minimum, str(condition_id)[:12],
+            )
+            return None
+
+        # THE BOOK'S OWN TIMESTAMP where it gives one, not wall-clock-at-read.
+        # A quiet market can return a book whose last mutation was minutes ago;
+        # one sampled live on 2026-09-09 was 242s stale. Logging the read time
+        # would overstate freshness by an unbounded amount, which defeats the
+        # one forensic job this field has: telling "the book moved" from "the
+        # gate is wrong" after a size rejection.
+        observed_at = _book_observed_at(book.get("timestamp"))
+
+        asks: list[tuple[float, float]] = []
+        for level in book.get("asks") or []:
+            try:
+                asks.append((float(level["price"]), float(level["size"])))
+            except (TypeError, ValueError, KeyError):
+                continue
+        if not asks:
+            log.error(
+                "gate 8: no asks on the book for %s... (%s side), refusing: a "
+                "fill-or-kill order against an empty book produces nothing",
+                str(condition_id)[:12], wanted.upper(),
+            )
+            return None
+
+        walked = self._shares_for_notional(asks, notional)
+        if walked is None:
+            depth = sum(p * sz for p, sz in asks)
+            log.error(
+                "gate 8: book cannot absorb $%.4f for %s... (total ask depth "
+                "$%.4f), refusing: the order is fill-or-kill",
+                notional, str(condition_id)[:12], depth,
+            )
+            return None
+
+        shares, fill_price = walked
+        return OrderConstraints(
+            minimum=minimum, shares=shares, fill_price=fill_price,
+            observed_at=observed_at,
+        )
+
+    async def read_order_constraints(
+        self, condition_id: Optional[str], direction: str, notional: float
+    ) -> Optional["OrderConstraints"]:
+        """The scanner's entry point to GATE 8's book read.
+
+        The scanner sizes every proposable candidate against THE SAME read the
+        gate performs, so it does not propose what the gate will refuse: same
+        two calls, same identity checks, same walk, same minimum. Public so the
+        coupling is stated rather than reached through a private name; the
+        gate itself keeps calling _fetch_order_constraints, and a test double
+        that overrides that one method is honoured on both paths.
+        """
+        return await self._fetch_order_constraints(condition_id, direction, notional)
+
+    async def _clob_get(
+        self, path: str, condition_id: str, params: Optional[dict[str, str]] = None
+    ) -> Optional[Any]:
+        """One CLOB GET, or None. Every failure is a refusal, never a default."""
+        try:
+            response = await self._get_client().get(
+                f"{CLOB_BASE_URL}{path}",
+                params=params or {},
+                timeout=MARKET_LIMITS_TIMEOUT_SECONDS,
+            )
+            if response.status_code >= 300:
+                log.warning(
+                    "gate 8: CLOB %s HTTP %s for %s...",
+                    path, response.status_code, str(condition_id)[:12],
+                )
+                return None
+            return response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            log.warning(
+                "gate 8: CLOB %s failed for %s...: %s",
+                path, str(condition_id)[:12], type(exc).__name__,
+            )
+            return None
+
+    @staticmethod
+    def _max_believable_cash_out(anchor: float, price: Optional[float]) -> float:
+        """Largest believable wallet debit for this anchor, in USDC.
+
+        Absolute rather than a multiplier, because the tolerance has an absolute
+        floor: at the position sizes fractional Kelly now produces, a ratio
+        alone is worth fractions of a cent. See FEE_TOLERANCE_ABS.
+
+        Falls back to the all-prices worst case when price is unknown, which is
+        the only case the old flat constant ever described correctly.
+        """
+        tolerance = max(FEE_TOLERANCE_RATIO * anchor, FEE_TOLERANCE_ABS)
+        if price is None or not math.isfinite(float(price)) or not 0 < float(price) <= 1:
+            return anchor * MAX_CASH_OUT_NOTIONAL_FACTOR + FEE_TOLERANCE_ABS
+        return anchor * (1.0 + FEE_RATE * (1.0 - float(price))) + tolerance
 
     @staticmethod
     def _extract_tx_hash(payload: dict[str, Any]) -> Optional[str]:

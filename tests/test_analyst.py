@@ -35,6 +35,7 @@ from src.trade_engine.models import (  # noqa: E402
     TradePosition,
 )
 from src.trade_engine.scanner import PolymarketScanner  # noqa: E402
+from src.trade_engine.sizing import maker_amount  # noqa: E402
 
 
 def run(coro):
@@ -355,16 +356,33 @@ class TestScannerAppliesReduce(unittest.TestCase):
         self.assertFalse(summary.analyst_skip)
         self.assertEqual(summary.analyst_recommendation.recommendation, "reduce")
 
-    def test_reduce_floors_at_three_dollars(self):
+    def test_reduce_never_increases_the_position(self):
+        """This test used to be test_reduce_floors_at_three_dollars, and it
+        asserted the defect.
+
+        The old code was max(AMOUNT_MIN_USDC, before / 2) with a $3 floor, so a
+        $3.00 position "reduced" to $3.00 and a $1.23 Kelly position "reduced"
+        to $3.00: a 2.4x INCREASE, on the exact path where the Analyst has just
+        expressed doubt. The floor was invisible while the old sizing ramp never
+        went below $3, and became a live safety inversion the moment Kelly did.
+
+        REDUCE must reduce. Asserted across the range rather than at one value,
+        because the old assertion passed at exactly one point.
+        """
         patch_history(self, [])
-        client = StubClient(text=json.dumps({
-            "recommendation": "reduce", "confidence": 0.4,
-            "reasoning": "Marginal.", "flags": ["marginal_edge"],
-        }))
-        summary = make_summary(make_candidate(amount_usdc=3.0))
-        scanner = PolymarketScanner(analyst=TradeAnalyst(client=client))
-        run(scanner.apply_analyst(summary))
-        self.assertEqual(summary.best_trade.amount_usdc, 3.0)
+        for before in (0.25, 1.23, 3.0, 10.0):
+            with self.subTest(before=before):
+                client = StubClient(text=json.dumps({
+                    "recommendation": "reduce", "confidence": 0.4,
+                    "reasoning": "Marginal.", "flags": ["marginal_edge"],
+                }))
+                summary = make_summary(make_candidate(amount_usdc=before))
+                scanner = PolymarketScanner(analyst=TradeAnalyst(client=client))
+                run(scanner.apply_analyst(summary))
+                after = summary.best_trade.amount_usdc
+                self.assertLess(after, before, "REDUCE must never increase")
+                # Half, at the whole cent the relay's client will submit.
+                self.assertEqual(after, maker_amount(before / 2))
 
 
 # 8. pass sets analyst_skip

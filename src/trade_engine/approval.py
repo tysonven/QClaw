@@ -32,6 +32,7 @@ from typing import Any, Optional
 import httpx
 
 from src.trade_engine.config import config, install_bot_token_redaction
+from src.trade_engine.sizing import fee_ratio, side_price_for
 from src.trade_engine.models import (
     AnalystRecommendation,
     ApprovalResult,
@@ -74,6 +75,20 @@ CALLBACK_PREFIX_SKIP = "skip"
 # One is orphaned whenever the waiter is gone (a cancelled /scan request), so
 # the map is capped rather than left to grow for the life of the process.
 MAX_RETAINED_RESULTS = 32
+
+
+def _debit_for(candidate) -> float:
+    """What the wallet actually pays: notional plus the CLOB fee.
+
+    The fee is charged on the side being bought, so a NO candidate uses the
+    complemented price. Falls back to the notional when the price is unusable,
+    which understates rather than overstates.
+    """
+    price = candidate.market_probability
+    if not price or not 0 < float(price) < 1:
+        return float(candidate.amount_usdc)
+    side = side_price_for(candidate.direction, float(price))
+    return float(candidate.amount_usdc) * (1.0 + fee_ratio(side))
 
 
 class ApprovalGateBusy(RuntimeError):
@@ -251,7 +266,14 @@ class ApprovalGate:
             # unformatted 20.582881944444444d in the message a human reads
             # while deciding whether to spend money is worse than useless.
             f"Horizon: {candidate.horizon_days:.2f}d\n"
-            f"Position: ${candidate.amount_usdc:.2f}\n"
+            # BOTH figures. amount_usdc is the notional sent to the relay; the
+            # wallet is debited notional plus fee, 5-6% more across the whole
+            # tradeable band, and the DEBIT is what sizing capped. Showing only
+            # the notional put a number in front of the approver that the
+            # system does not spend, which is the same objection that moved
+            # sizing onto the enforced ceiling.
+            f"Position: ${_debit_for(candidate):.2f} "
+            f"(${candidate.amount_usdc:.2f} + fee)\n"
             "\n"
             f"📊 Analyst: {verdict} ({recommendation.confidence:.0%} confidence)\n"
             f"\"{recommendation.reasoning}\"\n"

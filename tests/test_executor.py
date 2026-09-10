@@ -121,10 +121,54 @@ SUCCESS_STDOUT = json.dumps({
 })
 
 
+class _FakeClob:
+    """httpx-shaped client returning a scripted payload per CLOB path.
+
+    Books are keyed by the token id REQUESTED, and a token with no book gets
+    the live API's 404 rather than someone else's book. The first version
+    served one book payload for every token id, which made every wrong-token
+    path indistinguishable from a refusal: the asset_id identity check caught
+    the foreign book, so a guard that merely routed to the wrong token (the
+    old direction fallback, a tokens[0] fallback) was invisible to the suite
+    and a mutant restoring the fallback survived all 129 tests. A fake that
+    answers a request with the payload for a different request is a mask for
+    whatever sits between them.
+    """
+
+    NOT_FOUND = {"error": "No orderbook exists for the requested token id"}
+
+    def __init__(self, market=None, books=None, status=200, raises=None):
+        self._market, self._books = market, books or {}
+        self._status, self._raises = status, raises
+        self.calls = []
+        self.timeouts = []
+
+    async def get(self, url, params=None, timeout=None):
+        self.calls.append((url, params))
+        self.timeouts.append(timeout)
+        if "/book" in url:
+            token_id = str((params or {}).get("token_id"))
+            if token_id not in self._books:
+                return _FakeResponse(dict(self.NOT_FOUND), 404, self._raises)
+            return _FakeResponse(self._books[token_id], self._status, self._raises)
+        return _FakeResponse(self._market, self._status, self._raises)
+
+
+class _FakeResponse:
+    def __init__(self, payload, status, raises):
+        self._payload, self.status_code, self._raises = payload, status, raises
+
+    def json(self):
+        if self._raises is not None:
+            raise self._raises
+        return self._payload
+
+
 class StubExecutor(TradeExecutor):
     """TradeExecutor with the subprocess and Telegram edges replaced."""
 
-    def __init__(self, *, stdout=SUCCESS_STDOUT, returncode=0, raises=None, **kw):
+    def __init__(self, *, stdout=SUCCESS_STDOUT, returncode=0, raises=None,
+                 order_constraints=(5.0, 0.0875), **kw):
         kw.setdefault("token", "test-token")
         kw.setdefault("chat_id", "1375806243")
         super().__init__(**kw)
@@ -133,6 +177,29 @@ class StubExecutor(TradeExecutor):
         self.raises = raises
         self.argv_calls: list[list[str]] = []
         self.notifications: list[str] = []
+        # GATE 8 walks the live CLOB book. Stubbed here so the rest of the suite
+        # makes no network calls. Given as (minimum, fill_price); shares come
+        # from the REAL walk against a single deep level at fill_price, so the
+        # stub carries the gate's cent floor and a test changing the amount
+        # changes the verdict exactly the way the real gate would. None
+        # exercises the fail-closed path. The walk itself and the HTTP layer
+        # have their own direct tests.
+        self.order_constraints = order_constraints
+        self.constraint_calls: list[tuple] = []
+
+    async def _fetch_order_constraints(self, condition_id, direction, notional):
+        self.constraint_calls.append((condition_id, direction, notional))
+        if self.order_constraints is None:
+            return None
+        minimum, fill_price = self.order_constraints
+        walked = TradeExecutor._shares_for_notional([(fill_price, 1e9)], notional)
+        if walked is None:
+            return None
+        shares, price = walked
+        return executor_mod.OrderConstraints(
+            minimum=minimum, shares=shares, fill_price=price,
+            observed_at=datetime.now(timezone.utc),
+        )
 
     async def _run_script(self, argv):
         self.argv_calls.append(argv)
@@ -455,6 +522,113 @@ class GateTest(unittest.TestCase):
                     "horizon_below_minimum", end_date=bad, horizon_days=21.0
                 )
 
+    # --- GATE 8, the exchange's share minimum -----------------------------
+    #
+    # The gate WALKS THE BOOK: it computes how many shares the notional buys at
+    # the prices the exchange will actually charge. These drive it through the
+    # executor; the walk and the HTTP layer have their own tests below.
+
+    def test_gate8_refuses_an_order_below_the_share_minimum(self):
+        """$0.25 at a 0.40 fill price is 0.625 shares."""
+        self.assert_blocked(
+            "below_exchange_minimum", db_kwargs=None,
+            amount_usdc=0.25, market_probability=0.40,
+        )
+
+    def test_gate8_admits_an_order_that_clears_it(self):
+        ex = StubExecutor(order_constraints=(5.0, 0.40))
+        with DBStub():
+            result = run(ex.execute(make_approval(
+                amount_usdc=4.0, market_probability=0.40
+            )))
+        self.assertTrue(result.success, "10 shares clears a 5-share minimum")
+
+    def test_gate8_passes_the_notional_and_direction_to_the_book_walk(self):
+        """The walk must be for THIS order, not a generic depth check."""
+        ex = StubExecutor(order_constraints=(5.0, 0.40))
+        with DBStub():
+            run(ex.execute(make_approval(amount_usdc=4.0, market_probability=0.40)))
+        self.assertEqual(
+            ex.constraint_calls, [(VALID_CONDITION_ID, "YES", 4.0)],
+        )
+
+    def test_gate8_reads_the_LIVE_minimum_not_the_candidates_copy(self):
+        ex = StubExecutor(order_constraints=(50.0, 0.40))
+        with DBStub():
+            result = run(ex.execute(make_approval(
+                amount_usdc=4.0, market_probability=0.40, min_order_size=1.0
+            )))
+        self.assertFalse(result.success)
+        self.assertEqual(result.gate_blocked, "below_exchange_minimum")
+        self.assertEqual(ex.argv_calls, [])
+
+    def test_gate8_uses_the_live_minimum_exactly_not_the_stricter_of_the_two(self):
+        ex = StubExecutor(order_constraints=(5.0, 0.40))
+        with DBStub():
+            result = run(ex.execute(make_approval(
+                amount_usdc=4.0, market_probability=0.40, min_order_size=500.0
+            )))
+        self.assertTrue(result.success, "10 shares clears the LIVE minimum of 5")
+
+    def test_gate8_ignores_the_candidates_price_entirely(self):
+        """THE property. The share count comes from the BOOK, not the candidate.
+
+        A candidate whose scan-time price would give a comfortable 40 shares is
+        refused when the live fill price says 2.5. If the gate divided by the
+        candidate's price, or by any mid, this passes.
+        """
+        ex = StubExecutor(order_constraints=(5.0, 0.80))
+        with DBStub():
+            result = run(ex.execute(make_approval(
+                amount_usdc=2.0, market_probability=0.05
+            )))
+        self.assertFalse(result.success)
+        self.assertEqual(result.gate_blocked, "below_exchange_minimum")
+
+    # --- the boundary, pinned on both sides ------------------------------
+
+    def test_gate8_admits_exactly_the_minimum(self):
+        ex = StubExecutor(order_constraints=(5.0, 0.40))
+        with DBStub():
+            result = run(ex.execute(make_approval(
+                amount_usdc=2.0, market_probability=0.40
+            )))
+        self.assertTrue(result.success, "2.00 / 0.40 is exactly 5 shares")
+
+    def test_gate8_refuses_a_hair_under_the_minimum(self):
+        for amount, shares in ((1.999996, 4.99999), (1.98, 4.95), (1.9, 4.75)):
+            with self.subTest(shares=shares):
+                ex = StubExecutor(order_constraints=(5.0, 0.40))
+                with DBStub():
+                    result = run(ex.execute(make_approval(
+                        amount_usdc=amount, market_probability=0.40
+                    )))
+                self.assertFalse(result.success, f"{shares} shares must refuse")
+                self.assertEqual(result.gate_blocked, "below_exchange_minimum")
+
+    # --- fail closed -------------------------------------------------------
+
+    def test_gate8_fails_closed_when_constraints_cannot_be_read(self):
+        """The candidate CARRIES a permissive minimum, because that is the only
+        case in which a fallback is possible and therefore the only case that
+        tests fail-closed."""
+        for copy in (1.0, 0.001, 5.0):
+            with self.subTest(candidate_min=copy):
+                ex = StubExecutor(order_constraints=None)
+                with DBStub():
+                    result = run(ex.execute(make_approval(
+                        amount_usdc=9.0, market_probability=0.40,
+                        min_order_size=copy,
+                    )))
+                self.assertFalse(result.success)
+                self.assertEqual(result.gate_blocked, "below_exchange_minimum")
+                self.assertEqual(ex.argv_calls, [])
+
+    def test_gate8_refuses_a_candidate_the_scanner_never_sized(self):
+        self.assert_blocked(
+            "below_exchange_minimum", sizing_refusal="below_exchange_minimum"
+        )
+
     def test_unapproved_status_refused(self):
         for status in (ApprovalStatus.skipped, ApprovalStatus.timeout,
                        ApprovalStatus.analyst_skip, ApprovalStatus.pending):
@@ -464,6 +638,459 @@ class GateTest(unittest.TestCase):
             self.assertFalse(result.success)
             self.assertEqual(result.gate_blocked, "not_approved")
             self.assertEqual(ex.argv_calls, [])
+
+
+class Gate8LogValuesTest(unittest.TestCase):
+    """The refusal log is the deliverable, so its NUMBERS are asserted.
+
+    "Every refusal is logged with its numbers so the suppression rate becomes
+    data" is the stated justification for accepting near-total suppression. No
+    value in that line was asserted anywhere: mutants swapping shares for the
+    minimum, printing min_notional as a division instead of a product, and
+    reporting the minimum where the share count belongs all survived.
+
+    Asserting a label proves the format string; the label is written by the same
+    line that writes the value and cannot witness it.
+    """
+
+    def capture(self, **cand):
+        ex = StubExecutor(order_constraints=(7.0, 0.40))
+        with DBStub(), self.assertLogs("trade_engine.executor", level="INFO") as logs:
+            result = run(ex.execute(make_approval(**cand)))
+        return result, "\n".join(logs.output)
+
+    def test_the_refusal_line_carries_every_number_by_value(self):
+        # $2.00 at 0.40 is 5 shares against a required 7.
+        result, text = self.capture(amount_usdc=2.0, market_probability=0.40)
+        self.assertFalse(result.success)
+        for fragment in ("notional=2.0000", "fill_price=0.4000",
+                         "shares=5.0000", "required_shares=7.0000",
+                         "min_notional=2.8000"):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, text)
+
+    def test_min_notional_is_a_PRODUCT_not_a_quotient(self):
+        """7 shares at 0.40 is $2.80. Printed as a division it reads $17.50,
+        which is the same shape of wrong number in the same log line."""
+        _, text = self.capture(amount_usdc=2.0, market_probability=0.40)
+        self.assertIn("min_notional=2.8000", text)
+        self.assertNotIn("min_notional=17.5000", text)
+
+    def test_shares_and_required_are_not_interchangeable(self):
+        """Distinct fixture values, so a swap is visible at all."""
+        _, text = self.capture(amount_usdc=2.0, market_probability=0.40)
+        self.assertIn("shares=5.0000 required_shares=7.0000", text)
+        self.assertNotIn("shares=7.0000 required_shares=5.0000", text)
+
+    def test_the_refusal_line_carries_the_as_of_timestamp(self):
+        _, text = self.capture(amount_usdc=2.0, market_probability=0.40)
+        self.assertIn(" as of ", text)
+        self.assertRegex(text, r"as of \d{4}-\d{2}-\d{2}T")
+
+    def test_the_admit_line_reports_the_share_count_not_the_minimum(self):
+        ex = StubExecutor(order_constraints=(5.0, 0.40))
+        with DBStub(), self.assertLogs("trade_engine.executor", level="INFO") as logs:
+            result = run(ex.execute(make_approval(
+                amount_usdc=4.0, market_probability=0.40)))
+        text = "\n".join(logs.output)
+        self.assertTrue(result.success)
+        # BOTH halves. Asserting only the leading share count left a mutant
+        # reporting the share count again in the "required" position alive.
+        self.assertIn(
+            "gate 8 ok: 10.0000 shares at fill price 0.4000", text)
+        self.assertIn(">= 5.0000 required", text)
+        self.assertNotIn(">= 10.0000 required", text)
+
+
+class BookWalkTest(unittest.TestCase):
+    """_shares_for_notional must mirror py-clob-client-v2, not intuition.
+
+    The first version returned the VWAP of the levels consumed, which is what a
+    human means by "the price it fills at" and is NOT what the client submits.
+    Read from py_clob_client_v2 1.1.0, the version the relay pins:
+
+      calculate_buy_market_price   returns the price of THE LEVEL at which the
+                                   cumulative notional first reaches `amount`,
+                                   i.e. the MARGINAL price
+      get_market_order_amounts     raw_maker_amt = round_down(amount, 2)
+                                   raw_taker_amt = raw_maker_amt / raw_price
+
+    VWAP <= marginal whenever the order spans levels, so the old model
+    OVERSTATED the share count, in the same unsafe direction as the Gamma mid
+    this gate replaced.
+    """
+
+    walk = staticmethod(TradeExecutor._shares_for_notional)
+
+    def test_a_single_deep_level_fills_at_that_price(self):
+        shares, price = self.walk([(0.40, 10_000.0)], 2.0)
+        self.assertAlmostEqual(shares, 5.0, places=9)
+        self.assertAlmostEqual(price, 0.40, places=9)
+
+    def test_it_returns_the_MARGINAL_price_not_the_average(self):
+        """THE property. $2 against 1 share at 0.40 then depth at 0.50.
+
+        VWAP would be 2.00/4.2 = 0.476 and would report 4.2 shares. The client
+        divides by the marginal 0.50 and submits 4.0. A 5-share minimum refuses
+        the real order and the VWAP model would have admitted it.
+        """
+        shares, price = self.walk([(0.40, 1.0), (0.50, 10_000.0)], 2.0)
+        self.assertAlmostEqual(price, 0.50, places=9, msg="marginal, not VWAP")
+        self.assertAlmostEqual(shares, 4.0, places=9)
+        self.assertNotAlmostEqual(shares, 4.2, places=2, msg="4.2 is the VWAP answer")
+
+    def test_the_notional_is_floored_to_CENTS_before_dividing(self):
+        """round_down(amount, 2): round_config.size is 2 for every tick size.
+
+        $1.875 is submitted as $1.87, so at 0.375 the order is 4.9867 shares and
+        the exchange refuses it. Sizing routinely produces sub-cent notionals
+        and 0.001-tick markets exist, so this is not a corner case.
+        """
+        shares, price = self.walk([(0.375, 10_000.0)], 1.875)
+        self.assertAlmostEqual(price, 0.375, places=9)
+        self.assertAlmostEqual(shares, 1.87 / 0.375, places=9)
+        self.assertLess(shares, 5.0, "the unfloored 1.875 would give exactly 5")
+
+    def test_flooring_never_rounds_up(self):
+        for notional, expected_maker in ((1.879999, 1.87), (2.999, 2.99), (0.259, 0.25)):
+            with self.subTest(notional=notional):
+                shares, price = self.walk([(0.50, 10_000.0)], notional)
+                self.assertAlmostEqual(shares * price, expected_maker, places=9)
+
+    def test_a_sub_cent_notional_cannot_be_submitted(self):
+        self.assertIsNone(self.walk([(0.40, 10_000.0)], 0.009))
+
+    def test_a_book_too_thin_to_fill_is_None_not_a_partial(self):
+        """The client raises "no match" for a FOK order that the book cannot
+        reach, so a partial fill is not the alternative."""
+        self.assertIsNone(self.walk([(0.40, 1.0)], 2.0))
+        self.assertIsNone(self.walk([], 2.0))
+
+    def test_a_level_exactly_exhausting_the_budget_fills(self):
+        """The boundary the >= comparison sits on, pinned in both directions.
+        5 shares at 0.40 is exactly $2.00."""
+        shares, price = self.walk([(0.40, 5.0)], 2.0)
+        self.assertAlmostEqual(shares, 5.0, places=9)
+        self.assertAlmostEqual(price, 0.40, places=9)
+        # A hair more than the level holds must fall through to the next level.
+        shares, price = self.walk([(0.40, 5.0), (0.60, 1_000.0)], 2.01)
+        self.assertAlmostEqual(price, 0.60, places=9)
+
+    def test_levels_are_consumed_cheapest_first(self):
+        """The live API returns asks DESCENDING by price, so the sort is
+        load-bearing rather than cosmetic."""
+        shares, price = self.walk([(0.60, 100.0), (0.40, 100.0), (0.50, 100.0)], 4.0)
+        self.assertAlmostEqual(price, 0.40, places=9)
+        self.assertAlmostEqual(shares, 10.0, places=9)
+
+    def test_junk_levels_are_skipped_not_trusted(self):
+        shares, _ = self.walk([(0.0, 999.0), (-1.0, 999.0), (0.40, 10_000.0)], 2.0)
+        self.assertAlmostEqual(shares, 5.0, places=9)
+
+
+class OrderConstraintsFetchTest(unittest.TestCase):
+    """The two CLOB calls, driven directly. Every gate test stubs this."""
+
+    def market(self, **over):
+        m = {
+            "condition_id": VALID_CONDITION_ID,
+            # NOT 5. Every live market returns 5, so a fixture saying 5 cannot
+            # distinguish a parsed minimum from a hardcoded one: a mutant
+            # discarding the parsed value for the literal 5 survived every test
+            # here. The malformed-input tests prove the PARSE runs; only a
+            # non-default value proves the parsed value is what gets compared.
+            "minimum_order_size": 12,
+            "accepting_orders": True,
+            "tokens": [
+                {"outcome": "Yes", "token_id": "111", "price": 0.40},
+                {"outcome": "No", "token_id": "222", "price": 0.60},
+            ],
+        }
+        m.update(over)
+        return m
+
+    def book(self, asks, token_id="111"):
+        return {
+            "asks": [{"price": str(p), "size": str(s)} for p, s in asks],
+            "bids": [{"price": "0.39", "size": "100"}],
+            "asset_id": token_id,
+            "market": VALID_CONDITION_ID,
+            "min_order_size": "12",
+            "timestamp": "1757416800000",
+        }
+
+    #: distinguishes "argument not supplied" from "explicitly None", which the
+    #: first version of this helper conflated, so the None-payload case
+    #: silently exercised the default and asserted nothing.
+    DEFAULT = object()
+
+    def fetch(self, market=DEFAULT, book=DEFAULT, no_book=DEFAULT,
+              direction="YES", notional=2.0, **kw):
+        """`book` is the YES token's book and `no_book` the NO token's. The
+        two carry DIFFERENT asks (0.40 and 0.60) so a path that reads the
+        wrong side produces a visibly different number, not a refusal."""
+        books = {
+            "111": self.book([(0.40, 10_000.0)]) if book is self.DEFAULT else book,
+            "222": (self.book([(0.60, 10_000.0)], token_id="222")
+                    if no_book is self.DEFAULT else no_book),
+        }
+        ex = TradeExecutor(
+            client=_FakeClob(
+                market=self.market() if market is self.DEFAULT else market,
+                books=books, **kw),
+            token="t", chat_id="c",
+        )
+        return ex, run(ex._fetch_order_constraints(VALID_CONDITION_ID, direction, notional))
+
+    def book_calls(self, ex):
+        return [p["token_id"] for u, p in ex.client_calls if "/book" in u]
+
+    def test_it_returns_the_walked_fill_price_and_shares(self):
+        _, c = self.fetch()
+        self.assertAlmostEqual(c.minimum, 12.0, msg="the MARKET's minimum, not 5")
+        self.assertAlmostEqual(c.shares, 5.0, places=9)
+        self.assertAlmostEqual(c.fill_price, 0.40, places=9)
+
+    def test_the_minimum_tracks_the_market_not_a_constant(self):
+        for minimum in (1, 12, 50, 2.5):
+            with self.subTest(minimum_order_size=minimum):
+                # BOTH sources move together: the cross-check refuses when they
+                # disagree, which is its job and is tested separately below.
+                book = dict(self.book([(0.40, 10_000.0)]),
+                            min_order_size=str(minimum))
+                _, c = self.fetch(
+                    market=self.market(minimum_order_size=minimum), book=book,
+                )
+                self.assertIsNotNone(c, "market and book agree, this must size")
+                self.assertAlmostEqual(c.minimum, float(minimum))
+
+    def test_observed_at_is_the_BOOKS_timestamp_not_the_read_time(self):
+        """A quiet market can return a book minutes stale; one sampled live was
+        242s old. Logging the read time overstates freshness, which defeats the
+        field's only job after a size rejection."""
+        _, c = self.fetch()
+        self.assertEqual(
+            c.observed_at,
+            datetime.fromtimestamp(1757416800.0, tz=timezone.utc),
+        )
+        self.assertLess(
+            c.observed_at, datetime.now(timezone.utc),
+            "a fixed past timestamp must not be replaced by now",
+        )
+
+    def test_observed_at_falls_back_to_now_when_the_book_gives_none(self):
+        before = datetime.now(timezone.utc)
+        book = self.book([(0.40, 10_000.0)])
+        for bad in (None, "", "soon", 0, -1):
+            with self.subTest(timestamp=bad):
+                book["timestamp"] = bad
+                _, c = self.fetch(book=dict(book))
+                self.assertGreaterEqual(c.observed_at, before)
+
+    def test_a_book_for_the_wrong_token_or_market_is_refused(self):
+        book = self.book([(0.40, 10_000.0)])
+        for key, value in (("asset_id", "999"), ("market", "0x" + "cd" * 32)):
+            with self.subTest(field=key):
+                wrong = dict(book, **{key: value})
+                _, c = self.fetch(book=wrong)
+                self.assertIsNone(c)
+
+    def test_a_book_minimum_disagreeing_with_the_market_is_refused(self):
+        """One of the two is stale and neither can gate an order."""
+        book = dict(self.book([(0.40, 10_000.0)]), min_order_size="5")
+        _, c = self.fetch(book=book)
+        self.assertIsNone(c)
+
+    def test_an_unrecognised_direction_is_refused_before_any_book_is_read(self):
+        """A fail-open until 111521f, and a regression this suite could not see
+        until the fake served each token its own book.
+
+        The old line, `"yes" if direction.upper() == "YES" else "no"`, put
+        every one of these on the NO side BEFORE the lookup, so the lookup
+        found the No token and the gate sized them against the NO book. With
+        this fake, restoring that line ADMITS every case below on the NO book
+        (3.33 shares at 0.60) and this test fails. The old fake served the YES
+        book for the NO token too, so the identity check refused it and the
+        mutant survived for the wrong reason. Asserting that no book is read
+        at all pins the refusal to the direction check itself, which no
+        fallback can satisfy.
+        """
+        for direction in ("", "yes ", "BUY", "Y", None, "MAYBE", "buy", "NO "):
+            with self.subTest(direction=direction):
+                ex, c = self.fetch(direction=direction)
+                self.assertIsNone(c)
+                self.assertEqual(self.book_calls(ex), [], "refused before any book was read")
+
+    def test_the_gate_bounds_its_own_network_calls(self):
+        """A gate must not hang the money path. Nothing asserted the timeout was
+        passed, so dropping it survived."""
+        ex, _ = self.fetch()
+        for url, _ in ex.client_calls:
+            self.assertIn("clob.polymarket.com", url)
+        self.assertEqual(
+            ex._client.timeouts,
+            [executor_mod.MARKET_LIMITS_TIMEOUT_SECONDS] * len(ex.client_calls),
+        )
+
+    def test_every_non_2xx_status_is_refused(self):
+        """Only 503 was exercised, so raising the threshold to 500 survived.
+        The live CLOB returns 404 with a JSON body for an unknown id."""
+        for status in (301, 302, 400, 403, 404, 429, 500, 503):
+            with self.subTest(status=status):
+                _, c = self.fetch(status=status)
+                self.assertIsNone(c)
+
+    def test_the_fill_price_is_the_ASK_not_the_markets_mid(self):
+        """THE property mutant this exists to kill.
+
+        The market endpoint reports tokens[].price = 0.40, a mid. The book's
+        ask is 0.50. A gate reading the mid computes 5 shares and admits; the
+        real fill is 4 shares and the exchange refuses. Keeping the book call
+        and the walk while dividing by the mid must NOT pass.
+        """
+        _, c = self.fetch(book=self.book([(0.50, 10_000.0)]))
+        self.assertAlmostEqual(c.fill_price, 0.50, places=9)
+        self.assertAlmostEqual(c.shares, 4.0, places=9)
+        self.assertNotAlmostEqual(c.fill_price, 0.40, places=6)
+        self.assertLess(c.shares, 5.0, "the mid would have said 5")
+
+    def test_it_picks_the_token_by_OUTCOME_not_by_position(self):
+        """Retires the outcomePrices[0]-is-YES assumption. A market whose
+        outcomes are ordered ["No", "Yes"] must still size the YES side."""
+        reversed_market = self.market(tokens=[
+            {"outcome": "No", "token_id": "222", "price": 0.60},
+            {"outcome": "Yes", "token_id": "111", "price": 0.40},
+        ])
+        ex, c = self.fetch(market=reversed_market, direction="YES")
+        self.assertIsNotNone(c)
+        self.assertEqual(self.book_calls(ex), ["111"], "must ask for the YES token")
+        self.assertAlmostEqual(c.fill_price, 0.40, places=9,
+                               msg="the YES book's ask, not the NO book's 0.60")
+
+    def test_the_NO_side_is_sized_from_the_NO_book(self):
+        """The NO admit path. Before the fake served per-token books this
+        returned None in the test named for it, refused by the identity check
+        against the YES book, so nothing covered a NO order being sized."""
+        ex, c = self.fetch(direction="NO")
+        self.assertEqual(self.book_calls(ex), ["222"])
+        self.assertIsNotNone(c, "the NO side must be sizeable, not refused by a fixture")
+        self.assertAlmostEqual(c.fill_price, 0.60, places=9,
+                               msg="the NO book's ask, not the YES book's")
+        self.assertAlmostEqual(c.shares, 2.0 / 0.60, places=9)
+        self.assertAlmostEqual(c.minimum, 12.0)
+
+    def test_a_market_not_accepting_orders_is_refused(self):
+        """A live fail-open before this change: a closed market with a valid
+        minimum_order_size passed the gate."""
+        for value in (False, None, "false", 0):
+            with self.subTest(accepting_orders=value):
+                _, c = self.fetch(market=self.market(accepting_orders=value))
+                self.assertIsNone(c)
+
+    def test_the_wrong_market_is_refused(self):
+        _, c = self.fetch(market=self.market(condition_id="0x" + "cd" * 32))
+        self.assertIsNone(c)
+
+    def test_an_empty_book_is_refused(self):
+        for book in ({"asks": []}, {}, {"asks": None}, None):
+            with self.subTest(book=book):
+                _, c = self.fetch(book=book)
+                self.assertIsNone(c)
+
+    def test_a_book_too_thin_to_fill_is_refused(self):
+        _, c = self.fetch(book=self.book([(0.40, 1.0)]), notional=2.0)
+        self.assertIsNone(c)
+
+    def test_a_missing_or_malformed_minimum_is_refused(self):
+        for bad in (None, "many", 0, -5):
+            with self.subTest(minimum_order_size=bad):
+                _, c = self.fetch(market=self.market(minimum_order_size=bad))
+                self.assertIsNone(c)
+
+    def test_a_missing_token_for_the_side_is_refused_without_reading_a_book(self):
+        """A tokens[0] fallback would fetch the No token's book here and, with
+        a fake that serves it faithfully, be ADMITTED on it. The relay has a
+        positional fallback of the same shape (tokens[0] for YES, tokens[1]
+        for NO); the gate must not."""
+        ex, c = self.fetch(market=self.market(tokens=[
+            {"outcome": "No", "token_id": "222", "price": 0.60}]), direction="YES")
+        self.assertIsNone(c)
+        self.assertEqual(self.book_calls(ex), [], "no fallback to another token's book")
+
+    def test_transport_and_shape_failures_are_refused(self):
+        for label, kw in (("http error", dict(status=503)),
+                          ("non-JSON", dict(raises=ValueError("no json")))):
+            with self.subTest(case=label):
+                _, c = self.fetch(**kw)
+                self.assertIsNone(c)
+        for label, market in (("not a dict", ["a string"]), ("empty", None)):
+            with self.subTest(case=label):
+                _, c = self.fetch(market=market)
+                self.assertIsNone(c)
+
+    def test_a_missing_condition_id_is_refused_without_a_call(self):
+        ex = TradeExecutor(client=_FakeClob(), token="t", chat_id="c")
+        self.assertIsNone(run(ex._fetch_order_constraints(None, "YES", 2.0)))
+        self.assertEqual(ex._client.calls, [])
+
+    def test_the_scanners_entry_point_is_the_gates_own_read(self):
+        """read_order_constraints is what the scanner sizes against. It must be
+        the same read GATE 8 makes, not a second implementation, and a test
+        double overriding the private method must be honoured on both."""
+        ex, direct = self.fetch(book=self.book([(0.50, 10_000.0)]))
+        via_scanner = run(ex.read_order_constraints(VALID_CONDITION_ID, "YES", 2.0))
+        self.assertEqual(via_scanner, direct)
+        self.assertAlmostEqual(via_scanner.fill_price, 0.50, places=9)
+        stub = StubExecutor(order_constraints=(7.0, 0.40))
+        c = run(stub.read_order_constraints(VALID_CONDITION_ID, "YES", 2.0))
+        self.assertEqual((c.minimum, c.shares, c.fill_price), (7.0, 5.0, 0.40))
+        self.assertEqual(stub.constraint_calls, [(VALID_CONDITION_ID, "YES", 2.0)])
+
+    def test_it_makes_TWO_calls_the_market_then_the_book(self):
+        """Documented as deliberate. If someone collapses this to one call the
+        fill price is gone and only a mid remains."""
+        ex, c = self.fetch()
+        paths = [u for u, _ in ex.client_calls]
+        self.assertEqual(len(paths), 2)
+        self.assertIn("/markets/", paths[0])
+        self.assertIn("/book", paths[1])
+
+    # --- the book's identity is REQUIRED, not checked-if-present ----------
+
+    def test_a_book_without_its_identity_fields_is_refused(self):
+        """STRICT. Absent, None or empty asset_id, market or min_order_size is
+        a refusal, not a skipped check. The first version checked these only
+        when present, which is absent-means-pass one call over from the D2
+        finding: a payload that dropped the field disabled the check silently,
+        and an empty string passed outright."""
+        for key in ("asset_id", "market", "min_order_size"):
+            for absent in ("missing", None, ""):
+                with self.subTest(field=key, value=absent):
+                    book = self.book([(0.40, 10_000.0)])
+                    if absent == "missing":
+                        del book[key]
+                    else:
+                        book[key] = absent
+                    _, c = self.fetch(book=book)
+                    self.assertIsNone(c)
+
+    def test_a_book_minimum_that_cannot_be_parsed_is_refused(self):
+        for bad in ("many", [], {}, "5 shares"):
+            with self.subTest(min_order_size=bad):
+                _, c = self.fetch(book=dict(self.book([(0.40, 10_000.0)]), min_order_size=bad))
+                self.assertIsNone(c)
+
+    def test_a_token_with_no_book_is_refused(self):
+        """The live API answers 404 for a token it has no book for; the fake
+        does the same, so a lookup that lands on an unknown token is refused
+        rather than served a neighbour's book."""
+        market = self.market(tokens=[
+            {"outcome": "Yes", "token_id": "333", "price": 0.40},
+            {"outcome": "No", "token_id": "222", "price": 0.60},
+        ])
+        ex, c = self.fetch(market=market, direction="YES")
+        self.assertIsNone(c)
+        self.assertEqual(self.book_calls(ex), ["333"])
 
 
 class StalenessTest(unittest.TestCase):
@@ -567,7 +1194,12 @@ class EntryPriceNullTest(unittest.TestCase):
 
     def test_no_price_anywhere_records_null_not_zero(self):
         stdout = json.dumps({"success": True, "response": {"orderID": "0xo"}})
-        ex = StubExecutor(stdout=stdout)
+        # GATE 8 needs SOME price to convert the notional into shares, and
+        # market_probability=0 removes the candidate's. The live Gamma price
+        # supplies it, which is the real arrangement: the gate reads the market,
+        # the RECORDING path here still has no fill price to work from. Without
+        # this the gate refuses first and this test stops covering _derive_entry.
+        ex = StubExecutor(stdout=stdout, order_constraints=(5.0, 0.40))
         with DBStub() as db:
             # market_probability=0 removes the fallback too.
             result = run(ex.execute(make_approval(market_probability=0)))
@@ -724,16 +1356,96 @@ class RealFillRecordingTest(unittest.TestCase):
         self.assertAlmostEqual(usdc, 10.0)
 
     def test_cash_out_just_inside_the_upper_bound_is_accepted(self):
-        payload = self.real_payload(cash_out=14.99)  # 1.499x < 1.5x
+        """The bound is PRICE-AWARE now, so "just inside" is much tighter.
+
+        This used to accept 14.99 against a 10.00 notional, because the flat
+        1.5x ceiling was loose by more than 70x at high prices. The real fee
+        ratio is 1 + 0.07*(1-price), so at the payload's 0.284 the ceiling is
+        1 + 0.0501 + 0.01 tolerance = 1.0601, and 10.60 is the most that can be
+        believed.
+        """
+        payload = self.real_payload(cash_out=10.59)
         _, _, usdc = TradeExecutor._derive_entry(
             make_candidate(amount_usdc=10.0), payload
         )
-        self.assertAlmostEqual(usdc, 14.99)
+        self.assertAlmostEqual(usdc, 10.59)
+
+    def test_the_old_flat_ceiling_would_have_believed_a_50_percent_fee(self):
+        """What the tightening actually bought.
+
+        14.99 against a 10.00 notional is a 49.9% fee. The old flat 1.5x
+        accepted it and wrote it straight into pnl, which feeds Gate 3's
+        daily-loss brake. At this price the real fee is 5.01%.
+        """
+        payload = self.real_payload(cash_out=14.99)
+        _, _, usdc = TradeExecutor._derive_entry(
+            make_candidate(amount_usdc=10.0), payload
+        )
+        self.assertAlmostEqual(usdc, 10.0, msg="must fall back to the notional")
+
+    def test_tolerance_has_an_ABSOLUTE_floor_at_small_sizes(self):
+        """The ratio alone was worth fractions of a cent at Kelly sizes.
+
+        A false trip records the NOTIONAL, excluding the fee: cost basis
+        understated, pnl overstated, GATE 3's daily-loss brake under-triggered.
+        That is the unsafe direction, so the floor covers a plausible
+        two-price fill rather than being tight.
+        """
+        # $2 notional at price 0.30: real fee 4.9%, so 2.098. A second maker
+        # fill 2c away moves it by ~0.009, which a 1% ratio (0.02) barely
+        # covers and the absolute floor (0.03) comfortably does.
+        ceiling = executor_mod.TradeExecutor._max_believable_cash_out(2.0, 0.30)
+        # The real second-order error for a 2c two-price fill at this size is
+        # 0.000045, not the 0.009 an earlier version of this reasoning claimed.
+        self.assertGreater(ceiling, 2.098 + 0.000045)
+        self.assertAlmostEqual(ceiling, 2.0 * 1.049 + 0.02, places=6)
+
+    def test_the_floor_dominates_at_the_smallest_positions(self):
+        small = executor_mod.TradeExecutor._max_believable_cash_out(0.25, 0.30)
+        ratio_only = 0.25 * 1.049 + 0.01 * 0.25
+        self.assertGreater(small, ratio_only,
+                           "a 1% ratio on $0.25 is a quarter of a cent")
+
+    def test_the_ratio_takes_over_at_larger_positions(self):
+        big = executor_mod.TradeExecutor._max_believable_cash_out(10.0, 0.30)
+        self.assertAlmostEqual(big, 10.0 * 1.049 + 0.10, places=6)
+
+    def test_the_no_price_fallback_is_the_all_prices_worst_case(self):
+        """Not the old flat 1.5. That drop is a behaviour change and is pinned
+        here because a mutant restoring 1.5 survived the suite."""
+        fallback = executor_mod.TradeExecutor._max_believable_cash_out(10.0, None)
+        self.assertAlmostEqual(fallback, 10.0 * 1.08 + 0.005, places=6)
+        self.assertLess(fallback, 10.0 * 1.5)
+
+    def test_fee_tolerance_constants_are_what_the_reasoning_assumes(self):
+        """Pins both, since a mutant widening the ratio 40x survived."""
+        self.assertEqual(executor_mod.FEE_TOLERANCE_RATIO, 0.01)
+        self.assertEqual(executor_mod.FEE_TOLERANCE_ABS, 0.005)
+
+    def test_the_floor_covers_the_real_second_order_fill_error(self):
+        """Derived, not guessed, and the derivation is the corrected one.
+
+        For a symmetric two-price fill the VWAP cancels the first-order term,
+        leaving error = 0.07 * shares * (dP/2)^2. At the largest position this
+        sizing produces, a full 10c-apart split is 0.00097.
+        """
+        shares = 2.5 / 0.45
+        worst_fill_error = 0.07 * shares * (0.10 / 2) ** 2
+        self.assertLess(worst_fill_error, 0.001)
+        self.assertGreater(
+            executor_mod.FEE_TOLERANCE_ABS, worst_fill_error * 4,
+            "the floor must cover the worst plausible fill with headroom",
+        )
+        self.assertLess(
+            executor_mod.FEE_TOLERANCE_ABS, 0.01,
+            "wide enough to hide a fee-schedule change defeats the residual check",
+        )
 
     def test_real_fee_ratio_does_not_trip_the_upper_bound(self):
-        """The real f4be9ee8 numbers: 10.501189 vs 10.00 notional is 1.05x,
-        comfortably inside the 1.5x ceiling. The bound must never reject a
-        genuine fee."""
+        """The real f4be9ee8 numbers: 10.501189 vs 10.00 notional is 1.05012x,
+        against a computed ceiling of 1.0601 at price 0.284. The bound must
+        never reject a genuine fee, and the tightened one still does not: the
+        margin is 0.0100, which is the tolerance and nothing else."""
         _, _, usdc = TradeExecutor._derive_entry(
             make_candidate(amount_usdc=10.0), self.real_payload()
         )
@@ -920,6 +1632,20 @@ class SubprocessSafetyTest(unittest.TestCase):
         for token in ("--key", "--private-key", "--funder"):
             self.assertNotIn(token, argv)
 
+    def test_a_fractional_notional_reaches_argv_intact(self):
+        """5.0 is invariant under round(x,2), round(x,6) AND ceil-to-cent, so
+        pinning only that value proves nothing about rounding. A real Kelly
+        notional is fractional, and rounding it UP is the one thing sizing.py
+        forbids in capitals: it spends more than Kelly sized."""
+        for amount in (1.183712, 0.256841, 2.499999):
+            with self.subTest(amount=amount):
+                ex = StubExecutor(order_constraints=(0.1, 0.40))
+                with DBStub():
+                    result = run(ex.execute(make_approval(amount_usdc=amount)))
+                self.assertTrue(result.success)
+                self.assertEqual(ex.argv_calls[0][7], str(amount))
+                self.assertEqual(float(ex.argv_calls[0][7]), amount)
+
     def test_real_runner_uses_arg_array_not_a_shell(self):
         """Proves no shell interpretation: metacharacters stay literal.
 
@@ -994,6 +1720,57 @@ class ScannerWiringTest(unittest.TestCase):
         with DBStub():
             run(scanner.apply_execution(summary))
         self.assertIsNone(summary.execution_result)
+
+    def test_the_scanner_proposes_only_what_gate_8_admits_on_the_same_book(self):
+        """THE property this round exists for, end to end.
+
+        One executor stands in for both the scanner's book read and GATE 8, so
+        both see the same book. Whatever the scanner marks sizeable must pass
+        the gate, and whatever the gate refuses the scanner must already have
+        refused. Before this, the scanner sized at Gamma's quote and the gate at
+        the ask, and at the scanner's minimum tradeable probability the gate
+        refused at the median live spread at every price in the band.
+        """
+        from src.trade_engine import scanner as scanner_mod
+
+        async def fake_config():
+            return TradingConfig(id=1, max_position_usdc=10.0)
+
+        end_date = (datetime.now(timezone.utc) + timedelta(days=21)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        rows = [{
+            "market_id": "3158105", "condition_id": VALID_CONDITION_ID, "slug": "s",
+            "question": "q", "asset": "eth", "yes_price": 0.20, "volume": 50_000.0,
+            "horizon_days": 21.0, "end_date": end_date, "min_order_size": 5.0,
+            "simulation": {"probability": 0.90},
+        }]
+        real_cfg = scanner_mod.get_trading_config
+        scanner_mod.get_trading_config = fake_config
+        try:
+            verdicts = {}
+            for fill in (0.15, 0.20, 0.29, 0.40, 0.41, 0.45, 0.60):
+                with self.subTest(fill=fill):
+                    ex = StubExecutor(order_constraints=(5.0, fill))
+                    scanner = PolymarketScanner(executor=ex)
+                    summary = run(scanner.build_run_summary(
+                        rows, markets_fetched=1, candidates_analysed=1,
+                        sim_errors=0, open_positions=0,
+                    ))
+                    candidate = summary.high_edge[0]
+                    approval = make_approval()
+                    approval.candidate = candidate
+                    with DBStub():
+                        result = run(ex.execute(approval))
+                    verdicts[fill] = candidate.sizing_refusal is None
+                    if candidate.sizing_refusal is None:
+                        self.assertTrue(result.success, f"scanner proposed, gate refused at {fill}")
+                    else:
+                        self.assertEqual(result.gate_blocked, "below_exchange_minimum")
+            self.assertIn(True, verdicts.values(), "some fill must be admitted")
+            self.assertIn(False, verdicts.values(), "some fill must be refused")
+        finally:
+            scanner_mod.get_trading_config = real_cfg
 
     def test_condition_id_survives_to_candidate(self):
         """The scanner must carry condition_id, or gate 6 refuses everything."""
