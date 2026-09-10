@@ -26520,3 +26520,66 @@ Tracked as issue #136. The leaning is to drop the `branches: [main]` filter
 under `pull_request`, with the caveat that `deploy`'s `push`-only gating must be
 re-read afterwards rather than assumed, since widening the trigger must not make
 it reachable from a pull request.
+
+## 2026-09-10: the discriminator under test was unreachable, and a green CI that proved the opposite branch
+
+Two findings from the approval-gate remediation, both of the same class as the
+`assertIn` finding of 2026-09-09: a test that passes for a reason other than the
+one it names.
+
+**A test proved the guard clause above the guard it was written for.**
+`getSkillToolContext` returns `{}` for anything that is not a skill-parsed tool,
+and the discriminator that decides it is `preset.name.startsWith('skill:')`. The
+test asserted the contract using a builtin. A builtin is not in `_apiTools` at
+all, so the lookup one line earlier returns `{}` and the discriminator never
+runs. The mutant that exposed it changed the discriminator to return a populated
+object for non-skill presets and survived: the test could not reach the line it
+was written to protect.
+
+The fixture that kills it is a non-skill API preset, which does live in
+`_apiTools` alongside skill tools. A second mutant then survived that one too,
+loosening `startsWith('skill:')` to `includes('skill')`, because no fixture had
+a preset name that could tell a prefix from a substring. The probe that kills
+both is a preset named with a lower-case `skill` somewhere other than the start.
+Case matters here and cost a round: a capitalised `Skillshare` is invisible to
+`includes('skill')`, so the first attempt at that fixture also survived.
+
+> A guard clause earlier in the function can make the guard under test
+> unreachable. Choose the fixture that reaches the line, not the one that
+> produces the expected return value.
+
+**A test pinned the constants and the branch, and not the wiring between them.**
+The skill-write timeout fix sets one budget for writes and another for reads.
+The tests asserted the inequality between the constants, asserted that a signal
+was attached to the fetch, and asserted the branch could tell a write from a
+read. All three passed against a mutant that kept the whole branch and gave
+writes the READ budget, which is the entire defect restored. "A signal is
+present" cannot distinguish 45s from 15s. What kills it is intercepting
+`AbortSignal.timeout` and reading the milliseconds the call site asked for.
+
+Same shape as the GATE 8 lesson: keep the entire shape and change only the
+source of the substance.
+
+**CI green and local red, explained rather than declared.** Five test files
+failed locally and passed in CI. Four were native bindings, from installing with
+`--ignore-scripts`: three `better_sqlite3` and one `canvas`. The fifth was not.
+
+`tests/probes.test.js` asserts that any probe returning `ok: false` carries an
+error string. The pm2 probe's final return, the one reached when the process
+list parses cleanly, has no `error` key at all. It is reached whenever
+`allOnline` is false, which is precisely the condition the probe exists to
+detect. CI passes because pm2 is not installed there, so `execSync` throws and
+the catch path, which does set `error`, runs instead. The two environments were
+executing different branches, and neither was the correct one.
+
+Reproduced on the host without touching pm2: a shim on `PATH` emitted the real
+`pm2 jlist` output with one status flipped to `stopped`, and the probe returned
+`ok: false` with `error` undefined. Real pm2 state was verified unchanged
+afterwards. The consumer at `bootstrap.js` renders
+`probe pm2_processes failed: no detail`, and the name of the stopped process,
+which the probe does put in `detail.offline`, is dropped by both the warning
+line and the markdown renderer. So the bootstrap reports an outage without
+saying what is down, at the moment something is down.
+
+> Two environments disagreeing is the signal. Declaring one of them correct
+> without explaining the disagreement discards it.
