@@ -902,7 +902,7 @@ class OrderConstraintsFetchTest(unittest.TestCase):
         self.assertIsNone(c)
 
     def test_an_unrecognised_direction_is_refused_before_any_book_is_read(self):
-        """A fail-open until 7bec45d, and a regression this suite could not see
+        """A fail-open until 111521f, and a regression this suite could not see
         until the fake served each token its own book.
 
         The old line, `"yes" if direction.upper() == "YES" else "no"`, put
@@ -1009,8 +1009,9 @@ class OrderConstraintsFetchTest(unittest.TestCase):
 
     def test_a_missing_token_for_the_side_is_refused_without_reading_a_book(self):
         """A tokens[0] fallback would fetch the No token's book here and, with
-        a fake that serves it faithfully, be ADMITTED on it. The relay has
-        exactly that fallback; the gate must not."""
+        a fake that serves it faithfully, be ADMITTED on it. The relay has a
+        positional fallback of the same shape (tokens[0] for YES, tokens[1]
+        for NO); the gate must not."""
         ex, c = self.fetch(market=self.market(tokens=[
             {"outcome": "No", "token_id": "222", "price": 0.60}]), direction="YES")
         self.assertIsNone(c)

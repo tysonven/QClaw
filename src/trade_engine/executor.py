@@ -994,12 +994,13 @@ class TradeExecutor:
         # have been sized against the complement without erroring.
         #
         # An explicit refusal for an unrecognised direction. BEHAVIOURAL, not
-        # diagnostic. Until 7bec45d this line read
+        # diagnostic. Until 111521f (the commit that introduced this check)
+        # this line read
         #
         #     wanted = "yes" if str(direction).upper() == "YES" else "no"
         #
-        # which maps every string that is not exactly YES onto the NO side
-        # BEFORE the token lookup, so the lookup always found the No token and
+        # which maps every string that is not case-insensitively YES onto the
+        # NO side BEFORE the token lookup, so the lookup always found the No token and
         # the gate sized "BUY", "yes ", "", None and "MAYBE" against the NO
         # book. That was a fail-open, as the 2026-09-09 review said. A rebuttal
         # claimed the lookup already refused these and that it had been checked
