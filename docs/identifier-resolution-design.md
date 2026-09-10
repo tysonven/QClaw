@@ -1,14 +1,20 @@
 # Resolving identifiers before the approval prompt
 
 Design for items 2 and 3 of the remediation ordered on 2026-09-10, after the
-audit of the 2026-08-27 composed-identifier incident. **This is a proposal, not
-a built change.**
+audit of the 2026-08-27 composed-identifier incident. **Approved by Tyson on
+2026-09-10 as designed. Not built.**
 
 Revision 2, 2026-09-10. Tyson decided the fail-closed question and set three
 constraints on how the split is expressed. Those constraints replaced the
 recommendation in revision 1: the identifier convention is now derived from
 what a skill already declares rather than from a new list. The measurements
 that justify the change are in section 4.
+
+Corrected after approval, the same day. Section 3 names three broken skills,
+not four. Section 4 records two places where the derivation rule as written
+matches the wrong thing, and marks which surfacing mechanisms have shipped or
+been decided. Section 5 carries the revised countdown, section 6 the undecided
+resolver budget, and section 8 the decision to fix rather than delete.
 
 Anchors: QClaw `main` @ `86cea6d`. Counts re-measured against that tree and
 against the live process on `qclaw-agent`.
@@ -61,24 +67,35 @@ Item 1 makes the identifier visible. This is the check.
 Revision 1 got this wrong and the correction matters, because it is itself an
 instance of the drift constraint 2 is about.
 
-Four skills present as HTTP surfaces, carry endpoint lines and an `http:`
+Three skills present as HTTP surfaces, carry endpoint lines and an `http:`
 permission, and **register zero tools**. Confirmed against the live process,
-where every boot in `tool-call.log` shows ten skills registering and these four
-absent:
+where every boot in `tool-call.log` shows ten skills registering and these
+three absent:
 
-| skill | why it registers nothing |
-|---|---|
-| `ads-agency` | no `## Auth` section, so `Base URL:` is never read and the skill parses to null |
-| `content-studio` | same |
-| `clipper` | endpoint lines use an em dash, which the endpoint grammar does not match, and there is no `Base URL:` |
-| `task-queue` | `POST /rest/v1/charlie_tasks` has no ` - description`, so no endpoint matches |
+| skill | why it registers nothing | issue |
+|---|---|---|
+| `ads-agency` | no `## Auth` section, so `Base URL:` is never read and the skill parses to null | #149 |
+| `content-studio` | same | #150 |
+| `clipper` | no `Base URL:`, endpoint lines use an em dash the endpoint grammar does not match, and a single-brace `{job_id}` the parser does not treat as a parameter | #151 |
 
 The parser requires a base URL and at least one endpoint, and returns null
-otherwise. Null means no tools. Nothing reports it.
+otherwise. Null means no tools. Nothing reported it until PR #148.
+
+None of the three ever parsed, in any commit. The services behind all three
+answered throughout. Tyson's decision is to fix them, not delete them. Two of
+them need more than the parse fix: `ads-agency` and `content-studio` are
+`category: specialist-scope`, which Charlie's router never routes, and
+specialist spawning was retired on 2026-08-14, so a parse fix alone registers
+tools that no turn activates.
+
+An earlier draft of this section also listed `task-queue`. That was wrong: it
+is `surface: prompt` with no `## Endpoints` section, its
+`POST /rest/v1/charlie_tasks` is documentation prose, and it was delivered as
+prompt content nine times in the live log. It is working as designed.
 
 **This is the failure mode constraint 2 is guarding against, already present.**
-Four skill files declare a surface that does not exist, and the only way to
-find out is to go looking. Adding a second hand-maintained declaration to the
+Three skill files declare a surface that does not exist, and the only way to
+find out was to go looking. Adding a second hand-maintained declaration to the
 same files would inherit the same silence.
 
 The real write surface is ten skills. Forty-three write endpoints parse.
@@ -107,6 +124,11 @@ Step 3 is what reaches the incident. `POST /positions/manual-close` has no path
 parameter at all; `position_id` is a body field. But `position_id` is indexed
 from the sibling endpoints, so a body field of that name resolves through the
 same GET.
+
+PR #148 already implements the derivation in rules 1 and 2, in
+`src/agents/skill-diagnostics.js`, for its boot-time report. The build should
+import that, not write a second one: two implementations of one rule are a
+maintained list by another name.
 
 ### Measured coverage
 
@@ -152,20 +174,41 @@ anywhere, so all six of its webhook posts have nothing to resolve.
 not collapse.** A webhook post carrying no identifier is not a failure; it
 proceeds to the prompt with the subject block saying no identifier was present.
 
+### Two places the rule as written matches the wrong thing
+
+Found reading the design after approval. Both are latent today, and both need
+settling in the build rather than a redesign.
+
+- **Query-string parameters.** The parser's `path` includes the query string
+  (`src/agents/skill-parser.js:98`), so rule 2's "ends at the parameter"
+  matches filters as well as identifiers: `{{query}}` on six GHL
+  contact-search GETs, and `{{status}}` on n8n-api's executions filter. A
+  search answers 200 for any value, so a body field named `query` would come
+  back `resolved` with nothing checked. Latent as far as checked: n8n-api has
+  no writes, and GHL write payloads were not audited for a `query` field.
+  Strip the query string before applying rule 2, and count a resolve only on a
+  positive marker (the entity came back), never on a 2xx alone.
+- **One name, two entities.** n8n-api uses `{{id}}` for both
+  `GET /workflows/{{id}}` and `GET /executions/{{id}}`, so a name-keyed index
+  cannot pick the resolver. Latent because n8n-api has no writes. A path
+  identifier should resolve through the GET for the same resource, and an
+  ambiguous body name should be "could not resolve", never a guess.
+
 ### What surfaces a skill with none
 
 Constraint 2 asks this explicitly, and it is the part a derivation scheme owes.
 Three mechanisms, none of them a list:
 
-1. **Static, at boot.** `scripts/verify-coupling.js` already walks the live
-   registry. It should print, per skill: writes parsed, identifiers indexed,
-   identifiers with a resolver, and writes whose path parameter has no
-   resolver. A skill with writes and an empty index is one line of output, not
-   an archaeology exercise. This is also where the four zero-tool skills in
-   section 3 would have shown up years earlier.
-2. **A CI assertion.** A write endpoint with a `{{param}}` and no matching GET
-   in the same skill is a skill-file defect and can fail the build. That is a
-   derived check with nothing to maintain.
+1. **Static, at boot. Shipped in PR #148**, as a boot-time diagnostic called
+   from `src/agents/registry.js` rather than in `scripts/verify-coupling.js`.
+   It names the file, the line, the cause and the fix for a skill that declares
+   an HTTP surface and registers nothing, and it reports a write whose path
+   parameter has no resolver. The per-skill counts are still owed and belong
+   beside it: writes parsed, identifiers indexed, identifiers with a resolver,
+   writes unclassified.
+2. **A CI assertion. Decided against as a build gate.** Tyson preferred the
+   boot-time error, because a skill can be edited on the host where CI never
+   runs.
 3. **At runtime.** An unindexed identifier on an unclassified endpoint is
    refused, loudly, the first time it is called. A forgotten declaration
    produces a refused write, not a silent bypass.
@@ -204,10 +247,12 @@ exactly the reason constraint 1 gives.
 ### The migration cost, stated rather than discovered
 
 On the day this turns on, every write on every skill is unclassified and
-therefore hard-fails. That is 43 endpoints. **The rollout order is: declare
-first, enable second**, and the coupling script's per-skill count is how you
-know you are done. It should be a countdown to zero unclassified writes, run
-before the gate change ships, not after.
+therefore hard-fails. That is 43 endpoints on `main` @ `86cea6d`, or 49 if
+#149 to #151 land first: fixing those three skills adds six writes
+(`ads-agency` 4, `content-studio` 1, `clipper` 1). **The rollout order is:
+declare first, enable second**, and the per-skill count is how you know you
+are done. It should be a countdown to zero unclassified writes, run before the
+gate change ships, not after.
 
 ---
 
@@ -227,6 +272,11 @@ Subject:
   The CRM did not answer within 5s. This approval was not validated.
   Approving it accepts an identifier nobody has checked.
 ```
+
+The `5s` is illustrative. The resolver's own timeout budget has not been
+decided: skill fetches on `main` use 15s (`src/agents/skill-parser.js:260`)
+and PR #143 raises writes to 45s. The resolver GET sits between the call and
+the prompt, so its budget is a design decision for the build, not a default.
 
 **In the approvals row**, a `validated` column recording `resolved`,
 `unverified`, or `none_present`. Without it, a month later the row for a
@@ -272,16 +322,17 @@ confirmed it.
 
 1. PR #142 and PR #143 land. #142 also closes the last hole in the derived
    index.
-2. Coupling script reports the per-skill counts. Read them. Fix the four
-   zero-tool skills in section 3, or delete them if they are dead.
+2. Read the boot diagnostic from PR #148. Fix the three zero-tool skills in
+   section 3 (#149, #150, #151). Tyson decided fix, not delete.
 3. Parser change: the `[level]` endpoint prefix, plus the derived index built
-   at registration. Additive; a skill with neither behaves exactly as today.
-4. Declare classifications across all 43 writes. Countdown to zero.
+   at registration, importing #148's derivation. Additive; a skill with
+   neither behaves exactly as today.
+4. Declare classifications across all writes. Countdown to zero.
 5. Gate change: resolve before prompting, fail by level.
 
 Steps 3 and 5 want separate PRs. A parser change that returns null disables a
 skill silently, which section 3 shows is not hypothetical, and it deserves its
-own review and its own coupling run.
+own review and its own boot-diagnostic run.
 
 ---
 
