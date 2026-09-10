@@ -9,6 +9,7 @@ import { readdirSync, existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { log } from '../core/logger.js';
 import { parseSkill, skillToTools, executeSkillTool } from './skill-parser.js';
+import { inspectSkills, formatReport } from './skill-diagnostics.js';
 import { loadSkills } from './skill-loader.js';
 import { scanSpecialistResults } from '../tools/delegate-to.js';
 import { regenerateWithGates, isGatedTurn, buildProvenanceText } from './gates.js';
@@ -310,6 +311,27 @@ export class Agent {
             }
             log.debug(`Skill [${skill.name}]: registered ${tools.length} tools (scope: ${this.name})`);
           }
+        }
+
+        // A skill that declares an HTTP surface and registers nothing is an
+        // error, named at boot with its file and line. parseSkill returns null
+        // silently, and four skill files sat broken from the day they were
+        // created because nothing ever said so: two with `Base URL:` under the
+        // wrong heading, one with an em dash the endpoint grammar rejects, all
+        // three with live services behind them. Charlie appeared to have
+        // capabilities he did not have.
+        //
+        // Prose-only skills produce nothing here: the signal is derived from
+        // the file (an `## Endpoints` heading, a `Base URL:` line, or a
+        // non-empty http permission), never from a list of skill names.
+        try {
+          const report = inspectSkills(this.skills, this.services.secrets);
+          for (const line of formatReport(report)) {
+            if (line.startsWith('  ')) log.warn(line);
+            else log.error(line);
+          }
+        } catch (err) {
+          log.warn(`skill diagnostics failed: ${err.message}`);
         }
       }
     }
