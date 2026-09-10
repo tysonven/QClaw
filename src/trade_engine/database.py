@@ -149,18 +149,71 @@ async def write_position(position: dict[str, Any]) -> dict[str, Any]:
     return rows[0]
 
 
+class PositionStateConflict(SupabaseError):
+    """A conditional PATCH matched no row.
+
+    Raised only when update_position is called with require_status: the
+    position either does not exist or is not in the status the caller
+    required. Kept distinct from SupabaseError so a route can answer 404/409
+    with a message about the position, instead of the 503 a transport
+    failure gets.
+    """
+
+
+async def get_position(position_id: str) -> Optional[TradePosition]:
+    """One position by id, ANY status. None when no row matches.
+
+    This is the read the approval prompt and the post-error re-read use to say
+    what an identifier actually points at. get_open_positions cannot serve
+    that: a closed position is exactly the case the caller needs to see.
+    The caller is responsible for rejecting values that are not UUIDs, since
+    PostgREST answers those with a 400 rather than an empty set.
+    """
+    rows = await _request(
+        "GET",
+        "/trading_positions",
+        params={"id": f"eq.{position_id}", "limit": 1},
+    )
+    if not rows:
+        return None
+    return TradePosition.model_validate(rows[0])
+
+
 async def update_position(
-    position_id: str, updates: dict[str, Any]
+    position_id: str,
+    updates: dict[str, Any],
+    *,
+    require_status: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Patch one position by id and return the updated row."""
+    """Patch one position by id and return the updated row.
+
+    require_status makes the write CONDITIONAL: the filter becomes
+    id=eq.<id> AND status=eq.<require_status>, evaluated by Postgres inside the
+    one UPDATE statement. Two concurrent closes of the same open position then
+    cannot both succeed; the second matches zero rows and raises
+    PositionStateConflict. Without it, a read-then-write caller has a window in
+    which both writes land and the last one wins, which the 2026-09-10 audit
+    reproduced against this handler. The default (no condition) is kept for
+    the executor's own writes, which target rows it created moments earlier.
+    """
+    params: dict[str, Any] = {"id": f"eq.{position_id}"}
+    if require_status is not None:
+        params["status"] = f"eq.{require_status}"
     rows = await _request(
         "PATCH",
         "/trading_positions",
-        params={"id": f"eq.{position_id}"},
+        params=params,
         json_body=updates,
         write=True,
     )
     if not rows:
+        if require_status is not None:
+            raise PositionStateConflict(
+                "PATCH",
+                "/trading_positions",
+                200,
+                f"no row updated for id={position_id} with status={require_status}",
+            )
         raise SupabaseError(
             "PATCH",
             "/trading_positions",
@@ -428,8 +481,14 @@ async def set_manual_hold(position_id: str, hold: bool) -> dict[str, Any]:
 
     manual_hold suppresses alerting only. The monitor still prices the position
     every sweep so the dashboard and Analyst stay accurate.
+
+    Conditional on status=open, matching POST /positions/manual-close. Before
+    2026-09-10 this accepted any id that matched a row, so a closed position
+    returned 200 while the close endpoint 404'd the same id.
     """
-    return await update_position(position_id, {"manual_hold": bool(hold)})
+    return await update_position(
+        position_id, {"manual_hold": bool(hold)}, require_status="open"
+    )
 
 
 # Heartbeat identities. ONE per scheduled entry point, deliberately not one per

@@ -21,6 +21,7 @@ sys.path.insert(
 
 import asyncio  # noqa: E402
 import logging  # noqa: E402
+import uuid  # noqa: E402
 from contextlib import asynccontextmanager  # noqa: E402
 from datetime import datetime, timezone  # noqa: E402
 from typing import Any, Optional  # noqa: E402
@@ -38,6 +39,7 @@ from src.trade_engine.config import config, configure_logging  # noqa: E402
 from src.trade_engine.database import (  # noqa: E402
     HEARTBEAT_MONITOR,
     HEARTBEAT_SCANNER,
+    PositionStateConflict,
     SupabaseError,
     close_client,
     count_all_positions,
@@ -45,7 +47,9 @@ from src.trade_engine.database import (  # noqa: E402
     get_alerts_for_position,
     get_daily_pnl,
     get_open_positions,
+    get_position,
     get_recent_simulations,
+    get_simulations_by_ids,
     get_trading_config,
     get_unresolved_alerts,
     record_success_heartbeat,
@@ -469,6 +473,90 @@ async def positions_alerts() -> JSONResponse:
     }))
 
 
+def _is_position_id(value: str) -> bool:
+    """True iff value has the shape of a trading_positions.id (a UUID).
+
+    Anything else cannot name a row, so routes answer 404 for it themselves
+    rather than forwarding it to PostgREST, which rejects a malformed uuid
+    filter with a 400 that would surface here as a 503 "could not write".
+    The 2026-08-27 composed id "solana-110-aug-2026" is the case.
+    """
+    try:
+        uuid.UUID(str(value))
+    except (ValueError, AttributeError, TypeError):
+        return False
+    return True
+
+
+@app.get("/positions/{position_id}")
+async def position_by_id(position_id: str) -> JSONResponse:
+    """One position by id, ANY status.
+
+    Serves two callers in QClaw that need to say what an identifier points
+    at: the approval prompt's subject line before Tyson is asked to approve a
+    write, and the re-read after a write whose outcome is unknown. Both need
+    "closed" and "nothing" as answers, which GET /positions (open only)
+    cannot give. The market question is joined from the linked simulation
+    because trading_positions does not carry it.
+
+    Secondary lookups (question, live alerts) are reported under `lookups`
+    when they fail rather than degraded to a plausible None/0 inside a 200,
+    so a caller can tell "no alerts" from "could not read alerts".
+
+    Declared AFTER /positions/alerts on purpose: FastAPI matches routes in
+    declaration order, and this pattern would otherwise capture "alerts".
+    """
+    if not _is_position_id(position_id):
+        return JSONResponse(status_code=404, content={
+            "error": f"no position with id {position_id}",
+            "hint": "position ids are the UUIDs GET /positions returns; this value is not one",
+        })
+    try:
+        row = await get_position(position_id)
+    except SupabaseError as exc:
+        log.error("/positions/%s failed: %s", position_id, exc)
+        return JSONResponse(
+            status_code=503,
+            content={"error": "could not read position", "detail": str(exc)},
+        )
+    if row is None:
+        return JSONResponse(status_code=404, content={
+            "error": f"no position with id {position_id}",
+            "hint": "check GET /positions",
+        })
+
+    lookups: dict[str, str] = {}
+    question = None
+    if row.simulation_id:
+        try:
+            sims = await get_simulations_by_ids([row.simulation_id])
+            raw = sims[0].get("raw_output") if sims else None
+            question = raw.get("question") if isinstance(raw, dict) else None
+            lookups["question"] = "ok" if question else "missing"
+        except SupabaseError as exc:
+            log.warning("/positions/%s: question lookup failed: %s", position_id, exc)
+            lookups["question"] = "failed"
+    else:
+        lookups["question"] = "no_simulation"
+
+    unresolved_alert_count: Optional[int]
+    try:
+        unresolved_alert_count = len(await get_unresolved_alerts(position_id))
+        lookups["alerts"] = "ok"
+    except SupabaseError as exc:
+        log.warning("/positions/%s: alert lookup failed: %s", position_id, exc)
+        unresolved_alert_count = None
+        lookups["alerts"] = "failed"
+
+    return JSONResponse(content=jsonable_encoder({
+        "position": row,
+        "status": row.status,
+        "question": question,
+        "unresolved_alert_count": unresolved_alert_count,
+        "lookups": lookups,
+    }))
+
+
 @app.get("/positions/{position_id}/alerts")
 async def position_alert_history(position_id: str) -> JSONResponse:
     """Full alert history for one position, resolved ones included."""
@@ -512,8 +600,21 @@ async def position_hold(position_id: str, request: Request) -> JSONResponse:
         )
         return JSONResponse(status_code=400, content={"error": detail})
 
+    # Same answer as POST /positions/manual-close for the same inputs. Until
+    # 2026-09-10 a composed id came back 503 here and a real id on a CLOSED
+    # position came back 200, while the close endpoint 404'd both.
+    if not _is_position_id(position_id):
+        return JSONResponse(status_code=404, content={
+            "error": f"no OPEN position with id {position_id}",
+            "hint": "position ids are the UUIDs GET /positions returns; this value is not one",
+        })
     try:
         row = await set_manual_hold(position_id, req.hold)
+    except PositionStateConflict:
+        return JSONResponse(status_code=404, content={
+            "error": f"no OPEN position with id {position_id}",
+            "hint": "check GET /positions; a closed position cannot be held or released",
+        })
     except SupabaseError as exc:
         log.error("/positions/%s/hold failed: %s", position_id, exc)
         return JSONResponse(
@@ -569,6 +670,12 @@ async def positions_manual_close(request: Request) -> JSONResponse:
             content={"error": f"exit_price must be between 0 and 1, got {req.exit_price}"},
         )
 
+    if not _is_position_id(req.position_id):
+        return JSONResponse(status_code=404, content={
+            "error": f"no OPEN position with id {req.position_id}",
+            "hint": "position ids are the UUIDs GET /positions returns; this value is not one",
+        })
+
     # Read the position first: refuse to close what is not open, and derive
     # exit_usdc from its shares when the caller did not supply proceeds.
     try:
@@ -611,8 +718,30 @@ async def positions_manual_close(request: Request) -> JSONResponse:
         "exit_reason": req.exit_reason or "manual_close",
         "closed_at": datetime.now(timezone.utc).isoformat(),
     }
+    # Conditional on status=open so two closes of the same position cannot
+    # both land. The pre-read above gives a clear 404; this filter is the
+    # guarantee, evaluated inside the UPDATE statement itself. Reproduced on
+    # 2026-09-10: without it two overlapping closes both returned 200 and the
+    # last writer's numbers stayed on the row.
     try:
-        row = await update_position(req.position_id, updates)
+        row = await update_position(
+            req.position_id, updates, require_status="open"
+        )
+    except PositionStateConflict:
+        # Open at the read, not open at the write: a concurrent close or a
+        # hand correction got there first. Nothing was written and no alert
+        # is resolved, and the caller must not be able to read this as done.
+        log.warning(
+            "/positions/manual-close lost the race for %s: no longer open",
+            req.position_id,
+        )
+        return JSONResponse(status_code=409, content={
+            "error": f"position {req.position_id} is no longer open; nothing written",
+            "hint": (
+                "it was closed between this request's read and its write; "
+                "read GET /positions/{position_id} for the state that won"
+            ),
+        })
     except SupabaseError as exc:
         log.error("/positions/manual-close write failed: %s", exc)
         return JSONResponse(
