@@ -10,11 +10,15 @@ recommendation in revision 1: the identifier convention is now derived from
 what a skill already declares rather than from a new list. The measurements
 that justify the change are in section 4.
 
+**Read first:** section 4, "Resolved means the entity came back". Rule 2 as
+originally written would have validated nothing; Tyson decided the fix after
+approval, the same day.
+
 Corrected after approval, the same day. Section 3 names three broken skills,
-not four. Section 4 records two places where the derivation rule as written
-matches the wrong thing, and marks which surfacing mechanisms have shipped or
-been decided. Section 5 carries the revised countdown, section 6 the undecided
-resolver budget, and section 8 the decision to fix rather than delete.
+not four. Section 4 amends rule 2 per that decision and marks which surfacing
+mechanisms have shipped or been decided. Section 5 carries the revised
+countdown, section 6 the undecided resolver budget, and section 8 the decision
+to fix rather than delete.
 
 Anchors: QClaw `main` @ `86cea6d`. Counts re-measured against that tree and
 against the live process on `qclaw-agent`.
@@ -114,8 +118,11 @@ The rule, in three lines:
 
 1. Per skill, index every `{{param}}` that appears in any endpoint path,
    excluding `{{secrets.*}}` and `{{config.*}}`.
-2. Map each to the GET endpoint whose path **ends** at that parameter, if one
-   exists. That GET is the resolver.
+2. Map each to the GET endpoint on the same resource whose path, with any
+   query string stripped, **ends** at that parameter, if one exists. That GET
+   is the resolver. It is keyed on the endpoint, not the parameter name, and
+   it resolves only when the entity comes back (see "Resolved means the
+   entity came back" below; decided after approval).
 3. At the gate, resolve every write argument whose name matches an indexed
    parameter after normalising case and separators, **whether it arrived in
    the path or inside the body**.
@@ -174,25 +181,39 @@ anywhere, so all six of its webhook posts have nothing to resolve.
 not collapse.** A webhook post carrying no identifier is not a failure; it
 proceeds to the prompt with the subject block saying no identifier was present.
 
-### Two places the rule as written matches the wrong thing
+### Resolved means the entity came back (decided 2026-09-10, read this first)
 
-Found reading the design after approval. Both are latent today, and both need
-settling in the build rather than a redesign.
+Found reading the design after approval, and decided by Tyson the same day.
 
-- **Query-string parameters.** The parser's `path` includes the query string
-  (`src/agents/skill-parser.js:98`), so rule 2's "ends at the parameter"
-  matches filters as well as identifiers: `{{query}}` on six GHL
-  contact-search GETs, and `{{status}}` on n8n-api's executions filter. A
-  search answers 200 for any value, so a body field named `query` would come
-  back `resolved` with nothing checked. Latent as far as checked: n8n-api has
-  no writes, and GHL write payloads were not audited for a `query` field.
-  Strip the query string before applying rule 2, and count a resolve only on a
-  positive marker (the entity came back), never on a 2xx alone.
-- **One name, two entities.** n8n-api uses `{{id}}` for both
-  `GET /workflows/{{id}}` and `GET /executions/{{id}}`, so a name-keyed index
-  cannot pick the resolver. Latent because n8n-api has no writes. A path
-  identifier should resolve through the GET for the same resource, and an
-  ambiguous body name should be "could not resolve", never a guess.
+As originally written, rule 2 would have shipped a validation layer that
+validates nothing. The parser's `path` includes the query string
+(`src/agents/skill-parser.js:98`), so "ends at the parameter" matches filters
+as well as identifiers: `{{query}}` on six GHL contact-search GETs, and
+`{{status}}` on n8n-api's executions filter. A search answers 200 for any
+value, so a body field named `query` would come back `resolved` with nothing
+checked. And n8n-api uses `{{id}}` for both `GET /workflows/{{id}}` and
+`GET /executions/{{id}}`, so a name alone cannot pick between them. Both are
+latent today (n8n-api has no writes, and GHL write payloads were not audited
+for a `query` field), which is why they are settled before the gate turns on
+rather than found after.
+
+**The decision:**
+
+- **A resolve succeeds only when the entity comes back**, carrying the
+  identifier that was asked for. A 2xx alone is not a resolve: an empty list,
+  a search result, or an entity with a different identifier is "could not
+  resolve". This is the same require-a-positive-marker rule as the gate work.
+- **The resolver keys on the endpoint, not the parameter name.** That is what
+  settles `{{id}}`.
+
+What that implies for the derivation, to be pinned by tests against the real
+skill files rather than decided here:
+
+- Strip the query string before deriving resolvers. A query-string parameter
+  is never an identifier.
+- For each write, the resolver is the GET on the same resource whose path ends
+  at the parameter. A body field whose name matches more than one candidate is
+  "could not resolve", never a guess.
 
 ### What surfaces a skill with none
 
