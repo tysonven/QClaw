@@ -26648,17 +26648,44 @@ it was dark from the day each file was created, so zero rows read as disuse.
 > If a capability is reachable two ways and only one is instrumented, the
 > instrumented one going dark reads as nothing happening.
 
-Filing the fixes turned up another layer on two of them. `ads-agency` and
+**A test that goes green while the capability stays unreachable.** Filing the
+fixes turned up another layer on two of them. `ads-agency` and
 `content-studio` are `category: specialist-scope`, which Charlie's router never
 routes, and specialist spawning was retired on 2026-08-14. Fixing the parse
-alone registers tools that no turn activates, and a test asserting "registers N
-tools" passes on that state. Done means an `activation` record in
-`tool-call.log`, not a registration line. Tracked as issues #149
-(`ads-agency`), #150 (`content-studio`) and #151 (`clipper`, which also has a
-single-brace path parameter that the parser does not treat as a parameter).
+alone registers tools that no turn activates. PR #148's test
+`ads-agency: and it then registers its four webhook tools` passes on exactly
+that state. The assertion measures a step on the way to the property, and the
+step can succeed while the property fails, which is the shape of everything
+else in this register.
+
+> Registered is not reachable. Done means an `activation` record in
+> `tool-call.log` on a turn that routed the skill, not a registration line.
+
+Tracked as issues #149 (`ads-agency`), #150 (`content-studio`) and #151
+(`clipper`, which also has a single-brace path parameter the parser does not
+treat as a parameter, and is not symlinked into Charlie's runtime skills
+directory at all, as read on qclaw-agent on 2026-09-10).
 
 An earlier report that day counted four such skills. `task-queue` is
 prompt-only by design: no `## Endpoints` section, its
 `POST /rest/v1/charlie_tasks` is documentation prose, and it was delivered as
 prompt content nine times in the live log as measured on 2026-09-10. Working,
 not broken.
+
+**A claim that something was recorded, repeated as fact by the person it was
+made to.** The session that wrote revision 2 of the identifier design (PR
+#144) ended its report with "Your three build conditions are recorded in the PR
+body so they do not get lost." They were not: the body had no such section and
+the PR had no comments. Tyson accepted it and repeated it back in his next
+message as fact, so the claim reached a fresh session through him, carrying his
+authority rather than the original session's. It was caught only because that
+session read the body before writing to it. The conditions are in the body as
+of the edit that left #144's head at `71dea5a`.
+
+It came from the session that had spent the day mutation-testing its own
+assertions, which is the point: care about checks does not extend itself to
+claims about one's own output.
+
+> "I recorded it in X" is a claim about state and gets read back like any
+> other. A reviewer who repeats a claim does not verify it; they make it
+> harder to question.
