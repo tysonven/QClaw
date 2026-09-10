@@ -45,6 +45,8 @@
 import path from 'path';
 import { log } from '../core/logger.js';
 import { parseAndValidate } from '../tools/shell-exec-parser.js';
+import { buildApprovalSummary, renderApprovalDetail } from './approval-summary.js';
+import { resolveSubject } from './subject-resolvers.js';
 
 const SKILL_EDIT_ALLOWLIST = '/root/QClaw/src/agents/skills/';
 
@@ -263,11 +265,51 @@ export class ApprovalGate {
     return { requiresApproval: false };
   }
 
-  async requestApproval(agent, toolName, toolArgs, riskLevel) {
-    const action = `${toolName}(${JSON.stringify(toolArgs).slice(0, 200)})`;
-    const detail = `Agent ${agent} wants to execute: ${action}`;
+  /**
+   * @param {string} agent
+   * @param {string} toolName
+   * @param {object} toolArgs
+   * @param {string} riskLevel
+   * @param {{ httpMethod?: string, path?: string, skill?: string, baseUrl?: string }} [context]
+   *   Per-call metadata from the executor. `path`/`skill`/`baseUrl` drive the
+   *   identifier extraction and the subject lookup; all are optional, so a
+   *   caller that passes none still gets identifier-first rendering off the
+   *   args alone.
+   */
+  async requestApproval(agent, toolName, toolArgs, riskLevel, context = {}) {
+    // The prompt leads with the identifiers, whole, and says what they point
+    // at. Until 2026-09-10 it was JSON.stringify(args).slice(0, 200), which
+    // hid position_id entirely whenever the model put it last in the body.
+    // See src/security/approval-summary.js for the measurements.
+    const summary = buildApprovalSummary({ agent, toolName, toolArgs, context });
 
-    log.warn(`⏸️  Approval required: ${action}`);
+    const subject = await resolveSubject({
+      skill: summary.skill,
+      toolName,
+      method: summary.method,
+      path: summary.path,
+      identifiers: summary.identifiers,
+      args: toolArgs,
+      baseUrl: context?.baseUrl ?? null,
+    });
+    summary.subject = subject.lines;
+    summary.subjectStatus = subject.status;
+
+    const detail = renderApprovalDetail(summary);
+
+    // `action` keeps its original compact shape. It is a one-line label for
+    // the CLI list and the notifier payload, and callers already depend on it
+    // carrying the args (a shell_exec approval is unreadable without the
+    // command). The identifier-first rendering lives in `detail`, which is
+    // what gets stored and what the Telegram message is built from.
+    const action = `${toolName}(${JSON.stringify(toolArgs).slice(0, 200)})`;
+
+    // The log line leads with the identifiers so the process log answers
+    // "approval for which position?" without reading the args back.
+    const identSummary = summary.identifiers.length > 0
+      ? summary.identifiers.map(i => `${i.name}=${i.value}`).join(' ')
+      : 'no identifiers';
+    log.warn(`⏸️  Approval required: ${toolName} [${identSummary}]`);
 
     // Delegate to requestInlineApproval so the notifier always fires —
     // there should be one approval-creation code path, not two.
@@ -281,6 +323,7 @@ export class ApprovalGate {
       action,
       detail,
       riskLevel,
+      summary,
     });
   }
 
@@ -289,7 +332,7 @@ export class ApprovalGate {
    * Telegram notifier if configured, and awaits the human decision (or 10-min
    * auto-deny). Used by shell_exec and n8n_workflow_update.
    */
-  async requestInlineApproval({ agent, tool, action, detail, riskLevel = 'medium' }) {
+  async requestInlineApproval({ agent, tool, action, detail, riskLevel = 'medium', summary = null }) {
     if (!this.approvals?.createPending) {
       log.warn('requestInlineApproval: approvals subsystem unavailable — auto-deny');
       return { approved: false, id: -1, reason: 'approvals unavailable' };
@@ -299,7 +342,9 @@ export class ApprovalGate {
 
     if (this.notifier) {
       try {
-        await this.notifier({ id, agent, tool, action, detail, riskLevel });
+        // `summary` is null for shell_exec and n8n_workflow_update, which
+        // build their own detail text; the notifier renders those unchanged.
+        await this.notifier({ id, agent, tool, action, detail, riskLevel, summary });
       } catch (err) {
         log.debug(`approval notifier failed (id=${id}): ${err.message}`);
       }

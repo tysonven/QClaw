@@ -20,6 +20,15 @@ const MAX_TOOL_ITERATIONS = 100;  // Safety limit — increased for AGEX securit
 const TOOL_TIMEOUT = 30000;      // 30s per tool call
 const LONG_RUNNING_TOOL_TIMEOUT = 11 * 60 * 1000;  // 11 min — covers 10-min approval gate + buffer
 
+// A skill HTTP write needs longer than TOOL_TIMEOUT, and must EXCEED the
+// registry's own SKILL_WRITE_TIMEOUT_MS (45s). Three nested deadlines govern
+// one write — this one, the registry's fetch abort, and the remote service's
+// internal timeout — and they only report the truth if they fire outermost
+// last. At 30s here the executor would abort a 45s fetch, discarding the
+// registry's re-read of what the write actually did (audit 2026-09-10).
+export const SKILL_WRITE_TOOL_TIMEOUT = 60000;
+const SKILL_WRITE_METHODS = ['POST', 'PUT', 'PATCH', 'DELETE'];
+
 const OWNER_TELEGRAM_CHAT_ID = 1375806243;
 const CREDITS_NOTIFY_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 let _lastCreditsNotifyAt = 0;
@@ -269,14 +278,23 @@ export class ToolExecutor {
             // so their mutating verb is invisible to the gate unless we pass
             // it in. null for builtins/presets/unknown — gate ignores those.
             const httpMethod = this.tools?.getSkillToolMethod?.(call.name) ?? null;
-            const gateCheck = await this.approvalGate.check(call.name, call.args, { httpMethod });
+            // The endpoint, owning skill and base URL travel with the call so
+            // the approval prompt can name the identifiers (path params live
+            // in the path template) and look up what they point at. All null
+            // for builtins, which the gate and the summary both tolerate.
+            const callContext = {
+              httpMethod,
+              ...(this.tools?.getSkillToolContext?.(call.name) ?? {}),
+            };
+            const gateCheck = await this.approvalGate.check(call.name, call.args, callContext);
             if (gateCheck.requiresApproval) {
               log.warn(`🚨 Approval required: ${gateCheck.reason}`);
               const approval = await this.approvalGate.requestApproval(
                 options.agent || 'unknown',
                 call.name,
                 call.args,
-                gateCheck.riskLevel
+                gateCheck.riskLevel,
+                callContext
               );
               
               if (!approval.approved) {
@@ -317,7 +335,12 @@ export class ToolExecutor {
           // `longRunning: true` on their builtin definition. For those we use
           // an 11-minute ceiling so the 10-min approval timeout can fire first.
           const toolDef = this.tools._builtins?.get(call.name);
-          const toolTimeoutMs = toolDef?.longRunning ? LONG_RUNNING_TOOL_TIMEOUT : TOOL_TIMEOUT;
+          const isSkillWrite = SKILL_WRITE_METHODS.includes(
+            String(this.tools?.getSkillToolMethod?.(call.name) ?? '').toUpperCase()
+          );
+          let toolTimeoutMs = TOOL_TIMEOUT;
+          if (toolDef?.longRunning) toolTimeoutMs = LONG_RUNNING_TOOL_TIMEOUT;
+          else if (isSkillWrite) toolTimeoutMs = SKILL_WRITE_TOOL_TIMEOUT;
           const toolResult = await Promise.race([
             this.tools.executeTool(call.name, call.args, { channel: options.channel, userId: options.userId, agent: options.agent }),
             new Promise((_, reject) => setTimeout(() => reject(new Error('Tool timeout')), toolTimeoutMs))
