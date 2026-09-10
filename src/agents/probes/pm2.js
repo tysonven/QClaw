@@ -45,32 +45,19 @@ export function parsePm2Output(raw) {
   return JSON.parse(cleaned);
 }
 
-export async function probe(_ctx = {}) {
-  const t0 = Date.now();
-  let raw;
-  try {
-    raw = execSync('pm2 jlist 2>/dev/null', { timeout: 4500, encoding: 'utf-8' });
-  } catch (err) {
-    return {
-      name: 'pm2_processes',
-      ok: false,
-      latency_ms: Date.now() - t0,
-      error: `pm2 jlist failed: ${err.message || String(err)}`
-    };
-  }
-
-  let parsed;
-  try {
-    parsed = parsePm2Output(raw);
-  } catch (err) {
-    return {
-      name: 'pm2_processes',
-      ok: false,
-      latency_ms: Date.now() - t0,
-      error: `pm2 jlist returned non-JSON: ${err.message}`
-    };
-  }
-
+/**
+ * Turn a parsed `pm2 jlist` array into the probe result.
+ *
+ * Separated from probe() so the not-all-online branch can be tested. It could
+ * not be before: the branch is only reached when pm2 is INSTALLED and a
+ * process is DOWN, and neither environment produces that state. CI has no pm2,
+ * so `execSync` throws and the catch path runs; a developer machine has pm2 but
+ * none of the six processes, which does reach this branch and is why the suite
+ * disagreed with CI. Neither was running the branch under test.
+ *
+ * Exported for tests. probe() is the only production caller.
+ */
+export function evaluate(parsed, latency_ms) {
   const byName = new Map();
   for (const p of parsed) {
     if (!p || !p.name) continue;
@@ -98,10 +85,49 @@ export async function probe(_ctx = {}) {
     .filter((p) => p.status !== 'online' && p.status !== 'missing')
     .map((p) => `${p.name}=${p.status}`);
 
+  // An `error` string on every not-ok return, matching the idiom the other
+  // probes already use. Without it this return carried ok:false and no error
+  // in exactly the condition the probe exists to detect, and the consumer in
+  // bootstrap.js rendered "probe pm2_processes failed: no detail" while the
+  // name of the stopped process sat unread in detail.offline. A monitoring
+  // probe that cannot say what is down at the moment something is down is
+  // worse than no probe, because it reads as working.
+  const faults = [...offline, ...missing.map((n) => `${n}=missing`)];
+
   return {
     name: 'pm2_processes',
     ok: allOnline,
-    latency_ms: Date.now() - t0,
-    detail: { expected, extras, missing, offline }
+    latency_ms,
+    detail: { expected, extras, missing, offline },
+    ...(allOnline ? {} : { error: `${faults.length} of ${EXPECTED.length} expected processes not online: ${faults.join(', ')}` })
   };
+}
+
+export async function probe(_ctx = {}) {
+  const t0 = Date.now();
+  let raw;
+  try {
+    raw = execSync('pm2 jlist 2>/dev/null', { timeout: 4500, encoding: 'utf-8' });
+  } catch (err) {
+    return {
+      name: 'pm2_processes',
+      ok: false,
+      latency_ms: Date.now() - t0,
+      error: `pm2 jlist failed: ${err.message || String(err)}`
+    };
+  }
+
+  let parsed;
+  try {
+    parsed = parsePm2Output(raw);
+  } catch (err) {
+    return {
+      name: 'pm2_processes',
+      ok: false,
+      latency_ms: Date.now() - t0,
+      error: `pm2 jlist returned non-JSON: ${err.message}`
+    };
+  }
+
+  return evaluate(parsed, Date.now() - t0);
 }

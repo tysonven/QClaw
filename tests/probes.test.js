@@ -15,7 +15,7 @@
 
 import { probe as probeN8n } from '../src/agents/probes/n8n.js';
 import { probe as probeHeartbeat } from '../src/agents/probes/heartbeat-freshness.js';
-import { probe as probePm2, parsePm2Output } from '../src/agents/probes/pm2.js';
+import { probe as probePm2, parsePm2Output, evaluate as evaluatePm2 } from '../src/agents/probes/pm2.js';
 import { probe as probeSupabase } from '../src/agents/probes/supabase.js';
 import { probe as probeMemory } from '../src/agents/probes/memory-layer.js';
 
@@ -79,6 +79,64 @@ async function main() {
   let parsedClean;
   try { parsedClean = parsePm2Output('[{"name":"x","pm2_env":{"status":"online"}}]'); } catch (e) { parsedClean = e; }
   check('pm2 parse: clean JSON parses', Array.isArray(parsedClean) && parsedClean[0]?.name === 'x');
+
+  // ─── pm2 evaluate: the branch neither environment reaches
+  //
+  // The probe's clean-parse return is only taken when pm2 is INSTALLED. CI has
+  // no pm2, so execSync throws and the catch path runs; that path always set an
+  // error and always passed. A developer machine has pm2 but none of the six
+  // processes, which does reach this branch, which is why the suite disagreed
+  // with CI. Neither environment ran the branch under test, so it is driven
+  // directly here and the fixtures are the same in both.
+  const ALL = [
+    'agex-hub', 'quantumclaw', 'trading-worker',
+    'trade-engine', 'clipper-worker', 'claude-code-dispatcher',
+  ];
+  const rows = (over = {}) => ALL.map((name) => ({
+    name, pid: 1, pm2_env: { status: over[name] || 'online', pm_uptime: Date.now() - 1000, restart_time: 0 },
+  })).filter((p) => over[p.name] !== '__absent__');
+
+  const healthy = evaluatePm2(rows(), 12);
+  check('pm2 evaluate: all six online -> ok:true', healthy.ok === true, JSON.stringify(healthy.detail?.offline));
+  check('pm2 evaluate: a healthy result carries no error key',
+    !('error' in healthy), JSON.stringify(healthy.error));
+
+  // One process stopped. This is the state the probe exists to report, and
+  // the state in which it previously returned ok:false with error undefined.
+  const stopped = evaluatePm2(rows({ 'clipper-worker': 'stopped' }), 12);
+  check('pm2 evaluate: one stopped -> ok:false', stopped.ok === false);
+  check('pm2 evaluate: one stopped carries an error string',
+    typeof stopped.error === 'string' && stopped.error.length > 0, JSON.stringify(stopped.error));
+  check('pm2 evaluate: the error NAMES the stopped process',
+    (stopped.error || '').includes('clipper-worker'), stopped.error);
+  check('pm2 evaluate: the error names its status, not just the process',
+    (stopped.error || '').includes('stopped'), stopped.error);
+
+  // A process absent from jlist entirely is a different fault and must also
+  // be named. Pinned separately because `missing` and `offline` are separate
+  // lists and an error built from only one of them would pass the test above.
+  const gone = evaluatePm2(rows({ 'trade-engine': '__absent__' }), 12);
+  check('pm2 evaluate: a missing process -> ok:false with an error',
+    gone.ok === false && typeof gone.error === 'string' && gone.error.length > 0);
+  check('pm2 evaluate: the error NAMES the missing process',
+    (gone.error || '').includes('trade-engine'), gone.error);
+
+  // Both fault kinds at once, so a fix that handled only the first is caught.
+  const both = evaluatePm2(rows({ 'clipper-worker': 'stopped', 'agex-hub': '__absent__' }), 12);
+  check('pm2 evaluate: stopped AND missing are both named',
+    (both.error || '').includes('clipper-worker') && (both.error || '').includes('agex-hub'), both.error);
+
+  // The consumer in bootstrap.js renders `p.error || 'no detail'`. Pin what it
+  // now produces, because "no detail" at the moment a process is down was the
+  // whole defect and it lived in the rendering, not only in the probe.
+  check('pm2 evaluate: bootstrap would no longer render "no detail"',
+    `probe ${stopped.name} failed: ${stopped.error || 'no detail'}`.includes('clipper-worker=stopped'),
+    `probe ${stopped.name} failed: ${stopped.error || 'no detail'}`);
+
+  // detail must survive the refactor: it is what the dashboard reads.
+  check('pm2 evaluate: detail still carries the structured lists',
+    Array.isArray(stopped.detail?.offline) && stopped.detail.offline.includes('clipper-worker=stopped')
+      && Array.isArray(gone.detail?.missing) && gone.detail.missing.includes('trade-engine'));
 
   // ─── supabase
   const r4 = await probeSupabase();
