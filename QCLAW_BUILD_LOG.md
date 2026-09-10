@@ -26597,3 +26597,68 @@ tests drive with fixtures identical in both environments.
 
 > Two environments disagreeing is the signal. Declaring one of them correct
 > without explaining the disagreement discards it.
+
+## 2026-09-10: a heuristic only the real files could break, and three skills born broken
+
+Two findings from building the skill parse diagnostic (QClaw PR #148, on
+`feat/skill-parse-diagnostics` at `3df4234`) and the census behind it.
+
+**The HTTP-surface signal was wrong twice, and hand-written fixtures could not
+have shown either.** The diagnostic has to tell a skill that meant to make HTTP
+calls and failed from a skill that never meant to. One of its signals is the
+`http:` permission line, and two versions of that signal were wrong.
+
+Treating any value other than `none` as a declaration reported
+`business-intelligence` as broken. It is a healthy prompt-only skill, and its
+permission line reads:
+
+```
+- http: Inherited from Echo's skills (GHL, Stripe, n8n)
+```
+
+That is a sentence about where its data comes from, sitting in the slot where a
+host list goes. Accepting any bare word as a host then matched `Stripe` out of
+that sentence, and matched `none` itself, the one value that means no HTTP at
+all. The signal now requires a host with a dot, or `localhost`
+(`src/agents/skill-diagnostics.js:76` on that branch). Both flaws were caught by
+driving the tests off every real skill file rather than off fixtures.
+
+Nobody writing a fixture for a permission parser puts a sentence in the
+permission line. The author writes what the field is for; the estate contains
+what people actually typed. Same family as the 2026-09-09 entry on the fixture
+that agrees with the plausible hardcode: a fixture built by the person who
+wrote the rule shares the rule's assumptions, so it passes for the same reason
+the code does.
+
+> A fixture exercises the inputs its author imagined. The real files contain
+> the inputs people wrote. Only the real files can find a heuristic's blind spot.
+
+**Three skills were born broken, not degraded.** `ads-agency`, `content-studio`
+and `clipper` present as HTTP surfaces and register zero tools. Running the real
+`parseSkill` over every commit of each file (QClaw main at `86cea6d`,
+re-executed 2026-09-10) returns null for all eight versions, so none of them
+ever worked. The services behind all three answered throughout. Charlie has
+never had the Meta ad webhooks, Emma's podcast pipeline or clipper.
+
+It stayed invisible because each capability was reachable another way: an n8n
+Telegram router for the ad webhooks, the dashboard upload for the pipeline, the
+pipeline itself for clipper. Charlie's route was the only instrumented one, and
+it was dark from the day each file was created, so zero rows read as disuse.
+
+> If a capability is reachable two ways and only one is instrumented, the
+> instrumented one going dark reads as nothing happening.
+
+Filing the fixes turned up another layer on two of them. `ads-agency` and
+`content-studio` are `category: specialist-scope`, which Charlie's router never
+routes, and specialist spawning was retired on 2026-08-14. Fixing the parse
+alone registers tools that no turn activates, and a test asserting "registers N
+tools" passes on that state. Done means an `activation` record in
+`tool-call.log`, not a registration line. Tracked as issues #149
+(`ads-agency`), #150 (`content-studio`) and #151 (`clipper`, which also has a
+single-brace path parameter that the parser does not treat as a parameter).
+
+An earlier report that day counted four such skills. `task-queue` is
+prompt-only by design: no `## Endpoints` section, its
+`POST /rest/v1/charlie_tasks` is documentation prose, and it was delivered as
+prompt content nine times in the live log as measured on 2026-09-10. Working,
+not broken.
