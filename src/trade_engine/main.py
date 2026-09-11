@@ -35,7 +35,11 @@ from pydantic import ValidationError  # noqa: E402
 
 from src.trade_engine.approval import ApprovalGate, run_update_poller  # noqa: E402
 from src.trade_engine.executor import TradeExecutor  # noqa: E402
-from src.trade_engine.config import config, configure_logging  # noqa: E402
+from src.trade_engine.config import (  # noqa: E402
+    config,
+    configure_logging,
+    install_health_access_suppression,
+)
 from src.trade_engine.database import (  # noqa: E402
     HEARTBEAT_MONITOR,
     HEARTBEAT_SCANNER,
@@ -227,6 +231,10 @@ async def scheduled_monitor() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _poller_task
+
+    # After uvicorn has configured its own logging, so the /health access
+    # filter attaches to the live uvicorn.access logger and is not cleared.
+    install_health_access_suppression()
 
     log.info("trade-engine %s starting on %s:%s", config.version,
              config.trade_engine_host, config.trade_engine_port)

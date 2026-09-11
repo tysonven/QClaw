@@ -341,5 +341,52 @@ def install_bot_token_redaction() -> None:
             target.addFilter(_RedactBotToken())
 
 
+# The dashboard polls /health on a short interval. At INFO, uvicorn logs one
+# access line per poll, so on 2026-09-11 633 of 662 out-log lines were
+# 'GET /health 200 OK' and the boot banner was unreachable in any reasonable
+# window (it obstructed deploy verification three times). Drop the SUCCESSFUL
+# /health access lines only: a 4xx/5xx health check still logs, so a degraded
+# engine (the handler returns 503 on a Supabase failure) stays visible.
+_HEALTH_ACCESS_RE = re.compile(r'"(?:GET|HEAD) /health(?:[/?]\S*)? HTTP/[\d.]+"\s+(\d{3})')
+
+
+class _SuppressHealthAccess(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        # uvicorn's access record carries structured args:
+        # (client_addr, method, full_path, http_version, status_code). Prefer
+        # them, so the decision does not depend on the formatted string.
+        args = record.args
+        if isinstance(args, tuple) and len(args) >= 5:
+            method, path, status = args[1], args[2], args[4]
+            try:
+                if (
+                    method in ("GET", "HEAD")
+                    and str(path).split("?", 1)[0] == "/health"
+                    and 200 <= int(status) < 400
+                ):
+                    return False
+            except (TypeError, ValueError):
+                return True
+            return True
+        # Fall back to the formatted line for any other uvicorn version/shape.
+        try:
+            match = _HEALTH_ACCESS_RE.search(record.getMessage())
+        except Exception:  # noqa: BLE001 - logging must never raise
+            return True
+        return not (match and match.group(1)[0] in "23")
+
+
+def install_health_access_suppression() -> None:
+    """Drop successful /health access lines from uvicorn's access log.
+
+    Idempotent. Call it from the app lifespan, i.e. AFTER uvicorn has applied
+    its own logging dictConfig, so the filter is attached to the live
+    `uvicorn.access` logger and cannot be cleared by that config.
+    """
+    target = logging.getLogger("uvicorn.access")
+    if not any(isinstance(f, _SuppressHealthAccess) for f in target.filters):
+        target.addFilter(_SuppressHealthAccess())
+
+
 # Module-level singleton. Import failure here is intentional and fatal.
 config = Config()
