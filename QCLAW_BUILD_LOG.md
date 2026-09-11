@@ -26689,3 +26689,52 @@ claims about one's own output.
 > "I recorded it in X" is a claim about state and gets read back like any
 > other. A reviewer who repeats a claim does not verify it; they make it
 > harder to question.
+
+## 2026-09-11: git merges text, not intent, and two agreeing signals both answered the wrong question
+
+Checking whether two draft gate PRs from 2026-08-27/28 (#96 evidence-path
+instrumentation, #98 test-log isolation) still applied after main had moved 40-plus
+commits. Both rebased and merged onto main with no textual conflict, and each one's
+own test passed. Both readings were reassuring and both were answering a narrower
+question than the one being asked.
+
+**The clean merge answered "do these hunks overlap in the diff", not "are these
+changes still correct against a moved main".** On 2026-08-28 the work was split:
+#97 (`bcb16ee`) and #99 (`725f48d`) merged the evidence-path vocabulary
+(`matchEvidence` returning `backed`/`sourced`/`weak`, gates returning `fired`) and
+the store-isolation half. #96 and #98 are the pre-split originals. #96 was authored
+on the `gates.js` at `8190453`, before that vocabulary existed, and rewrites the
+same four functions #97/#99 rewrote (`matchEvidence`, `gateCompletion`, `gateState`,
+`gateDelegation`). The three-way merge stitched its pre-split rewrites onto main's
+post-split versions of those functions and reported success, because git's diff
+found the hunks non-overlapping. Nothing flagged that the same functions had been
+rewritten twice from two different starting points. A clean merge is evidence about
+text placement, not about whether the result expresses one coherent intent.
+
+> A clean merge means no two edits touched the same lines. It does not mean the
+> edits are compatible. When main has moved under a branch, "it merges" answers a
+> question you were not asking.
+
+**The tests agreed, and that made it worse rather than better.** Each branch's own
+test passed after the merge, so another signal appeared to confirm the merge
+reading. But the tests cover each branch's own additions, not whether those
+additions duplicate work that landed while the branch sat. Both signals agreed and
+both were scoped to the wrong question. Same shape as the fixture that agrees with
+the plausible hardcode: the check and the code share an assumption, so the check
+cannot witness the thing in doubt.
+
+**The green was younger than the PRs.** Neither branch had ever registered its test
+in the old hardcoded `&&` chain, so under that chain the tests were never run. #113
+(`0d4b302`) replaced the chain with a globbing runner (`scripts/run-js-tests.mjs`,
+`tests/*.test.js`), whose own docstring records that the old chain had drifted past
+test files it never ran. So these tests had never executed until today, on a merge,
+under a runner that did not exist when the PRs were written. "The test passes" was
+newly true and had never been observed before, which is the opposite of the
+assurance a passing test usually carries.
+
+**Resolution: both PRs closed, not left open.** An open PR that merges cleanly and
+must not be merged is a trap for whoever finds it next, and the same class has cost
+weeks. The genuine un-landed residuals were refiled fresh against current code: #96's
+gate-log observation-row recording as #160 (build on the current `gates.js`, take
+the idea not the diff), #98's `paths.js` log-writer isolation residual over #97 as
+#161. Each closed PR says plainly that its diff targets code that no longer exists.
