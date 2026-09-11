@@ -26597,3 +26597,144 @@ tests drive with fixtures identical in both environments.
 
 > Two environments disagreeing is the signal. Declaring one of them correct
 > without explaining the disagreement discards it.
+
+## 2026-09-10: a heuristic only the real files could break, and three skills born broken
+
+Two findings from building the skill parse diagnostic (QClaw PR #148, on
+`feat/skill-parse-diagnostics` at `3df4234`) and the census behind it.
+
+**The HTTP-surface signal was wrong twice, and hand-written fixtures could not
+have shown either.** The diagnostic has to tell a skill that meant to make HTTP
+calls and failed from a skill that never meant to. One of its signals is the
+`http:` permission line, and two versions of that signal were wrong.
+
+Treating any value other than `none` as a declaration reported
+`business-intelligence` as broken. It is a healthy prompt-only skill, and its
+permission line reads:
+
+```
+- http: Inherited from Echo's skills (GHL, Stripe, n8n)
+```
+
+That is a sentence about where its data comes from, sitting in the slot where a
+host list goes. Accepting any bare word as a host then matched `Stripe` out of
+that sentence, and matched `none` itself, the one value that means no HTTP at
+all. The signal now requires a host with a dot, or `localhost`
+(`src/agents/skill-diagnostics.js:76` on that branch). Both flaws were caught by
+driving the tests off every real skill file rather than off fixtures.
+
+Nobody writing a fixture for a permission parser puts a sentence in the
+permission line. The author writes what the field is for; the estate contains
+what people actually typed. Same family as the 2026-09-09 entry on the fixture
+that agrees with the plausible hardcode: a fixture built by the person who
+wrote the rule shares the rule's assumptions, so it passes for the same reason
+the code does.
+
+> A fixture exercises the inputs its author imagined. The real files contain
+> the inputs people wrote. Only the real files can find a heuristic's blind spot.
+
+**Three skills were born broken, not degraded.** `ads-agency`, `content-studio`
+and `clipper` present as HTTP surfaces and register zero tools. Running the real
+`parseSkill` over every commit of each file (QClaw main at `86cea6d`,
+re-executed 2026-09-10) returns null for all eight versions, so none of them
+ever worked. The services behind all three answered throughout. Charlie has
+never had the Meta ad webhooks, Emma's podcast pipeline or clipper.
+
+It stayed invisible because each capability was reachable another way: an n8n
+Telegram router for the ad webhooks, the dashboard upload for the pipeline, the
+pipeline itself for clipper. Charlie's route was the only instrumented one, and
+it was dark from the day each file was created, so zero rows read as disuse.
+
+> If a capability is reachable two ways and only one is instrumented, the
+> instrumented one going dark reads as nothing happening.
+
+**A test that goes green while the capability stays unreachable.** Filing the
+fixes turned up another layer on two of them. `ads-agency` and
+`content-studio` are `category: specialist-scope`, which Charlie's router never
+routes, and specialist spawning was retired on 2026-08-14. Fixing the parse
+alone registers tools that no turn activates. PR #148's test
+`ads-agency: and it then registers its four webhook tools` passes on exactly
+that state. The assertion measures a step on the way to the property, and the
+step can succeed while the property fails, which is the shape of everything
+else in this register.
+
+> Registered is not reachable. Done means an `activation` record in
+> `tool-call.log` on a turn that routed the skill, not a registration line.
+
+Tracked as issues #149 (`ads-agency`), #150 (`content-studio`) and #151
+(`clipper`, which also has a single-brace path parameter the parser does not
+treat as a parameter, and is not symlinked into Charlie's runtime skills
+directory at all, as read on qclaw-agent on 2026-09-10).
+
+An earlier report that day counted four such skills. `task-queue` is
+prompt-only by design: no `## Endpoints` section, its
+`POST /rest/v1/charlie_tasks` is documentation prose, and it was delivered as
+prompt content nine times in the live log as measured on 2026-09-10. Working,
+not broken.
+
+**A claim that something was recorded, repeated as fact by the person it was
+made to.** The session that wrote revision 2 of the identifier design (PR
+#144) ended its report with "Your three build conditions are recorded in the PR
+body so they do not get lost." They were not: the body had no such section and
+the PR had no comments. Tyson accepted it and repeated it back in his next
+message as fact, so the claim reached a fresh session through him, carrying his
+authority rather than the original session's. It was caught only because that
+session read the body before writing to it. The conditions are in the body as
+of the edit that left #144's head at `71dea5a`.
+
+It came from the session that had spent the day mutation-testing its own
+assertions, which is the point: care about checks does not extend itself to
+claims about one's own output.
+
+> "I recorded it in X" is a claim about state and gets read back like any
+> other. A reviewer who repeats a claim does not verify it; they make it
+> harder to question.
+
+## 2026-09-11: git merges text, not intent, and two agreeing signals both answered the wrong question
+
+Checking whether two draft gate PRs from 2026-08-27/28 (#96 evidence-path
+instrumentation, #98 test-log isolation) still applied after main had moved 40-plus
+commits. Both rebased and merged onto main with no textual conflict, and each one's
+own test passed. Both readings were reassuring and both were answering a narrower
+question than the one being asked.
+
+**The clean merge answered "do these hunks overlap in the diff", not "are these
+changes still correct against a moved main".** On 2026-08-28 the work was split:
+#97 (`bcb16ee`) and #99 (`725f48d`) merged the evidence-path vocabulary
+(`matchEvidence` returning `backed`/`sourced`/`weak`, gates returning `fired`) and
+the store-isolation half. #96 and #98 are the pre-split originals. #96 was authored
+on the `gates.js` at `8190453`, before that vocabulary existed, and rewrites the
+same four functions #97/#99 rewrote (`matchEvidence`, `gateCompletion`, `gateState`,
+`gateDelegation`). The three-way merge stitched its pre-split rewrites onto main's
+post-split versions of those functions and reported success, because git's diff
+found the hunks non-overlapping. Nothing flagged that the same functions had been
+rewritten twice from two different starting points. A clean merge is evidence about
+text placement, not about whether the result expresses one coherent intent.
+
+> A clean merge means no two edits touched the same lines. It does not mean the
+> edits are compatible. When main has moved under a branch, "it merges" answers a
+> question you were not asking.
+
+**The tests agreed, and that made it worse rather than better.** Each branch's own
+test passed after the merge, so another signal appeared to confirm the merge
+reading. But the tests cover each branch's own additions, not whether those
+additions duplicate work that landed while the branch sat. Both signals agreed and
+both were scoped to the wrong question. Same shape as the fixture that agrees with
+the plausible hardcode: the check and the code share an assumption, so the check
+cannot witness the thing in doubt.
+
+**The green was younger than the PRs.** Neither branch had ever registered its test
+in the old hardcoded `&&` chain, so under that chain the tests were never run. #113
+(`0d4b302`) replaced the chain with a globbing runner (`scripts/run-js-tests.mjs`,
+`tests/*.test.js`), whose own docstring records that the old chain had drifted past
+test files it never ran. So these tests had never executed until today, on a merge,
+under a runner that did not exist when the PRs were written. "The test passes" was
+newly true and had never been observed before, which is the opposite of the
+assurance a passing test usually carries.
+
+**Resolution: both PRs closed, not left open.** An open PR that merges cleanly and
+must not be merged is a trap for whoever finds it next, and the same class has cost
+weeks. The genuine un-landed residuals were refiled fresh against current code: #96's
+gate-log observation-row recording as #160 (build on the current `gates.js`, take
+the idea not the diff), #98's `paths.js` log-writer isolation residual over #97 as
+#161. Each closed PR says plainly that its diff targets code that no longer exists.
