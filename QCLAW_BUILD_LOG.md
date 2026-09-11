@@ -26816,3 +26816,58 @@ separate functional gap surfaced and is filed too: QClaw's graph memory has been
 calling cognee unauthenticated because the manager reads credentials through the
 CredentialManager, whose schema omits `cognee_username`/`cognee_password` (#158). That
 predates this work and was neither caused nor fixed by it.
+
+## 2026-09-11: a test written to catch fixture-versus-reality had the same defect in its own other half
+
+`tests/skill-diagnostics.test.js` (added in #148) opens by stating why it uses
+the real skill files as fixtures: "a hand-written fixture proves the diagnostic
+can explain a file I wrote to be explained. The real files are the ones that
+fooled everybody." The suite exists to test against real estate rather than
+against agreeable fixtures. One check in it did the opposite, in its other
+half, and it was found only by bringing #142 up to date against main.
+
+The check on the unresolvable-identifier feature conflated two questions:
+
+- CAN the diagnostic detect a write path identifier with no GET ending at it.
+- IS `position_id` unresolvable in the live `trading-api.md` right now.
+
+The author saw #142 coming and modelled it with a fixture, adding
+`GET /positions/{{position_id}}` to a copy of the file and asserting the id then
+clears. That half was careful. The paired assertion, one block up, read the
+LIVE file and asserted `position_id` is unresolvable. That half was coupled to
+merge order. #142 adds exactly that GET, so on #142's branch the live file
+resolves `position_id`, the live-file assertion flipped, and the rebase that was
+textually clean produced a red test.
+
+> A test must not depend on a value the estate can move under it. Reading a real
+> file proves the thing is real; asserting a fixed fact about that file couples
+> the test to whoever edits it next. The same suite can be robust in one half
+> and merge-order-coupled in the other, inside a single check.
+
+Two things make it sharper than the earlier instances. It is self-referential:
+the defect the suite was written to catch is the defect it contained. And the
+break was not local to the branch. The assertion read the live file, so it would
+have reddened `main` itself the moment #142 merged, not only #142's PR. A test
+that passes on `main` today and is guaranteed to fail on `main` after the next
+already-approved change is a slower version of the same trap as an open PR that
+merges cleanly and must not be merged.
+
+Same family as the fixture that agreed with the plausible hardcode (#135's cold
+review) and the clean merge that stitched pre-split rewrites onto post-split
+code (#96/#98, entry above). In each, a check answered a narrower question than
+the one being asked, and agreed with itself.
+
+Fixed on #142's branch by splitting the two: the CAPABILITY is proved on a
+synthetic skill whose `widget_id` has no GET ending at it, which nothing in the
+estate can change, and mutation-checked (give `widget_id` a GET and the flag
+must clear, so the assertion is not vacuous); the LIVE file gets its own
+assertion that `position_id` resolves, with a note to fix that one, never the
+capability, when endpoints move.
+
+The failure was the smaller half of the finding. #142's
+`GET /positions/{{position_id}}`, answering 404 when the value is not a position
+id, is exactly the resolver the identifier-resolution design (#144) specifies:
+a GET whose path ends at the identifier, returning the entity, with a negative
+marker. So `position_id` stops being a composed-value special case and #144
+inherits a premise change. Recorded in #144's body before that build starts, so
+the next session does not re-derive a constraint that no longer holds.
