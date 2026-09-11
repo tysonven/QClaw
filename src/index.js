@@ -34,6 +34,8 @@ import { createClaudeCodeDispatchTool } from './tools/claude-code-dispatch.js';
 import { createDelegateToTool } from './tools/delegate-to.js';
 import { RateLimiter } from './security/rate-limiter.js';
 import { ContentQueue } from './security/content-queue.js';
+import { renderTelegramText } from './security/approval-summary.js';
+import { registerSubjectResolver, makeTradingApiPositionResolver } from './security/subject-resolvers.js';
 import { banner } from './cli/brand.js';
 import { log } from './core/logger.js';
 import { writeFileSync, unlinkSync } from 'fs';
@@ -463,6 +465,14 @@ class QuantumClaw {
     // workaround that guarantees delivery via raw fetch.
     const ownerChatId = this.config.channels?.telegram?.ownerChatId || 1375806243;
     if (this.approvalGate) {
+      // Subject lookup for trading-api position ids: the prompt says which
+      // market a position id names and whether it is open or closed, so the
+      // operator is not matching a UUID by eye. The base URL comes from the
+      // skill's own preset at call time, so this stays correct if the engine
+      // moves. A skill-declared convention replaces this stopgap (fix 2 of
+      // the 2026-09-10 audit).
+      registerSubjectResolver('trading-api', makeTradingApiPositionResolver());
+
       // Cache the token at wire time for perf, but allow refresh on 401 so a
       // BotFather rotation while the process is running doesn't permanently
       // wedge the notifier.
@@ -473,7 +483,7 @@ class QuantumClaw {
         return cachedToken;
       };
 
-      this.approvalGate.setNotifier(async ({ id, agent, tool, action, detail, riskLevel }) => {
+      this.approvalGate.setNotifier(async ({ id, agent, tool, action, detail, riskLevel, summary }) => {
         // Fast-fail if the channel never came up at all — keeps the message
         // out of a state where it would be sent to a token-less bot. We don't
         // depend on tgChannel.bot for the actual send.
@@ -483,14 +493,18 @@ class QuantumClaw {
           return;
         }
 
-        const text =
-          `⚠️ Approval needed [${id}]\n` +
-          `Tool: ${tool}\n` +
-          `Agent: ${agent}\n` +
-          `Risk: ${riskLevel}\n` +
-          `Action: ${String(action || '').slice(0, 200)}\n` +
-          (detail ? `\nDetail:\n${String(detail).slice(0, 500)}\n` : '') +
-          `\nReply ✅ ${id} or ❌ ${id} — auto-denies after 10 min.`;
+        // renderTelegramText leads with the identifiers, in full, and trades
+        // only the Arguments block for space. The previous form sliced the
+        // serialised args to 200 twice over, which hid position_id whenever
+        // the model put it last in the body (audit 2026-09-10).
+        const text = renderTelegramText({
+          id,
+          tool,
+          agent,
+          riskLevel,
+          summary: summary || null,
+          detail: detail || action || '',
+        });
 
         const send = (token) =>
           fetch(`https://api.telegram.org/bot${token}/sendMessage`, {

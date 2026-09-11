@@ -16,6 +16,8 @@
 
 import { MCPClient } from './mcp-client.js';
 import { log } from '../core/logger.js';
+import { extractIdentifiers } from '../security/approval-summary.js';
+import { hasSubjectResolver, resolveSubject } from '../security/subject-resolvers.js';
 import { appendFileSync, chmodSync, existsSync, mkdirSync, statSync } from 'fs';
 import { dirname, join } from 'path';
 import { homedir } from 'os';
@@ -599,6 +601,65 @@ export const PRESET_SERVERS = {
  * resolves to an empty string.
  */
 const CONFIG_TEMPLATE_ALLOWLIST = new Set(['dashboard.authToken']);
+
+// Skill HTTP timeouts. The WRITE budget must exceed the slowest response a
+// write endpoint can legitimately produce, or the client reports a failure
+// the server went on to commit. The trade engine is the binding case: 20s per
+// Supabase round trip and two of them before a manual-close commits, so 15s
+// (the pre-2026-09-10 value for both) aborted first. It must also stay under
+// the executor's per-tool ceiling for skill writes, or the executor's own
+// race would abort even earlier and re-introduce the same gap one layer up.
+// See SKILL_WRITE_TOOL_TIMEOUT in src/tools/executor.js.
+export const SKILL_READ_TIMEOUT_MS = 15000;
+export const SKILL_WRITE_TIMEOUT_MS = 45000;
+const SKILL_WRITE_METHODS = ['POST', 'PUT', 'PATCH', 'DELETE'];
+
+/**
+ * Re-read the subject of a write whose outcome is unknown.
+ *
+ * Reuses the approval prompt's subject resolver: the same lookup that says
+ * "position X is OPEN on market Y" before the write is what says whether the
+ * write landed after one. No new per-skill convention, and a skill with no
+ * resolver gets a sentence saying plainly that the state is unverified.
+ *
+ * A module-level function, not a method, on purpose: it needs no instance
+ * state, and _executeAPITool is invoked via .call() with partial `this`
+ * objects in several tests. A method would throw "not a function" INSIDE the
+ * error path and replace the original transport error with its own, which is
+ * the exact failure mode this code exists to prevent.
+ *
+ * Never throws for the same reason.
+ *
+ * @returns {Promise<string>} a sentence for the tool-result message
+ */
+export async function observeAfterWrite(preset, toolDef, args, cause) {
+  try {
+    const skill = preset?.name?.startsWith('skill:') ? preset.name.slice(6) : null;
+    if (!skill || !hasSubjectResolver(skill)) {
+      return 'State NOT verified: no re-read is available for this skill, so check the target by hand before retrying.';
+    }
+    const { identifiers } = extractIdentifiers({ args, path: toolDef?.endpoint || toolDef?.path });
+    if (identifiers.length === 0) {
+      return 'State NOT verified: the call named no identifier to re-read.';
+    }
+    const observed = await resolveSubject({
+      skill,
+      toolName: toolDef?.name,
+      method: toolDef?.method,
+      path: toolDef?.endpoint || toolDef?.path,
+      identifiers,
+      args,
+      baseUrl: preset?.baseUrl || null,
+    });
+    if (observed.status === 'resolved') {
+      return `Re-read after the failure says: ${observed.lines.join('; ')}. Report THAT state, not the error, and do not retry until it is understood.`;
+    }
+    return `State NOT verified: the re-read did not resolve (${observed.status}${observed.lines.length ? ': ' + observed.lines.join('; ') : ''}).`;
+  } catch (err) {
+    log.warn(`observeAfterWrite failed after ${cause?.message}: ${err.message}`);
+    return `State NOT verified: the re-read itself failed (${err.message}).`;
+  }
+}
 
 export class ToolRegistry {
   constructor(config, secrets) {
@@ -1525,11 +1586,52 @@ export class ToolRegistry {
           headers['Content-Type'] = 'application/json';
         }
 
-        const res = await fetch(fetchUrl, { method, headers, body, signal: AbortSignal.timeout(15000) });
+        // A WRITE gets longer than a read, because the client must not give
+        // up before the server can finish. The trade engine allows 20s per
+        // Supabase round trip (src/trade_engine/database.py REQUEST_TIMEOUT)
+        // and a manual-close makes two of them before the write commits, so a
+        // 15s client abort could report failure over a committed close and
+        // nothing re-read the row. Reproduced 2026-09-10: the client aborted,
+        // the tool result became error:true, and the position closed anyway.
+        //
+        // This bound is a probability reduction, not a guarantee: no client
+        // timeout can prove a server did not commit. The re-read below is the
+        // part that makes the REPORT correct.
+        const isWrite = SKILL_WRITE_METHODS.includes(method.toUpperCase());
+        const timeoutMs = isWrite ? SKILL_WRITE_TIMEOUT_MS : SKILL_READ_TIMEOUT_MS;
+
+        let res;
+        try {
+          res = await fetch(fetchUrl, { method, headers, body, signal: AbortSignal.timeout(timeoutMs) });
+        } catch (err) {
+          if (!isWrite) throw err;
+          // The write's outcome is UNKNOWN: the request may have committed.
+          // Say so, and attach whatever the store reports now.
+          const observed = await observeAfterWrite(preset, toolDef, args, err);
+          const unknownErr = new Error(
+            `API error (${preset.name}/${toolName}): ${method} ${endpoint} outcome UNKNOWN ` +
+            `after ${timeoutMs}ms: ${err.message}. The write may have been applied. ${observed}`
+          );
+          unknownErr.rethrow = true;
+          throw unknownErr;
+        }
+
         const text = await res.text();
         if (!res.ok) {
           // Must escape the catch-all below (which returns strings) so the
           // executor loop records error:true instead of a success-shaped result.
+          //
+          // A 5xx is the same unknown-outcome case as a timeout: the server
+          // reached the handler and may have committed before failing. A 4xx
+          // is a refusal the server states, so it needs no re-read.
+          if (isWrite && res.status >= 500) {
+            const observed = await observeAfterWrite(preset, toolDef, args, new Error(`HTTP ${res.status}`));
+            const serverErr = new Error(
+              `${preset.name} HTTP ${res.status} on ${method} ${endpoint}, outcome UNKNOWN: ${text.slice(0, 300)}. ${observed}`
+            );
+            serverErr.rethrow = true;
+            throw serverErr;
+          }
           const httpErr = new Error(`${preset.name} HTTP ${res.status}: ${text.slice(0, 500)}`);
           httpErr.rethrow = true;
           throw httpErr;
@@ -1598,6 +1700,31 @@ export class ToolRegistry {
     if (!entry) return null;
     if (!entry.preset?.name?.startsWith('skill:')) return null;
     return String(entry.toolDef?.method || 'GET').toUpperCase();
+  }
+
+  /**
+   * Per-call metadata for a skill-parsed tool: the endpoint template, the
+   * owning skill and its base URL.
+   *
+   * The approval prompt needs all three. The path template is the only place
+   * that records which argument is a path identifier (`{{position_id}}`);
+   * the skill name selects a subject resolver; the base URL is what that
+   * resolver reads. Same `skill:` discriminator as getSkillToolMethod, so
+   * builtins, MCP tools and non-skill presets all yield an empty object.
+   *
+   * @param {string} toolName
+   * @returns {{ path?: string, skill?: string, baseUrl?: string }}
+   */
+  getSkillToolContext(toolName) {
+    const entry = this._apiTools.get(toolName);
+    if (!entry) return {};
+    const presetName = entry.preset?.name;
+    if (!presetName?.startsWith('skill:')) return {};
+    return {
+      path: entry.toolDef?.endpoint || entry.toolDef?.path || null,
+      skill: presetName.slice(6) || null,
+      baseUrl: entry.preset?.baseUrl || null,
+    };
   }
 
   /**
