@@ -26738,3 +26738,81 @@ weeks. The genuine un-landed residuals were refiled fresh against current code: 
 gate-log observation-row recording as #160 (build on the current `gates.js`, take
 the idea not the diff), #98's `paths.js` log-writer isolation residual over #97 as
 #161. Each closed PR says plainly that its diff targets code that no longer exists.
+## 2026-09-11: Docker published ports never traverse the host firewall, and three services sat open behind a rule that read as protection
+
+Chasing one note in the clipper skill review (#151, port 4002) turned into finding
+that qclaw-agent had three services reachable from the internet while the host
+presented as firewalled. All host state below was read with sudo and applied with
+sudo on qclaw-agent, and verified from an external host (150.228.61.61, allowlisted
+nowhere). Nothing is anchored to present tense: every claim holds at the host and
+timestamp stated.
+
+**The mechanism, which is the finding.** clipper-worker on 4002 is protected by an
+iptables INPUT rule set (accept from the n8n host and lo, drop the rest), persisted
+in `/etc/iptables/rules.v4`. That one visible control read as "this host is
+firewalled". It is not. The host's INPUT policy is ACCEPT, and the only INPUT rules
+were the three for 4002.
+
+Docker's published ports do not go through INPUT. A `-p` publish installs a DNAT in
+the nat table and the traffic is evaluated in FORWARD via Docker's own chains, which
+accept it, with an empty `DOCKER-USER`. So a container published on `0.0.0.0` is
+reachable from the internet no matter what INPUT says. On qclaw-agent that left
+open, verified reachable from 150.228.61.61 on 2026-09-10:
+
+- Qdrant 1.17.0 on 6333/6334 (docker run, created 2026-03-25), no API key: `GET
+  /collections` answered 200 from the internet.
+- cognee on 8000, whose JWT secret fell back to the literal `"super_secret"` with no
+  env override, so any reachable party could forge a superuser token. Known upstream
+  bug topoteretes/cognee #4265 (closed, reported 2026-07-29, affected 1.1.2); the
+  running image reports 0.5.5-local. The open self-registration is #3084.
+
+AGEX hub-lite on 4891 is the exception, a host process (in-process in QClaw), not a
+container, so its traffic does traverse INPUT. It was open only because no rule
+covered it, and it binds `0.0.0.0` hardcoded in `@agexhq/hub-lite/src/index.js:272`
+(1.0.0 pinned and 1.0.1), with no host option in `startHubLite`.
+
+> A single visible firewall rule is evidence about one port, not about a host.
+> Docker-published ports live in a different chain from the one the rule is in, so
+> the rule can be real and the host still open. Probe from off-box; do not read
+> protection off the rule set.
+
+**It was being hit, not just scanned.** At investigation time an external host held a
+live gRPC connection to the unauthenticated Qdrant on 6334 (`209.222.101.194`,
+ReliableSite US). On 2026-08-28 `35.194.7.52` (Google Cloud) ran the Qdrant
+snapshot-recovery write attack against it (`PUT
+/collections/_qdrant_sec_probe_ro_*/snapshots/recover`), which failed 400/500
+("running in standalone mode") and left the storage volume's `tmp/` dir mtime at
+2026-08-28 13:51:40 as its only trace. Someone tried to write, not only to read.
+
+**Closed on the host 2026-09-11, after a snapshot to `/root/security-snapshot-20260911/`
+(rules.v4 backup, container inspects, and `cognee-backup:20260911` from `docker
+commit`):**
+
+- cognee recreated with `-p 127.0.0.1:8000:8000` and real `FASTAPI_USERS_*` secrets,
+  and its default superuser rotated off `default_password` (fresh DB on recreate).
+  Login with the new password 200, with the old 400, `/datasets` 200 with token and
+  401 without. QClaw still reaches it on localhost. Tracked #155.
+- Qdrant `docker stop` (manual stop overrides `unless-stopped`, so it stays down),
+  container and volume kept for a week before removal. cognee healthy afterwards,
+  confirming it was not a consumer. Tracked #154.
+- AGEX 4891 given an INPUT rule mirroring 4002 (accept lo, drop rest), persisted.
+  Hub still up on localhost, 4891 times out from outside. Tracked #154.
+- External sweep after: 4002, 4891, 6333, 6334, 8000 all closed or filtered; 22, 80,
+  443 open.
+
+**Upstream versus ours, kept separate deliberately.** The cognee secret defaults are
+upstream bugs already filed publicly (#4265, #3084); the AGEX `0.0.0.0` bind is in an
+`@agexhq` package and fixable at that source. What was ours is the deployment:
+publishing these ports on `0.0.0.0`, never setting the cognee env override, and
+running the box with no cloud firewall as the backstop that n8n-automation happens to
+have. n8n runs the same Docker-publish-wide pattern (`flowos-overlay` on
+`0.0.0.0:3333`) and is saved only by that cloud firewall (external probe: only 22
+open). Same latent gap on both boxes; one has a backstop layer, one did not.
+
+**Two follow-ups filed as scope-only, not built:** a cloud firewall on qclaw-agent
+matching n8n (#156), and a standing off-box check of what listens on `0.0.0.0` that
+should not (#157), since today's exposure was found by chance, not by a detector. A
+separate functional gap surfaced and is filed too: QClaw's graph memory has been
+calling cognee unauthenticated because the manager reads credentials through the
+CredentialManager, whose schema omits `cognee_username`/`cognee_password` (#158). That
+predates this work and was neither caused nor fixed by it.
