@@ -25,6 +25,7 @@ POST /positions/manual - Log a manually-executed trade so it is tracked and the 
 POST /monitor/run - Run the Position Monitor sweep once, on demand
 GET /positions/alerts - Live threshold alerts needing attention; an alert is NOT a close, the position is still open
 GET /positions/{{position_id}}/alerts - Full alert history for one position, resolved ones included
+GET /positions/{{position_id}} - One position by id, ANY status, with its market question and unresolved alert count; 404 when the value is not a position id
 POST /positions/{{position_id}}/hold - Mark a position manually managed so alerts stop; body hold true or false
 POST /positions/manual-close - Log a position Tyson closed by hand; body position_id, exit_price, optional exit_usdc, exit_reason, note
 

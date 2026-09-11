@@ -152,27 +152,53 @@ function main() {
     fixedReport.rows[0]?.tools === 4, `got ${fixedReport.rows[0]?.tools}`);
 
   // ── 5. Unresolvable path identifiers ──
+  //
+  // This once conflated two things in one assertion against the live
+  // trading-api.md, and it broke the moment that file changed: #142 added
+  // GET /positions/{{position_id}}, so position_id started resolving and the
+  // "it is unresolvable" assertion, which read the live file, flipped. That is
+  // the same defect this whole suite exists to catch (a fixture that reads real
+  // estate a later edit can move), so the two things are now separate.
+  //
+  //  - CAPABILITY: the diagnostic detects a write path identifier with no GET
+  //    ending at it. Proved against a SYNTHETIC skill nothing in the estate can
+  //    change. This is the assertion worth keeping forever.
+  //  - LIVE FILE: what is true of trading-api.md right now. Expected to move as
+  //    endpoints are added or removed; when it does, fix THIS assertion only and
+  //    leave the capability one above untouched.
+
+  // CAPABILITY (estate-immune): a made-up skill whose write path parameter has
+  // no GET ending at it. widget_id can never be resolved, no matter what any
+  // real skill file grows to.
+  const synthUnresolvable = [
+    '## Auth',
+    'Base URL: https://example.test',
+    '',
+    '## Endpoints',
+    'POST /widgets/{{widget_id}}/close - close one widget by id',
+    'GET /widgets/alerts - list alerts; note this GET does NOT end at widget_id',
+  ].join('\n');
+  const synth = inspectSkills([{ name: 'synth-api', content: synthUnresolvable, filename: 'synth-api.md' }], null);
+  check('CAPABILITY: a write path id with no GET ending at it is flagged unresolvable',
+    synth.rows[0]?.unresolvedParams.some((u) => u.param === 'widget_id'),
+    JSON.stringify(synth.rows[0]?.unresolvedParams));
+  check('CAPABILITY: the report explains the unresolvable id in words, not a code',
+    formatReport(synth).some((l) => l.includes('widget_id') && l.includes('cannot be resolved before approval')),
+    JSON.stringify(formatReport(synth).filter((l) => l.includes('widget_id'))));
+
+  // LIVE FILE: trading-api.md now RESOLVES position_id, because it declares
+  // GET /positions/{{position_id}} (added in #142, the 404-on-non-id resolver).
+  // This reflects the current endpoints and is EXPECTED to change. If a future
+  // edit removes that GET, this flips; fix it here. The capability above does
+  // not move, because it never reads a file the estate can edit.
   const tradingRow = report.rows.find((r) => r.name === 'trading-api');
-  check('trading-api on main: position_id has no GET ending at it',
-    tradingRow?.unresolvedParams.some((u) => u.param === 'position_id'),
+  check('LIVE trading-api.md: position_id resolves (GET /positions/{{position_id}} present)',
+    tradingRow && !tradingRow.unresolvedParams.some((u) => u.param === 'position_id'),
     JSON.stringify(tradingRow?.unresolvedParams));
 
   const ghlRow = report.rows.find((r) => r.name === 'ghl-fsc');
   check('ghl-fsc: contact_id resolves, so nothing is reported',
     ghlRow?.unresolvedParams.length === 0, JSON.stringify(ghlRow?.unresolvedParams));
-
-  // PR #142 adds GET /positions/{{position_id}}. Model that here so the check
-  // is known to clear rather than assumed to.
-  const withGet = read('trading-api').replace(
-    'GET /positions/{{position_id}}/alerts',
-    'GET /positions/{{position_id}} - One position by id\nGET /positions/{{position_id}}/alerts'
-  );
-  const after142 = inspectSkills([{ name: 'trading-api', content: withGet, filename: 'trading-api.md' }], null);
-  check('PRECONDITION: the trading-api fixture actually changed',
-    withGet !== read('trading-api'));
-  check('trading-api with #142 merged: position_id resolves and clears',
-    after142.rows[0]?.unresolvedParams.length === 0,
-    JSON.stringify(after142.rows[0]?.unresolvedParams));
 
   // ── 6. The boot output ──
   const lines = formatReport(report);
@@ -184,8 +210,12 @@ function main() {
     JSON.stringify(lines.find((l) => l.includes('ads-agency'))));
   check('report says what looked like an HTTP skill',
     lines.some((l) => l.includes('it looked like an HTTP skill because of')));
-  check('report explains the unresolvable identifier in words, not a code',
-    lines.some((l) => l.includes('position_id') && l.includes('cannot be resolved before approval')),
+  // position_id resolves in the live trading-api.md now (GET present, #142), so
+  // the real report must NOT flag it. The words-not-code formatting of an
+  // unresolvable id is proved in section 5 on the synthetic fixture, where no
+  // endpoint edit can move it.
+  check('report does NOT flag position_id now that the live file resolves it',
+    !lines.some((l) => l.includes('position_id') && l.includes('cannot be resolved before approval')),
     JSON.stringify(lines.filter((l) => l.includes('position_id'))));
 
   const clean = formatReport(inspectSkills([skill('ghl-fsc')], null));
