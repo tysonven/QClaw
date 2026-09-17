@@ -26969,3 +26969,66 @@ event.
 - The instance runs on America/New_York because `GENERIC_TIMEZONE` is unset
   (#167). Three paths fail on every run: a deleted credential, a paused
   Supabase project and a dead Morning Light endpoint (#168).
+
+## 2026-09-18: two credentials that were one value, and the prediction that caught the half-fix
+
+The dashboard session token and the token n8n sends to the same dashboard were
+the same string. That is why `qclaw dashboard` re-minting a link could break
+the Flow OS and Crete image generators, and why the value sat in
+`quantumclaw-out.log` 872 times: the boot banner printed it on every start,
+and `/root` is 755, so the uid-999 dispatcher account could read it.
+
+Split over two merges and one runtime migration (#172, #177, #179):
+
+- `dashboard.apiToken` / `QCLAW_API_TOKEN` is a Bearer-only server credential,
+  checked BEFORE anything derived from the browser token, so a machine caller
+  never resolves through the browser one.
+- The session token now authenticates a browser only: the JWT cookie, or the
+  `?token=` hand-off when the request is a browser. Presented as a Bearer it is
+  rejected and named (`rejected-session-bearer`), so the caller is findable from
+  one log line rather than a generic 401.
+- Auth precedence became an exported pure function, asserted by 18 checks
+  without an HTTP server.
+
+Verified on 2026-09-18 after the session token was rotated: the new token opens
+the dashboard in a browser (200) and the old one bounces to `/login` (302);
+neither works as a Bearer (401); the api token still does (200). The 874
+historical `token=` values were redacted in place, preserving the inode so
+PM2's open append handle survived.
+
+### The half-fix, and why it surfaced
+
+#177 was supposed to stop the token reaching the log. The claim made before
+the deploy was specific: the `?token=` count would stay flat across the next
+boot. It went 872 to 873.
+
+The banner was one of two print sites. The `📡 DASHBOARD` box below it printed
+the tokenised URL again, and #177 had not touched it.
+
+> A prediction stated before the check is what makes a wrong result visible. The
+> count moving by one is not something anyone notices in a 58,000-line log; it
+> is only a finding because a number had been named in advance. State the
+> expected value, not "verify afterwards".
+
+The box is now gated on `process.stdout.isTTY`: a human at a terminal still gets
+a clickable link, PM2's log gets the origin. The count held at 874 across the
+next boot, which is the same prediction, made again, and this time correct.
+
+### Checking what depends on a credential before removing it
+
+Tightening the server to reject the session token would have broken
+`qclaw pairing approve` and `qclaw pairing list`, which send it as a Bearer to
+`/api/pairing/*`. They were found by grepping for callers before pushing, and
+moved to the api token in the same commit, so the breakage never existed.
+
+> "What depends on this" is a question to answer before the change ships, not
+> after a caller starts failing. The estate is small enough to grep; the failure
+> mode it prevents is not small.
+
+Same shape as verifying which processes reach Qdrant before closing its port
+(2026-09-11). In both cases the dependency list was short and knowable, and the
+cost of asking was a single search.
+
+A third caller was found the same way and deliberately left working: the config
+template allowlist still permits `{{config.dashboard.authToken}}`, though no
+skill currently uses it.
