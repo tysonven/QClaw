@@ -560,7 +560,11 @@ class QuantumClaw {
           saveConfig(this.config);
         }
 
-        log.success(`Dashboard: ${dashUrl}`);
+        // The URL carries ?token=<session token>. Printing it put the token into
+        // quantumclaw-out.log on every boot, where any local account could read
+        // it (#172). The tokenless origin is enough to know where the dashboard
+        // is; `qclaw dashboard` still prints a working link.
+        log.success(`Dashboard: ${dashUrl.split('?')[0]} (run \`qclaw dashboard\` for a login link)`);
 
         // Save dashboard URL to file so `qclaw dashboard` can re-show it
         try {

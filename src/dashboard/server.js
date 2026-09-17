@@ -146,6 +146,51 @@ export async function fetchDailyRealisedLoss(sbUrl, sbKey, fetchImpl = fetch, no
 // already removed; this defensive handler returns a clear 403 (not a 404) so any
 // stale dashboard client gets an explicit signal. Specialists are registered via
 // FLOW_OS_SPECIALISTS.md, not spawned ad hoc.
+/**
+ * Decide one request's auth, as a pure function so the precedence is testable
+ * without an HTTP server.
+ *
+ * Two credentials, deliberately distinct (#172):
+ *   - `authToken`  the BROWSER session token. Re-mintable by `qclaw dashboard`,
+ *                  carried in a cookie, and also the /login password.
+ *   - `apiToken`   the SERVER-TO-SERVER credential. Bearer only, stable across
+ *                  a session re-mint, so re-minting the dashboard link cannot
+ *                  break n8n. That breakage is why they were ever one value.
+ *
+ * `legacy: true` marks the session token being used as a machine credential.
+ * It is still accepted so the split can land before every caller has moved;
+ * the acceptance is removed once n8n sends the api token (see #172 step 3).
+ *
+ * @returns {{ok: boolean, via: string|null, legacy?: boolean, clearCookie?: boolean}}
+ */
+export function resolveDashboardAuth({ cookie, bearer, queryToken, apiToken, authToken, verifySession }) {
+  // Priority 1: JWT session cookie (browser).
+  if (cookie) {
+    try {
+      verifySession(cookie);
+      return { ok: true, via: 'cookie' };
+    } catch {
+      // Expired or invalid: fall through to the token paths, and tell the
+      // caller to clear it so the browser stops presenting a dead cookie.
+      const next = resolveDashboardAuth({ cookie: null, bearer, queryToken, apiToken, authToken, verifySession });
+      return { ...next, clearCookie: true };
+    }
+  }
+
+  // Priority 2: Bearer api token (machine callers). Checked BEFORE the session
+  // token so a correct machine credential never depends on the browser one.
+  if (apiToken && bearer && bearer === apiToken) return { ok: true, via: 'bearer-api' };
+
+  // Priority 3 (legacy): the session token presented as a machine credential.
+  if (authToken && bearer && bearer === authToken) return { ok: true, via: 'bearer-session', legacy: true };
+
+  // Priority 4 (legacy): ?token= query param. Also the browser hand-off from
+  // the dashboard URL, which is why it stays until the cookie hand-off lands.
+  if (authToken && queryToken && queryToken === authToken) return { ok: true, via: 'query-session', legacy: true };
+
+  return { ok: false, via: null };
+}
+
 export function spawnDisabledHandler(req, res) {
   res.status(403).json({
     error: 'spawn_disabled',
@@ -154,6 +199,17 @@ export function spawnDisabledHandler(req, res) {
 }
 
 export class DashboardServer {
+  /** Warn once an hour per (via, path) that the browser session token is being
+   * used as a machine credential. Never logs the token itself. */
+  _warnLegacyAuth(via, path) {
+    const key = `${via} ${path}`;
+    const last = this._legacyWarnedAt?.get(key) || 0;
+    if (Date.now() - last < 3600000) return;
+    this._legacyWarnedAt?.set(key, Date.now());
+    log.warn(`Dashboard auth: ${path} authenticated with the browser session token via ${via}. ` +
+      'Machine callers should send the api token as a Bearer header (#172).');
+  }
+
   constructor(qclaw) {
     this.qclaw = qclaw;
     this.config = qclaw.config;
@@ -200,6 +256,11 @@ export class DashboardServer {
       this.tokenCreatedAt = this.config.dashboard?.tokenCreatedAt || Date.now();
     }
     this.tokenExpiry = tokenAge;
+
+    // Server-to-server credential, deliberately NOT the browser session token.
+    // A UI re-mint of the session token must not be able to break n8n, which is
+    // what one shared value caused. Machine callers send this as a Bearer header.
+    this.apiToken = this.config.dashboard?.apiToken || process.env.QCLAW_API_TOKEN || null;
 
     // PIN protection (set during onboard or via config)
     this.pin = this.config.dashboard?.pin || null;
@@ -490,6 +551,12 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
     }, 120000);
     rateLimitCleanup.unref();
 
+    // Legacy-auth warnings are throttled per (via, path): the point is to show
+    // that a machine caller still presents the browser token, not to fill the
+    // log with one line per request (which is how the token got into the log
+    // in the first place — see #172).
+    this._legacyWarnedAt = new Map();
+
     this.app.use((req, res, next) => {
       // Skip auth for public paths
       const publicPaths = ['/', '/login', '/onboard', '/favicon.ico',
@@ -508,33 +575,26 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
       }
 
       const authToken = this.config.dashboard?.authToken || process.env.DASHBOARD_AUTH_TOKEN;
-      let authenticated = false;
+      const apiToken = this.apiToken;
 
-      // Priority 1: JWT session cookie
-      const sessionCookie = req.cookies?.dashboard_session;
-      if (sessionCookie) {
-        try {
-          jwt.verify(sessionCookie, this.sessionSecret);
-          authenticated = true;
-        } catch {
-          // Cookie expired or invalid — clear it
-          res.clearCookie('dashboard_session');
-        }
-      }
+      const decision = resolveDashboardAuth({
+        cookie: req.cookies?.dashboard_session,
+        bearer: req.headers['authorization']?.replace('Bearer ', ''),
+        queryToken: req.query.token,
+        apiToken,
+        authToken,
+        verifySession: (token) => { jwt.verify(token, this.sessionSecret); },
+      });
+      const authenticated = decision.ok;
+      const sessionCookie = decision.via === 'cookie' ? req.cookies?.dashboard_session : null;
 
-      // Priority 2: Bearer token header (API/programmatic access)
-      if (!authenticated && authToken) {
-        const bearer = req.headers['authorization']?.replace('Bearer ', '');
-        if (bearer && bearer === authToken) {
-          authenticated = true;
-        }
-      }
-
-      // Priority 3: ?token= query param (API/programmatic access)
-      if (!authenticated && authToken && req.query.token) {
-        if (req.query.token === authToken) {
-          authenticated = true;
-        }
+      if (decision.clearCookie) res.clearCookie('dashboard_session');
+      if (decision.legacy) {
+        // The browser session token is being used as a machine credential. That is the
+        // shared-value failure this split exists to remove, so it is logged by name
+        // rather than silently accepted. Acceptance is removed once every machine
+        // caller sends the api token (see the migration note in resolveDashboardAuth).
+        this._warnLegacyAuth(decision.via, req.path);
       }
 
       if (!authenticated) {
@@ -864,7 +924,7 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
       try {
         const { key, value } = req.body;
         if (!key) return res.status(400).json({ error: 'key required' });
-        const blocked = ['_dir', '_file', 'dashboard.authToken', 'dashboard.pin'];
+        const blocked = ['_dir', '_file', 'dashboard.authToken', 'dashboard.apiToken', 'dashboard.pin'];
         if (blocked.includes(key)) return res.status(403).json({ error: 'Cannot modify this key via API' });
 
         const { saveConfig } = await import('../core/config.js');
