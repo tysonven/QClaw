@@ -26871,3 +26871,101 @@ a GET whose path ends at the identifier, returning the entity, with a negative
 marker. So `position_id` stops being a composed-value special case and #144
 inherits a premise change. Recorded in #144's body before that build starts, so
 the next session does not re-derive a constraint that no longer holds.
+
+## 2026-09-17: a 74-hour full outage raised no alert, because every watcher ran on the droplets that were off
+
+All three droplets (qclaw-agent, n8n-automation, polymarket-relay) were powered
+off after a billing failure. `last -x reboot shutdown` on the n8n host recorded:
+
+```
+reboot   system boot  6.8.0-139-generi Thu Sep 17 12:29   still running
+shutdown system down  6.8.0-117-generi Mon Sep 14 10:10 - 12:29 (3+02:19)
+```
+
+qclaw-agent and polymarket-relay recorded the same shutdown and boot to the
+minute. n8n logged `Received SIGTERM. Shutting down...` at
+2026-09-14T10:10:39Z and `Database connection timed out` six seconds later, and
+re-activated its 40 workflows at 2026-09-17T12:30:56Z.
+
+Nothing alerted for 74h19m. The Workflow Dormancy Alerter (`O5ir2Mp0e2AXkUXZ`)
+and the charlie-liveness watcher cron both ran on the n8n host; the spend
+alerter and every heartbeat writer (Charlie, dispatcher, trade-engine) ran on
+qclaw. The first signal of any kind was the Alerter's own Telegram message at
+2026-09-17T13:00Z, half an hour after power returned.
+
+> A watcher that shares a host with the thing it watches cannot report that
+> host being off. Liveness needs a vantage point, and an alert path, that
+> survive the failure they are meant to detect.
+
+On this evidence #157 was promoted from scope-only to a build item, with the
+liveness half added to its listener check (comment on #157, 2026-09-17).
+
+### What the outage cost, from a read-only audit (nothing replayed)
+
+- No execution was stuck: zero rows in `running`, `new`, `waiting` or
+  `crashed`, zero with a null `stoppedAt`. The last execution before shutdown
+  was 1251851 at 10:00:41Z.
+- n8n schedule triggers do not backfill, so missed ticks were skipped, not
+  queued. The two publishers that catch up by design
+  (`status=approved AND scheduled_for <= now`) had empty queues; their first
+  runs after boot (1251854, 1251857) published nothing.
+- The real loss sat with webhook senders. GHL workflows (the AIA002 token
+  generator, both payment-update link generators) and Shopify (8 retries over
+  4 hours) gave up long before power returned, and no retry reached n8n after
+  boot. Those losses can only be counted on the sender side. By owner decision
+  nothing customer-facing was replayed: a welcome or dunning message three days
+  late is worse than none.
+- Charlie's channel manager calls `deleteWebhook({ drop_pending_updates: true })`
+  at start, so nothing sent to Charlie during the outage was acted on late.
+  trade-engine's APScheduler is in-memory with `coalesce=True`, and
+  `trading_positions` held no open rows, so it had no backlog either.
+- The nightly n8n `pg_dump` has no files for 2026-09-15, 16 or 17.
+
+### Two things the outage broke that did not heal on boot
+
+**A 3-day schedule stranded for a year (#166).** `kJ2EdkOeEAwVbMwU` stored
+`recurrenceRules [254]` after its 2026-09-11 run; its due day 257 fell inside
+the outage, and n8n 2.4.8 fires only when
+`dayOfYear === (intervalSize + lastExecution) % 365`, so the next match would
+have been 2027-09-14. At 2026-09-17T13:34Z the workflow was deactivated through
+the API, its stored rule changed `[254]` to `[260]`, and it was reactivated
+with `activeVersionId` unchanged (`6cae166a`). The next run is due on
+2026-09-20 between 13:00 and 13:59Z. Upstream replaced the equality with an
+elapsed check in n8n-io/n8n#28423, released in 2.18.0; this instance runs
+2.4.8. Seven of 84 workflows use the pattern, one of them active, and two
+inactive ones would strand on reactivation.
+
+**A client integration's GHL access token expired, and nothing renewed it.**
+`highlevel_tokens` row 2 read `expires_at 2026-09-15 04:57:05` after boot,
+because the 12-hour refresh (`b36b4MKe1p6wQbTQ`, legacy Cron node) had
+missed six runs. The
+refresh workflow's saved draft differs from its published version, so editing
+its trigger through a PUT would have published an unrelated draft. Instead the
+published refresh chain ran as a temporary webhook-triggered copy, which was
+deleted afterwards. The auth probe (a GET for a contact id that does not exist)
+returned `401 {"message":"Invalid JWT"}` before the refresh and
+`400 {"error":"Contact with id 000000000000000000000000 not found"}` after it,
+so authentication passed and no contact data came back. The Shopify
+subscriptions feeding this integration are not visible to the stored Admin API
+token, which lists only GHL's own five. They did survive two earlier bursts of
+more than eight consecutive failures (2026-07-09 and 2026-08-12), which the
+Admin API deletion rule would not have allowed, so they are probably
+admin-created and still present. Confirmation waits on the next real order
+event.
+
+### Process notes
+
+- `docker exec -i` inside `ssh host 'bash -s' <<EOF` read the rest of the
+  heredoc as its own stdin. The script ran its first command and exited with no
+  output and no error. Scripts now run from a file on the host, and
+  `docker exec` gets no stdin it does not need.
+- A command meant to run an unrelated check also invoked the refresh script
+  with its output discarded. That created a second temporary workflow and a
+  second refresh at 13:56:42Z. It stored cleanly (the probe with the prior
+  token returned `400`, not `401`), and the workflow was deleted. One-shot
+  scripts with side effects are removed from the host once they have run.
+- Deactivating through the public API reset `settings.availableInMCP` to
+  `false`, as a PUT does. It was restored in the database.
+- The instance runs on America/New_York because `GENERIC_TIMEZONE` is unset
+  (#167). Three paths fail on every run: a deleted credential, a paused
+  Supabase project and a dead Morning Light endpoint (#168).
