@@ -737,7 +737,7 @@ class LogHygieneTest(unittest.TestCase):
     def test_bot_token_is_scrubbed_from_error_text(self):
         from src.trade_engine.approval import _scrub
 
-        token = "8895488594:AAH-secret-material"
+        token = "123456789:TEST_ONLY_not_a_real_token_redaction"
         leaked = f"Request URL: https://api.telegram.org/bot{token}/getUpdates"
 
         self.assertNotIn(token, _scrub(leaked, token))
@@ -752,7 +752,7 @@ class LogHygieneTest(unittest.TestCase):
         from src.trade_engine.config import install_bot_token_redaction
 
         install_bot_token_redaction()
-        token = "8895488594:AAHXKwF5CdEMNPtk0rLAdi-hudTtv-5NUOA"
+        token = "123456789:TEST_ONLY_not_a_real_token_redaction"
 
         with self.assertLogs("httpx", level="INFO") as captured:
             logging_mod.getLogger("httpx").info(
