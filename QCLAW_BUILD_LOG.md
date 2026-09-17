@@ -11945,7 +11945,7 @@ operations were already live on n8n at the time of this commit (executed
   `vjj2uBIPc07FpIxx`, plus Trade Executor) stay deactivated per the
   May 13 decision — gated on trading-worker fix + Polymarket
   resolution.
-- Hardcoded literal bot token `bot8622820007:AAFBlHVe2igbSGDKfgWal-BW_Vv0_HkvuQI`
+- Hardcoded literal bot token `bot8622820007:<redacted, token revoked 2026-09-17>`
   in `lrGcirtmOHb1xTq8` Meta Ads Ad Creation Agent `Get Telegram File
   URL` — P2 backlog, security hygiene.
 - Migration of the 18 env-token httpRequest nodes onto credential
