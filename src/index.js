@@ -560,6 +560,15 @@ class QuantumClaw {
           saveConfig(this.config);
         }
 
+        // Same for the api token: persist a generated one so the CLI and any
+        // other machine caller can read it back (#172).
+        if (this.dashboard.apiTokenGenerated && !this.config.dashboard?.apiToken) {
+          const { saveConfig } = await import('./core/config.js');
+          if (!this.config.dashboard) this.config.dashboard = {};
+          this.config.dashboard.apiToken = this.dashboard.apiToken;
+          saveConfig(this.config);
+        }
+
         // The URL carries ?token=<session token>. Printing it put the token into
         // quantumclaw-out.log on every boot, where any local account could read
         // it (#172). The tokenless origin is enough to know where the dashboard
@@ -584,18 +593,22 @@ class QuantumClaw {
           } catch { /* non-fatal */ }
         }
 
-        // Show dashboard URL prominently
+        // Show dashboard URL prominently.
+        // Under PM2 stdout is a log file, not a terminal, and this box was the
+        // second place the session token was written there every boot (#172).
+        // A human at a TTY still gets the clickable link; the log gets the origin.
+        const dashDisplay = process.stdout.isTTY ? dashUrl : `${dashUrl.split('?')[0]}  (run \`qclaw dashboard\` for a login link)`;
         log.info('');
         if (this.dashboard.tunnelUrl) {
           log.success('┌─────────────────────────────────────────────────┐');
           log.success('│  📡 DASHBOARD (any browser/device)              │');
           log.success('└─────────────────────────────────────────────────┘');
-          log.info(`  ${dashUrl}`);
+          log.info(`  ${dashDisplay}`);
         } else {
           log.success('┌─────────────────────────────────────────────────┐');
           log.success('│  💻 DASHBOARD (local)                           │');
           log.success('└─────────────────────────────────────────────────┘');
-          log.info(`  ${dashUrl}`);
+          log.info(`  ${dashDisplay}`);
         }
         log.info('');
         log.info('  Lost this URL? Run: qclaw dashboard');

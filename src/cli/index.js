@@ -1268,7 +1268,10 @@ switch (command) {
       const { config } = await loadCore();
       const port = config.dashboard?.port || 3000;
       const localHost = (config.dashboard?.host === '0.0.0.0' ? '127.0.0.1' : config.dashboard?.host) || '127.0.0.1';
-      const token = config.dashboard?.authToken || process.env.DASHBOARD_AUTH_TOKEN || '';
+      // Machine caller: the api token, not the browser session token, which the
+      // dashboard no longer accepts as a Bearer credential (#172).
+      const token = config.dashboard?.apiToken || process.env.QCLAW_API_TOKEN
+        || config.dashboard?.authToken || process.env.DASHBOARD_AUTH_TOKEN || '';
 
       try {
         const res = await fetch(`http://${localHost}:${port}/api/pairing/approve`, {
@@ -1297,7 +1300,10 @@ switch (command) {
       const { config } = await loadCore();
       const port = config.dashboard?.port || 3000;
       const localHost = (config.dashboard?.host === '0.0.0.0' ? '127.0.0.1' : config.dashboard?.host) || '127.0.0.1';
-      const token = config.dashboard?.authToken || process.env.DASHBOARD_AUTH_TOKEN || '';
+      // Machine caller: the api token, not the browser session token, which the
+      // dashboard no longer accepts as a Bearer credential (#172).
+      const token = config.dashboard?.apiToken || process.env.QCLAW_API_TOKEN
+        || config.dashboard?.authToken || process.env.DASHBOARD_AUTH_TOKEN || '';
 
       try {
         const qp = channelName ? `?channel=${channelName}` : '';
