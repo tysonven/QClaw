@@ -55,6 +55,10 @@ const WRITE_METHODS = ['POST', 'PUT', 'PATCH', 'DELETE'];
  * default is the safe one (design section 5, constraint 1):
  *
  *   declared valid level   -> that level
+ *   a bracket that is NOT  -> 'unclassified', DELETE included. Someone tried
+ *   a level (a typo, `[]`)    to declare and got it wrong; that must cost a
+ *                             refusal, never the undeclared-DELETE leniency
+ *                             below (#184 cold review, finding 3)
  *   undeclared DELETE      -> 'destructive', so omission never weakens what a
  *                             DELETE already got (it was always high risk)
  *   any other undeclared   -> 'unclassified', which the gate refuses outright,
@@ -64,14 +68,23 @@ const WRITE_METHODS = ['POST', 'PUT', 'PATCH', 'DELETE'];
  *   GET                    -> null; reads are not classified
  *
  * @param {string} method
- * @param {string|null|undefined} declaredLevel - a valid level or null
+ * @param {string|null|undefined} declared - the RAW bracket token as written
+ *   (null or undefined when there was no bracket). Matched case-insensitively
+ *   after trimming, the same way the parser reads it.
  * @returns {'financial'|'destructive'|'mutating'|'unclassified'|null}
  */
-export function effectiveWriteLevel(method, declaredLevel) {
+export function effectiveWriteLevel(method, declared) {
   const m = String(method ?? '').trim().toUpperCase();
   if (!WRITE_METHODS.includes(m)) return null;
-  if (declaredLevel && ENDPOINT_LEVELS.includes(declaredLevel)) return declaredLevel;
-  return m === 'DELETE' ? 'destructive' : 'unclassified';
+  if (declared === null || declared === undefined) return m === 'DELETE' ? 'destructive' : 'unclassified';
+  const token = String(declared).trim().toLowerCase();
+  return ENDPOINT_LEVELS.includes(token) ? token : 'unclassified';
+}
+
+// What a parsed endpoint or tool definition declared: the raw bracket token
+// when the parser recorded one, else a valid level set directly, else nothing.
+function declaredOf(e) {
+  return e?.declaredLevel ?? e?.level ?? null;
 }
 
 /**
@@ -93,15 +106,29 @@ function trimTrailingSlash(p) {
   return p.length > 1 ? p.replace(/\/+$/, '') : p;
 }
 
-// `{{param}}` names in a path, excluding the registry's own templates.
+// `{{param}}` names in a path, excluding the registry's own templates. Each
+// name once, in first-occurrence order.
 function placeholderNames(path) {
   const out = [];
   for (const m of String(path ?? '').matchAll(/\{\{([^}]+)\}\}/g)) {
     const n = m[1].trim();
     if (n.startsWith('secrets.') || n.startsWith('config.')) continue;
-    out.push(n);
+    if (!out.includes(n)) out.push(n);
   }
   return out;
+}
+
+/**
+ * The identifier names in an endpoint path: `{{param}}` placeholders before
+ * any query string, excluding `{{secrets.*}}` and `{{config.*}}`. THE rule;
+ * the approval prompt's pathParamNames (approval-summary.js) calls this, so
+ * what the prompt shows as a path identifier and what the index can resolve
+ * are decided in one place (#184 cold review, finding 6).
+ * @param {string} path
+ * @returns {string[]}
+ */
+export function pathIdentifierNames(path) {
+  return placeholderNames(pathOnly(path));
 }
 
 /**
@@ -158,11 +185,17 @@ function placeholderNames(path) {
  *     states. Re-adding the line reopens the gap: close it before or with
  *     that change, not after.
  *
+ * The returned index is frozen all the way down. One index is shared by every
+ * tool of a skill and handed to the gate by reference, so nothing downstream
+ * may be able to edit what part two will trust.
+ *
  * @param {Array<{method: string, path: string, level?: string|null,
  *                declaredLevel?: string|null, line?: number}>} endpoints
  * @returns {{
- *   indexed: Map<string, string[]>,
- *   resolvers: Array<{ path: string, resource: string, param: string, key: string, params: string[] }>,
+ *   endpoints: string[],                       // "METHOD path" for every endpoint derived from
+ *   indexed: Record<string, string[]>,         // normalised name -> spellings seen in paths
+ *   resolvers: Array<{ method: 'GET', path: string, resource: string, param: string,
+ *                      key: string, params: string[] }>,
  *   writes: Array<{ method: string, path: string, line: number|null,
  *                   declaredLevel: string|null, level: string,
  *                   pathParams: Array<{ param: string, resolver: object|null }> }>,
@@ -171,55 +204,76 @@ function placeholderNames(path) {
 export function deriveIdentifierIndex(endpoints) {
   const eps = Array.isArray(endpoints) ? endpoints : [];
 
-  const indexed = new Map(); // normalised name -> spellings seen in paths
+  const indexed = {};
   for (const e of eps) {
-    for (const n of placeholderNames(pathOnly(e.path))) {
+    for (const n of pathIdentifierNames(e.path)) {
       const key = normaliseIdentifierName(n);
-      if (!indexed.has(key)) indexed.set(key, []);
-      if (!indexed.get(key).includes(n)) indexed.get(key).push(n);
+      if (!indexed[key]) indexed[key] = [];
+      if (!indexed[key].includes(n)) indexed[key].push(n);
     }
   }
+  for (const key of Object.keys(indexed)) Object.freeze(indexed[key]);
 
   const resolvers = [];
   const seen = new Set();
   for (const e of eps) {
+    // Only a GET resolves. A PUT or PATCH ending at the parameter is a write
+    // on that entity, not a way to read it.
     if (String(e.method).toUpperCase() !== 'GET') continue;
     const resource = trimTrailingSlash(pathOnly(e.path));
     const m = resource.match(/\{\{([^}]+)\}\}$/);
     if (!m) continue;
     const param = m[1].trim();
     if (param.startsWith('secrets.') || param.startsWith('config.')) continue;
-    if (seen.has(resource)) continue; // a GET line written twice is one resolver
+    if (seen.has(resource)) continue; // one resource written twice is one resolver
     seen.add(resource);
-    resolvers.push({
+    resolvers.push(Object.freeze({
+      method: 'GET',
       path: e.path,
       resource,
       param,
       key: normaliseIdentifierName(param),
-      params: placeholderNames(resource),
-    });
+      params: Object.freeze(placeholderNames(resource)),
+    }));
   }
 
   const writes = [];
   for (const e of eps) {
     const method = String(e.method).toUpperCase();
     if (!WRITE_METHODS.includes(method)) continue;
-    const bare = pathOnly(e.path);
-    const pathParams = placeholderNames(bare).map((param) => ({
+    const pathParams = pathIdentifierNames(e.path).map((param) => Object.freeze({
       param,
       resolver: pathParamResolver({ resolvers }, e.path, param),
     }));
-    writes.push({
+    writes.push(Object.freeze({
       method,
       path: e.path,
       line: e.line ?? null,
       declaredLevel: e.declaredLevel ?? null,
-      level: effectiveWriteLevel(method, e.level ?? null),
-      pathParams,
-    });
+      level: effectiveWriteLevel(method, declaredOf(e)),
+      pathParams: Object.freeze(pathParams),
+    }));
   }
 
-  return { indexed, resolvers, writes };
+  return Object.freeze({
+    endpoints: Object.freeze(eps.map((e) => `${String(e.method).toUpperCase()} ${e.path}`)),
+    indexed: Object.freeze(indexed),
+    resolvers: Object.freeze(resolvers),
+    writes: Object.freeze(writes),
+  });
+}
+
+/**
+ * Was this index derived from a skill that declares this endpoint? The
+ * registry hands a tool its skill's index only when it was, so an index that
+ * was never derived from the tool's own skill (an empty endpoint list, another
+ * skill's endpoints, a stale cache) reaches the gate as NO index rather than
+ * as an index with nothing in it. "Never derived" and "nothing to resolve"
+ * are different states and must not collapse (#184 cold review, finding 4).
+ */
+export function indexCoversEndpoint(index, method, path) {
+  return Array.isArray(index?.endpoints)
+    && index.endpoints.includes(`${String(method ?? '').toUpperCase()} ${path}`);
 }
 
 /**
@@ -413,24 +467,31 @@ export function inspectSkills(skills, secrets = null) {
 
     const writes = index.writes.length;
     const unclassified = index.writes.filter((w) => w.level === 'unclassified').length;
-    // "With a resolver" means exactly one: two GETs ending at the same name
-    // (n8n-api's {{id}} on workflows and executions) cannot resolve a body
-    // field of that name, so they are counted as ambiguous instead.
+    const pathIds = index.writes.flatMap((w) => w.pathParams);
+    // Two different questions, counted separately so neither reads as the
+    // other. A write's PATH identifier resolves on its own resource (keyed on
+    // the endpoint). A BODY field has no resource, so it resolves by name, and
+    // only when exactly one GET ends at that name: two (n8n-api's {{id}} on
+    // workflows and executions) is ambiguous, not resolvable.
+    const keys = Object.keys(index.indexed);
     const resolverCount = (k) => index.resolvers.filter((r) => r.key === k).length;
-    const withResolver = [...index.indexed.keys()].filter((k) => resolverCount(k) === 1);
-    const ambiguous = [...index.indexed.keys()].filter((k) => resolverCount(k) > 1);
+    const first = (k) => index.indexed[k][0];
 
     rows.push({
       file, name: skill.name, ok: tools.length > 0, tools: tools.length, signals,
       reason: tools.length > 0 ? null : 'parsed but produced no tools',
       line: null, hint: null, unresolvedParams,
       badLevels, ignoredLevels,
+      malformed: parsed.malformedEndpointLines || [],
       counts: {
         writes,
         unclassified,
-        indexed: [...index.indexed.values()].map((names) => names[0]),
-        withResolver: withResolver.map((k) => index.indexed.get(k)[0]),
-        ambiguous: ambiguous.map((k) => index.indexed.get(k)[0]),
+        indexed: keys.map(first),
+        pathIdentifiers: pathIds.length,
+        pathResolvable: pathIds.filter((p) => p.resolver).length,
+        bodyResolvable: keys.filter((k) => resolverCount(k) === 1).map(first),
+        ambiguous: keys.filter((k) => resolverCount(k) > 1).map(first),
+        malformed: (parsed.malformedEndpointLines || []).length,
       },
     });
   }
@@ -441,6 +502,7 @@ export function inspectSkills(skills, secrets = null) {
     unresolved: rows.filter((r) => r.unresolvedParams.length > 0),
     badLevels: rows.filter((r) => (r.badLevels || []).length > 0),
     ignoredLevels: rows.filter((r) => (r.ignoredLevels || []).length > 0),
+    malformed: rows.filter((r) => (r.malformed || []).length > 0),
   };
 }
 
@@ -477,44 +539,75 @@ export function formatReport(report) {
       );
     }
   }
+  for (const r of report.malformed || []) {
+    for (const m of r.malformed) {
+      lines.push(
+        `skill "${r.name}" (${r.file}:${m.line}): this line looks like an endpoint but does not parse, so it registered no tool and is missing from the countdown: ${JSON.stringify(m.text)}. Fix: write it as "[level] METHOD /path - description", with a plain hyphen.`
+      );
+    }
+  }
   return lines;
 }
 
 /**
  * The countdown to zero unclassified writes (design section 5, "declare
- * first, enable second"). Unlike formatReport this is NOT quiet when
- * healthy: the gate change merges only when this reads 0 on the host, so 0
- * has to be printed to be read.
+ * first, enable second"). Unlike formatReport this is NOT quiet when there is
+ * something to count: the gate change merges only when this reads 0 on the
+ * host, so 0 has to be printed to be read.
  *
- * One line per skill that has writes, then the total. Each skill line carries
- * the counts the design owes beside the diagnostic: writes parsed, writes
- * unclassified, identifiers indexed, identifiers with a resolver.
+ * WHY IT IS LABELLED, SUPPRESSED AND SOMETIMES INCOMPLETE. The merge
+ * condition is "the log reads 0", and a cold review of #184 found two
+ * independent ways it could read 0 while wrong:
  *
- * @returns {{ unclassified: number, writes: number, lines: string[] }}
+ *   - a write dropped by a malformed line leaves both sides of "U of W", so
+ *     the count shrinks with nothing saying why. When any endpoint-looking
+ *     line did not parse, the total says INCOMPLETE and does not start with a
+ *     number that could be read as 0.
+ *   - every agent printed a total, and an agent with no skills (echo, on the
+ *     host) printed "0 of 0" on every boot. The line now names the agent, and
+ *     an agent with nothing to count prints nothing.
+ *
+ * One line per skill that has writes or malformed lines, then the total.
+ * Each skill line carries the counts the design owes beside the diagnostic.
+ *
+ * @param {object} report - from inspectSkills
+ * @param {string} [agent] - the agent whose skills these are, for the label
+ * @returns {{ unclassified: number, writes: number, malformed: number, lines: string[] }}
  */
-export function formatCountdown(report) {
+export function formatCountdown(report, agent = null) {
   const lines = [];
   let writes = 0;
   let unclassified = 0;
+  let malformed = 0;
   let skills = 0;
   for (const r of report.rows || []) {
     const c = r.counts;
-    if (!c || c.writes === 0) continue;
+    if (!c || (c.writes === 0 && c.malformed === 0)) continue;
     skills++;
     writes += c.writes;
     unclassified += c.unclassified;
+    malformed += c.malformed;
     const ids = c.indexed.length > 0 ? ` (${c.indexed.join(', ')})` : '';
+    const body = c.bodyResolvable.length > 0 ? ` (${c.bodyResolvable.join(', ')})` : '';
     const amb = c.ambiguous.length > 0 ? `, ambiguous: ${c.ambiguous.join(', ')}` : '';
+    const bad = c.malformed > 0 ? `; ${c.malformed} endpoint line(s) did not parse` : '';
     lines.push(
       `  skill "${r.name}" (${r.file}): ${c.writes} writes, ${c.unclassified} unclassified; ` +
-      `identifiers indexed ${c.indexed.length}${ids}, with a resolver ${c.withResolver.length}${amb}`
+      `identifiers indexed ${c.indexed.length}${ids}; ` +
+      `write path identifiers ${c.pathIdentifiers}, ${c.pathResolvable} resolvable on their own resource; ` +
+      `body-resolvable names ${c.bodyResolvable.length}${body}${amb}${bad}`
     );
   }
-  lines.push(
-    `identifier gate countdown: ${unclassified} of ${writes} skill writes unclassified across ${skills} skills.` +
-    (unclassified > 0
-      ? ' The identifier gate refuses an unclassified write outright, so it merges only when this reads 0.'
-      : '')
-  );
-  return { unclassified, writes, lines };
+  if (skills === 0) return { unclassified, writes, malformed, lines };
+
+  const label = agent ? ` (${agent})` : '';
+  const tail = `${unclassified} of ${writes} skill writes unclassified across ${skills} skills.`;
+  lines.push(malformed > 0
+    ? `identifier gate countdown${label}: INCOMPLETE. ${malformed} endpoint line(s) did not parse and are not counted (named above). ` +
+      `Of the writes that did parse, ${tail} Fix the named lines before reading this as a count.`
+    : `identifier gate countdown${label}: ${tail}` +
+      (unclassified > 0
+        ? ' The identifier gate refuses an unclassified write outright, so it merges only when this reads 0.'
+        : ''));
+  return { unclassified, writes, malformed, lines };
 }

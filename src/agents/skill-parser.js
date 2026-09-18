@@ -54,11 +54,18 @@
  * the day they were written (#149, #150, #151). Every reader of an endpoint
  * line imports parseEndpointLine or looksLikeEndpointLine from here.
  *
- * A level that is not one of ENDPOINT_LEVELS (a typo, an empty `[]`) does NOT
- * drop the endpoint. The tool still registers, `level` is null so the write
- * reads as unclassified and is refused, and `declaredLevel` keeps the raw
- * token so the boot diagnostic can name the line. A typo must cost a loud
- * refusal, never a missing tool.
+ * A WELL-FORMED bracket holding something that is not one of ENDPOINT_LEVELS
+ * (a typo, an empty `[]`) does NOT drop the endpoint. The tool still
+ * registers, the write reads as unclassified (DELETE included) and is
+ * refused, and `declaredLevel` keeps the raw token so the boot diagnostic can
+ * name the line.
+ *
+ * A MALFORMED line (an unclosed bracket, stacked brackets, an en or em dash
+ * before the description) cannot register: no grammar can guess what it
+ * meant. It is recorded in `malformedEndpointLines` instead, and the boot
+ * report names it and marks the countdown incomplete. Either way a typo is
+ * loud. Until 2026-09-18 the second kind was silent, and the countdown read
+ * lower than the truth.
  */
 export const ENDPOINT_LEVELS = Object.freeze(['financial', 'destructive', 'mutating']);
 
@@ -97,6 +104,40 @@ export function looksLikeEndpointLine(line) {
 }
 
 /**
+ * True when a line inside `## Endpoints` did NOT parse but was plainly meant
+ * to be an endpoint: it names an HTTP verb as a word and carries a path.
+ * Comment lines (`# ...`) are never counted.
+ *
+ * Looser than the grammar, but not so loose that it reads prose. The strict
+ * grammar above decides what registers; this decides what gets reported when
+ * the grammar says no. A cold review of #184 found eighteen spellings that
+ * dropped a write without a word: an unclosed `[mutating`, doubled or stacked
+ * brackets, fullwidth brackets, a zero-width space, the level after the verb,
+ * an en or em dash before the description. Every one of them has an
+ * upper-case verb, then a path, and nothing before the verb but punctuation,
+ * invisible characters and bracketed tokens.
+ *
+ * That last condition is what keeps prose out: n8n-api.md has a sentence in
+ * its Endpoints section that says "Do NOT use GET /workflows?limit=200", and
+ * a sentence has words before its verb. The residual it accepts: a typo with
+ * a lower-case verb is not reported (the grammar would accept the verb in
+ * either case; prose is where lower case lives).
+ */
+export function isMalformedEndpointLine(line) {
+  const t = String(line ?? '').trim();
+  if (!t || t.startsWith('#')) return false;
+  if (parseEndpointLine(t)) return false;
+  const verb = /(^|[^A-Za-z])(GET|POST|PUT|PATCH|DELETE)(?=[^A-Za-z]|$)/.exec(t);
+  if (!verb) return false;
+  const at = verb.index + verb[1].length;
+  const before = t.slice(0, at)
+    // bracketed tokens, closed or not: [..] (..) {..} <..> fullwidth, `..`
+    .replace(/[[({<［【`][^\])}>］】`]*[\])}>］】`]?/g, '');
+  if (/[A-Za-z0-9]/.test(before)) return false;
+  return /\/[^\s/]/.test(t.slice(at));
+}
+
+/**
  * Count the endpoint lines under `## Endpoints`, by the same grammar the
  * parser registers tools from. Used by `qclaw skill list`.
  * @param {string} content
@@ -128,6 +169,11 @@ export function parseSkill(name, content, secrets) {
       baseUrl: null,
       headers: {},
       endpoints: [],
+      // Lines in `## Endpoints` that look like endpoints and did not parse.
+      // They register nothing, so the boot report must name them: otherwise a
+      // dropped write also drops out of the countdown, which then reads lower
+      // than the truth with nothing saying why.
+      malformedEndpointLines: [],
       permissions: { http: [], shell: [], file: [] },
       notes: [],
     };
@@ -177,6 +223,8 @@ export function parseSkill(name, content, secrets) {
         const endpoint = parseEndpointLine(line);
         if (endpoint) {
           skill.endpoints.push({ ...endpoint, line: i + 1 });
+        } else if (isMalformedEndpointLine(line)) {
+          skill.malformedEndpointLines.push({ line: i + 1, text: line });
         }
       }
 
@@ -281,9 +329,12 @@ export function skillToTools(skill) {
       skill: skill.name,
       method: endpoint.method,
       path: endpoint.path,
-      // The declared level, or null. Never sent to the model: the registry
-      // formats only name, description and inputSchema.
+      // The declared level, or null, and the raw bracket token, so a bracket
+      // that is not a level reads as unclassified rather than as undeclared.
+      // Never sent to the model: the registry formats only name, description
+      // and inputSchema.
       level: endpoint.level ?? null,
+      declaredLevel: endpoint.declaredLevel ?? null,
     });
   }
 

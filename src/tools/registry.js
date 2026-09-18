@@ -18,7 +18,7 @@ import { MCPClient } from './mcp-client.js';
 import { log } from '../core/logger.js';
 import { extractIdentifiers } from '../security/approval-summary.js';
 import { hasSubjectResolver, resolveSubject } from '../security/subject-resolvers.js';
-import { deriveIdentifierIndex, effectiveWriteLevel } from '../agents/skill-diagnostics.js';
+import { deriveIdentifierIndex, effectiveWriteLevel, indexCoversEndpoint } from '../agents/skill-diagnostics.js';
 import { appendFileSync, chmodSync, existsSync, mkdirSync, statSync } from 'fs';
 import { dirname, join } from 'path';
 import { homedir } from 'os';
@@ -1171,7 +1171,9 @@ export class ToolRegistry {
       skill: parsedSkill,
       scope,
       identifierIndex,
-      level: effectiveWriteLevel(toolDef.method || 'GET', toolDef.level ?? null),
+      // The raw bracket token when the parser recorded one, so a bracket that
+      // is not a level reads unclassified (a DELETE included), not undeclared.
+      level: effectiveWriteLevel(toolDef.method || 'GET', toolDef.declaredLevel ?? toolDef.level ?? null),
     };
 
     this._apiTools.set(fullName, entry);
@@ -1731,9 +1733,12 @@ export class ToolRegistry {
    * builtins, MCP tools and non-skill presets all yield an empty object.
    *
    * `level` and `identifierIndex` are for the identifier gate: the write's
-   * effective level (declared, else destructive for DELETE, else
+   * effective level (declared; a bracket that is not a level reads
+   * unclassified; undeclared DELETE destructive, other undeclared writes
    * unclassified; null for a GET) and the index derived from the owning
-   * skill's endpoint block at registration.
+   * skill's endpoint block at registration. `identifierIndex` is null when
+   * that index does not include this tool's own endpoint, which is what an
+   * index derived from the wrong or an empty endpoint list looks like.
    *
    * @param {string} toolName
    * @returns {{ path?: string, skill?: string, baseUrl?: string,
@@ -1744,12 +1749,18 @@ export class ToolRegistry {
     if (!entry) return {};
     const presetName = entry.preset?.name;
     if (!presetName?.startsWith('skill:')) return {};
+    const path = entry.toolDef?.endpoint || entry.toolDef?.path || null;
+    const method = entry.toolDef?.method || 'GET';
+    // Hand over the index only if it was derived from a skill that declares
+    // THIS endpoint. Otherwise the gate gets null ("never derived"), never an
+    // index that merely has nothing in it ("nothing to resolve").
+    const index = entry.identifierIndex ?? null;
     return {
-      path: entry.toolDef?.endpoint || entry.toolDef?.path || null,
+      path,
       skill: presetName.slice(6) || null,
       baseUrl: entry.preset?.baseUrl || null,
       level: entry.level ?? null,
-      identifierIndex: entry.identifierIndex ?? null,
+      identifierIndex: index && indexCoversEndpoint(index, method, path) ? index : null,
     };
   }
 

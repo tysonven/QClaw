@@ -19,7 +19,7 @@
  * asserted through registerSkillTool, through getSkillToolContext, through
  * ToolExecutor.run into the gate's own check(), and through Agent.load() into
  * the boot log, using real parsed skill files rather than hand-built skill
- * objects (which carry no endpoints and so produce an empty index).
+ * objects (which carry no endpoints, and so get no index at all).
  *
  * Run: node tests/identifier-index.test.js
  */
@@ -49,7 +49,11 @@ const {
   inspectSkills,
   formatReport,
   formatCountdown,
+  indexCoversEndpoint,
+  pathIdentifierNames,
 } = await import('../src/agents/skill-diagnostics.js');
+const { pathParamNames, extractIdentifiers } = await import('../src/security/approval-summary.js');
+const { registerSpecialistSkills } = await import('../src/agents/specialist-loader.js');
 const { ToolRegistry } = await import('../src/tools/registry.js');
 const { ToolExecutor } = await import('../src/tools/executor.js');
 const { ApprovalGate } = await import('../src/security/approval-gate.js');
@@ -224,8 +228,8 @@ async function main() {
     'GET /runs?widgetId={{widget_id}}&status={{status}} - filter runs',
   ]), null).endpoints);
   check('CAPABILITY: query-string parameters are not indexed (query, expand, status)',
-    !q.indexed.has('query') && !q.indexed.has('expand') && !q.indexed.has('status'),
-    JSON.stringify([...q.indexed.keys()]));
+    !('query' in q.indexed) && !('expand' in q.indexed) && !('status' in q.indexed),
+    JSON.stringify(Object.keys(q.indexed)));
   check('CAPABILITY: a GET that ends at a parameter only in its query string is not a resolver',
     q.resolvers.length === 1 && q.resolvers[0].resource === '/widgets/{{widget_id}}',
     JSON.stringify(q.resolvers));
@@ -271,8 +275,8 @@ async function main() {
     'POST /locations/{{secrets.location_id}}/notes - add a note',
   ]), null).endpoints);
   check('CAPABILITY: {{secrets.*}} and {{config.*}} are not indexed and resolve nothing',
-    t.indexed.size === 0 && t.resolvers.length === 0 && bodyFieldResolvers(t, 'location_id').length === 0,
-    JSON.stringify({ indexed: [...t.indexed.keys()], resolvers: t.resolvers }));
+    Object.keys(t.indexed).length === 0 && t.resolvers.length === 0 && bodyFieldResolvers(t, 'location_id').length === 0,
+    JSON.stringify({ indexed: Object.keys(t.indexed), resolvers: t.resolvers }));
 
   // CAPABILITY: body spelling meets path spelling.
   const n = deriveIdentifierIndex(parseSkill('n', skillText([
@@ -322,12 +326,12 @@ async function main() {
     bodyFieldResolvers(trading, 'market_url').length === 0 && bodyFieldResolvers(trading, 'condition_id').length === 0);
   const fsc = live('ghl-fsc');
   check('LIVE ghl-fsc: {{query}} on the contact search is not indexed',
-    !fsc.indexed.has('query'), JSON.stringify([...fsc.indexed.keys()]));
+    !('query' in fsc.indexed), JSON.stringify(Object.keys(fsc.indexed)));
   check('LIVE ghl-fsc: a body contactId resolves through GET /contacts/{{contact_id}}',
     bodyFieldResolvers(fsc, 'contactId').map((r) => r.resource).join() === '/contacts/{{contact_id}}');
   const n8n = live('n8n-api');
   check('LIVE n8n-api: workflow_id and status (query-string filters) are not indexed',
-    !n8n.indexed.has('workflowid') && !n8n.indexed.has('status'), JSON.stringify([...n8n.indexed.keys()]));
+    !('workflowid' in n8n.indexed) && !('status' in n8n.indexed), JSON.stringify(Object.keys(n8n.indexed)));
   check('LIVE n8n-api: a body "id" is ambiguous between workflows and executions',
     bodyFieldResolvers(n8n, 'id').length === 2, JSON.stringify(bodyFieldResolvers(n8n, 'id')));
   const stripe = live('stripe');
@@ -411,15 +415,44 @@ async function main() {
     regDelete.getSkillToolContext(TOOL('synth', 'synth__delete_widgets_id')).level === 'destructive',
     JSON.stringify([...regDelete._apiTools.keys()]));
 
-  // The trap, stated: a hand-built skill object with no endpoints (the shape
-  // the older gate tests use) produces an EMPTY index. Such a fixture cannot
-  // prove anything about resolution, and the gate tests must not use it.
+  // "Never derived" and "nothing to resolve" are different states and must
+  // not collapse (#184 cold review, finding 4). A hand-built skill object with
+  // no endpoints (the shape the older gate tests use) was never derived from
+  // anything that declares the tool's endpoint: it gets NO index. A real skill
+  // with writes and no identifiers gets an index that covers its endpoint and
+  // has nothing in it.
   const handBuilt = new ToolRegistry({}, {});
   handBuilt.registerSkillTool('charlie', 'ghl', { name: 'ghl', baseUrl: 'https://x.test', headers: {} },
     { name: 'ghl__create_notes', method: 'POST', path: '/contacts/{{contact_id}}/notes', description: 'n', inputSchema: { type: 'object', properties: {} } });
   const hbCtx = handBuilt.getSkillToolContext('charlie__ghl__ghl__create_notes');
-  check('a hand-built skill with no endpoints has an index, and it is empty',
-    hbCtx.identifierIndex && hbCtx.identifierIndex.resolvers.length === 0 && hbCtx.level === 'unclassified');
+  check('never derived: a hand-built skill with no endpoints reaches the gate with NO index',
+    hbCtx.identifierIndex === null && hbCtx.level === 'unclassified', JSON.stringify(hbCtx.identifierIndex));
+  const regNothing = registerReal('hooks', skillText(['[mutating] POST /webhook/a - fire a', '[mutating] POST /webhook/b - fire b']));
+  const nothingCtx = regNothing.getSkillToolContext(TOOL('hooks', 'hooks__create_webhook_a'));
+  check('nothing to resolve: a real skill with no identifiers gets an index that covers it and is empty',
+    nothingCtx.identifierIndex !== null && indexCoversEndpoint(nothingCtx.identifierIndex, 'POST', '/webhook/a')
+      && nothingCtx.identifierIndex.resolvers.length === 0 && Object.keys(nothingCtx.identifierIndex.indexed).length === 0,
+    JSON.stringify(nothingCtx.identifierIndex));
+
+  // A stale index is a wrong index. Re-registering a skill of the same name
+  // with different endpoints must not reuse the earlier derivation.
+  const regA = registerReal('w', skillText(['GET /a/{{a_id}} - one a', '[mutating] POST /a/{{a_id}}/x - x']));
+  const regB = registerReal('w', skillText(['GET /b/{{b_id}} - one b', '[mutating] POST /b/{{b_id}}/x - x']));
+  check('PRECONDITION: the first registration resolved its own resource',
+    bodyFieldResolvers(regA.getSkillToolContext(TOOL('w', 'w__create_a_id_x')).identifierIndex, 'a_id').length === 1);
+  check('a re-parsed skill of the same name gets its OWN index, not a cached one',
+    bodyFieldResolvers(regB.getSkillToolContext(TOOL('w', 'w__create_b_id_x')).identifierIndex, 'b_id').length === 1,
+    JSON.stringify(regB.getSkillToolContext(TOOL('w', 'w__create_b_id_x')).identifierIndex));
+
+  // The index is shared by every tool of a skill and handed out by
+  // reference; nothing downstream may be able to edit it.
+  const frozenIdx = reg.getSkillToolContext(MANUAL_CLOSE).identifierIndex;
+  let mutated = false;
+  try { frozenIdx.resolvers.push({ resource: '/evil' }); mutated = true; } catch { /* frozen */ }
+  try { frozenIdx.indexed.evil = ['evil']; mutated = true; } catch { /* frozen */ }
+  try { frozenIdx.resolvers[0].resource = '/evil'; mutated = true; } catch { /* frozen */ }
+  check('the index is frozen: resolvers, names and resolver objects cannot be edited',
+    !mutated && Object.isFrozen(frozenIdx) && frozenIdx.resolvers[0].resource === '/positions/{{position_id}}');
 
   // The executor seam. Real registry, real parsed file, real gate check():
   // the level and the index must reach both check() and requestApproval()
@@ -480,25 +513,46 @@ async function main() {
   const before = formatCountdown(inspectSkills([{ name: 'w', content: three(''), filename: 'w.md' }], null));
   check('CAPABILITY: counts writes and unclassified (declared and undeclared DELETE are not unclassified)',
     before.writes === 3 && before.unclassified === 1, JSON.stringify(before));
-  check('CAPABILITY: the per-skill line carries writes, unclassified, identifiers indexed and with a resolver',
-    before.lines.some((l) => l.includes('"w" (w.md): 3 writes, 1 unclassified; identifiers indexed 1 (widget_id), with a resolver 1')),
+  check('CAPABILITY: the per-skill line says what it counts, path and body separately',
+    before.lines.some((l) => l.includes('"w" (w.md): 3 writes, 1 unclassified; identifiers indexed 1 (widget_id); '
+      + 'write path identifiers 2, 2 resolvable on their own resource; body-resolvable names 1 (widget_id)')),
     JSON.stringify(before.lines));
   check('CAPABILITY: the total says 1 of 3 and why it matters',
     before.lines.some((l) => l.startsWith('identifier gate countdown: 1 of 3 ') && /merges only when this reads 0/.test(l)),
     JSON.stringify(before.lines));
+  check('CAPABILITY: the total names the agent when given one',
+    formatCountdown(inspectSkills([{ name: 'w', content: three(''), filename: 'w.md' }], null), 'charlie')
+      .lines.some((l) => l.startsWith('identifier gate countdown (charlie): 1 of 3 ')));
   const ambiguousSkill = skillText([
     'GET /workflows/{{id}} - one workflow',
     'GET /executions/{{id}} - one execution',
     'POST /workflows - create',
   ]);
   const amb = formatCountdown(inspectSkills([{ name: 'a', content: ambiguousSkill, filename: 'a.md' }], null));
-  check('CAPABILITY: a name two GETs end at is ambiguous, not "with a resolver"',
-    amb.lines.some((l) => l.includes('identifiers indexed 1 (id), with a resolver 0, ambiguous: id')),
-    JSON.stringify(amb.lines));
+  check('CAPABILITY: a name two GETs end at is ambiguous, not body-resolvable',
+    amb.lines.some((l) => l.includes('body-resolvable names 0, ambiguous: id')), JSON.stringify(amb.lines));
+  // Path and body are different questions: a v2 write whose only GET is v1
+  // has an unresolvable PATH identifier while the NAME is body-resolvable.
+  // The line must not print a resolver count that reads as covering the write.
+  const v1v2 = formatCountdown(inspectSkills([{ name: 'v', content: skillText([
+    'GET /v1/contacts/{{contact_id}} - one contact',
+    '[mutating] POST /v2/contacts/{{contact_id}}/notes - note',
+  ]), filename: 'v.md' }], null));
+  check('CAPABILITY: a write path identifier with no same-resource GET is counted unresolvable on the line',
+    v1v2.lines.some((l) => l.includes('write path identifiers 1, 0 resolvable on their own resource')), JSON.stringify(v1v2.lines));
   const after = formatCountdown(inspectSkills([{ name: 'w', content: three('[mutating] '), filename: 'w.md' }], null));
   check('CAPABILITY: at zero the countdown still prints, and says 0',
     after.unclassified === 0 && after.lines.some((l) => l.startsWith('identifier gate countdown: 0 of 3 ')),
     JSON.stringify(after.lines));
+  const nothing = formatCountdown(inspectSkills([], null), 'echo');
+  check('CAPABILITY: an agent with nothing to count prints NOTHING, never "0 of 0"',
+    nothing.lines.length === 0, JSON.stringify(nothing.lines));
+  const onlyReads = formatCountdown(inspectSkills([{ name: 'r', content: skillText(['GET /widgets/{{widget_id}} - one']), filename: 'r.md' }], null), 'echo');
+  check('CAPABILITY: an agent whose skills only read prints nothing either',
+    onlyReads.lines.length === 0, JSON.stringify(onlyReads.lines));
+  const declaredCase = formatCountdown(inspectSkills([{ name: 'c', content: skillText(['[Mutating] POST /widgets - create']), filename: 'c.md' }], null));
+  check('CAPABILITY: a level written in another case counts as declared, not unclassified',
+    declaredCase.unclassified === 0 && declaredCase.writes === 1, JSON.stringify(declaredCase));
 
   // LIVE: the countdown counts every parsed write, no more and no fewer.
   const liveCount = formatCountdown(allLive);
@@ -509,32 +563,200 @@ async function main() {
   check('LIVE: the countdown counts exactly the writes the parser registers',
     liveCount.writes === parsedWrites && liveCount.unclassified <= liveCount.writes,
     `countdown ${liveCount.writes}, parser ${parsedWrites}`);
+  check('LIVE: no real skill file has an endpoint line that fails to parse',
+    allLive.malformed.length === 0, JSON.stringify(allLive.malformed.map((r) => r.malformed)));
 
   // The boot seam. Agent.load() is what runs on the host: it must register
-  // the tools with their levels AND print the countdown, including at zero.
-  for (const [label, content, want] of [
-    ['one undeclared write', three(''), 'identifier gate countdown: 1 of 3 '],
-    ['all declared', three('[mutating] '), 'identifier gate countdown: 0 of 3 '],
-  ]) {
+  // the tools with their levels AND an index that resolves, and print the
+  // countdown labelled with the agent, including at zero.
+  const boot = async (agentName, files) => {
     const agentDir = mkdtempSync(join(TMP, 'agent-'));
     mkdirSync(join(agentDir, 'skills'));
-    writeFileSync(join(agentDir, 'skills', 'w.md'), content);
+    for (const [f, content] of Object.entries(files)) writeFileSync(join(agentDir, 'skills', f), content);
     const registry = new ToolRegistry({}, {});
-    const agent = new Agent('charlie', agentDir, { toolRegistry: registry, secrets: { get: async () => null } });
+    const agent = new Agent(agentName, agentDir, { toolRegistry: registry, secrets: { get: async () => null } });
     const printed = [];
     const realLog = console.log;
     console.log = (...args) => { printed.push(args.join(' ')); };
-    try {
-      await agent.load();
-    } finally {
-      console.log = realLog;
-    }
-    check(`boot (${label}): Agent.load() prints the countdown`,
+    try { await agent.load(); } finally { console.log = realLog; }
+    return { registry, printed };
+  };
+  for (const [label, content, want] of [
+    ['one undeclared write', three(''), 'identifier gate countdown (charlie): 1 of 3 '],
+    ['all declared', three('[mutating] '), 'identifier gate countdown (charlie): 0 of 3 '],
+  ]) {
+    const { registry, printed } = await boot('charlie', { 'w.md': content });
+    const ctx = registry.getSkillToolContext('charlie__w__w__create_widgets_id_pay');
+    check(`boot (${label}): Agent.load() prints the countdown, labelled with the agent`,
       printed.some((l) => l.includes(want)), JSON.stringify(printed.filter((l) => l.includes('countdown'))));
     check(`boot (${label}): Agent.load() registers the create tool with its effective level`,
       registry.getSkillToolContext('charlie__w__w__create_widgets').level === (label === 'all declared' ? 'mutating' : 'unclassified'),
       JSON.stringify(registry.getSkillToolContext('charlie__w__w__create_widgets').level));
+    check(`boot (${label}): the booted tool's index covers its endpoint and resolves its path identifier`,
+      ctx.identifierIndex !== null
+        && pathParamResolver(ctx.identifierIndex, '/widgets/{{widget_id}}/pay', 'widget_id')?.resource === '/widgets/{{widget_id}}',
+      JSON.stringify(ctx.identifierIndex));
   }
+  // Two skills in one boot: each tool must get its OWN skill's index.
+  const two = await boot('charlie', {
+    'w.md': three('[mutating] '),
+    'g.md': skillText(['GET /gadgets/{{gadget_id}} - one', '[mutating] POST /gadgets/{{gadget_id}}/spin - spin']),
+  });
+  const gCtx = two.registry.getSkillToolContext('charlie__g__g__create_gadgets_id_spin');
+  const wCtx = two.registry.getSkillToolContext('charlie__w__w__create_widgets_id_pay');
+  check('boot (two skills): each tool resolves through its own skill\'s index',
+    bodyFieldResolvers(gCtx.identifierIndex, 'gadget_id').length === 1 && bodyFieldResolvers(wCtx.identifierIndex, 'widget_id').length === 1
+      && bodyFieldResolvers(gCtx.identifierIndex, 'widget_id').length === 0,
+    JSON.stringify({ g: gCtx.identifierIndex?.resolvers, w: wCtx.identifierIndex?.resolvers }));
+  // An agent with an empty skills directory (echo, on the host) must print
+  // no countdown at all: its "0 of 0" would read as the answer.
+  const echoBoot = await boot('echo', {});
+  check('boot (echo, empty skills directory): no countdown line is printed',
+    !echoBoot.printed.some((l) => l.includes('identifier gate countdown')), JSON.stringify(echoBoot.printed));
+  // A malformed line at boot: named with its line, and the countdown says
+  // INCOMPLETE instead of a number that could be read as done.
+  const badBoot = await boot('charlie', { 'w.md': three('[mutating] ').replace('[financial] POST', '[financial POST') });
+  check('boot (malformed line): the report names the file and line',
+    badBoot.printed.some((l) => l.includes('w.md:6') && l.includes('does not parse')), JSON.stringify(badBoot.printed.filter((l) => l.includes('w.md'))));
+  check('boot (malformed line): the countdown says INCOMPLETE, not "0 of"',
+    badBoot.printed.some((l) => l.includes('identifier gate countdown (charlie): INCOMPLETE'))
+      && !badBoot.printed.some((l) => /identifier gate countdown \(charlie\): 0 of/.test(l)),
+    JSON.stringify(badBoot.printed.filter((l) => l.includes('countdown'))));
+
+  // The specialist registration path gets the same index.
+  const specDir = mkdtempSync(join(TMP, 'spec-'));
+  writeFileSync(join(specDir, 'w.md'), three('[mutating] '));
+  const specRegistry = new ToolRegistry({}, {});
+  const specEntry = { agentName: 'widget-operator', businessUnit: 'test', status: 'live', isLive: true, skills: ['w'] };
+  const spec = Agent.createSpecialist(specEntry, { toolRegistry: specRegistry });
+  registerSpecialistSkills(spec, { toolRegistry: specRegistry, secrets: {} }, { skillsDir: specDir, getEntry: () => specEntry });
+  const specCtx = specRegistry.getSkillToolContext('widget-operator__w__w__create_widgets_id_pay');
+  check('specialist path: a specialist-registered tool gets an index that resolves',
+    specCtx.level === 'financial'
+      && pathParamResolver(specCtx.identifierIndex, '/widgets/{{widget_id}}/pay', 'widget_id')?.resource === '/widgets/{{widget_id}}',
+    JSON.stringify({ level: specCtx.level, index: specCtx.identifierIndex }));
+
+  // ── 5. The cold review's findings, one check each ───────────────────
+  console.log('cold review:');
+
+  // Finding 1: every spelling the review found that dropped a write silently
+  // is now named at boot, and makes the countdown INCOMPLETE.
+  const variants = [
+    '[mutating POST /widgets/{{widget_id}}/pay - pay',
+    '[[mutating]] POST /widgets/{{widget_id}}/pay - pay',
+    '[mutating]] POST /widgets/{{widget_id}}/pay - pay',
+    '[mutating] [financial] POST /widgets/{{widget_id}}/pay - pay',
+    '[mutating][financial] POST /widgets/{{widget_id}}/pay - pay',
+    '(mutating) POST /widgets/{{widget_id}}/pay - pay',
+    '{mutating} POST /widgets/{{widget_id}}/pay - pay',
+    '<mutating> POST /widgets/{{widget_id}}/pay - pay',
+    '［mutating］ POST /widgets/{{widget_id}}/pay - pay',
+    '【mutating】 POST /widgets/{{widget_id}}/pay - pay',
+    '`[mutating]` POST /widgets/{{widget_id}}/pay - pay',
+    '- [mutating] POST /widgets/{{widget_id}}/pay - pay',
+    '[mutating] - POST /widgets/{{widget_id}}/pay - pay',
+    'POST [mutating] /widgets/{{widget_id}}/pay - pay',
+    '​[mutating] POST /widgets/{{widget_id}}/pay - pay',
+    '[mutating]​ POST /widgets/{{widget_id}}/pay - pay',
+    '[mutating] POST /widgets/{{widget_id}}/pay — pay',
+    '[mutating] POST /widgets/{{widget_id}}/pay – pay',
+    'POST /widgets/{{widget_id}}/pay',
+  ];
+  const silent = [];
+  for (const v of variants) {
+    const content = skillText(['GET /widgets/{{widget_id}} - one', v]);
+    const report = inspectSkills([{ name: 'w', content, filename: 'w.md' }], null);
+    const lines = formatReport(report);
+    const cd = formatCountdown(report, 'charlie');
+    const named = lines.some((l) => l.includes('w.md:6') && l.includes('does not parse'));
+    const incomplete = cd.lines.some((l) => l.startsWith('identifier gate countdown (charlie): INCOMPLETE'));
+    const readsZero = cd.lines.some((l) => /^identifier gate countdown \(charlie\): 0 of/.test(l));
+    if (!named || !incomplete || readsZero) silent.push(JSON.stringify(v));
+  }
+  check(`finding 1: all ${variants.length} malformed spellings are named at boot and make the countdown INCOMPLETE`,
+    silent.length === 0, silent.join(' | '));
+  const notMalformed = inspectSkills([{ name: 'w', content: skillText([
+    'GET /widgets/{{widget_id}} - one',
+    '# POST /invoices is REMOVED, not undeclared: a comment line, never an endpoint',
+    'All requests to /webhook/qclaw-router must send a flat JSON body:',
+    'lightweight {id, name, active} array (a few KB). Do NOT use GET /workflows?limit=200 for',
+    'Get details at /docs before calling anything',
+  ]), filename: 'w.md' }], null);
+  check('finding 1: comment and prose lines that mention a verb or a path are not reported as malformed',
+    notMalformed.malformed.length === 0, JSON.stringify(notMalformed.malformed));
+
+  // Finding 3: a bracket that is not a level makes ANY write unclassified,
+  // DELETE included, everywhere it is read.
+  for (const bad of ['mutatin', '']) {
+    const content = skillText(['GET /widgets/{{widget_id}} - one', `[${bad}] DELETE /widgets/{{widget_id}} - delete`]);
+    const r = registerReal('w', content);
+    const report = inspectSkills([{ name: 'w', content, filename: 'w.md' }], null);
+    check(`finding 3: "[${bad}] DELETE" is unclassified in the registry, the report and the countdown alike`,
+      r.getSkillToolContext(TOOL('w', 'w__delete_widgets_id')).level === 'unclassified'
+        && formatReport(report).some((l) => /reads as unclassified/.test(l))
+        && formatCountdown(report).unclassified === 1,
+      JSON.stringify({ level: r.getSkillToolContext(TOOL('w', 'w__delete_widgets_id')).level, cd: formatCountdown(report).lines }));
+  }
+  const table2 = [
+    ['DELETE', 'mutatin', 'unclassified'], ['DELETE', '', 'unclassified'], ['DELETE', 'destructive', 'destructive'],
+    ['POST', ' Mutating ', 'mutating'], ['POST', 'MUTATING', 'mutating'],
+  ];
+  const wrong2 = table2.filter(([m, l, want]) => effectiveWriteLevel(m, l) !== want);
+  check('finding 3: effectiveWriteLevel reads the RAW token (trimmed, any case); a bad one is unclassified',
+    wrong2.length === 0, JSON.stringify(wrong2.map(([m, l, want]) => [m, l, want, effectiveWriteLevel(m, l)])));
+  check('grammar: a space inside the bracket and none after it both parse',
+    parseEndpointLine('[ mutating ] POST /w - d')?.level === 'mutating' && parseEndpointLine('[mutating]POST /w - d')?.level === 'mutating');
+
+  // Finding 5: the same-resource property against near misses.
+  const putOnly = deriveIdentifierIndex(parseSkill('p', skillText(['[mutating] PUT /contacts/{{contact_id}} - update']), null).endpoints);
+  check('finding 5 (X2): a PUT ending at the parameter is not a resolver',
+    putOnly.resolvers.length === 0 && bodyFieldResolvers(putOnly, 'contactId').length === 0, JSON.stringify(putOnly.resolvers));
+  const mixed = deriveIdentifierIndex(parseSkill('m', skillText([
+    'GET /a/{{a_id}} - a', '[mutating] PATCH /b/{{b_id}} - b', 'GET /orgs/{{org_id}}/members/{{member_id}}?expand={{expand}} - member',
+  ]), null).endpoints);
+  check('finding 5 (X2): every resolver records that it is a GET',
+    mixed.resolvers.length === 2 && mixed.resolvers.every((r) => r.method === 'GET'), JSON.stringify(mixed.resolvers));
+  const member = mixed.resolvers.find((r) => r.param === 'member_id');
+  check('finding 5 (X8, X9): a resolver keeps every path parameter, and its original path with the query',
+    JSON.stringify(member?.params) === '["org_id","member_id"]'
+      && member?.path === '/orgs/{{org_id}}/members/{{member_id}}?expand={{expand}}'
+      && member?.resource === '/orgs/{{org_id}}/members/{{member_id}}',
+    JSON.stringify(member));
+  const v12 = deriveIdentifierIndex(parseSkill('v', skillText([
+    'GET /v1/contacts/{{contact_id}} - one contact', '[mutating] POST /v2/contacts/{{contact_id}}/notes - note',
+  ]), null).endpoints);
+  check('finding 5 (X3): a v2 write does not resolve through the v1 GET',
+    pathParamResolver(v12, '/v2/contacts/{{contact_id}}/notes', 'contact_id') === null);
+  const twoSep = deriveIdentifierIndex(parseSkill('t', skillText(['GET /records/{{contact_record_id}} - one']), null).endpoints);
+  check('finding 5 (X4): a name with two separators normalises fully',
+    ['contactRecordId', 'contact-record-id', 'CONTACT_RECORD_ID'].every((n) => bodyFieldResolvers(twoSep, n).length === 1));
+  const variantsOfOne = deriveIdentifierIndex(parseSkill('d', skillText([
+    'GET /w/{{id}} - one', 'GET /w/{{id}}/ - one, trailing slash', 'GET /w/{{id}}?expand=1 - one, with a query',
+  ]), null).endpoints);
+  check('finding 5 (X5): one resource written three ways is one resolver',
+    variantsOfOne.resolvers.length === 1, JSON.stringify(variantsOfOne.resolvers));
+  const repeated = deriveIdentifierIndex(parseSkill('r', skillText([
+    'GET /teams/{{team_id}} - one team', '[mutating] POST /teams/{{team_id}}/copy/{{team_id}} - copy',
+  ]), null).endpoints);
+  check('finding 5 (X6, 12): a parameter repeated in a write path is one identifier, resolved at its first occurrence',
+    repeated.writes[0].pathParams.length === 1 && repeated.writes[0].pathParams[0].resolver?.resource === '/teams/{{team_id}}',
+    JSON.stringify(repeated.writes[0].pathParams));
+
+  // Finding 6: one rule for path identifiers, in the prompt and the index.
+  const paths = [
+    '/widgets/{{widget_id}}/close?reason={{reason_id}}',
+    '/contacts/?locationId={{secrets.x}}&query={{query}}',
+    '/orgs/{{org_id}}/members/{{member_id}}?expand={{expand}}',
+    ...realSkills().map((s) => parseSkill(s.name, s.content, null)).filter(Boolean).flatMap((p) => p.endpoints.map((e) => e.path)),
+  ];
+  const disagree = paths.filter((p) => JSON.stringify(pathParamNames(p)) !== JSON.stringify(pathIdentifierNames(p)));
+  check('finding 6: the prompt\'s pathParamNames and the index agree on every path, real and synthetic',
+    disagree.length === 0, disagree.slice(0, 3).join(' | '));
+  const ex = extractIdentifiers({ args: { reason_id: 'r1', widget_id: 'w1' }, path: '/widgets/{{widget_id}}/close?reason={{reason_id}}' });
+  check('finding 6: a query-string placeholder is not shown as a PATH identifier in the prompt',
+    ex.identifiers.find((i) => i.name === 'widget_id')?.source === 'path'
+      && ex.identifiers.find((i) => i.name === 'reason_id')?.source !== 'path',
+    JSON.stringify(ex.identifiers));
 }
 
 try {
