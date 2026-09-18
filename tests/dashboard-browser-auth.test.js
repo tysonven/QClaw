@@ -243,18 +243,22 @@ try {
   check('apiFetch with no session sends the reader to /login?tab=ghl', client.replaced[0] === '/login?tab=ghl', JSON.stringify(client.replaced));
   check('...and does not hand the failure to the tab as data', threw !== null);
 
+  // A throw here is a failed check, not an aborted run: the rest must still report.
+  const settle = async (p) => { try { return { res: await p }; } catch (err) { return { err }; } };
+
   client = makeClient({ jar: cookie?.pair, activeTab: 'ghl' });
-  res = await client.ctx.apiFetch('/api/threads');
-  body = await res.json().catch(() => null);
-  check('apiFetch with the cookie returns the data', res.status === 200 && body?.[0]?.id === 'thread-marker-7f3a' && client.replaced.length === 0,
-    `${res.status} ${JSON.stringify(client.replaced)}`);
+  let call = await settle(client.ctx.apiFetch('/api/threads'));
+  body = call.res ? await call.res.json().catch(() => null) : null;
+  check('apiFetch with the cookie returns the data',
+    call.res?.status === 200 && body?.[0]?.id === 'thread-marker-7f3a' && client.replaced.length === 0,
+    `${call.res?.status ?? call.err} ${JSON.stringify(client.replaced)}`);
 
   client = makeClient({ jar: cookie?.pair, activeTab: 'chat' });
-  res = await client.ctx.apiFetch('/api/auth/verify-pin', {
+  call = await settle(client.ctx.apiFetch('/api/auth/verify-pin', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin: '0000' }),
-  });
-  check('apiFetch leaves an unmarked 401 (wrong PIN) to the caller', res.status === 401 && client.replaced.length === 0,
-    `${res.status} ${JSON.stringify(client.replaced)}`);
+  }));
+  check('apiFetch leaves an unmarked 401 (wrong PIN) to the caller', call.res?.status === 401 && client.replaced.length === 0,
+    `${call.res?.status ?? call.err} ${JSON.stringify(client.replaced)}`);
 
   client = makeClient({ jar: null, activeTab: 'chat', hash: '#ghl' });
   client.ctx.openTabFromHash();
