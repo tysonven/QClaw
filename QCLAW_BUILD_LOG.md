@@ -27085,3 +27085,28 @@ column, which would have recorded a not-found identifier as `resolved`.
 
 Same rule as requiring a positive validity marker on both sides of a guard:
 where the marker is not specific, a plausible default fills the gap.
+
+## 2026-09-18: three mutants that never got to run
+
+The mutation run on #184 reported 25 of 25 mutants killed. That number hides
+the more useful one: three of the 25 would have survived the tests as first
+written. They were found by reading each planned mutant against the tests
+BEFORE the harness ran, not by the run.
+
+- The CLI going back to its own copy of the endpoint grammar (M10). The CLI
+  test only checked skills with a nonzero count, and the one live file where
+  the two grammars disagree, clipper, has a count of zero.
+- Counting a name that two GETs end at as "with a resolver" (M17). No
+  synthetic skill with writes had an ambiguous name.
+- Reading a write's path identifiers from the path including its query string
+  (M24). No fixture had a write with a `{{param}}` in its query string.
+
+Each got a test (QClaw `3934456`, `a4d01b3`) before the harness ran. The run
+then killed all 25 at `a4d01b3`, and again at `df2ffe0` after the declarations
+changed the fixtures under it.
+
+> Walk the mutant list against the tests before running it. A survivor found
+> by reading costs a test; one found by the run costs a test and a rerun; one
+> never found costs a green suite that proves less than it says. A clean
+> mutation report is only as informative as the account of what was tightened
+> to reach it, so give the account.
