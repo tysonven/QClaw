@@ -18,6 +18,7 @@ import { MCPClient } from './mcp-client.js';
 import { log } from '../core/logger.js';
 import { extractIdentifiers } from '../security/approval-summary.js';
 import { hasSubjectResolver, resolveSubject } from '../security/subject-resolvers.js';
+import { deriveIdentifierIndex, effectiveWriteLevel } from '../agents/skill-diagnostics.js';
 import { appendFileSync, chmodSync, existsSync, mkdirSync, statSync } from 'fs';
 import { dirname, join } from 'path';
 import { homedir } from 'os';
@@ -614,6 +615,9 @@ export const SKILL_READ_TIMEOUT_MS = 15000;
 export const SKILL_WRITE_TIMEOUT_MS = 45000;
 const SKILL_WRITE_METHODS = ['POST', 'PUT', 'PATCH', 'DELETE'];
 
+// parsed skill -> its identifier index (see registerSkillTool).
+const _identifierIndexes = new WeakMap();
+
 /**
  * Re-read the subject of a write whose outcome is unknown.
  *
@@ -1149,11 +1153,25 @@ export class ToolRegistry {
       secretKey: parsedSkill.secretKey || null
     };
 
+    // The identifier index is built HERE, at registration, and not by the
+    // caller. Two paths register skill tools (agents/registry.js for the
+    // primary agent, specialist-loader.js for specialists), and tests register
+    // directly; an index attached by any one caller would leave the others
+    // with none, and a gate reading an absent index looks exactly like a gate
+    // with nothing to check. One index per parsed skill, shared by its tools.
+    let identifierIndex = _identifierIndexes.get(parsedSkill);
+    if (!identifierIndex) {
+      identifierIndex = deriveIdentifierIndex(parsedSkill.endpoints);
+      _identifierIndexes.set(parsedSkill, identifierIndex);
+    }
+
     const entry = {
       preset,
       toolDef,
       skill: parsedSkill,
       scope,
+      identifierIndex,
+      level: effectiveWriteLevel(toolDef.method || 'GET', toolDef.level ?? null),
     };
 
     this._apiTools.set(fullName, entry);
@@ -1712,8 +1730,14 @@ export class ToolRegistry {
    * resolver reads. Same `skill:` discriminator as getSkillToolMethod, so
    * builtins, MCP tools and non-skill presets all yield an empty object.
    *
+   * `level` and `identifierIndex` are for the identifier gate: the write's
+   * effective level (declared, else destructive for DELETE, else
+   * unclassified; null for a GET) and the index derived from the owning
+   * skill's endpoint block at registration.
+   *
    * @param {string} toolName
-   * @returns {{ path?: string, skill?: string, baseUrl?: string }}
+   * @returns {{ path?: string, skill?: string, baseUrl?: string,
+   *             level?: string|null, identifierIndex?: object|null }}
    */
   getSkillToolContext(toolName) {
     const entry = this._apiTools.get(toolName);
@@ -1724,6 +1748,8 @@ export class ToolRegistry {
       path: entry.toolDef?.endpoint || entry.toolDef?.path || null,
       skill: presetName.slice(6) || null,
       baseUrl: entry.preset?.baseUrl || null,
+      level: entry.level ?? null,
+      identifierIndex: entry.identifierIndex ?? null,
     };
   }
 

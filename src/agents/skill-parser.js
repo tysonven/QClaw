@@ -35,6 +35,85 @@
  */
 
 /**
+ * The endpoint line grammar, defined ONCE.
+ *
+ *   [level] METHOD /path - description
+ *
+ * `[level]` is optional and declares what a write does, for the identifier
+ * gate (docs/identifier-resolution-design.md section 5). It is one of
+ * ENDPOINT_LEVELS. An undeclared write is not given a level here: it reads as
+ * unclassified, which the gate refuses (see effectiveWriteLevel in
+ * skill-diagnostics.js).
+ *
+ * WHY THIS LIVES IN ONE PLACE: until 2026-09-18 this grammar was written out
+ * four times, in this parser, twice in skill-diagnostics.js and in the
+ * `qclaw skill list` endpoint count, plus a copy in its test. Adding a prefix
+ * to a format defined in four places is how a skill goes silent: the parser
+ * drops a line it does not match and returns no tool for it, with no error,
+ * which is exactly how ads-agency, content-studio and clipper sat broken from
+ * the day they were written (#149, #150, #151). Every reader of an endpoint
+ * line imports parseEndpointLine or looksLikeEndpointLine from here.
+ *
+ * A level that is not one of ENDPOINT_LEVELS (a typo, an empty `[]`) does NOT
+ * drop the endpoint. The tool still registers, `level` is null so the write
+ * reads as unclassified and is refused, and `declaredLevel` keeps the raw
+ * token so the boot diagnostic can name the line. A typo must cost a loud
+ * refusal, never a missing tool.
+ */
+export const ENDPOINT_LEVELS = Object.freeze(['financial', 'destructive', 'mutating']);
+
+const ENDPOINT_LINE_RE = /^(?:\[([^\]]*)\]\s*)?(GET|POST|PUT|PATCH|DELETE)\s+(\/[^\s]*)\s*-\s*(.+)/i;
+
+// Looser: a line that LOOKS like an endpoint (verb then something), used only
+// to explain why a line that looks like one did not parse.
+const ENDPOINT_LIKE_RE = /^(?:\[[^\]]*\]\s*)?(GET|POST|PUT|PATCH|DELETE)\s+\S/i;
+
+/**
+ * Parse one endpoint line. Returns null when the line is not an endpoint.
+ * @param {string} line
+ * @returns {{ method: string, path: string, description: string,
+ *             level: string|null, declaredLevel: string|null }|null}
+ *   `level` is the declared level when it is valid, else null.
+ *   `declaredLevel` is the raw bracket content, or null when there was none.
+ */
+export function parseEndpointLine(line) {
+  const m = String(line ?? '').trim().match(ENDPOINT_LINE_RE);
+  if (!m) return null;
+  const [, rawLevel, method, path, description] = m;
+  const declaredLevel = rawLevel === undefined ? null : rawLevel.trim();
+  const candidate = declaredLevel === null ? null : declaredLevel.toLowerCase();
+  return {
+    method: method.toUpperCase(),
+    path: path.trim(),
+    description: description.trim(),
+    level: candidate !== null && ENDPOINT_LEVELS.includes(candidate) ? candidate : null,
+    declaredLevel,
+  };
+}
+
+/** True when a line looks like an endpoint line, whether or not it parses. */
+export function looksLikeEndpointLine(line) {
+  return ENDPOINT_LIKE_RE.test(String(line ?? '').trim());
+}
+
+/**
+ * Count the endpoint lines under `## Endpoints`, by the same grammar the
+ * parser registers tools from. Used by `qclaw skill list`.
+ * @param {string} content
+ * @returns {number}
+ */
+export function countEndpointLines(content) {
+  let inSection = false;
+  let count = 0;
+  for (const line of String(content ?? '').split(/\r?\n/)) {
+    if (/^##\s+Endpoints\b/.test(line)) { inSection = true; continue; }
+    if (inSection && /^##\s+/.test(line)) break;
+    if (inSection && parseEndpointLine(line)) count++;
+  }
+  return count;
+}
+
+/**
  * Parse a skill markdown file into an executable tool config
  * @param {string} name - Skill name (from filename)
  * @param {string} content - Markdown content
@@ -55,8 +134,8 @@ export function parseSkill(name, content, secrets) {
 
     let section = null;
 
-    for (let line of lines) {
-      line = line.trim();
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
 
       // Detect sections
       if (line.startsWith('## Auth')) {
@@ -94,15 +173,10 @@ export function parseSkill(name, content, secrets) {
       if (section === 'endpoints') {
         // GET /customers - List customers
         // GET /customers/{{customer_id}} - Get customer by ID
-        // POST /customers - Create customer
-        const match = line.match(/^(GET|POST|PUT|PATCH|DELETE)\s+(\/[^\s]*)\s*-\s*(.+)/i);
-        if (match) {
-          const [, method, path, description] = match;
-          skill.endpoints.push({
-            method: method.toUpperCase(),
-            path: path.trim(),
-            description: description.trim(),
-          });
+        // [mutating] POST /customers - Create customer
+        const endpoint = parseEndpointLine(line);
+        if (endpoint) {
+          skill.endpoints.push({ ...endpoint, line: i + 1 });
         }
       }
 
@@ -207,6 +281,9 @@ export function skillToTools(skill) {
       skill: skill.name,
       method: endpoint.method,
       path: endpoint.path,
+      // The declared level, or null. Never sent to the model: the registry
+      // formats only name, description and inputSchema.
+      level: endpoint.level ?? null,
     });
   }
 

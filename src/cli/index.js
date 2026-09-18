@@ -980,18 +980,10 @@ switch (command) {
         return { name: get('name') || fallbackName, category: get('category') };
       };
 
-      // Endpoint count: lines under "## Endpoints" matching METHOD /path
-      const countEndpoints = (content) => {
-        const lines = content.split(/\r?\n/);
-        let inSection = false;
-        let count = 0;
-        for (const line of lines) {
-          if (/^##\s+Endpoints\b/.test(line)) { inSection = true; continue; }
-          if (inSection && /^##\s+/.test(line)) break;
-          if (inSection && /^(GET|POST|PUT|PATCH|DELETE)\s+\//.test(line.trim())) count++;
-        }
-        return count;
-      };
+      // Endpoint count: lines under "## Endpoints" that the parser reads as
+      // endpoints, by the ONE grammar in skill-parser.js. This used to be its
+      // own regex, one of four copies of that grammar.
+      const { countEndpointLines: countEndpoints } = await import('../agents/skill-parser.js');
 
       const files = readdirSync(skillsDir).filter(f => f.endsWith('.md'));
 

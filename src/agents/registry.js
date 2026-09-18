@@ -9,7 +9,7 @@ import { readdirSync, existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { log } from '../core/logger.js';
 import { parseSkill, skillToTools, executeSkillTool } from './skill-parser.js';
-import { inspectSkills, formatReport } from './skill-diagnostics.js';
+import { inspectSkills, formatReport, formatCountdown } from './skill-diagnostics.js';
 import { loadSkills } from './skill-loader.js';
 import { scanSpecialistResults } from '../tools/delegate-to.js';
 import { regenerateWithGates, isGatedTurn, buildProvenanceText } from './gates.js';
@@ -330,6 +330,12 @@ export class Agent {
             if (line.startsWith('  ')) log.warn(line);
             else log.error(line);
           }
+          // The countdown to zero unclassified writes prints on EVERY boot,
+          // including at 0: the identifier gate merges only when the host
+          // log shows 0, so 0 must be printed to be read. Warn while nonzero.
+          const countdown = formatCountdown(report);
+          const logCountdown = countdown.unclassified > 0 ? log.warn : log.info;
+          for (const line of countdown.lines) logCountdown(line);
         } catch (err) {
           log.warn(`skill diagnostics failed: ${err.message}`);
         }

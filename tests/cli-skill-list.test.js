@@ -21,6 +21,7 @@ import { spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { join, dirname } from 'path';
 import { readdirSync, readFileSync } from 'fs';
+import { countEndpointLines } from '../src/agents/skill-parser.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const REPO = join(dirname(__filename), '..');
@@ -51,14 +52,11 @@ function expectedSkills() {
     };
     const name = get('name') || file.replace(/\.md$/, '');
     const category = get('category');
-    // Endpoint count under "## Endpoints"
-    let inSection = false; let count = 0;
-    for (const line of content.split(/\r?\n/)) {
-      if (/^##\s+Endpoints\b/.test(line)) { inSection = true; continue; }
-      if (inSection && /^##\s+/.test(line)) break;
-      if (inSection && /^(GET|POST|PUT|PATCH|DELETE)\s+\//.test(line.trim())) count++;
-    }
-    out.push({ name, category, endpoints: count });
+    // Endpoint count under "## Endpoints", by the parser's own grammar. This
+    // was a fourth copy of that grammar, which is how a `[level]` prefix
+    // would have made the CLI and this test agree with each other and
+    // disagree with the parser.
+    out.push({ name, category, endpoints: countEndpointLines(content) });
   }
   return out;
 }
