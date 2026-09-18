@@ -174,7 +174,7 @@ for (const [label, res] of [
 // ─── H1 ──────────────────────────────────────────────────────────────────
 console.log('H1: a disable that did not succeed must never report success');
 for (const status of [500, 401, 403, 503]) {
-  const { ctx, el, toasts } = makeEnv({
+  const { ctx, el, toasts, navigations } = makeEnv({
     fetchImpl: async () => okRes({ id: 1, trading_enabled: true, max_position_usdc: 10, min_edge_threshold: 7, daily_loss_limit: 20 }),
   });
   await ctx.trLoadConfig();                       // armed: toggle ON
@@ -187,6 +187,9 @@ for (const status of [500, 401, 403, 503]) {
     toasts.some(t => t.kind === 'err' && /ARMED/.test(t.msg)), JSON.stringify(toasts));
   check(`HTTP ${status}: toggle does NOT show OFF`,
     el('tr-trading-toggle').textContent !== 'OFF', el('tr-trading-toggle').textContent);
+  // An upstream failure (these carry no login-required marker) is not a
+  // signed-out dashboard: the reader stays on the page to see the warning.
+  check(`HTTP ${status}: reader is NOT sent to /login`, navigations.length === 0, JSON.stringify(navigations));
 }
 
 // The dashboard session expiring mid-session: the disable comes back as the
