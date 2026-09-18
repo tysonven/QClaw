@@ -27110,3 +27110,71 @@ changed the fixtures under it.
 > never found costs a green suite that proves less than it says. A clean
 > mutation report is only as informative as the account of what was tightened
 > to reach it, so give the account.
+
+## 2026-09-18: the gate to turn on the gate could go green for two wrong reasons
+
+Part two of the identifier gate merges when the host's boot log reads 0: zero
+unclassified skill writes. A cold review of #184 (at QClaw `df2ffe0`) found
+two independent ways that line could read 0 while the answer was not 0. It is
+the vacuity class, inside the mechanism built to close it.
+
+- **A write that failed to parse left the count.** An endpoint line the
+  grammar rejects (an unclosed `[mutating`, stacked or fullwidth brackets, a
+  zero-width space, an en or em dash before the description: eighteen
+  spellings) registered no tool and reported nothing. The write dropped out of
+  both sides of "U of W", so the count shrank with it and nothing said why.
+- **An agent with nothing to count printed 0.** Every agent's boot printed a
+  total. The host has an `echo` agent with an empty skills directory (read on
+  `qclaw-agent` 2026-09-18), so every boot would have printed an unlabelled
+  `0 of 0 across 0 skills` beside Charlie's line. Whatever Charlie's state,
+  the log would have held a line reading 0.
+
+Either alone was enough, and they fail independently: fixing one leaves the
+other. Fixed in QClaw `b353358`:
+
+- every endpoint-looking line that fails to parse is named at boot with its
+  file and line;
+- the countdown then says `INCOMPLETE` instead of a number;
+- the line names its agent;
+- an agent with nothing to count prints nothing at all.
+
+The same round closed the review's other blocking findings:
+
+- a bad bracket on a DELETE now reads unclassified;
+- the gate is handed an index only when it covers the tool's own endpoint, so
+  "never derived" reaches it as no index rather than an empty one;
+- resolvers record that they are GETs;
+- the prompt and the index share one rule for path identifiers.
+
+Mutation run at QClaw `f41612d`: 56 mutants, all killed. That covers the
+earlier 25, the review's 14 survivors (including the three that emptied the
+index at `Agent.load()`, at the specialist path and by caching on the skill
+name), and one per fix.
+
+> A condition written as "the log reads 0" is only as good as every line that
+> can print a 0. Before trusting a zero, ask what else prints one: an empty
+> set, a count that shrank, a second writer. A mechanism built to stop a
+> vacuous pass needs the same question asked of itself.
+
+### Two claims of mine, the same shape
+
+- #184's body said "a typo costs a loud refusal, never a missing tool". That
+  was true of the typo in mind, a well-formed bracket holding a misspelt level
+  (`[finacial]`). It was false of the eighteen malformed spellings, which
+  dropped the tool silently. It was found by reproducing the reviewer's
+  finding, not by accepting it.
+- The identifiers column in the classification table Tyson decided from said
+  GHL notes carry only `contact_id` and contact creation carries none. The
+  skill files document `userId` on notes and `locationId` on contact creation.
+  Both look like ids and nothing resolves them, so under the decided
+  notice-by-name rule every note and every contact creation would prompt NOT
+  VERIFIED, every time.
+
+> Both are claims about the code's behaviour that were true of the case in
+> mind and not of the cases not enumerated. Enumerate before claiming: list
+> the inputs the claim covers, then try one that is not on the list.
+
+The second is being fixed by giving the GHL skills a GET for users and for the
+location, so the index can resolve both. That is on hold: the FSC token
+answered 401 to both reads (2026-09-18), and Tyson decides before anything is
+built around it.
