@@ -27032,3 +27032,56 @@ cost of asking was a single search.
 A third caller was found the same way and deliberately left working: the config
 template allowlist still permits `{{config.dashboard.authToken}}`, though no
 skill currently uses it.
+
+## 2026-09-18: two success signals that were not the entity
+
+Found auditing for the identifier gate (#144). One finding, in two places. Both
+would have let the gate record an identifier as checked when nothing had
+checked it, and both are the defect the gate exists to prevent: a success
+signal taken from something other than the thing asked about.
+
+### Which GET resolves an identifier
+
+#148's boot diagnostic (QClaw `3c0b5dc`) chose the resolver for an identifier
+as "a GET whose path ends at the parameter". The parsed path includes the
+query string, and the rule keyed on the parameter's name. Run over the real
+skill files at QClaw `3621d09`, it counted as resolvers:
+
+- `{{query}}` on the contact search in all six GHL skills;
+- `{{status}}` and `{{workflow_id}}` on n8n-api's execution filters;
+- `{{secrets.ghl_*_location_id}}` in all six GHL skills.
+
+And n8n-api's `{{id}}` on workflows and on executions was one resolver, because
+the name was the key. A search answers 200 for any value. A validation layer
+built on that rule would have resolved every identifier it was handed.
+
+The design had named `query` and `status`. Running the rule over the files
+found `workflow_id` and the secrets placeholders too.
+
+### What counts as resolved
+
+#143's subject lookup (`src/security/subject-resolvers.js:73` at QClaw
+`3621d09`) reports `status: 'resolved'` whenever it produced any line. For a
+missing position the line it produces is
+`position <id>: NOT FOUND in the trade engine`. The approval prompt shows that
+line correctly, which is all it was built for. The approved design (section 6,
+#144 at `cadc0f5`) proposed wiring that same status to the new `validated`
+column, which would have recorded a not-found identifier as `resolved`.
+
+### Where it stands
+
+- The derivation half is in PR #184 (QClaw `a9c6f7d`): query string stripped,
+  templates excluded, the resolver for a path identifier keyed on its own
+  resource. Mutation-tested: keeping the query string, keying on the name, and
+  letting a secrets placeholder resolve each turn the suite red.
+- The lookup half is decided and not built at the time of writing. #143's
+  lines stay for display. The gate gets its own result, and a resolve counts
+  only when the entity comes back carrying the identifier that was asked for.
+
+> A 2xx, a non-empty list and a line of output are each evidence that
+> something answered. None of them is evidence that the thing asked about
+> exists. Require the entity, and check it carries the identifier that was
+> sent.
+
+Same rule as requiring a positive validity marker on both sides of a guard:
+where the marker is not specific, a plausible default fills the gap.
