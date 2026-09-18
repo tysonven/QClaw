@@ -237,17 +237,17 @@ try {
     return { ctx, replaced, clicked };
   };
 
-  let client = makeClient({ jar: null, activeTab: 'ghl' });
-  let threw = null;
-  try { await client.ctx.apiFetch('/api/threads'); } catch (e) { threw = e; }
-  check('apiFetch with no session sends the reader to /login?tab=ghl', client.replaced[0] === '/login?tab=ghl', JSON.stringify(client.replaced));
-  check('...and does not hand the failure to the tab as data', threw !== null);
-
   // A throw here is a failed check, not an aborted run: the rest must still report.
   const settle = async (p) => { try { return { res: await p }; } catch (err) { return { err }; } };
 
-  client = makeClient({ jar: cookie?.pair, activeTab: 'ghl' });
+  let client = makeClient({ jar: null, activeTab: 'ghl' });
   let call = await settle(client.ctx.apiFetch('/api/threads'));
+  check('apiFetch with no session sends the reader to /login?tab=ghl', client.replaced[0] === '/login?tab=ghl', JSON.stringify(client.replaced));
+  check('...and hands the 401 back unchanged, so the caller\'s own failure path runs',
+    call.res?.status === 401 && !call.err, `${call.res?.status} ${call.err}`);
+
+  client = makeClient({ jar: cookie?.pair, activeTab: 'ghl' });
+  call = await settle(client.ctx.apiFetch('/api/threads'));
   body = call.res ? await call.res.json().catch(() => null) : null;
   check('apiFetch with the cookie returns the data',
     call.res?.status === 200 && body?.[0]?.id === 'thread-marker-7f3a' && client.replaced.length === 0,

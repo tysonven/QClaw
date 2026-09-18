@@ -1123,12 +1123,16 @@ function currentTab() {
 // "no valid session" sends the reader to /login, which says where the token
 // comes from and returns them to this tab. Other 401s (a wrong PIN, an
 // upstream 401 relayed by a proxy route) are left to the caller.
+//
+// The response is returned unchanged either way, so each caller's own failure
+// path still runs. The trading kill switch depends on that: a disable that
+// comes back 401 must still say "trading may still be ARMED", not be swallowed
+// by the navigation.
 async function apiFetch(path, opts) {
   const r = await fetch(path, { credentials: 'same-origin', ...(opts || {}) });
   if (r.status === 401 && r.headers.get('X-Dashboard-Auth') === 'login-required') {
     const tab = currentTab();
     location.replace('/login' + (tab ? '?tab=' + encodeURIComponent(tab) : ''));
-    throw new Error('Session expired, opening the sign-in page');
   }
   return r;
 }

@@ -52,6 +52,22 @@ for (const fn of ['function trLoadConfig', 'async function trPostConfig', 'funct
   }
 }
 
+// The block calls apiFetch(), the dashboard's shared wrapper for every
+// same-origin call. Run the real one (and the currentTab() it uses) rather
+// than a stub, so a change to how it treats a 401 reaches these assertions.
+function extractFunction(header) {
+  const start = html.indexOf(header);
+  if (start === -1) { console.error(`FATAL: ui.html has no ${header}`); process.exit(1); }
+  let depth = 0;
+  for (let i = html.indexOf('{', start); i < html.length; i++) {
+    if (html[i] === '{') depth++;
+    else if (html[i] === '}' && --depth === 0) return html.slice(start, i + 1);
+  }
+  console.error(`FATAL: ${header} is unbalanced`);
+  process.exit(1);
+}
+const shared = [extractFunction('function currentTab()'), extractFunction('async function apiFetch(')].join('\n');
+
 // ─── Harness ─────────────────────────────────────────────────────────────
 function makeEnv({ fetchImpl } = {}) {
   const els = {};
@@ -60,11 +76,14 @@ function makeEnv({ fetchImpl } = {}) {
     className: '', style: {}, focus() {},
   });
   const toasts = [];
+  const navigations = [];
   const ctx = {
     console: { log() {}, error() {}, warn() {} },
     $: el,
-    API: (p) => p,
     fetch: fetchImpl,
+    location: { replace: (u) => navigations.push(u) },
+    document: { querySelector: () => ({ dataset: { page: 'trading' } }) },
+    encodeURIComponent,
     toast: (msg, kind) => toasts.push({ msg, kind }),
     setInterval: () => 0,
     clearInterval: () => {},
@@ -82,11 +101,15 @@ function makeEnv({ fetchImpl } = {}) {
     Object.defineProperty(globalThis, '_trConfigLoaded', { get: () => _trConfigLoaded, configurable: true });
     Object.defineProperty(globalThis, '_trConfig', { get: () => _trConfig, configurable: true });
   `;
-  vm.runInContext(source + EXPOSE, ctx);
-  return { ctx, els, el, toasts };
+  vm.runInContext(shared + '\n' + source + EXPOSE, ctx);
+  return { ctx, els, el, toasts, navigations };
 }
 
-const okRes = (body, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => body });
+// A real Response always has headers; apiFetch reads one on a 401.
+const okRes = (body, status = 200, headers = {}) => ({
+  ok: status >= 200 && status < 300, status, json: async () => body,
+  headers: { get: (k) => headers[k.toLowerCase()] ?? null },
+});
 
 // ─── C1 ──────────────────────────────────────────────────────────────────
 console.log('C1: a fabricated or failed config read must never become live config');
@@ -164,6 +187,27 @@ for (const status of [500, 401, 403, 503]) {
     toasts.some(t => t.kind === 'err' && /ARMED/.test(t.msg)), JSON.stringify(toasts));
   check(`HTTP ${status}: toggle does NOT show OFF`,
     el('tr-trading-toggle').textContent !== 'OFF', el('tr-trading-toggle').textContent);
+}
+
+// The dashboard session expiring mid-session: the disable comes back as the
+// auth middleware's 401, marked login-required. apiFetch sends the reader to
+// /login, and the kill switch must STILL say trading may be armed rather than
+// have its failure swallowed by the navigation.
+{
+  const { ctx, el, toasts, navigations } = makeEnv({
+    fetchImpl: async () => okRes({ id: 1, trading_enabled: true, max_position_usdc: 10, min_edge_threshold: 7, daily_loss_limit: 20 }),
+  });
+  await ctx.trLoadConfig();
+  ctx.fetch = async () => okRes({ error: 'Unauthorised' }, 401, { 'x-dashboard-auth': 'login-required' });
+  await ctx.trToggleTrading();
+  check('expired session: no success toast',
+    !toasts.some(t => t.kind === 'ok' && /disabled|cancelled/i.test(t.msg)), JSON.stringify(toasts));
+  check('expired session: still warns trading may still be ARMED',
+    toasts.some(t => t.kind === 'err' && /ARMED/.test(t.msg)), JSON.stringify(toasts));
+  check('expired session: toggle does NOT show OFF',
+    el('tr-trading-toggle').textContent !== 'OFF', el('tr-trading-toggle').textContent);
+  check('expired session: reader is sent to /login?tab=trading',
+    navigations[0] === '/login?tab=trading', JSON.stringify(navigations));
 }
 
 {
