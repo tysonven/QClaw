@@ -11,12 +11,12 @@ description: Dispatch operational actions to n8n via /webhook/qclaw-router and p
 Base URL: https://webhook.flowos.tech
 Header: X-QCLAW-TOKEN: {{secrets.n8n_router_token}}
 ## Endpoints
-POST /webhook/qclaw-router - Route operational actions to n8n workflows
-POST /webhook/qclaw-google-sheets - Append/read Google Sheets ops data
-POST /webhook/qclaw-trello - Create/update Trello cards
-POST /webhook/qclaw-social - Queue social publishing (FB/IG/LinkedIn)
-POST /webhook/qclaw-wordpress - Draft/publish WordPress content
-POST /webhook/qclaw-youtube - Trigger YouTube metadata workflows
+[mutating] POST /webhook/qclaw-router - Route operational actions to n8n workflows
+[mutating] POST /webhook/qclaw-google-sheets - Append/read Google Sheets ops data
+[mutating] POST /webhook/qclaw-trello - Create/update Trello cards
+[mutating] POST /webhook/qclaw-social - Queue social publishing (FB/IG/LinkedIn)
+[mutating] POST /webhook/qclaw-wordpress - Draft/publish WordPress content
+[mutating] POST /webhook/qclaw-youtube - Trigger YouTube metadata workflows
 ## Payload Format
 All requests to /webhook/qclaw-router must send a flat JSON body:
 {"action": "social"}

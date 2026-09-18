@@ -40,11 +40,11 @@ GET /invoices/?altId={{secrets.ghl_flowos_location_id}}&altType=location&limit=1
 GET /invoices/?altId={{secrets.ghl_flowos_location_id}}&altType=location&limit=100&offset=0&status=sent - List outstanding Flow OS invoices, meaning issued and not yet paid. Use this for unpaid, outstanding or owed questions.
 
 # Write endpoints (all require Telegram approval via ApprovalGate)
-POST /contacts/?locationId={{secrets.ghl_flowos_location_id}} - Create Flow OS contact. Body: {firstName, lastName, email, phone, locationId}. ALWAYS search by email first — dedup is mandatory.
-PUT /contacts/{{contact_id}} - Update Flow OS contact fields. Body: any subset of {firstName, lastName, email, phone, tags, customFields}.
-POST /contacts/{{contact_id}}/notes - Add internal note to Flow OS contact. Body: {body, userId}. userId: see Usage Notes for literal value.
-POST /contacts/{{contact_id}}/tasks - Create task against Flow OS contact. Body: {title, body, dueDate, completed, contactId, assignedTo}. assignedTo: see Usage Notes for literal value.
-POST /conversations/messages - Create email DRAFT to an existing Flow OS contact only. Body: {type: "Email", contactId, emailFrom, emailTo, emailSubject, emailBody, attachments: []}. NEVER send to arbitrary addresses — contactId is mandatory. This creates a draft, not a live send; Tyson reviews before sending.
+[mutating] POST /contacts/?locationId={{secrets.ghl_flowos_location_id}} - Create Flow OS contact. Body: {firstName, lastName, email, phone, locationId}. ALWAYS search by email first — dedup is mandatory.
+[mutating] PUT /contacts/{{contact_id}} - Update Flow OS contact fields. Body: any subset of {firstName, lastName, email, phone, tags, customFields}.
+[mutating] POST /contacts/{{contact_id}}/notes - Add internal note to Flow OS contact. Body: {body, userId}. userId: see Usage Notes for literal value.
+[mutating] POST /contacts/{{contact_id}}/tasks - Create task against Flow OS contact. Body: {title, body, dueDate, completed, contactId, assignedTo}. assignedTo: see Usage Notes for literal value.
+[destructive] POST /conversations/messages - Create email DRAFT to an existing Flow OS contact only. Body: {type: "Email", contactId, emailFrom, emailTo, emailSubject, emailBody, attachments: []}. NEVER send to arbitrary addresses — contactId is mandatory. This creates a draft, not a live send; Tyson reviews before sending.
 
 ## Permissions
 - http: [services.leadconnectorhq.com]

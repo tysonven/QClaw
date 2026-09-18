@@ -38,11 +38,11 @@ GET /contacts/{{contact_id}} - Get a single SproutCode contact by ID
 GET /opportunities/search?location_id={{secrets.ghl_sproutcode_location_id}} - List SproutCode opportunities
 
 # Write endpoints (all require Telegram approval via ApprovalGate)
-POST /contacts/?locationId={{secrets.ghl_sproutcode_location_id}} - Create SproutCode contact. Body: {firstName, lastName, email, phone, locationId}. ALWAYS search by email first — dedup is mandatory.
-PUT /contacts/{{contact_id}} - Update SproutCode contact fields. Body: any subset of {firstName, lastName, email, phone, tags, customFields}.
-POST /contacts/{{contact_id}}/notes - Add internal note to SproutCode contact. Body: {body, userId}. userId: see Usage Notes for literal value.
-POST /contacts/{{contact_id}}/tasks - Create task against SproutCode contact. Body: {title, body, dueDate, completed, contactId, assignedTo}. assignedTo: see Usage Notes for literal value.
-POST /conversations/messages - Create email DRAFT to an existing SproutCode contact only. Body: {type: "Email", contactId, emailFrom, emailTo, emailSubject, emailBody, attachments: []}. NEVER send to arbitrary addresses — contactId is mandatory. This creates a draft, not a live send; Tyson reviews before sending.
+[mutating] POST /contacts/?locationId={{secrets.ghl_sproutcode_location_id}} - Create SproutCode contact. Body: {firstName, lastName, email, phone, locationId}. ALWAYS search by email first — dedup is mandatory.
+[mutating] PUT /contacts/{{contact_id}} - Update SproutCode contact fields. Body: any subset of {firstName, lastName, email, phone, tags, customFields}.
+[mutating] POST /contacts/{{contact_id}}/notes - Add internal note to SproutCode contact. Body: {body, userId}. userId: see Usage Notes for literal value.
+[mutating] POST /contacts/{{contact_id}}/tasks - Create task against SproutCode contact. Body: {title, body, dueDate, completed, contactId, assignedTo}. assignedTo: see Usage Notes for literal value.
+[destructive] POST /conversations/messages - Create email DRAFT to an existing SproutCode contact only. Body: {type: "Email", contactId, emailFrom, emailTo, emailSubject, emailBody, attachments: []}. NEVER send to arbitrary addresses — contactId is mandatory. This creates a draft, not a live send; Tyson reviews before sending.
 
 ## Permissions
 - http: [services.leadconnectorhq.com]

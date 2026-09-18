@@ -38,11 +38,11 @@ GET /invoices/?altId={{secrets.ghl_fsc_location_id}}&altType=location&limit=100&
 GET /invoices/?altId={{secrets.ghl_fsc_location_id}}&altType=location&limit=100&offset=0&status=sent - List outstanding FSC invoices, meaning issued and not yet paid. Use this for unpaid, outstanding or owed questions.
 
 # Write endpoints (all require Telegram approval via ApprovalGate)
-POST /contacts/?locationId={{secrets.ghl_fsc_location_id}} - Create FSC contact. Body: {firstName, lastName, email, phone, locationId}. ALWAYS search by email first — dedup is mandatory.
-PUT /contacts/{{contact_id}} - Update FSC contact fields. Body: any subset of {firstName, lastName, email, phone, tags, customFields}.
-POST /contacts/{{contact_id}}/notes - Add internal note to FSC contact. Body: {body, userId}. userId: see Usage Notes for literal value.
-POST /contacts/{{contact_id}}/tasks - Create task against FSC contact. Body: {title, body, dueDate, completed, contactId, assignedTo}. assignedTo: see Usage Notes for literal value.
-POST /conversations/messages - Create email DRAFT to an existing FSC contact only. Body: {type: "Email", contactId, emailFrom, emailTo, emailSubject, emailBody, attachments: []}. NEVER send to arbitrary addresses — contactId is mandatory. This creates a draft, not a live send; Tyson reviews before sending.
+[mutating] POST /contacts/?locationId={{secrets.ghl_fsc_location_id}} - Create FSC contact. Body: {firstName, lastName, email, phone, locationId}. ALWAYS search by email first — dedup is mandatory.
+[mutating] PUT /contacts/{{contact_id}} - Update FSC contact fields. Body: any subset of {firstName, lastName, email, phone, tags, customFields}.
+[mutating] POST /contacts/{{contact_id}}/notes - Add internal note to FSC contact. Body: {body, userId}. userId: see Usage Notes for literal value.
+[mutating] POST /contacts/{{contact_id}}/tasks - Create task against FSC contact. Body: {title, body, dueDate, completed, contactId, assignedTo}. assignedTo: see Usage Notes for literal value.
+[destructive] POST /conversations/messages - Create email DRAFT to an existing FSC contact only. Body: {type: "Email", contactId, emailFrom, emailTo, emailSubject, emailBody, attachments: []}. NEVER send to arbitrary addresses — contactId is mandatory. This creates a draft, not a live send; Tyson reviews before sending.
 
 ## Permissions
 - http: [services.leadconnectorhq.com]

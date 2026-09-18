@@ -20,14 +20,14 @@ GET /health - Engine liveness: trading enabled, open-position count, last scan a
 GET /config - Returns trading config (enabled, limits)
 GET /simulations - Returns the 10 most recent trading simulations; raw_output carries question and polymarket_condition_id
 GET /positions - Returns open trading positions
-POST /simulate - Runs one Monte Carlo simulation (body: asset, target, horizon_days, question)
-POST /positions/manual - Log a manually-executed trade so it is tracked and the Analyst learns from its outcome (body: market_url or condition_id, direction YES or NO, entry_price, usdc_amount, optional shares)
-POST /monitor/run - Run the Position Monitor sweep once, on demand
+[mutating] POST /simulate - Runs one Monte Carlo simulation (body: asset, target, horizon_days, question)
+[mutating] POST /positions/manual - Log a manually-executed trade so it is tracked and the Analyst learns from its outcome (body: market_url or condition_id, direction YES or NO, entry_price, usdc_amount, optional shares)
+[mutating] POST /monitor/run - Run the Position Monitor sweep once, on demand
 GET /positions/alerts - Live threshold alerts needing attention; an alert is NOT a close, the position is still open
 GET /positions/{{position_id}}/alerts - Full alert history for one position, resolved ones included
 GET /positions/{{position_id}} - One position by id, ANY status, with its market question and unresolved alert count; 404 when the value is not a position id
-POST /positions/{{position_id}}/hold - Mark a position manually managed so alerts stop; body hold true or false
-POST /positions/manual-close - Log a position Tyson closed by hand; body position_id, exit_price, optional exit_usdc, exit_reason, note
+[mutating] POST /positions/{{position_id}}/hold - Mark a position manually managed so alerts stop; body hold true or false
+[financial] POST /positions/manual-close - Log a position Tyson closed by hand; body position_id, exit_price, optional exit_usdc, exit_reason, note
 
 ## Permissions
 - http: [localhost:4003]

@@ -149,12 +149,14 @@ function placeholderNames(path) {
  *   - Stripe's `customer` field on POST /invoices. The skill indexes
  *     `customer_id` from GET /customers/{{customer_id}}, and `customer` does
  *     not normalise to it. It is ALSO invisible to the name heuristic,
- *     because `customer` does not look like an id. KNOWN GAP: while
- *     POST /invoices is unclassified the gate refuses it outright, so nothing
- *     goes through unchecked. That control is an accident of the endpoint
- *     being undeclared. Declaring a level on POST /invoices, any level, lets
- *     a `customer` value through with no check at all. Close this gap before
- *     or with that declaration, not after.
+ *     because `customer` does not look like an id. KNOWN GAP. Undeclared, the
+ *     gate would refuse it outright, but that control is an accident of
+ *     nobody having declared it: declaring ANY level lets a `customer` value
+ *     through with no check at all. So on 2026-09-18 the endpoint line was
+ *     REMOVED from stripe.md, not left undeclared (reason #181; stripe.md
+ *     says so where the line was). Removed and undeclared are different
+ *     states. Re-adding the line reopens the gap: close it before or with
+ *     that change, not after.
  *
  * @param {Array<{method: string, path: string, level?: string|null,
  *                declaredLevel?: string|null, line?: number}>} endpoints

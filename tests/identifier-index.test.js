@@ -89,16 +89,17 @@ async function main() {
   // ── 1. The grammar, and the parser seam ──────────────────────────────
   console.log('grammar:');
 
-  // 1a. Additive on the estate. Every line of every real skill file that
-  // carries no bracket reads the same under the new grammar as under the old
-  // one. A relative property, so no real file can move it.
+  // 1a. Additive on the estate. Every line of every real skill file reads the
+  // same under the new grammar as under the old one, once any level prefix is
+  // taken off for the old grammar's sake. A relative property, so no real
+  // file, declared or not, can move it.
+  const stripLevel = (t) => t.replace(/^\[[^\]]*\]\s*/, '');
   let compared = 0;
   const disagreements = [];
   for (const s of realSkills()) {
     for (const raw of s.content.split('\n')) {
       const t = raw.trim();
-      if (t.startsWith('[')) continue;
-      const old = t.match(PRE_PREFIX_GRAMMAR);
+      const old = stripLevel(t).match(PRE_PREFIX_GRAMMAR);
       const neu = parseEndpointLine(t);
       if (old) compared++;
       const same = old === null
@@ -111,31 +112,35 @@ async function main() {
   check('an unprefixed line parses exactly as it did before the prefix existed',
     disagreements.length === 0, disagreements.slice(0, 3).join(' | '));
 
-  // 1b. A declaration never drops an endpoint. Prefix every write in every
-  // real skill that parses and register the tools: identical names, identical
-  // count. This is the property that has to hold on the day the declarations
-  // land, checked against every real file today.
-  let prefixedWrites = 0;
+  // 1b. A declaration never drops an endpoint. Each real skill that parses is
+  // registered three ways: as it stands, with every level prefix stripped,
+  // and with every write re-declared. Identical tool names all three ways,
+  // however many of its writes the real file happens to declare today.
+  let rewrittenWrites = 0;
   const dropped = [];
+  const toolNames = (name, content) => {
+    const p = parseSkill(name, content, null);
+    return p ? skillToTools(p).map((t) => t.name).join(',') : '(skill parsed to null)';
+  };
   for (const s of realSkills()) {
-    const plain = parseSkill(s.name, s.content, null);
-    if (!plain) continue;
-    const declared = s.content.split('\n').map((l) => {
-      const t = l.trim();
-      const e = parseEndpointLine(t);
-      if (e && WRITE.includes(e.method)) { prefixedWrites++; return `[mutating] ${t}`; }
-      return l;
+    if (!parseSkill(s.name, s.content, null)) continue;
+    const rewrite = (declare) => s.content.split('\n').map((l) => {
+      const e = parseEndpointLine(l.trim());
+      if (!e || !WRITE.includes(e.method)) return l;
+      rewrittenWrites++;
+      return declare ? `[mutating] ${stripLevel(l.trim())}` : stripLevel(l.trim());
     }).join('\n');
-    const withLevels = parseSkill(s.name, declared, null);
-    const a = skillToTools(plain).map((t) => t.name).join(',');
-    const b = withLevels ? skillToTools(withLevels).map((t) => t.name).join(',') : '(skill parsed to null)';
-    if (a !== b) dropped.push(`${s.name}: ${a} != ${b}`);
-    else if (withLevels.endpoints.some((e) => WRITE.includes(e.method) && e.level !== 'mutating')) {
-      dropped.push(`${s.name}: a prefixed write did not carry its level`);
+    const asIs = toolNames(s.name, s.content);
+    const stripped = toolNames(s.name, rewrite(false));
+    const declaredAll = rewrite(true);
+    const redeclared = toolNames(s.name, declaredAll);
+    if (asIs !== stripped || asIs !== redeclared) dropped.push(`${s.name}: ${asIs} | ${stripped} | ${redeclared}`);
+    else if (parseSkill(s.name, declaredAll, null).endpoints.some((e) => WRITE.includes(e.method) && e.level !== 'mutating')) {
+      dropped.push(`${s.name}: a re-declared write did not carry its level`);
     }
   }
-  check('PRECONDITION: real writes were prefixed', prefixedWrites >= 40, `prefixed ${prefixedWrites}`);
-  check('declaring every real write registers exactly the same tools, each carrying its level',
+  check('PRECONDITION: real writes were rewritten', rewrittenWrites >= 80, `rewritten ${rewrittenWrites}`);
+  check('declared, stripped or re-declared, every real skill registers exactly the same tools',
     dropped.length === 0, dropped.slice(0, 2).join(' | '));
 
   // 1c. Each level, and an undeclared write, on a synthetic skill.
@@ -352,9 +357,17 @@ async function main() {
     return r;
   };
 
-  const reg = registerReal('trading-api', read('trading-api'));
+  // The real trading-api.md with every level stripped: what an undeclared
+  // skill registers as. Derived from the real file so the endpoints are real,
+  // stripped so no declaration made in the file can move these checks.
+  const stripLevels = (content) => content.split('\n')
+    .map((l) => (parseEndpointLine(l.trim()) ? stripLevel(l.trim()) : l)).join('\n');
+  const undeclaredTrading = stripLevels(read('trading-api'));
+  check('PRECONDITION: stripping leaves the undeclared endpoint lines',
+    /^POST \/positions\/manual-close /m.test(undeclaredTrading));
+  const reg = registerReal('trading-api', undeclaredTrading);
   const closeCtx = reg.getSkillToolContext(MANUAL_CLOSE);
-  check('registered from the real file: manual-close is unclassified (no declaration yet)',
+  check('registered from the real file, undeclared: manual-close is unclassified',
     closeCtx.level === 'unclassified', JSON.stringify({ level: closeCtx.level }));
   check('registered from the real file: the index resolves a body position_id',
     bodyFieldResolvers(closeCtx.identifierIndex, 'position_id').length === 1,
@@ -367,17 +380,28 @@ async function main() {
     closeCtx.identifierIndex === reg.getSkillToolContext(HOLD).identifierIndex
       && closeCtx.identifierIndex === reg.getSkillToolContext(POSITION).identifierIndex);
 
-  // The same file with manual-close declared: the declaration travels from
-  // the file line to the registry entry.
-  const declaredContent = read('trading-api').replace(
+  // The same undeclared file with ONLY manual-close declared: the declaration
+  // travels from the file line to the registry entry, and no further.
+  const declaredContent = undeclaredTrading.replace(
     /^POST \/positions\/manual-close /m, '[financial] POST /positions/manual-close ');
-  check('PRECONDITION: the declaration edit changed the file', declaredContent !== read('trading-api'));
+  check('PRECONDITION: the declaration edit changed the file', declaredContent !== undeclaredTrading);
   const regDeclared = registerReal('trading-api', declaredContent);
   check('a [financial] declaration reaches the registry entry',
     regDeclared.getSkillToolContext(MANUAL_CLOSE).level === 'financial',
     JSON.stringify(regDeclared.getSkillToolContext(MANUAL_CLOSE).level));
   check('...and only that endpoint: /hold stays unclassified',
     regDeclared.getSkillToolContext(HOLD).level === 'unclassified');
+
+  // LIVE FILE: the declarations as decided on 2026-09-18. Expected to move
+  // only when a level is re-decided; fix these, not the checks above.
+  const regLive = registerReal('trading-api', read('trading-api'));
+  check('LIVE trading-api.md: manual-close is declared financial',
+    regLive.getSkillToolContext(MANUAL_CLOSE).level === 'financial');
+  check('LIVE trading-api.md: /positions/manual is declared mutating (decided 2026-09-18)',
+    regLive.getSkillToolContext(TOOL('trading-api', 'trading-api__create_positions_manual')).level === 'mutating');
+  check('LIVE stripe.md: POST /invoices is removed, and says so where the line was',
+    !parseSkill('stripe', read('stripe'), null).endpoints.some((e) => e.method === 'POST' && e.path === '/invoices')
+      && /^# POST \/invoices is REMOVED, not undeclared/m.test(read('stripe')));
 
   const regDelete = registerReal('synth', skillText([
     'GET /widgets/{{widget_id}} - one',
