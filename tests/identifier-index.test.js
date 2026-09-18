@@ -434,6 +434,17 @@ async function main() {
       && nothingCtx.identifierIndex.resolvers.length === 0 && Object.keys(nothingCtx.identifierIndex.indexed).length === 0,
     JSON.stringify(nothingCtx.identifierIndex));
 
+  check('indexCoversEndpoint: true for the skill\'s own endpoint, false for one it does not declare',
+    indexCoversEndpoint(closeCtx.identifierIndex, 'POST', '/positions/manual-close')
+      && !indexCoversEndpoint(closeCtx.identifierIndex, 'POST', '/positions/not-declared')
+      && !indexCoversEndpoint(closeCtx.identifierIndex, 'GET', '/positions/manual-close'));
+  const mismatch = new ToolRegistry({}, {});
+  const parsedTrading = parseSkill('trading-api', undeclaredTrading, null);
+  mismatch.registerSkillTool('charlie', 'trading-api', parsedTrading,
+    { name: 'trading-api__create_elsewhere', method: 'POST', path: '/elsewhere/{{position_id}}', description: 'x', inputSchema: { type: 'object', properties: {} } });
+  check('a tool whose endpoint its skill does not declare gets NO index, even though the skill has one',
+    mismatch.getSkillToolContext('charlie__trading-api__trading-api__create_elsewhere').identifierIndex === null);
+
   // A stale index is a wrong index. Re-registering a skill of the same name
   // with different endpoints must not reuse the earlier derivation.
   const regA = registerReal('w', skillText(['GET /a/{{a_id}} - one a', '[mutating] POST /a/{{a_id}}/x - x']));
