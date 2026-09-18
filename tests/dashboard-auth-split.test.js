@@ -26,7 +26,6 @@ console.log('\nresolveDashboardAuth:');
 // The split itself: a machine caller authenticates with the api token alone.
 let r = resolveDashboardAuth({ ...base, bearer: API });
 check('bearer api token authenticates', r.ok && r.via === 'bearer-api', JSON.stringify(r));
-check('bearer api token is not flagged legacy', r.ok && !r.legacy, JSON.stringify(r));
 
 // The failure this split removes: re-minting the session token must not break
 // a machine caller that holds the api token.
@@ -38,16 +37,22 @@ r = resolveDashboardAuth({ ...base, bearer: SESSION });
 check('bearer session token is REJECTED', !r.ok, JSON.stringify(r));
 check('rejected bearer session token is named, not a bare 401', r.via === 'rejected-session-bearer', JSON.stringify(r));
 
-r = resolveDashboardAuth({ ...base, queryToken: SESSION, isBrowser: false });
-check('?token= session token is REJECTED for a non-browser caller', !r.ok && r.via === 'rejected-session-query', JSON.stringify(r));
+r = resolveDashboardAuth({ ...base, queryToken: SESSION });
+check('?token= session token is REJECTED on an API route', !r.ok && r.via === 'rejected-session-query', JSON.stringify(r));
 
-// The browser hand-off survives: opening the dashboard link still works.
+// #179 accepted ?token= here when the caller claimed to be a browser, and this
+// file asserted that by passing `isBrowser: true`. The real dashboard's calls
+// are fetch(), which never sends the text/html Accept header that flag was
+// derived from, so the assertion passed while every tab returned 401. The
+// browser now presents the token once, at GET /?token=, for the session cookie
+// (see dashboard-browser-auth.test.js, which drives that over real HTTP).
+// A stale caller still passing isBrowser must not revive the old path.
 r = resolveDashboardAuth({ ...base, queryToken: SESSION, isBrowser: true });
-check('?token= session token still authenticates a BROWSER', r.ok && r.via === 'query-browser', JSON.stringify(r));
+check('?token= session token is rejected even when isBrowser is passed', !r.ok && r.via === 'rejected-session-query', JSON.stringify(r));
 
-// A browser cannot borrow the api token through the query param either.
-r = resolveDashboardAuth({ ...base, queryToken: API, isBrowser: true });
-check('api token is not accepted as a query param, even for a browser', !r.ok, JSON.stringify(r));
+// Nor can anything borrow the api token through the query param.
+r = resolveDashboardAuth({ ...base, queryToken: API });
+check('api token is not accepted as a query param', !r.ok, JSON.stringify(r));
 
 // Precedence: a correct api token wins even when a stale session token is also
 // presented, so a machine caller is never resolved through the browser path.
@@ -55,7 +60,7 @@ r = resolveDashboardAuth({ ...base, bearer: API, queryToken: 'stale-session-valu
 check('api token wins over a stale query token', r.ok && r.via === 'bearer-api', JSON.stringify(r));
 
 // A machine caller holding BOTH must still resolve through the api token.
-r = resolveDashboardAuth({ ...base, bearer: API, queryToken: SESSION, isBrowser: false });
+r = resolveDashboardAuth({ ...base, bearer: API, queryToken: SESSION });
 check('api token wins over a session query token', r.ok && r.via === 'bearer-api', JSON.stringify(r));
 
 // Cookies keep priority for browsers.

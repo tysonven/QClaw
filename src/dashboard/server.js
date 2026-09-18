@@ -157,13 +157,17 @@ export async function fetchDailyRealisedLoss(sbUrl, sbKey, fetchImpl = fetch, no
  *                  a session re-mint, so re-minting the dashboard link cannot
  *                  break n8n. That breakage is why they were ever one value.
  *
- * `legacy: true` marks the session token being used as a machine credential.
- * It is still accepted so the split can land before every caller has moved;
- * the acceptance is removed once n8n sends the api token (see #172 step 3).
+ * The session token is never accepted by this middleware, from a header or a
+ * URL. A browser presents it exactly once, at GET /?token= (the link that
+ * `qclaw dashboard` prints) or through the /login form, and both exchange it
+ * for the `dashboard_session` cookie. From then on the cookie is the browser's
+ * credential. #179 accepted `?token=` here only when the request's Accept
+ * header contained text/html, which a page navigation sends and fetch() never
+ * does, so every tab's API call was rejected while the page itself loaded.
  *
- * @returns {{ok: boolean, via: string|null, legacy?: boolean, clearCookie?: boolean}}
+ * @returns {{ok: boolean, via: string|null, clearCookie?: boolean}}
  */
-export function resolveDashboardAuth({ cookie, bearer, queryToken, apiToken, authToken, verifySession, isBrowser = false }) {
+export function resolveDashboardAuth({ cookie, bearer, queryToken, apiToken, authToken, verifySession }) {
   // Priority 1: JWT session cookie (browser).
   if (cookie) {
     try {
@@ -172,7 +176,7 @@ export function resolveDashboardAuth({ cookie, bearer, queryToken, apiToken, aut
     } catch {
       // Expired or invalid: fall through to the token paths, and tell the
       // caller to clear it so the browser stops presenting a dead cookie.
-      const next = resolveDashboardAuth({ cookie: null, bearer, queryToken, apiToken, authToken, verifySession, isBrowser });
+      const next = resolveDashboardAuth({ cookie: null, bearer, queryToken, apiToken, authToken, verifySession });
       return { ...next, clearCookie: true };
     }
   }
@@ -181,18 +185,53 @@ export function resolveDashboardAuth({ cookie, bearer, queryToken, apiToken, aut
   // derived from the browser credential, so a machine caller never depends on it.
   if (apiToken && bearer && bearer === apiToken) return { ok: true, via: 'bearer-api' };
 
-  // Priority 3: the ?token= hand-off that opens the dashboard link in a BROWSER.
-  // Restricted to browser requests: the session token is not a machine
-  // credential, and accepting it as one is what coupled n8n to a re-mint (#172).
-  if (authToken && queryToken && queryToken === authToken && isBrowser) return { ok: true, via: 'query-browser' };
-
-  // The session token presented as a machine credential is no longer accepted.
-  // Named rather than lumped into a generic 401 so the caller can be found from
-  // one log line instead of a packet capture.
+  // The session token presented to an API route is rejected, and named rather
+  // than lumped into a generic 401 so the caller can be found from one log line
+  // instead of a packet capture.
   if (authToken && bearer && bearer === authToken) return { ok: false, via: 'rejected-session-bearer' };
   if (authToken && queryToken && queryToken === authToken) return { ok: false, via: 'rejected-session-query' };
 
   return { ok: false, via: null };
+}
+
+/**
+ * WebSocket auth. The dashboard page connects with its session cookie; the
+ * terminal UI (src/cli/tui.js) connects with `?token=<session token>`, so both
+ * are accepted. Before the cookie was accepted here, a browser signed in
+ * through /login had working tabs and a dead chat.
+ *
+ * No session token configured means no check, as before.
+ *
+ * @returns {{ok: boolean, via: string|null}}
+ */
+export function resolveWsAuth({ cookie, queryToken, authToken, verifySession }) {
+  if (!authToken) return { ok: true, via: 'unconfigured' };
+  if (cookie) {
+    try {
+      verifySession(cookie);
+      return { ok: true, via: 'cookie' };
+    } catch { /* expired or forged: try the query token */ }
+  }
+  if (queryToken && queryToken === authToken) return { ok: true, via: 'query' };
+  return { ok: false, via: null };
+}
+
+/**
+ * The tab to return to after signing in, or '' for none. The value ends up in
+ * a redirect Location (`/#<tab>`) and in the login form, so it is restricted
+ * to lowercase letters and hyphens: nothing that can leave the page, start a
+ * new path, or break out of an attribute.
+ */
+export function safeLoginTab(tab) {
+  return typeof tab === 'string' && /^[a-z][a-z-]{0,31}$/.test(tab) ? tab : '';
+}
+
+/** Constant-time comparison of a presented token with the configured one. */
+function sameToken(presented, expected) {
+  if (typeof presented !== 'string' || typeof expected !== 'string' || !presented || !expected) return false;
+  const a = Buffer.from(presented);
+  const b = Buffer.from(expected);
+  return a.length === b.length && timingSafeEqual(a, b);
 }
 
 export function spawnDisabledHandler(req, res) {
@@ -203,15 +242,39 @@ export function spawnDisabledHandler(req, res) {
 }
 
 export class DashboardServer {
-  /** Warn once an hour per (via, path) that the browser session token is being
-   * used as a machine credential. Never logs the token itself. */
+  /** Warn once an hour per (via, path) that the browser session token was
+   * presented to an API route and rejected. Never logs the token itself. */
   _warnLegacyAuth(via, path) {
     const key = `${via} ${path}`;
     const last = this._legacyWarnedAt?.get(key) || 0;
     if (Date.now() - last < 3600000) return;
     this._legacyWarnedAt?.set(key, Date.now());
-    log.warn(`Dashboard auth: ${path} authenticated with the browser session token via ${via}. ` +
-      'Machine callers should send the api token as a Bearer header (#172).');
+    log.warn(`Dashboard auth: ${path} REJECTED the browser session token (${via}). ` +
+      'Browsers authenticate with the session cookie (open the `qclaw dashboard` link, or sign in at /login); ' +
+      'machine callers send the api token as a Bearer header (#172).');
+  }
+
+  /** Issue the browser session cookie. One place, so the link hand-off and the
+   * /login form cannot drift apart on lifetime or flags. */
+  _issueSessionCookie(res) {
+    const token = jwt.sign({ authenticated: true }, this.sessionSecret, { expiresIn: '24h' });
+    res.cookie('dashboard_session', token, {
+      httpOnly: true,
+      secure: true,
+      sameSite: 'strict',
+      maxAge: 86400000, // 24h
+    });
+  }
+
+  /** Count a failed session-token attempt against the lockout; true if now locked. */
+  _recordFailedLogin(ip) {
+    const attempts = this.authAttempts.get(ip) || { count: 0 };
+    attempts.count++;
+    if (attempts.count >= this.AUTH_MAX_ATTEMPTS) {
+      attempts.lockedUntil = Date.now() + this.AUTH_LOCKOUT_MS;
+      log.warn(`Dashboard login lockout: ${ip} (${this.AUTH_MAX_ATTEMPTS} failed attempts)`);
+    }
+    this.authAttempts.set(ip, attempts);
   }
 
   constructor(qclaw) {
@@ -320,8 +383,32 @@ export class DashboardServer {
     // Manus webhook handler
     try { setupManusWebhook(this); } catch (err) { log.debug(`Manus webhook: ${err.message}`); }
 
-    // Serve dashboard UI
+    // Serve dashboard UI.
+    //
+    // `/?token=<session token>` is the link `qclaw dashboard` prints. It is the
+    // hand-off #177 said would land: the token is exchanged here for the session
+    // cookie, then the browser is redirected to `/` so the token leaves the
+    // address bar and history. A browser keeps any #tab fragment across the
+    // redirect. Every API call and the chat socket then authenticate with the
+    // cookie; the token itself is never sent again.
     this.app.get('/', (req, res) => {
+      if (req.query.token !== undefined) {
+        const ip = req.ip || req.socket.remoteAddress;
+        const lockout = this.authAttempts.get(ip);
+        if (lockout?.lockedUntil && Date.now() < lockout.lockedUntil) {
+          return res.redirect('/login?error=1');
+        }
+        const authToken = this.config.dashboard?.authToken || process.env.DASHBOARD_AUTH_TOKEN;
+        if (sameToken(req.query.token, authToken)) {
+          this._issueSessionCookie(res);
+          this.authAttempts.delete(ip);
+          return res.redirect('/');
+        }
+        // A stale or mistyped link: say so on the login page, rather than serve
+        // a dashboard whose every tab then fails.
+        this._recordFailedLogin(ip);
+        return res.redirect('/login?error=1');
+      }
       res.send(this._renderDashboard());
     });
 
@@ -339,9 +426,12 @@ export class DashboardServer {
       }
     });
 
-    // Login page
+    // Login page. Reached from a stale link, an expired session, or a
+    // notification deep link (`/#ghl`), so it says where the token comes from
+    // and returns the reader to the tab they were sent to.
     this.app.get('/login', (req, res) => {
       const error = req.query.error === '1';
+      const tab = safeLoginTab(req.query.tab);
       res.send(`<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -357,14 +447,16 @@ input[type=password]:focus{border-color:#333}
 button{width:100%;padding:10px;margin-top:12px;background:#1a1a1a;color:#fff;border:none;border-radius:6px;font-size:.9rem;cursor:pointer;transition:opacity .15s}
 button:hover{opacity:.85}
 .err{color:#d33;font-size:.8rem;margin-top:8px}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.78rem;background:#f3f3f3;padding:1px 4px;border-radius:3px}
 </style></head><body>
 <div class="card">
 <h1>Agent Boardroom</h1>
-<p class="subtle">Enter your dashboard token to continue.</p>
+<p class="subtle">Sign in with your dashboard token. To get one, run <code>qclaw dashboard</code> on the server and open the link it prints, or paste the token from that link here.</p>
 <form method="POST" action="/api/auth/login">
 <input type="password" name="password" placeholder="Token" autofocus required>
+${tab ? `<input type="hidden" name="tab" value="${tab}">` : ''}
 <button type="submit">Sign in</button>
-${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
+${error ? '<p class="err">That token was not accepted. Run <code>qclaw dashboard</code> on the server for a current one.</p>' : ''}
 </form></div></body></html>`);
     });
 
@@ -372,37 +464,27 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
     this.app.post('/api/auth/login', (req, res) => {
       const ip = req.ip || req.socket.remoteAddress;
 
+      // The tab to return to. Validated, so it can only ever produce `/#<tab>`.
+      const tab = safeLoginTab(req.body?.tab);
+      const tabQuery = tab ? `&tab=${tab}` : '';
+
       // Check lockout
       const lockout = this.authAttempts.get(ip);
       if (lockout?.lockedUntil && Date.now() < lockout.lockedUntil) {
-        return res.redirect('/login?error=1');
+        return res.redirect(`/login?error=1${tabQuery}`);
       }
 
       const password = req.body?.password;
       const authToken = this.config.dashboard?.authToken || process.env.DASHBOARD_AUTH_TOKEN;
 
       if (password && authToken && password === authToken) {
-        // Success — issue JWT cookie
-        const token = jwt.sign({ authenticated: true }, this.sessionSecret, { expiresIn: '24h' });
-        res.cookie('dashboard_session', token, {
-          httpOnly: true,
-          secure: true,
-          sameSite: 'strict',
-          maxAge: 86400000, // 24h
-        });
+        this._issueSessionCookie(res);
         this.authAttempts.delete(ip);
-        return res.redirect('/');
+        return res.redirect(tab ? `/#${tab}` : '/');
       }
 
-      // Failed — track attempt
-      const attempts = this.authAttempts.get(ip) || { count: 0 };
-      attempts.count++;
-      if (attempts.count >= this.AUTH_MAX_ATTEMPTS) {
-        attempts.lockedUntil = Date.now() + this.AUTH_LOCKOUT_MS;
-        log.warn(`Dashboard login lockout: ${ip} (${this.AUTH_MAX_ATTEMPTS} failed attempts)`);
-      }
-      this.authAttempts.set(ip, attempts);
-      return res.redirect('/login?error=1');
+      this._recordFailedLogin(ip);
+      return res.redirect(`/login?error=1${tabQuery}`);
     });
 
     // Logout endpoint
@@ -597,7 +679,6 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
         queryToken: req.query.token,
         apiToken,
         authToken,
-        isBrowser,
         verifySession: (token) => { jwt.verify(token, this.sessionSecret); },
       });
       const authenticated = decision.ok;
@@ -605,10 +686,16 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
 
       if (decision.clearCookie) res.clearCookie('dashboard_session');
       if (decision.via === 'rejected-session-bearer' || decision.via === 'rejected-session-query') {
-        // A machine caller is still presenting the browser session token. It is
-        // rejected now, and named so the caller is findable from the log.
+        // Something presented the browser session token to an API route. It is
+        // rejected, and named so the caller is findable from the log.
         this._warnLegacyAuth(decision.via, req.path);
       }
+
+      // Marks the 401s below as "no valid session", so the dashboard can send
+      // the reader to /login. A bare 401 is not enough: /api/auth/verify-pin
+      // answers a wrong PIN with 401, and the Supabase proxy routes relay an
+      // upstream 401 as-is. Neither of those should sign anyone out.
+      const loginRequired = () => res.set('X-Dashboard-Auth', 'login-required');
 
       if (!authenticated) {
         if (!isLocalhost) {
@@ -621,7 +708,9 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
           }
           this.authAttempts.set(ip, attempts);
         }
-        return isBrowser ? res.redirect('/login') : res.status(401).json({ error: 'Unauthorised' });
+        if (isBrowser) return res.redirect('/login');
+        loginRequired();
+        return res.status(401).json({ error: 'Unauthorised' });
       }
 
       // Token expiry check — only for auto-generated session tokens, not the static config authToken
@@ -629,9 +718,9 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
       const isAutoToken = !this.config.dashboard?.authToken;
       if (!sessionCookie && !isLocalhost && isAutoToken && this.tokenCreatedAt && this.tokenExpiry) {
         if (Date.now() - this.tokenCreatedAt > this.tokenExpiry) {
-          return isBrowser
-            ? res.redirect('/login')
-            : res.status(401).json({ error: 'Token expired. Run: qclaw dashboard' });
+          if (isBrowser) return res.redirect('/login');
+          loginRequired();
+          return res.status(401).json({ error: 'Token expired. Run: qclaw dashboard' });
         }
       }
 
@@ -2537,17 +2626,21 @@ ${error ? '<p class="err">Invalid token. Please try again.</p>' : ''}
   }
 
   _setupWebSocket() {
+    const parseCookies = cookieParser();
     this.wss.on('connection', (ws, req) => {
-      // Check auth token if configured
-      const authToken = this.config.dashboard?.authToken || process.env.DASHBOARD_AUTH_TOKEN;
-      if (authToken) {
-        const url = new URL(req.url, 'http://localhost');
-        const token = url.searchParams.get('token');
-        if (token !== authToken) {
-          ws.send(JSON.stringify({ type: 'error', error: 'Unauthorised' }));
-          ws.close(4001, 'Unauthorised');
-          return;
-        }
+      // The upgrade request is a raw IncomingMessage, so parse its cookies with
+      // the same parser the HTTP routes use.
+      parseCookies(req, null, () => {});
+      const decision = resolveWsAuth({
+        cookie: req.cookies?.dashboard_session,
+        queryToken: new URL(req.url, 'http://localhost').searchParams.get('token'),
+        authToken: this.config.dashboard?.authToken || process.env.DASHBOARD_AUTH_TOKEN,
+        verifySession: (token) => { jwt.verify(token, this.sessionSecret); },
+      });
+      if (!decision.ok) {
+        ws.send(JSON.stringify({ type: 'error', error: 'Unauthorised' }));
+        ws.close(4001, 'Unauthorised');
+        return;
       }
 
       ws.isAlive = true;
