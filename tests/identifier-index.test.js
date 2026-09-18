@@ -455,6 +455,15 @@ async function main() {
   check('CAPABILITY: the total says 1 of 3 and why it matters',
     before.lines.some((l) => l.startsWith('identifier gate countdown: 1 of 3 ') && /merges only when this reads 0/.test(l)),
     JSON.stringify(before.lines));
+  const ambiguousSkill = skillText([
+    'GET /workflows/{{id}} - one workflow',
+    'GET /executions/{{id}} - one execution',
+    'POST /workflows - create',
+  ]);
+  const amb = formatCountdown(inspectSkills([{ name: 'a', content: ambiguousSkill, filename: 'a.md' }], null));
+  check('CAPABILITY: a name two GETs end at is ambiguous, not "with a resolver"',
+    amb.lines.some((l) => l.includes('identifiers indexed 1 (id), with a resolver 0, ambiguous: id')),
+    JSON.stringify(amb.lines));
   const after = formatCountdown(inspectSkills([{ name: 'w', content: three('[mutating] '), filename: 'w.md' }], null));
   check('CAPABILITY: at zero the countdown still prints, and says 0',
     after.unclassified === 0 && after.lines.some((l) => l.startsWith('identifier gate countdown: 0 of 3 ')),

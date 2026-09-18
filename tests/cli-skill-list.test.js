@@ -88,6 +88,14 @@ for (const sk of expected) {
     check(`CLI shows endpoint count for "${sk.name}"`,
       new RegExp(`${sk.name}.*\\(${sk.endpoints} endpoints\\)`).test(stdout),
       `expected (${sk.endpoints} endpoints) for ${sk.name}`);
+  } else {
+    // Zero is a claim too. A skill whose endpoint-looking lines the parser
+    // rejects (clipper's em dashes, #151) must not be shown with a count, or
+    // the CLI reports a surface that registers nothing.
+    const esc = sk.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const line = stdout.split('\n').find((l) => new RegExp(`^\\s*${esc}(\\s|$)`).test(l)) || '';
+    check(`CLI shows no endpoint count for "${sk.name}"`,
+      !/\(\d+ endpoints\)/.test(line), `line: ${line.trim()}`);
   }
 }
 
