@@ -228,6 +228,13 @@ async function main() {
     pathParamResolver(q, '/widgets/{{widget_id}}/close', 'widget_id')?.resource === '/widgets/{{widget_id}}');
   check('CAPABILITY: a body field named "query" has no resolver',
     bodyFieldResolvers(q, 'query').length === 0);
+  const qWrite = deriveIdentifierIndex(parseSkill('qw', skillText([
+    'GET /widgets/{{widget_id}} - one widget',
+    'POST /widgets/{{widget_id}}/close?reason={{reason_id}} - close with a reason',
+  ]), null).endpoints);
+  check('CAPABILITY: a {{param}} in a WRITE\'s query string is not one of its path identifiers',
+    JSON.stringify(qWrite.writes[0]?.pathParams.map((p) => p.param)) === '["widget_id"]',
+    JSON.stringify(qWrite.writes[0]?.pathParams));
 
   // CAPABILITY: keyed on the endpoint. `{{id}}` on one resource never
   // resolves through a GET on another.
