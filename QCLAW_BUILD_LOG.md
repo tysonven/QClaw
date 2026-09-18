@@ -27032,3 +27032,174 @@ cost of asking was a single search.
 A third caller was found the same way and deliberately left working: the config
 template allowlist still permits `{{config.dashboard.authToken}}`, though no
 skill currently uses it.
+
+## 2026-09-18: every dashboard tab 401'd after #179, and the test that passed it was fixture-versus-reality, merged a week after we wrote that up
+
+The GHL Marketing tab showed `Failed to load: Unauthorised` while a live draft
+(`f6256d12-eced-486a-93bf-3d3254be007f`, created 11:00:20Z) waited for review.
+Every other tab that calls the API failed the same way. Fixed on
+`fix/dashboard-api-auth`, draft PR #189, unmerged as of this entry.
+
+### The premise, checked rather than accepted
+
+The report attributed the break to #177 and said the Telegram review link
+landed on the login page. Both were wrong, and both corrections mattered:
+
+- **It was #179, not #177.** #177 (QClaw main fdd9c2e) still accepted
+  `?token=` as a legacy path, with a comment saying why: "Also the browser
+  hand-off from the dashboard URL, which is why it stays until the cookie
+  hand-off lands." The hand-off never landed. #179 (QClaw main 16c1914)
+  accepted `?token=` only when `Accept` contained `text/html`.
+- **The bare link does not land on login.** `/` is a public path. Probed at
+  the public URL on 2026-09-18: `/`, and `/?token=bogus`, both return 200 with
+  the dashboard HTML. A bare link opens the dashboard with every tab failing and
+  nothing saying why, which is worse than a login page. It also means "the page
+  loads with the session token" was never evidence the credential worked. The
+  page loads with any token.
+
+### Mechanism and evidence
+
+`ui.html` authenticated every API call by appending `?token=<session token>`.
+`fetch()` sends `Accept: */*`. So every tab's call fell through to
+`rejected-session-query`. Verbatim, `quantumclaw-out.log` on qclaw, boot
+10:34:59Z at QClaw main 3621d09 (ANSI codes stripped):
+
+```
+11:30:24 ⚠ Dashboard auth: /api/threads authenticated with the browser session token via rejected-session-query. Machine callers should send the api token as a Bearer header (#172).
+11:30:24 ⚠ Dashboard auth: /api/pairing/pending authenticated with the browser session token via rejected-session-query. Machine callers should send the api token as a Bearer header (#172).
+11:30:26 ⚠ Dashboard auth: /api/ghl/drafts authenticated with the browser session token via rejected-session-query. Machine callers should send the api token as a Bearer header (#172).
+11:30:29 ⚠ Dashboard auth: /api/crete/content authenticated with the browser session token via rejected-session-query. Machine callers should send the api token as a Bearer header (#172).
+```
+
+The warning said "authenticated" for a rejection and blamed machine callers.
+The caller was the browser. Reproduced on the host at 11:45Z, the same GET three
+ways: session `?token=` with `Accept: */*` got `401 {"error":"Unauthorised"}`;
+the `/login` cookie got 200 with the draft in it; the Bearer api token got 200.
+So the draft could be reviewed that day through `/login` without a deploy.
+
+The chat socket accepted only `?token=`, so after #179 neither way into the
+dashboard worked fully. The `qclaw dashboard` link gave chat but no tabs;
+`/login` gave tabs but no chat.
+
+### The fixture-versus-reality defect, again
+
+#179's test asserted the browser path like this:
+
+```js
+r = resolveDashboardAuth({ ...base, queryToken: SESSION, isBrowser: true });
+check('?token= session token still authenticates a BROWSER', r.ok && r.via === 'query-browser', ...);
+```
+
+`isBrowser` is derived in the middleware from `Accept` containing `text/html`.
+The dashboard's calls are `fetch()`, which never sends it. The test supplied the
+one input that made the branch pass, and no request the dashboard makes has that
+shape. The assertion was true of the function and false of the product.
+
+The verification recorded in the entry above ("the new token opens the dashboard
+in a browser (200)") had the same blind spot from the other side. It was a page
+navigation. A navigation carries `text/html`, the one request shape the branch
+accepted, to a path that answers 200 for any token. It could not have seen what
+`fetch()` gets.
+
+This is the defect of #142/#148 ("a test written to catch fixture-versus-reality
+had the same defect in its own other half", 2026-09-11) and of #135's cold
+review: a check answered a narrower question than the one being asked, and
+agreed with itself. Here the narrower question was "does the function accept
+this input"; the one being asked was "does the dashboard load".
+
+### The rule keeps being stated and then not applied to the next thing
+
+The pattern was written up on 2026-09-11. #179 merged on 2026-09-17, six days
+later, with a test of the same shape. Its build-log entry (#180) was itself
+about verification discipline: it records a prediction that caught a half-fix,
+and grepping for callers before tightening a credential. The same work applied
+two of the disciplines this log has accumulated and missed a third it had
+written down the week before.
+
+> Recording an instance in this log has not stopped the next one. The log is
+> read when an entry is being written, not when a test is. Each entry ends with
+> the rule restated, the rules accumulate, and none of them is in front of
+> whoever writes the next test.
+
+It recurred inside this fix as well, and each time it was caught by executing
+the real code, not by recalling the rule:
+
+- `tests/trading-room-ui.test.js` ran the real Trading Room block against a stub
+  `API: (p) => p`. When the block moved to `apiFetch`, the stub no longer
+  matched anything real, and 8 checks went red. That failure was loud, which is
+  the good case.
+- The first `apiFetch` threw after starting the `/login` redirect. On the
+  trading disable path, that routed an expired-session 401 into the generic
+  "Failed to update trading" instead of "trading may still be ARMED". It was
+  found only by making the trading harness run the real `apiFetch`.
+- A mutant that makes `apiFetch` redirect on any 401 survived the trading test,
+  because nothing asserted that an upstream 401 leaves the reader on the page.
+
+A candidate control, for Tyson to decide, not adopted: for any test of a request
+handler or an auth decision, the PR states what the real caller sends and where
+that was observed. A pure-function table stays useful for precedence, but it
+does not count as evidence that a caller works.
+
+### What changed on the branch (draft PR #189 at ccd117b, unmerged as of this entry)
+
+- `GET /?token=<session token>` exchanges the token for the same
+  `dashboard_session` cookie `/login` issues, then redirects to `/`. That is the
+  hand-off #177 described. A wrong or stale link goes to `/login?error=1`.
+- The UI puts no token in URLs or `sessionStorage`. Every same-origin call goes
+  through `apiFetch`. A 401 marked `X-Dashboard-Auth: login-required` sends the
+  reader to `/login?tab=<tab>`, and the response is still returned so each
+  caller's own failure path runs. Bare 401s are left alone, because the
+  wrong-PIN route and the Supabase proxy routes answer 401 for other reasons.
+- The chat socket accepts the cookie. `src/cli/tui.js` keeps `?token=`.
+- `/#ghl` opens the GHL Marketing tab; `/login` returns the reader to it, with
+  `tab` restricted to `[a-z-]`.
+- The resolver no longer accepts the session token from a URL. Callers of the
+  removed branch were checked first: `ui.html`, the CLI, the TUI, and all 83
+  n8n workflows, saved and published versions both. Three of those workflows
+  call the dashboard over HTTP (GHL and Crete image generation, active; Trade
+  Executor, inactive), all with `Bearer $env.QCLAW_API_TOKEN`.
+
+The first test to run the real `DashboardServer.start()` found an undeclared
+dependency:
+
+```
+Error [ERR_MODULE_NOT_FOUND]: Cannot find package 'express-rate-limit' imported from /Users/tysonvenables/QClaw-worktrees/dashboard-api-auth/src/dashboard/server.js
+```
+
+Production resolves it from a stray `/root/package.json` (8.3.2 in
+`/root/node_modules`, checked on the host 2026-09-18), outside the repo. That
+is why no test had ever called `start()`. It is now declared, pinned to exactly
+what production resolves (8.3.2, with `ip-address` 10.1.0). The lockfile's
+`hasInstallScript` count is 3 before and after, so the deploy's rebuild
+allowlist does not move.
+
+### Tests, anchored to ccd117b
+
+`tests/dashboard-browser-auth.test.js` drives the real `start()` over real HTTP
+and a real WebSocket. Requests carry `Accept: */*` where `fetch()` would send
+them and `text/html` for navigations. The test also runs the real `apiFetch`
+and `openTabFromHash` source taken out of `ui.html`.
+
+- Unmutated, locally on Node 22: browser 43/0, split 17/0, trading 51/0.
+  `npm test` reported 57/57 test files passed, and lint was clean.
+- Against `server.js` and `ui.html` from QClaw main 3621d09, the new test
+  fails. The valid link returns 200 with no cookie, and a tab's `fetch()` gets
+  `401 {"error":"Unauthorised"}`, the live failure.
+- Eleven single-regression mutants were all killed; the table is in #189.
+
+### Not done in this change
+
+- **Telegram review links.** Both are to change after merge. `Awo65rdSe5BvDHtC`
+  ("GHL Marketing: Content Generator", node `Send to Telegram`, Flow States Ads
+  Bot) goes to `/#ghl`. `tnvXFYvODL1PrhJa` ("Crete - Content Generator", node
+  `Telegram Notify`) goes to `/#crete`. Both messages add: "If it asks for a
+  token, run `qclaw dashboard` on the server." No credential goes in the link:
+  it would sit in Telegram history on every device and in n8n's environment,
+  and a re-mint would break old links. That is the coupling #172 split apart.
+  Both were unchanged as of this entry.
+- **#187.** Every tunnelled request arrives as `127.0.0.1`, so the `/login`
+  lockout is shared by all visitors. It has triggered 4 times in the production
+  log. This change sends browsers through `/login` more often, so it gets worse
+  before it gets better.
+- **#188.** The tunnel connector is spawned by `_tunnelCloudflare()` with its
+  credential on the command line, readable by every local account.
