@@ -590,19 +590,21 @@ export function formatReport(report) {
  * host, so 0 has to be printed to be read.
  *
  * WHY IT IS LABELLED, DATED, SUPPRESSED AND SOMETIMES INCOMPLETE. The merge
- * condition is "Charlie's line reads 0", and two cold reviews of #184 found
- * three ways it could read 0 while wrong. It is the vacuity class, inside the
- * mechanism built to close it:
+ * condition is "Charlie's line reads 0", and the cold reviews of #184 kept
+ * finding ways it could read 0 while wrong. It is the vacuity class, inside
+ * the mechanism built to close it:
  *
  *   - a line in `## Endpoints` that failed to parse left both sides of
  *     "U of W", so the count shrank with nothing saying why;
+ *   - two endpoints with the same tool name registered as one, while the
+ *     count still counted both (parseSkill now refuses the group);
  *   - a skill that registered NOTHING (a broken `Base URL:`, a misspelt
  *     heading) left the count entirely, taking all its writes with it;
  *   - every agent printed a total, and an agent with no skills (echo, on the
  *     host) printed "0 of 0" on every boot.
  *
- * So: any invalid line or any skill that registered nothing makes the total
- * INCOMPLETE, and that line carries no count of writes at all. The line names
+ * So: any invalid, colliding or out-of-section endpoint line, or any skill
+ * that registered nothing, makes the total INCOMPLETE, and that line carries no count of writes at all. The line names
  * its agent. An agent with nothing to count prints nothing. And the line
  * carries the date, because the boot log's timestamps are time of day only,
  * and an earlier boot's 0 must not be read as the current one.

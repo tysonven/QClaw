@@ -27179,17 +27179,17 @@ location, so the index can resolve both. That is on hold: the FSC token
 answered 401 to both reads (2026-09-18), and Tyson decides before anything is
 built around it.
 
-## 2026-09-19: the third blind zero, and declaring what a section may hold
+## 2026-09-19: a whole broken skill left the count, and declaring what a section may hold
 
-The second cold review of #184 (at QClaw `bd99e98`) found a third way the
-identifier gate's merge line could read 0 while wrong: **a skill that
+A cold review of #184 (at QClaw `bd99e98`) found another way the identifier
+gate's merge line could read 0 while wrong: **a skill that
 registered nothing dropped out of the countdown entirely**, all its writes
 with it. A `Base URL:` typed as `Base URL -` in trading-api printed a named
 error and then `0 of 37`. On the real files it was already happening:
 ads-agency and content-studio register nothing (#149, #150), and their five
 undeclared writes were not in the `0 of 42` the previous round shipped.
 
-That is the vacuity class a third time in the same mechanism:
+It is the vacuity class again, in the same mechanism as before:
 
 - a dropped line;
 - an empty agent;
@@ -27202,9 +27202,8 @@ order (section 8 fixes the zero-tool skills before the parser change).
 
 ### Stop guessing, declare
 
-The first round's fix for dropped lines was a detector that recognised what
-a malformed endpoint looks like. The second review found typos it still
-missed:
+The earlier fix for dropped lines was a detector that recognised what a
+malformed endpoint looks like. The review found typos it still missed:
 
 - a bare level word;
 - a misspelt verb;
@@ -27247,3 +27246,45 @@ boot's 0 read as the current one is the frozen-log failure in a new place.
 - Mutation run at QClaw `6fac6cb`: 79 mutants, all applied, all killed. Two
   first reported NOT APPLIED because their target code had been rewritten;
   they were re-targeted and run rather than counted.
+
+
+## 2026-09-19: a verification claim nobody could check
+
+#184's body said "79 mutants, all killed", and earlier "56" and "25". The lists
+behind those numbers lived in a session scratchpad. A cold review asked to
+rerun them could not, so each number was a verification claim nobody could
+check. That is the failure this register exists to record, produced here by
+the verification itself.
+
+The harness and every list #184 has run are now committed under
+`scripts/mutation/` (QClaw `3cfd691`):
+
+- `history/` holds each round's list exactly as run, labelled with the commit
+  it ran against;
+- `identifier-gate.mjs` is the list for the current code.
+
+The harness refuses a dirty tree and a repository's main checkout
+(`/root/QClaw` is the live deploy), redirects the tool-call log (#182), and
+fails the run on any mutant that does not apply.
+
+Checked by doing it: the committed round-three lists, run against QClaw
+`6fac6cb` in a fresh worktree, reproduce the recorded result exactly. The
+run gave 76 killed and the same two not applied, then the three re-run
+mutants killed: 79 applied, 79 killed. The current list at QClaw `d14150a`:
+100 applied, 100 killed.
+
+That first reproduction attempt was itself refused, correctly. A
+`node_modules` symlink in the scratch worktree read as untracked, and the
+harness will not mutate a tree with anything untracked in it.
+
+> A count of what the tests killed is only evidence if someone else can
+> produce the same count. Commit the list with the claim, name the commit it
+> ran against, and make a mutant that does not apply fail the run rather than
+> disappear from it.
+
+The same review found the collision case in the merge line. Two endpoint
+lines that get the same tool name left the registry holding whichever came
+last, silently, while the countdown counted both lines and read 0. A stale
+duplicate of the manual-close line could replace its `financial` level with
+`mutating`. Fixed in QClaw `810a4e8`: every line in a colliding group is
+refused and named, and endpoint lines outside `## Endpoints` are named too.
