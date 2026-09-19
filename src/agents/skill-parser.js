@@ -52,27 +52,25 @@
  * drops a line it does not match and returns no tool for it, with no error,
  * which is exactly how ads-agency, content-studio and clipper sat broken from
  * the day they were written (#149, #150, #151). Every reader of an endpoint
- * line imports parseEndpointLine or looksLikeEndpointLine from here.
+ * line imports from here.
+ *
+ * THE SEPARATOR NEEDS WHITESPACE ON BOTH SIDES (` - `). With `\s*-\s*` the
+ * path could backtrack to a hyphen inside itself: an em dash in the
+ * manual-close line parsed as `POST /positions/manual` with a description
+ * starting "close", replacing the real /positions/manual tool and deleting
+ * manual-close without a word. Seven real writes have hyphenated paths (#192).
  *
  * A WELL-FORMED bracket holding something that is not one of ENDPOINT_LEVELS
  * (a typo, an empty `[]`) does NOT drop the endpoint. The tool still
- * registers, the write reads as unclassified (DELETE included) and is
- * refused, and `declaredLevel` keeps the raw token so the boot diagnostic can
- * name the line.
- *
- * A MALFORMED line (an unclosed bracket, stacked brackets, an en or em dash
- * before the description) cannot register: no grammar can guess what it
- * meant. It is recorded in `malformedEndpointLines` instead, and the boot
- * report names it and marks the countdown incomplete. Either way a typo is
- * loud. Until 2026-09-18 the second kind was silent, and the countdown read
- * lower than the truth.
+ * registers, the write reads as unclassified (DELETE included), and
+ * `declaredLevel` keeps the raw token so the boot diagnostic can name it.
  */
 export const ENDPOINT_LEVELS = Object.freeze(['financial', 'destructive', 'mutating']);
 
-const ENDPOINT_LINE_RE = /^(?:\[([^\]]*)\]\s*)?(GET|POST|PUT|PATCH|DELETE)\s+(\/[^\s]*)\s*-\s*(.+)/i;
+const ENDPOINT_LINE_RE = /^(?:\[([^\]]*)\]\s*)?(GET|POST|PUT|PATCH|DELETE)\s+(\/\S*)\s+-\s+(.+)/i;
 
 // Looser: a line that LOOKS like an endpoint (verb then something), used only
-// to explain why a line that looks like one did not parse.
+// by diagnose() to explain why a skill that registered nothing did not parse.
 const ENDPOINT_LIKE_RE = /^(?:\[[^\]]*\]\s*)?(GET|POST|PUT|PATCH|DELETE)\s+\S/i;
 
 /**
@@ -104,54 +102,58 @@ export function looksLikeEndpointLine(line) {
 }
 
 /**
- * True when a line inside `## Endpoints` did NOT parse but was plainly meant
- * to be an endpoint: it names an HTTP verb as a word and carries a path.
- * Comment lines (`# ...`) are never counted.
+ * Where `## Endpoints` is, defined ONCE (#183). The section starts at a
+ * level-two heading `## Endpoints` and ends at the next level-two heading of
+ * any other name. The parser, the boot diagnostics and `qclaw skill list` all
+ * read the section through this, so they cannot disagree about which lines
+ * are in it. (Until 2026-09-19 the parser kept reading endpoints under any
+ * heading it did not recognise, while the other two stopped at it.)
  *
- * Looser than the grammar, but not so loose that it reads prose. The strict
- * grammar above decides what registers; this decides what gets reported when
- * the grammar says no. A cold review of #184 found eighteen spellings that
- * dropped a write without a word: an unclosed `[mutating`, doubled or stacked
- * brackets, fullwidth brackets, a zero-width space, the level after the verb,
- * an en or em dash before the description. Every one of them has an
- * upper-case verb, then a path, and nothing before the verb but punctuation,
- * invisible characters and bracketed tokens.
- *
- * That last condition is what keeps prose out: n8n-api.md has a sentence in
- * its Endpoints section that says "Do NOT use GET /workflows?limit=200", and
- * a sentence has words before its verb. The residual it accepts: a typo with
- * a lower-case verb is not reported (the grammar would accept the verb in
- * either case; prose is where lower case lives).
+ * @param {string} content
+ * @returns {Array<{ line: number, text: string }>} every line inside the
+ *   section, 1-based line numbers, text trimmed, headings excluded
  */
-export function isMalformedEndpointLine(line) {
-  const t = String(line ?? '').trim();
-  if (!t || t.startsWith('#')) return false;
-  if (parseEndpointLine(t)) return false;
-  const verb = /(^|[^A-Za-z])(GET|POST|PUT|PATCH|DELETE)(?=[^A-Za-z]|$)/.exec(t);
-  if (!verb) return false;
-  const at = verb.index + verb[1].length;
-  const before = t.slice(0, at)
-    // bracketed tokens, closed or not: [..] (..) {..} <..> fullwidth, `..`
-    .replace(/[[({<［【`][^\])}>］】`]*[\])}>］】`]?/g, '');
-  if (/[A-Za-z0-9]/.test(before)) return false;
-  return /\/[^\s/]/.test(t.slice(at));
+export function endpointsSection(content) {
+  const out = [];
+  let inside = false;
+  const lines = String(content ?? '').split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const t = lines[i].trim();
+    if (/^##\s/.test(t)) { inside = /^##\s+Endpoints\b/.test(t); continue; }
+    if (inside) out.push({ line: i + 1, text: t });
+  }
+  return out;
 }
 
 /**
- * Count the endpoint lines under `## Endpoints`, by the same grammar the
- * parser registers tools from. Used by `qclaw skill list`.
+ * What a line inside `## Endpoints` may be, declared rather than guessed:
+ * an endpoint, a `#` comment, or blank. ANYTHING ELSE IS INVALID, prose
+ * included, by design (decided 2026-09-19).
+ *
+ * The previous rule tried to recognise what a malformed endpoint looks like,
+ * and each cold review of #184 found spellings it missed: a bare level word,
+ * a misspelt verb, a numbered line, a path without its slash, a lower-case
+ * verb. Guessing loses to the next variant, so the section now says what it
+ * may contain and everything else is named at boot. Prose that belongs in
+ * the section is written as a `#` comment.
+ *
+ * @returns {'endpoint'|'comment'|'blank'|'invalid'}
+ */
+export function classifyEndpointsLine(text) {
+  const t = String(text ?? '').trim();
+  if (!t) return 'blank';
+  if (t.startsWith('#')) return 'comment';
+  return parseEndpointLine(t) ? 'endpoint' : 'invalid';
+}
+
+/**
+ * Count the endpoint lines in `## Endpoints`, by the same section rule and
+ * grammar the parser registers tools from. Used by `qclaw skill list`.
  * @param {string} content
  * @returns {number}
  */
 export function countEndpointLines(content) {
-  let inSection = false;
-  let count = 0;
-  for (const line of String(content ?? '').split(/\r?\n/)) {
-    if (/^##\s+Endpoints\b/.test(line)) { inSection = true; continue; }
-    if (inSection && /^##\s+/.test(line)) break;
-    if (inSection && parseEndpointLine(line)) count++;
-  }
-  return count;
+  return endpointsSection(content).filter((l) => classifyEndpointsLine(l.text) === 'endpoint').length;
 }
 
 /**
@@ -169,11 +171,11 @@ export function parseSkill(name, content, secrets) {
       baseUrl: null,
       headers: {},
       endpoints: [],
-      // Lines in `## Endpoints` that look like endpoints and did not parse.
-      // They register nothing, so the boot report must name them: otherwise a
-      // dropped write also drops out of the countdown, which then reads lower
-      // than the truth with nothing saying why.
-      malformedEndpointLines: [],
+      // Lines in `## Endpoints` that are not an endpoint, a `#` comment or
+      // blank. They register nothing, so the boot report names each one and
+      // the countdown reads INCOMPLETE: otherwise a write that failed to parse
+      // drops out of the count, which then reads lower than the truth.
+      invalidEndpointLines: [],
       permissions: { http: [], shell: [], file: [] },
       notes: [],
     };
@@ -216,18 +218,6 @@ export function parseSkill(name, content, secrets) {
         }
       }
 
-      if (section === 'endpoints') {
-        // GET /customers - List customers
-        // GET /customers/{{customer_id}} - Get customer by ID
-        // [mutating] POST /customers - Create customer
-        const endpoint = parseEndpointLine(line);
-        if (endpoint) {
-          skill.endpoints.push({ ...endpoint, line: i + 1 });
-        } else if (isMalformedEndpointLine(line)) {
-          skill.malformedEndpointLines.push({ line: i + 1, text: line });
-        }
-      }
-
       if (section === 'permissions') {
         // - http: [api.stripe.com]
         // - shell: none
@@ -247,6 +237,17 @@ export function parseSkill(name, content, secrets) {
       if (section === 'notes' && line.startsWith('- ')) {
         skill.notes.push(line.replace(/^-\s*/, ''));
       }
+    }
+
+    // Endpoints are read through the one section rule (endpointsSection),
+    // never by this loop's section tracking, so every reader agrees on which
+    // lines are in `## Endpoints`.
+    //   GET /customers - List customers
+    //   [mutating] POST /customers - Create customer
+    for (const { line, text } of endpointsSection(content)) {
+      const kind = classifyEndpointsLine(text);
+      if (kind === 'endpoint') skill.endpoints.push({ ...parseEndpointLine(text), line });
+      else if (kind === 'invalid') skill.invalidEndpointLines.push({ line, text });
     }
 
     // Validate

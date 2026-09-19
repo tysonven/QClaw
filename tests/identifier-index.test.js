@@ -52,6 +52,7 @@ const {
   indexCoversEndpoint,
   pathIdentifierNames,
 } = await import('../src/agents/skill-diagnostics.js');
+const { endpointsSection, classifyEndpointsLine } = await import('../src/agents/skill-parser.js');
 const { pathParamNames, extractIdentifiers } = await import('../src/security/approval-summary.js');
 const { registerSpecialistSkills } = await import('../src/agents/specialist-loader.js');
 const { ToolRegistry } = await import('../src/tools/registry.js');
@@ -80,6 +81,13 @@ const WRITE = ['POST', 'PUT', 'PATCH', 'DELETE'];
 // (src/agents/skill-parser.js:98 at QClaw main 3621d09). A reference only:
 // production code must never import a copy of the grammar.
 const PRE_PREFIX_GRAMMAR = /^(GET|POST|PUT|PATCH|DELETE)\s+(\/[^\s]*)\s*-\s*(.+)/i;
+
+// Report-level countdown checks run at a fixed time so the dated prefix is
+// exact. Boot-level checks run at the real time and match any date.
+const NOW = new Date('2026-09-19T00:00:00Z');
+const countdown = (report, agent = null) => formatCountdown(report, agent, NOW);
+const CD = (agent = null) => `identifier gate countdown${agent ? ` (${agent})` : ''} at 2026-09-19T00:00:00Z: `;
+const CDRE = (agent, rest) => new RegExp(`identifier gate countdown \\(${agent}\\) at \\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z: ${rest}`);
 
 const skillText = (endpointLines) => [
   '## Auth',
@@ -184,7 +192,7 @@ async function main() {
       lines.some((l) => l.includes('synth.md:6') && l.includes(`"[${bad}]"`) && /unclassified/.test(l)),
       JSON.stringify(lines));
     check(`"[${bad}]": the countdown counts it as unclassified`,
-      formatCountdown(report).unclassified === 1, JSON.stringify(formatCountdown(report).lines));
+      countdown(report).unclassified === 1, JSON.stringify(countdown(report).lines));
   }
 
   // 1e. A level on a GET does nothing, and says so.
@@ -521,7 +529,7 @@ async function main() {
     `${post}POST /widgets - create`,
     'DELETE /widgets/{{widget_id}} - delete',
   ]);
-  const before = formatCountdown(inspectSkills([{ name: 'w', content: three(''), filename: 'w.md' }], null));
+  const before = countdown(inspectSkills([{ name: 'w', content: three(''), filename: 'w.md' }], null));
   check('CAPABILITY: counts writes and unclassified (declared and undeclared DELETE are not unclassified)',
     before.writes === 3 && before.unclassified === 1, JSON.stringify(before));
   check('CAPABILITY: the per-skill line says what it counts, path and body separately',
@@ -529,44 +537,44 @@ async function main() {
       + 'write path identifiers 2, 2 resolvable on their own resource; body-resolvable names 1 (widget_id)')),
     JSON.stringify(before.lines));
   check('CAPABILITY: the total says 1 of 3 and why it matters',
-    before.lines.some((l) => l.startsWith('identifier gate countdown: 1 of 3 ') && /merges only when this reads 0/.test(l)),
+    before.lines.some((l) => l.startsWith(`${CD()}1 of 3 `) && /merges only when this reads 0/.test(l)),
     JSON.stringify(before.lines));
   check('CAPABILITY: the total names the agent when given one',
-    formatCountdown(inspectSkills([{ name: 'w', content: three(''), filename: 'w.md' }], null), 'charlie')
-      .lines.some((l) => l.startsWith('identifier gate countdown (charlie): 1 of 3 ')));
+    countdown(inspectSkills([{ name: 'w', content: three(''), filename: 'w.md' }], null), 'charlie')
+      .lines.some((l) => l.startsWith(`${CD('charlie')}1 of 3 `)));
   const ambiguousSkill = skillText([
     'GET /workflows/{{id}} - one workflow',
     'GET /executions/{{id}} - one execution',
     'POST /workflows - create',
   ]);
-  const amb = formatCountdown(inspectSkills([{ name: 'a', content: ambiguousSkill, filename: 'a.md' }], null));
+  const amb = countdown(inspectSkills([{ name: 'a', content: ambiguousSkill, filename: 'a.md' }], null));
   check('CAPABILITY: a name two GETs end at is ambiguous, not body-resolvable',
     amb.lines.some((l) => l.includes('body-resolvable names 0, ambiguous: id')), JSON.stringify(amb.lines));
   // Path and body are different questions: a v2 write whose only GET is v1
   // has an unresolvable PATH identifier while the NAME is body-resolvable.
   // The line must not print a resolver count that reads as covering the write.
-  const v1v2 = formatCountdown(inspectSkills([{ name: 'v', content: skillText([
+  const v1v2 = countdown(inspectSkills([{ name: 'v', content: skillText([
     'GET /v1/contacts/{{contact_id}} - one contact',
     '[mutating] POST /v2/contacts/{{contact_id}}/notes - note',
   ]), filename: 'v.md' }], null));
   check('CAPABILITY: a write path identifier with no same-resource GET is counted unresolvable on the line',
     v1v2.lines.some((l) => l.includes('write path identifiers 1, 0 resolvable on their own resource')), JSON.stringify(v1v2.lines));
-  const after = formatCountdown(inspectSkills([{ name: 'w', content: three('[mutating] '), filename: 'w.md' }], null));
+  const after = countdown(inspectSkills([{ name: 'w', content: three('[mutating] '), filename: 'w.md' }], null));
   check('CAPABILITY: at zero the countdown still prints, and says 0',
-    after.unclassified === 0 && after.lines.some((l) => l.startsWith('identifier gate countdown: 0 of 3 ')),
+    after.unclassified === 0 && after.lines.some((l) => l.startsWith(`${CD()}0 of 3 `)),
     JSON.stringify(after.lines));
-  const nothing = formatCountdown(inspectSkills([], null), 'echo');
+  const nothing = countdown(inspectSkills([], null), 'echo');
   check('CAPABILITY: an agent with nothing to count prints NOTHING, never "0 of 0"',
     nothing.lines.length === 0, JSON.stringify(nothing.lines));
-  const onlyReads = formatCountdown(inspectSkills([{ name: 'r', content: skillText(['GET /widgets/{{widget_id}} - one']), filename: 'r.md' }], null), 'echo');
+  const onlyReads = countdown(inspectSkills([{ name: 'r', content: skillText(['GET /widgets/{{widget_id}} - one']), filename: 'r.md' }], null), 'echo');
   check('CAPABILITY: an agent whose skills only read prints nothing either',
     onlyReads.lines.length === 0, JSON.stringify(onlyReads.lines));
-  const declaredCase = formatCountdown(inspectSkills([{ name: 'c', content: skillText(['[Mutating] POST /widgets - create']), filename: 'c.md' }], null));
+  const declaredCase = countdown(inspectSkills([{ name: 'c', content: skillText(['[Mutating] POST /widgets - create']), filename: 'c.md' }], null));
   check('CAPABILITY: a level written in another case counts as declared, not unclassified',
     declaredCase.unclassified === 0 && declaredCase.writes === 1, JSON.stringify(declaredCase));
 
   // LIVE: the countdown counts every parsed write, no more and no fewer.
-  const liveCount = formatCountdown(allLive);
+  const liveCount = countdown(allLive);
   const parsedWrites = realSkills()
     .map((s) => parseSkill(s.name, s.content, null))
     .filter(Boolean)
@@ -574,8 +582,8 @@ async function main() {
   check('LIVE: the countdown counts exactly the writes the parser registers',
     liveCount.writes === parsedWrites && liveCount.unclassified <= liveCount.writes,
     `countdown ${liveCount.writes}, parser ${parsedWrites}`);
-  check('LIVE: no real skill file has an endpoint line that fails to parse',
-    allLive.malformed.length === 0, JSON.stringify(allLive.malformed.map((r) => r.malformed)));
+  check('LIVE: no skill that parses has a line in ## Endpoints that is not an endpoint, comment or blank',
+    allLive.invalid.length === 0, JSON.stringify(allLive.invalid.map((r) => r.invalid)));
 
   // The boot seam. Agent.load() is what runs on the host: it must register
   // the tools with their levels AND an index that resolves, and print the
@@ -593,13 +601,13 @@ async function main() {
     return { registry, printed };
   };
   for (const [label, content, want] of [
-    ['one undeclared write', three(''), 'identifier gate countdown (charlie): 1 of 3 '],
-    ['all declared', three('[mutating] '), 'identifier gate countdown (charlie): 0 of 3 '],
+    ['one undeclared write', three(''), CDRE('charlie', '1 of 3 ')],
+    ['all declared', three('[mutating] '), CDRE('charlie', '0 of 3 ')],
   ]) {
     const { registry, printed } = await boot('charlie', { 'w.md': content });
     const ctx = registry.getSkillToolContext('charlie__w__w__create_widgets_id_pay');
     check(`boot (${label}): Agent.load() prints the countdown, labelled with the agent`,
-      printed.some((l) => l.includes(want)), JSON.stringify(printed.filter((l) => l.includes('countdown'))));
+      printed.some((l) => want.test(l)), JSON.stringify(printed.filter((l) => l.includes('countdown'))));
     check(`boot (${label}): Agent.load() registers the create tool with its effective level`,
       registry.getSkillToolContext('charlie__w__w__create_widgets').level === (label === 'all declared' ? 'mutating' : 'unclassified'),
       JSON.stringify(registry.getSkillToolContext('charlie__w__w__create_widgets').level));
@@ -624,14 +632,14 @@ async function main() {
   const echoBoot = await boot('echo', {});
   check('boot (echo, empty skills directory): no countdown line is printed',
     !echoBoot.printed.some((l) => l.includes('identifier gate countdown')), JSON.stringify(echoBoot.printed));
-  // A malformed line at boot: named with its line, and the countdown says
+  // An invalid line at boot: named with its line, and the countdown says
   // INCOMPLETE instead of a number that could be read as done.
   const badBoot = await boot('charlie', { 'w.md': three('[mutating] ').replace('[financial] POST', '[financial POST') });
-  check('boot (malformed line): the report names the file and line',
-    badBoot.printed.some((l) => l.includes('w.md:6') && l.includes('does not parse')), JSON.stringify(badBoot.printed.filter((l) => l.includes('w.md'))));
-  check('boot (malformed line): the countdown says INCOMPLETE, not "0 of"',
-    badBoot.printed.some((l) => l.includes('identifier gate countdown (charlie): INCOMPLETE'))
-      && !badBoot.printed.some((l) => /identifier gate countdown \(charlie\): 0 of/.test(l)),
+  check('boot (invalid line): the report names the file and line',
+    badBoot.printed.some((l) => l.includes('w.md:6') && l.includes('is not an endpoint')), JSON.stringify(badBoot.printed.filter((l) => l.includes('w.md'))));
+  check('boot (invalid line): the countdown says INCOMPLETE and carries no count',
+    badBoot.printed.some((l) => CDRE('charlie', 'INCOMPLETE').test(l))
+      && !badBoot.printed.some((l) => /identifier gate countdown.*\d+ of \d+/.test(l)),
     JSON.stringify(badBoot.printed.filter((l) => l.includes('countdown'))));
 
   // The specialist registration path gets the same index.
@@ -678,23 +686,38 @@ async function main() {
     const content = skillText(['GET /widgets/{{widget_id}} - one', v]);
     const report = inspectSkills([{ name: 'w', content, filename: 'w.md' }], null);
     const lines = formatReport(report);
-    const cd = formatCountdown(report, 'charlie');
-    const named = lines.some((l) => l.includes('w.md:6') && l.includes('does not parse'));
-    const incomplete = cd.lines.some((l) => l.startsWith('identifier gate countdown (charlie): INCOMPLETE'));
-    const readsZero = cd.lines.some((l) => /^identifier gate countdown \(charlie\): 0 of/.test(l));
+    const cd = countdown(report, 'charlie');
+    const named = lines.some((l) => l.includes('w.md:6') && l.includes('is not an endpoint'));
+    const incomplete = cd.lines.some((l) => l.startsWith(`${CD('charlie')}INCOMPLETE`));
+    const readsZero = cd.lines.some((l) => /^identifier gate countdown.*\d+ of \d+/.test(l));
     if (!named || !incomplete || readsZero) silent.push(JSON.stringify(v));
   }
   check(`finding 1: all ${variants.length} malformed spellings are named at boot and make the countdown INCOMPLETE`,
     silent.length === 0, silent.join(' | '));
-  const notMalformed = inspectSkills([{ name: 'w', content: skillText([
+  // The strict rule (decided 2026-09-19): ## Endpoints may hold endpoints,
+  // "#" comments and blank lines. Prose inside it is invalid BY DESIGN.
+  const strictContent = [
+    '## Auth', 'Base URL: https://example.test', '',
+    '## Endpoints',
     'GET /widgets/{{widget_id}} - one',
-    '# POST /invoices is REMOVED, not undeclared: a comment line, never an endpoint',
-    'All requests to /webhook/qclaw-router must send a flat JSON body:',
-    'lightweight {id, name, active} array (a few KB). Do NOT use GET /workflows?limit=200 for',
+    '# a comment mentioning POST /widgets, never an endpoint',
+    '',
+    'All requests to /webhook/x must send a flat JSON body:',
+    '',
+    '## Payload Format',
     'Get details at /docs before calling anything',
-  ]), filename: 'w.md' }], null);
-  check('finding 1: comment and prose lines that mention a verb or a path are not reported as malformed',
-    notMalformed.malformed.length === 0, JSON.stringify(notMalformed.malformed));
+    'POST /widgets - an endpoint line under another heading',
+  ].join('\n');
+  const strict = inspectSkills([{ name: 'w', content: strictContent, filename: 'w.md' }], null);
+  check('strict rule: a comment and a blank line are fine; prose inside ## Endpoints is named, by design',
+    JSON.stringify(strict.invalid[0]?.invalid.map((m) => m.line)) === '[8]', JSON.stringify(strict.invalid));
+  check('strict rule (#183): the section ends at the next ## heading, for the parser, the CLI and the index alike',
+    parseSkill('w', strictContent, null).endpoints.map((e) => e.path).join() === '/widgets/{{widget_id}}'
+      && countEndpointLines(strictContent) === 1
+      && endpointsSection(strictContent).every((l) => l.line >= 5 && l.line <= 9),
+    JSON.stringify(endpointsSection(strictContent)));
+  check('classifyEndpointsLine: endpoint, comment, blank, and everything else invalid',
+    ['GET /a - b', '# x', '   ', 'prose'].map(classifyEndpointsLine).join() === 'endpoint,comment,blank,invalid');
 
   // Finding 3: a bracket that is not a level makes ANY write unclassified,
   // DELETE included, everywhere it is read.
@@ -705,8 +728,8 @@ async function main() {
     check(`finding 3: "[${bad}] DELETE" is unclassified in the registry, the report and the countdown alike`,
       r.getSkillToolContext(TOOL('w', 'w__delete_widgets_id')).level === 'unclassified'
         && formatReport(report).some((l) => /reads as unclassified/.test(l))
-        && formatCountdown(report).unclassified === 1,
-      JSON.stringify({ level: r.getSkillToolContext(TOOL('w', 'w__delete_widgets_id')).level, cd: formatCountdown(report).lines }));
+        && countdown(report).unclassified === 1,
+      JSON.stringify({ level: r.getSkillToolContext(TOOL('w', 'w__delete_widgets_id')).level, cd: countdown(report).lines }));
   }
   const table2 = [
     ['DELETE', 'mutatin', 'unclassified'], ['DELETE', '', 'unclassified'], ['DELETE', 'destructive', 'destructive'],
@@ -768,6 +791,149 @@ async function main() {
     ex.identifiers.find((i) => i.name === 'widget_id')?.source === 'path'
       && ex.identifiers.find((i) => i.name === 'reason_id')?.source !== 'path',
     JSON.stringify(ex.identifiers));
+
+  // ── 6. The second cold review's findings ────────────────────────────
+  console.log('cold review, round two:');
+
+  // Finding 1 (#192): a dash typo on a HYPHENATED path must never register a
+  // shorter path. Every write line with a hyphen in its path, in the real
+  // files, under every variant: the damaged line registers nothing, nothing
+  // else changes, and the line is named.
+  const hyphenCases = [];
+  for (const name of ['trading-api', 'n8n-router']) {
+    const content = read(name);
+    const base = parseSkill(name, content, null);
+    const basePaths = base.endpoints.map((e) => `${e.method} ${e.path}`).sort();
+    const lines = content.split('\n');
+    for (const e of base.endpoints.filter((x) => WRITE.includes(x.method) && x.path.includes('-'))) {
+      const orig = lines[e.line - 1];
+      const variants = {
+        'em dash': orig.replace(' - ', ' — '),
+        'en dash': orig.replace(' - ', ' – '),
+        'no description': orig.slice(0, orig.indexOf(' - ')),
+        'no space before the hyphen': orig.replace(' - ', '- '),
+        'no space after the hyphen': orig.replace(' - ', ' -'),
+        'level after the path': orig.replace(/^\[([^\]]*)\] (\S+) (\S+) - /, '$2 $3 [$1] - '),
+      };
+      for (const [what, line] of Object.entries(variants)) {
+        if (line === orig) { hyphenCases.push(`${name}:${e.line} ${what}: variant did not apply`); continue; }
+        const damaged = lines.map((l, i) => (i === e.line - 1 ? line : l)).join('\n');
+        const p = parseSkill(name, damaged, null);
+        const want = basePaths.filter((x) => x !== `${e.method} ${e.path}`);
+        const got = p.endpoints.map((x) => `${x.method} ${x.path}`).sort();
+        const named = p.invalidEndpointLines.some((m) => m.line === e.line);
+        if (JSON.stringify(got) !== JSON.stringify(want) || !named) hyphenCases.push(`${name}:${e.line} ${what}: ${JSON.stringify(got.filter((x) => !basePaths.includes(x)))} named=${named}`);
+      }
+    }
+  }
+  check('finding 1 (#192): on all seven real hyphenated writes, no dash variant registers a shorter path, and each is named',
+    hyphenCases.length === 0, hyphenCases.slice(0, 4).join(' | '));
+
+  // Finding 3: the typos the heuristic missed are invalid under the strict
+  // rule, named, and make the countdown INCOMPLETE with no count.
+  const missed = [
+    'financial POST /widgets/{{widget_id}}/pay - pay',
+    'mutating: PUT /widgets/{{widget_id}} - update',
+    '[mutating] PTU /widgets/{{widget_id}} - update',
+    '1. [mutating] POST /widgets/{{widget_id}}/pay - pay',
+    '[mutating] POST widgets/{{widget_id}}/pay - pay',
+    '[mutating post /widgets/{{widget_id}}/pay - pay',
+    'PO​ST /widgets/{{widget_id}}/pay - pay',
+    '[mutating] POST /widgets/{{widget_id}}/pay -',
+  ];
+  const stillSilent = [];
+  for (const v of missed) {
+    const report = inspectSkills([{ name: 'w', content: skillText(['GET /widgets/{{widget_id}} - one', v]), filename: 'w.md' }], null);
+    const cd = countdown(report, 'charlie');
+    const ok = formatReport(report).some((l) => l.includes('w.md:6')) && cd.incomplete
+      && cd.lines.some((l) => l.startsWith(`${CD('charlie')}INCOMPLETE`)) && !cd.lines.some((l) => /countdown.*\d+ of \d+/.test(l));
+    if (!ok) stillSilent.push(JSON.stringify(v));
+  }
+  check(`finding 3: all ${missed.length} typos the heuristic missed are named and make the countdown INCOMPLETE`,
+    stillSilent.length === 0, stillSilent.join(' | '));
+
+  // Finding 2 (decision A): a skill that registers NOTHING is incomplete, not
+  // absent. Each of these breaks one real skill beside a healthy one.
+  const healthy = { name: 'ghl-fsc', content: read('ghl-fsc'), filename: 'ghl-fsc.md' };
+  const breakages = {
+    'Base URL typed "Base URL -"': ['trading-api', read('trading-api').replace('Base URL: http://localhost:4003', 'Base URL - http://localhost:4003')],
+    'heading typed "## Endpoint"': ['ghl', read('ghl').replace('## Endpoints', '## Endpoint')],
+    'every endpoint line broken': ['n8n-router', read('n8n-router').replace(/^\[mutating\] POST/gm, '[mutating POST')],
+  };
+  for (const [what, [name, content]] of Object.entries(breakages)) {
+    check(`PRECONDITION (${what}): the edit changed ${name}.md`, content !== read(name));
+    const report = inspectSkills([{ name, content, filename: `${name}.md` }, healthy], null);
+    const cd = countdown(report, 'charlie');
+    check(`finding 2 (${what}): the countdown is INCOMPLETE, names the skill, and gives no count`,
+      cd.incomplete && cd.broken === 1
+        && cd.lines.some((l) => l.includes(`"${name}"`) && l.includes('registered nothing'))
+        && cd.lines.some((l) => l.startsWith(`${CD('charlie')}INCOMPLETE. 1 skill(s) registered nothing`))
+        && !cd.lines.some((l) => /countdown.*\d+ of \d+/.test(l)),
+      JSON.stringify(cd.lines.slice(-2)));
+  }
+  // LIVE: today ads-agency, content-studio and clipper register nothing
+  // (#149 to #151), so the countdown over the real files is INCOMPLETE. That
+  // is expected until they land; it is what stops part two merging first.
+  const liveCd = countdown(allLive, 'charlie');
+  check('LIVE: the real files read INCOMPLETE, naming exactly the skills the report says registered nothing',
+    liveCd.incomplete === (allLive.broken.length > 0)
+      && allLive.broken.every((r) => liveCd.lines.some((l) => l.includes(`"${r.name}"`) && l.includes('registered nothing'))),
+    JSON.stringify({ broken: allLive.broken.map((r) => r.name), last: liveCd.lines.at(-1) }));
+
+  // Finding 4: the total across more than one skill IS the merge line.
+  const undeclared1 = skillText(['GET /a/{{a_id}} - a', 'POST /a/{{a_id}}/x - x', '[mutating] POST /a - make']);
+  const undeclared2 = skillText(['GET /b/{{b_id}} - b', 'POST /b/{{b_id}}/y - y']);
+  const twoSkills = countdown(inspectSkills([
+    { name: 'a', content: undeclared1, filename: 'a.md' },
+    { name: 'b', content: undeclared2, filename: 'b.md' },
+  ], null), 'charlie');
+  check('finding 4: unclassified writes are summed across skills (1 + 1 of 2 + 1)',
+    twoSkills.unclassified === 2 && twoSkills.writes === 3 && twoSkills.lines.some((l) => l.startsWith(`${CD('charlie')}2 of 3 `)),
+    JSON.stringify(twoSkills.lines.at(-1)));
+  const invalidFirst = countdown(inspectSkills([
+    { name: 'a', content: undeclared1 + '\n[mutating POST /a/broken - x', filename: 'a.md' },
+    { name: 'b', content: skillText(['[mutating] POST /b - make']), filename: 'b.md' },
+  ], null), 'charlie');
+  check('finding 4: an invalid line in the FIRST skill still makes the total INCOMPLETE when a later skill is clean',
+    invalidFirst.incomplete && invalidFirst.lines.some((l) => l.startsWith(`${CD('charlie')}INCOMPLETE`)),
+    JSON.stringify(invalidFirst.lines.at(-1)));
+  const bothWays = countdown(inspectSkills([{ name: 'a', content: undeclared1 + '\nprose in the section', filename: 'a.md' }], null), 'charlie');
+  check('finding 5 (K6): INCOMPLETE also when writes are unclassified, and still with no count',
+    bothWays.unclassified === 1 && bothWays.lines.some((l) => l.startsWith(`${CD('charlie')}INCOMPLETE`))
+      && !bothWays.lines.some((l) => /countdown.*\d+ of \d+/.test(l)));
+
+  // Finding 5: levels that merely contain a level word are not levels.
+  const lookalikes = ['not mutating', 'mutating?', 'financially', 'mutating destructive', 'non-financial'];
+  check('finding 5 (K14): a bracket that only contains a level word is unclassified',
+    lookalikes.every((t) => effectiveWriteLevel('POST', t) === 'unclassified')
+      && lookalikes.every((t) => parseEndpointLine(`[${t}] POST /w - d`)?.level === null),
+    JSON.stringify(lookalikes.map((t) => [t, effectiveWriteLevel('POST', t)])));
+
+  // Findings 4 and 5 at boot: the sum, the label, the per-skill lines, the
+  // log level and the date, as Agent.load() prints them.
+  const multiBoot = await boot('charlie', { 'a.md': undeclared1, 'b.md': undeclared2 });
+  check('boot (two skills, one undeclared write each): the total is 2 of 3',
+    multiBoot.printed.some((l) => CDRE('charlie', '2 of 3 ').test(l)), JSON.stringify(multiBoot.printed.filter((l) => l.includes('countdown'))));
+  check('boot: the per-skill lines are printed, not only the total',
+    multiBoot.printed.some((l) => l.includes('skill "a" (a.md): 2 writes, 1 unclassified'))
+      && multiBoot.printed.some((l) => l.includes('skill "b" (b.md): 1 writes, 1 unclassified')));
+  check('boot: a nonzero countdown logs as a warning',
+    multiBoot.printed.some((l) => CDRE('charlie', '2 of 3 ').test(l) && l.includes('⚠')));
+  const zeroBoot = await boot('charlie', { 'w.md': three('[mutating] ') });
+  check('boot: a zero countdown logs as info, not a warning',
+    zeroBoot.printed.some((l) => CDRE('charlie', '0 of 3 ').test(l) && l.includes('▸') && !l.includes('⚠')));
+  const otherBoot = await boot('ops', { 'w.md': three('') });
+  check('boot: the label is the booting agent\'s name, not a constant',
+    otherBoot.printed.some((l) => CDRE('ops', '1 of 3 ').test(l)) && !otherBoot.printed.some((l) => l.includes('(charlie)')),
+    JSON.stringify(otherBoot.printed.filter((l) => l.includes('countdown'))));
+  const stamp = multiBoot.printed.map((l) => /countdown \(charlie\) at (\S+Z):/.exec(l)?.[1]).find(Boolean);
+  check('boot: the countdown carries the boot time as an ISO date, so an earlier boot\'s line cannot pass for this one',
+    !!stamp && Math.abs(Date.parse(stamp) - Date.now()) < 120000, String(stamp));
+  const brokenBoot = await boot('charlie', { 'w.md': three('[mutating] '), 't.md': read('trading-api').replace('Base URL: ', 'Base URL - ') });
+  check('boot: a skill that registers nothing makes the countdown INCOMPLETE, as a warning, with no count',
+    brokenBoot.printed.some((l) => CDRE('charlie', 'INCOMPLETE. 1 skill\\(s\\) registered nothing').test(l) && l.includes('⚠'))
+      && !brokenBoot.printed.some((l) => /countdown.*\d+ of \d+/.test(l)),
+    JSON.stringify(brokenBoot.printed.filter((l) => l.includes('countdown'))));
 }
 
 try {

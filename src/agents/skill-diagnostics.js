@@ -45,6 +45,7 @@ import {
   skillToTools,
   parseEndpointLine,
   looksLikeEndpointLine,
+  endpointsSection,
   ENDPOINT_LEVELS,
 } from './skill-parser.js';
 
@@ -350,12 +351,15 @@ export function diagnose(content) {
   let section = null;
   let baseUrlLine = null;
   let baseUrlSection = null;
-  let sawEndpointsHeading = false;
+  // Which lines are in `## Endpoints` comes from the one section rule the
+  // parser uses (skill-parser.js endpointsSection), not from this loop.
+  const endpointLineNumbers = new Set(endpointsSection(content).map((l) => l.line));
+  const sawEndpointsHeading = lines.some((l) => /^##\s+Endpoints\b/.test(l.trim()));
   const verbLines = [];
   for (let i = 0; i < lines.length; i++) {
     const t = lines[i].trim();
     if (t.startsWith('## Auth')) { section = 'auth'; continue; }
-    if (t.startsWith('## Endpoints')) { section = 'endpoints'; sawEndpointsHeading = true; continue; }
+    if (t.startsWith('## Endpoints')) { section = 'endpoints'; continue; }
     if (t.startsWith('## Permissions')) { section = 'permissions'; continue; }
     if (t.startsWith('## Usage Notes') || t.startsWith('## Source')) { section = 'notes'; continue; }
     if (t.startsWith('## ')) { section = 'other'; continue; }
@@ -364,7 +368,7 @@ export function diagnose(content) {
       baseUrlLine = i + 1;
       baseUrlSection = section;
     }
-    if (looksLikeEndpointLine(t)) verbLines.push({ n: i + 1, text: t, inEndpoints: section === 'endpoints' });
+    if (looksLikeEndpointLine(t)) verbLines.push({ n: i + 1, text: t, inEndpoints: endpointLineNumbers.has(i + 1) });
   }
 
   if (baseUrlLine !== null && baseUrlSection !== 'auth') {
@@ -482,7 +486,7 @@ export function inspectSkills(skills, secrets = null) {
       reason: tools.length > 0 ? null : 'parsed but produced no tools',
       line: null, hint: null, unresolvedParams,
       badLevels, ignoredLevels,
-      malformed: parsed.malformedEndpointLines || [],
+      invalid: parsed.invalidEndpointLines || [],
       counts: {
         writes,
         unclassified,
@@ -491,7 +495,7 @@ export function inspectSkills(skills, secrets = null) {
         pathResolvable: pathIds.filter((p) => p.resolver).length,
         bodyResolvable: keys.filter((k) => resolverCount(k) === 1).map(first),
         ambiguous: keys.filter((k) => resolverCount(k) > 1).map(first),
-        malformed: (parsed.malformedEndpointLines || []).length,
+        invalid: (parsed.invalidEndpointLines || []).length,
       },
     });
   }
@@ -502,7 +506,7 @@ export function inspectSkills(skills, secrets = null) {
     unresolved: rows.filter((r) => r.unresolvedParams.length > 0),
     badLevels: rows.filter((r) => (r.badLevels || []).length > 0),
     ignoredLevels: rows.filter((r) => (r.ignoredLevels || []).length > 0),
-    malformed: rows.filter((r) => (r.malformed || []).length > 0),
+    invalid: rows.filter((r) => (r.invalid || []).length > 0),
   };
 }
 
@@ -539,10 +543,10 @@ export function formatReport(report) {
       );
     }
   }
-  for (const r of report.malformed || []) {
-    for (const m of r.malformed) {
+  for (const r of report.invalid || []) {
+    for (const m of r.invalid) {
       lines.push(
-        `skill "${r.name}" (${r.file}:${m.line}): this line looks like an endpoint but does not parse, so it registered no tool and is missing from the countdown: ${JSON.stringify(m.text)}. Fix: write it as "[level] METHOD /path - description", with a plain hyphen.`
+        `skill "${r.name}" (${r.file}:${m.line}): this line in "## Endpoints" is not an endpoint, a "#" comment or blank, so it registered nothing and the countdown is INCOMPLETE: ${JSON.stringify(m.text)}. Fix: write an endpoint as "[level] METHOD /path - description" with " - " between path and description, or start prose with "# ".`
       );
     }
   }
@@ -555,42 +559,56 @@ export function formatReport(report) {
  * something to count: the gate change merges only when this reads 0 on the
  * host, so 0 has to be printed to be read.
  *
- * WHY IT IS LABELLED, SUPPRESSED AND SOMETIMES INCOMPLETE. The merge
- * condition is "the log reads 0", and a cold review of #184 found two
- * independent ways it could read 0 while wrong:
+ * WHY IT IS LABELLED, DATED, SUPPRESSED AND SOMETIMES INCOMPLETE. The merge
+ * condition is "Charlie's line reads 0", and two cold reviews of #184 found
+ * three ways it could read 0 while wrong. It is the vacuity class, inside the
+ * mechanism built to close it:
  *
- *   - a write dropped by a malformed line leaves both sides of "U of W", so
- *     the count shrinks with nothing saying why. When any endpoint-looking
- *     line did not parse, the total says INCOMPLETE and does not start with a
- *     number that could be read as 0.
+ *   - a line in `## Endpoints` that failed to parse left both sides of
+ *     "U of W", so the count shrank with nothing saying why;
+ *   - a skill that registered NOTHING (a broken `Base URL:`, a misspelt
+ *     heading) left the count entirely, taking all its writes with it;
  *   - every agent printed a total, and an agent with no skills (echo, on the
- *     host) printed "0 of 0" on every boot. The line now names the agent, and
- *     an agent with nothing to count prints nothing.
+ *     host) printed "0 of 0" on every boot.
  *
- * One line per skill that has writes or malformed lines, then the total.
- * Each skill line carries the counts the design owes beside the diagnostic.
+ * So: any invalid line or any skill that registered nothing makes the total
+ * INCOMPLETE, and that line carries no count of writes at all. The line names
+ * its agent. An agent with nothing to count prints nothing. And the line
+ * carries the date, because the boot log's timestamps are time of day only,
+ * and an earlier boot's 0 must not be read as the current one.
  *
  * @param {object} report - from inspectSkills
  * @param {string} [agent] - the agent whose skills these are, for the label
- * @returns {{ unclassified: number, writes: number, malformed: number, lines: string[] }}
+ * @param {Date} [now] - the boot time printed on the line
+ * @returns {{ unclassified: number, writes: number, invalid: number,
+ *             broken: number, incomplete: boolean, lines: string[] }}
  */
-export function formatCountdown(report, agent = null) {
+export function formatCountdown(report, agent = null, now = new Date()) {
   const lines = [];
   let writes = 0;
   let unclassified = 0;
-  let malformed = 0;
+  let invalid = 0;
+  let broken = 0;
   let skills = 0;
   for (const r of report.rows || []) {
+    if (!r.ok) {
+      // Declares an HTTP surface and registered nothing: its writes, however
+      // many, are uncounted. Named in the report above; counted here.
+      broken++;
+      skills++;
+      lines.push(`  skill "${r.name}" (${r.file}): registered nothing (named above), so none of its writes are counted`);
+      continue;
+    }
     const c = r.counts;
-    if (!c || (c.writes === 0 && c.malformed === 0)) continue;
+    if (!c || (c.writes === 0 && c.invalid === 0)) continue;
     skills++;
     writes += c.writes;
     unclassified += c.unclassified;
-    malformed += c.malformed;
+    invalid += c.invalid;
     const ids = c.indexed.length > 0 ? ` (${c.indexed.join(', ')})` : '';
     const body = c.bodyResolvable.length > 0 ? ` (${c.bodyResolvable.join(', ')})` : '';
     const amb = c.ambiguous.length > 0 ? `, ambiguous: ${c.ambiguous.join(', ')}` : '';
-    const bad = c.malformed > 0 ? `; ${c.malformed} endpoint line(s) did not parse` : '';
+    const bad = c.invalid > 0 ? `; ${c.invalid} line(s) in ## Endpoints are not endpoints` : '';
     lines.push(
       `  skill "${r.name}" (${r.file}): ${c.writes} writes, ${c.unclassified} unclassified; ` +
       `identifiers indexed ${c.indexed.length}${ids}; ` +
@@ -598,16 +616,23 @@ export function formatCountdown(report, agent = null) {
       `body-resolvable names ${c.bodyResolvable.length}${body}${amb}${bad}`
     );
   }
-  if (skills === 0) return { unclassified, writes, malformed, lines };
+  const incomplete = invalid > 0 || broken > 0;
+  if (skills === 0) return { unclassified, writes, invalid, broken, incomplete, lines };
 
   const label = agent ? ` (${agent})` : '';
-  const tail = `${unclassified} of ${writes} skill writes unclassified across ${skills} skills.`;
-  lines.push(malformed > 0
-    ? `identifier gate countdown${label}: INCOMPLETE. ${malformed} endpoint line(s) did not parse and are not counted (named above). ` +
-      `Of the writes that did parse, ${tail} Fix the named lines before reading this as a count.`
-    : `identifier gate countdown${label}: ${tail}` +
-      (unclassified > 0
-        ? ' The identifier gate refuses an unclassified write outright, so it merges only when this reads 0.'
-        : ''));
-  return { unclassified, writes, malformed, lines };
+  const at = now.toISOString().replace(/\.\d{3}Z$/, 'Z');
+  const prefix = `identifier gate countdown${label} at ${at}: `;
+  if (incomplete) {
+    const why = [
+      broken > 0 ? `${broken} skill(s) registered nothing` : null,
+      invalid > 0 ? `${invalid} line(s) in ## Endpoints are not endpoints` : null,
+    ].filter(Boolean).join(' and ');
+    lines.push(`${prefix}INCOMPLETE. ${why} (named above). No count of writes is given until they are fixed.`);
+  } else {
+    lines.push(
+      `${prefix}${unclassified} of ${writes} skill writes unclassified across ${skills} skills.` +
+      (unclassified > 0 ? ' The identifier gate refuses an unclassified write outright, so it merges only when this reads 0.' : '')
+    );
+  }
+  return { unclassified, writes, invalid, broken, incomplete, lines };
 }

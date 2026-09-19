@@ -333,11 +333,12 @@ export class Agent {
           // The countdown to zero unclassified writes prints on every boot,
           // including at 0, for any agent that has skill writes: the identifier
           // gate merges only when the host log shows 0, so 0 must be printed to
-          // be read. Labelled with the agent, and silent for an agent with
-          // nothing to count, so an empty agent's "0 of 0" can never be read
-          // as the answer. Warn while nonzero or incomplete.
+          // be read. Labelled with the agent and dated, silent for an agent
+          // with nothing to count, and INCOMPLETE (with no count) when a skill
+          // registered nothing or a line in ## Endpoints did not parse. Warn
+          // while nonzero or incomplete.
           const countdown = formatCountdown(report, this.name);
-          const logCountdown = countdown.unclassified > 0 || countdown.malformed > 0 ? log.warn : log.info;
+          const logCountdown = countdown.unclassified > 0 || countdown.incomplete ? log.warn : log.info;
           for (const line of countdown.lines) logCountdown(line);
         } catch (err) {
           log.warn(`skill diagnostics failed: ${err.message}`);
