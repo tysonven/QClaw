@@ -200,20 +200,29 @@ export function resolveDashboardAuth({ cookie, bearer, queryToken, apiToken, aut
  * are accepted. Before the cookie was accepted here, a browser signed in
  * through /login had working tabs and a dead chat.
  *
+ * The cookie authenticates only when the handshake's Origin is allowed
+ * (`originAllowed`, from isAllowedOrigin). A browser attaches the SameSite=Strict
+ * cookie to a handshake started by any same-site page, including other
+ * flowos.tech subdomains, and without this a page there could drive the agent.
+ * The query token is not ambient, so it needs no origin check. `originAllowed`
+ * defaults to false, so a caller that forgets it fails closed.
+ *
  * No session token configured means no check, as before.
  *
  * @returns {{ok: boolean, via: string|null}}
  */
-export function resolveWsAuth({ cookie, queryToken, authToken, verifySession }) {
+export function resolveWsAuth({ cookie, queryToken, authToken, verifySession, originAllowed = false }) {
   if (!authToken) return { ok: true, via: 'unconfigured' };
+  let crossOrigin = false;
   if (cookie) {
     try {
       verifySession(cookie);
-      return { ok: true, via: 'cookie' };
+      if (originAllowed) return { ok: true, via: 'cookie' };
+      crossOrigin = true; // a valid session, but the handshake came from another origin
     } catch { /* expired or forged: try the query token */ }
   }
   if (queryToken && queryToken === authToken) return { ok: true, via: 'query' };
-  return { ok: false, via: null };
+  return { ok: false, via: crossOrigin ? 'rejected-cross-origin' : null };
 }
 
 /**
@@ -225,6 +234,44 @@ export function resolveWsAuth({ cookie, queryToken, authToken, verifySession }) 
 export function safeLoginTab(tab) {
   return typeof tab === 'string' && /^[a-z][a-z-]{0,31}$/.test(tab) ? tab : '';
 }
+
+/**
+ * Whether a request carrying the session cookie may act, judged by its Origin.
+ *
+ * The cookie is SameSite=Strict, but "site" is the registrable domain, not the
+ * origin: a page on any other flowos.tech subdomain (webhook.flowos.tech serves
+ * n8n webhook responses) is same-site, so the browser attaches the cookie to a
+ * WebSocket or form POST that page starts. Without this check that page can
+ * drive the agent as the signed-in user. Browsers always send Origin on a
+ * WebSocket handshake and on any request that is not GET or HEAD.
+ *
+ * WHY AN EXPLICIT ALLOWLIST AND NOT `Origin === Host`. Do not simplify this back.
+ * The public dashboard is reached through a Cloudflare tunnel, and what
+ * cloudflared forwards as the Host header has not been verified. If it arrives
+ * as the local service (localhost:4000) rather than the public hostname, an
+ * Origin==Host comparison refuses every real browser request, which kills chat
+ * and every save in production. The allowlist is built only from values this
+ * server owns: `dashboard.tunnelUrl`, the tunnel URL it is running with, and the
+ * local URL it listens on. Nothing a request supplies is trusted to build it.
+ *
+ * A missing, `null` or malformed Origin is refused.
+ *
+ * @param {string|undefined} origin  the request's Origin header
+ * @param {Array<string|null|undefined>} allowedUrls  URLs whose origins are allowed
+ */
+export function isAllowedOrigin(origin, allowedUrls) {
+  if (typeof origin !== 'string' || !origin || origin === 'null') return false;
+  let presented;
+  try { presented = new URL(origin).origin; } catch { return false; }
+  for (const u of allowedUrls) {
+    if (!u) continue;
+    try { if (new URL(u).origin === presented) return true; } catch { /* not a URL: skip */ }
+  }
+  return false;
+}
+
+/** Methods that read. Cross-origin reads are already unreadable: no CORS headers are set. */
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
 /** Constant-time comparison of a presented token with the configured one. */
 function sameToken(presented, expected) {
@@ -252,6 +299,28 @@ export class DashboardServer {
     log.warn(`Dashboard auth: ${path} REJECTED the browser session token (${via}). ` +
       'Browsers authenticate with the session cookie (open the `qclaw dashboard` link, or sign in at /login); ' +
       'machine callers send the api token as a Bearer header (#172).');
+  }
+
+  /** The URLs a cookie-authenticated request may originate from. See isAllowedOrigin. */
+  _allowedOriginUrls() {
+    return [
+      this.config.dashboard?.tunnelUrl,
+      this.tunnelUrl,
+      this.localUrl,
+      this.actualPort ? `http://127.0.0.1:${this.actualPort}` : null,
+    ];
+  }
+
+  /** Warn once an hour per (origin, path) that a cookie request was refused for
+   * its Origin. The origin is attacker-supplied, so it is quoted and truncated. */
+  _warnCrossOrigin(origin, path) {
+    const shown = JSON.stringify(String(origin ?? '(none)').slice(0, 100));
+    const key = `cross-origin ${shown} ${path}`;
+    const last = this._legacyWarnedAt?.get(key) || 0;
+    if (Date.now() - last < 3600000) return;
+    this._legacyWarnedAt?.set(key, Date.now());
+    log.warn(`Dashboard auth: ${path} REFUSED a session-cookie request from origin ${shown}. ` +
+      `Allowed: ${this._allowedOriginUrls().filter(Boolean).join(', ') || '(none configured)'}.`);
   }
 
   /** Issue the browser session cookie. One place, so the link hand-off and the
@@ -391,22 +460,23 @@ export class DashboardServer {
     // address bar and history. A browser keeps any #tab fragment across the
     // redirect. Every API call and the chat socket then authenticate with the
     // cookie; the token itself is never sent again.
+    //
+    // The hand-off neither reads nor feeds the login lockout. The lockout is
+    // keyed on req.ip, and every tunnelled request arrives as 127.0.0.1 (#187),
+    // so its per-visitor premise is broken until #187 is fixed: it is one bucket
+    // shared by everyone. Wired in here, ten anonymous GETs with a wrong token
+    // locked the owner's own link out for two minutes, renewably. Guessing gains
+    // nothing without it: every code path that mints the session token (server
+    // boot, `qclaw dashboard`, `qclaw onboard`) uses randomBytes(16), 128 bits.
     this.app.get('/', (req, res) => {
       if (req.query.token !== undefined) {
-        const ip = req.ip || req.socket.remoteAddress;
-        const lockout = this.authAttempts.get(ip);
-        if (lockout?.lockedUntil && Date.now() < lockout.lockedUntil) {
-          return res.redirect('/login?error=1');
-        }
         const authToken = this.config.dashboard?.authToken || process.env.DASHBOARD_AUTH_TOKEN;
         if (sameToken(req.query.token, authToken)) {
           this._issueSessionCookie(res);
-          this.authAttempts.delete(ip);
           return res.redirect('/');
         }
         // A stale or mistyped link: say so on the login page, rather than serve
         // a dashboard whose every tab then fails.
-        this._recordFailedLogin(ip);
         return res.redirect('/login?error=1');
       }
       res.send(this._renderDashboard());
@@ -540,6 +610,7 @@ ${error ? '<p class="err">That token was not accepted. Run <code>qclaw dashboard
 
     const localHost = (host === '0.0.0.0' || host === '127.0.0.1') ? 'localhost' : host;
     const localUrl = `http://${localHost}:${actualPort}`;
+    this.localUrl = localUrl; // an allowed Origin for cookie requests (isAllowedOrigin)
 
     // Build the clickable URL with token as query param (more reliable than hash across shells)
     this.dashUrl = `${localUrl}/?token=${this.sessionToken}`;
@@ -722,6 +793,21 @@ ${error ? '<p class="err">That token was not accepted. Run <code>qclaw dashboard
           loginRequired();
           return res.status(401).json({ error: 'Token expired. Run: qclaw dashboard' });
         }
+      }
+
+      // Cross-site request forgery guard. The session cookie is an ambient
+      // credential: the browser attaches it to requests another same-site page
+      // starts. So a cookie-authenticated request that changes state must come
+      // from an allowed Origin (see isAllowedOrigin for why that is an explicit
+      // allowlist, not Origin==Host). Reads are exempt: without CORS headers a
+      // cross-origin page cannot read the response. The Bearer api token and a
+      // ?token= are not ambient, so a forged request cannot carry them.
+      // 403, not 401, and no login-required marker: the session is fine, the
+      // request's origin is not, and sending the reader to /login would loop.
+      if (decision.via === 'cookie' && !SAFE_METHODS.has(req.method)
+          && !isAllowedOrigin(req.headers.origin, this._allowedOriginUrls())) {
+        this._warnCrossOrigin(req.headers.origin, req.path);
+        return res.status(403).json({ error: 'Cross-origin request refused' });
       }
 
       // Reset failed attempts on success
@@ -2636,7 +2722,14 @@ ${error ? '<p class="err">That token was not accepted. Run <code>qclaw dashboard
         queryToken: new URL(req.url, 'http://localhost').searchParams.get('token'),
         authToken: this.config.dashboard?.authToken || process.env.DASHBOARD_AUTH_TOKEN,
         verifySession: (token) => { jwt.verify(token, this.sessionSecret); },
+        originAllowed: isAllowedOrigin(req.headers.origin, this._allowedOriginUrls()),
       });
+      if (decision.via === 'rejected-cross-origin') {
+        this._warnCrossOrigin(req.headers.origin, '/ws');
+        ws.send(JSON.stringify({ type: 'error', error: 'Cross-origin socket refused' }));
+        ws.close(4003, 'Cross-origin socket refused');
+        return;
+      }
       if (!decision.ok) {
         ws.send(JSON.stringify({ type: 'error', error: 'Unauthorised' }));
         ws.close(4001, 'Unauthorised');

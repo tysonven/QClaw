@@ -59,13 +59,20 @@ function freePort() {
 
 const port = await freePort();
 const origin = `http://127.0.0.1:${port}`;
+// The public URL the dashboard is served on. Deliberately NOT the Host these
+// requests arrive with (127.0.0.1:<port>): in production the tunnel's Host is
+// unverified, so the allowlist must not depend on it.
+const TUNNEL = 'https://dash.example.test';
+// Every message that reaches the agent, so a refused request can be shown to
+// have run nothing rather than merely to have returned an error.
+const agentRuns = [];
 const qclaw = {
-  config: { _dir: home, dashboard: { port, host: '127.0.0.1', tunnel: 'none', authToken: SESSION, apiToken: API, pin: PIN } },
+  config: { _dir: home, dashboard: { port, host: '127.0.0.1', tunnel: 'none', tunnelUrl: TUNNEL, authToken: SESSION, apiToken: API, pin: PIN } },
   agents: {
     count: 1,
     list: () => [],
     get: () => null,
-    primary: () => ({ name: 'primary', process: async (message) => ({ content: `echo:${message}` }) }),
+    primary: () => ({ name: 'primary', process: async (message) => { agentRuns.push(message); return { content: `echo:${message}` }; } }),
   },
   memory: { getThreads: () => THREADS, cogneeConnected: false },
   degradationLevel: 0,
@@ -177,15 +184,80 @@ try {
     ws.on('close', (code) => done(`closed:${code}`));
     ws.on('error', (err) => done(`socket-error:${err.message}`));
   });
-  let w = await wsOutcome('/ws', { Cookie: cookie?.pair || '' });
-  check('socket with the session cookie gets an agent response',
+  // A browser always sends Origin on a WebSocket handshake; the dashboard page's
+  // origin is the one it was served from.
+  let w = await wsOutcome('/ws', { Cookie: cookie?.pair || '', Origin: origin });
+  check('socket with the session cookie, from the dashboard\'s own origin, gets an agent response',
     w.outcome === 'response' && w.frames.some(f => f.type === 'response' && f.content === 'echo:ping'), JSON.stringify(w));
   w = await wsOutcome(`/ws?token=${SESSION}`);
   check('socket with ?token=<session> (src/cli/tui.js) still gets a response', w.outcome === 'response', JSON.stringify(w));
   w = await wsOutcome('/ws');
   check('socket with nothing is refused', w.outcome === 'error' && w.frames[0]?.error === 'Unauthorised', JSON.stringify(w));
-  w = await wsOutcome('/ws', { Cookie: 'dashboard_session=forged.jwt.value' });
+  w = await wsOutcome('/ws', { Cookie: 'dashboard_session=forged.jwt.value', Origin: origin });
   check('socket with a forged cookie is refused', w.outcome === 'error', JSON.stringify(w));
+
+  console.log('\nCross-site forgery: the cookie acts only from an allowed origin');
+  // SameSite=Strict is same-SITE: a page on another flowos.tech subdomain gets
+  // the cookie attached to a socket or form POST it starts. That is the page
+  // these requests stand in for.
+  const SIBLING = 'https://webhook.flowos.tech';
+  let runsBefore = agentRuns.length;
+  w = await wsOutcome('/ws', { Cookie: cookie?.pair || '', Origin: SIBLING });
+  check('socket with the cookie from a sibling subdomain is refused, and runs nothing',
+    w.outcome === 'error' && w.frames[0]?.error === 'Cross-origin socket refused' && agentRuns.length === runsBefore, JSON.stringify(w));
+  for (const [label, hdrs] of [
+    ['a cross-site origin', { Origin: 'https://evil.example' }],
+    ['no Origin at all', {}],
+    ['Origin: null', { Origin: 'null' }],
+    ['a look-alike of the tunnel host', { Origin: 'https://dash.example.test.evil.example' }],
+  ]) {
+    w = await wsOutcome('/ws', { Cookie: cookie?.pair || '', ...hdrs });
+    check(`socket with the cookie and ${label} is refused`, w.outcome === 'error' && agentRuns.length === runsBefore, JSON.stringify(w));
+  }
+  // The allowlist, not the Host header: this Origin never matches the Host
+  // (127.0.0.1:<port>), and must still be accepted.
+  w = await wsOutcome('/ws', { Cookie: cookie?.pair || '', Origin: TUNNEL });
+  check('socket with the cookie from dashboard.tunnelUrl is accepted (Host plays no part)', w.outcome === 'response', JSON.stringify(w));
+  w = await wsOutcome('/ws', { Cookie: cookie?.pair || '', Origin: `http://localhost:${port}` });
+  check('socket with the cookie from the local URL is accepted', w.outcome === 'response', JSON.stringify(w));
+  w = await wsOutcome(`/ws?token=${SESSION}`, { Origin: SIBLING });
+  check('socket with ?token= is not origin-checked (the token is not ambient)', w.outcome === 'response', JSON.stringify(w));
+
+  const chatPost = (headers) => fetch(origin + '/api/chat', {
+    method: 'POST', redirect: 'manual',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...FETCH, ...headers },
+    body: 'message=forged',
+  });
+  runsBefore = agentRuns.length;
+  res = await chatPost({ Cookie: cookie?.pair || '', Origin: SIBLING });
+  body = await res.json().catch(() => null);
+  check('form POST /api/chat with the cookie from a sibling subdomain -> 403, runs nothing',
+    res.status === 403 && body?.error === 'Cross-origin request refused' && agentRuns.length === runsBefore, `${res.status} ${JSON.stringify(body)}`);
+  check('...and carries no login-required marker (the session is fine; /login would loop)',
+    res.headers.get('x-dashboard-auth') === null, String(res.headers.get('x-dashboard-auth')));
+  res = await chatPost({ Cookie: cookie?.pair || '' });
+  check('form POST with the cookie and no Origin -> 403, runs nothing', res.status === 403 && agentRuns.length === runsBefore, String(res.status));
+  res = await chatPost({ Cookie: cookie?.pair || '', Origin: origin });
+  check('POST with the cookie from the dashboard\'s own origin runs the agent',
+    res.status === 200 && agentRuns.length === runsBefore + 1, `${res.status} ${agentRuns.length - runsBefore}`);
+  res = await chatPost({ Cookie: cookie?.pair || '', Origin: TUNNEL });
+  check('POST with the cookie from dashboard.tunnelUrl runs the agent', res.status === 200, String(res.status));
+  res = await chatPost({ Authorization: `Bearer ${API}`, Origin: SIBLING });
+  check('Bearer api token is not origin-checked (n8n sends no cookie)', res.status === 200, String(res.status));
+  res = await get('/api/threads', { ...FETCH, Cookie: cookie?.pair || '', Origin: SIBLING });
+  check('a cross-origin GET is not refused (no CORS headers, so its response is unreadable there)', res.status === 200, String(res.status));
+  check('...and the server sends no CORS header that would make it readable',
+    res.headers.get('access-control-allow-origin') === null, String(res.headers.get('access-control-allow-origin')));
+
+  console.log('\nThe link hand-off is outside the shared lockout (#187)');
+  // Every tunnelled request is 127.0.0.1 in production, so any lockout the
+  // hand-off fed would be one bucket shared by everyone.
+  for (let i = 0; i < 12; i++) await get('/?token=wrong-guess-' + i, NAV);
+  res = await get(`/?token=${SESSION}`, NAV);
+  check('after 12 wrong links, the owner\'s correct link still signs in',
+    res.status === 302 && res.headers.get('location') === '/' && !!sessionCookieFrom(res), `${res.status} ${res.headers.get('location')}`);
+  res = await postForm('/api/auth/login', { password: SESSION });
+  check('...and /login with the correct token still signs in', res.headers.get('location') === '/', String(res.headers.get('location')));
 
   console.log('\nui.html: the real client code');
   const uiPath = join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'dashboard', 'ui.html');
@@ -213,7 +285,8 @@ try {
   const clientSource = [extract('function currentTab()'), extract('async function apiFetch('), extract('function openTabFromHash()')].join('\n');
 
   // A browser's same-origin fetch: relative URL resolved against the page,
-  // the cookie jar attached for credentials 'same-origin', Accept */* by default.
+  // the cookie jar attached for credentials 'same-origin', Accept */* by default,
+  // and Origin sent on any method other than GET or HEAD (Fetch spec).
   const makeClient = ({ jar, activeTab, hash = '' }) => {
     const replaced = [];
     const clicked = [];
@@ -229,7 +302,12 @@ try {
       encodeURIComponent,
       fetch: (path, opts = {}) => fetch(origin + path, {
         ...opts,
-        headers: { ...FETCH, ...(opts.headers || {}), ...(opts.credentials === 'same-origin' && jar ? { Cookie: jar } : {}) },
+        headers: {
+          ...FETCH,
+          ...(opts.headers || {}),
+          ...(opts.credentials === 'same-origin' && jar ? { Cookie: jar } : {}),
+          ...(!['GET', 'HEAD'].includes((opts.method || 'GET').toUpperCase()) ? { Origin: origin } : {}),
+        },
       }),
     };
     vm.createContext(ctx);
@@ -252,6 +330,16 @@ try {
   check('apiFetch with the cookie returns the data',
     call.res?.status === 200 && body?.[0]?.id === 'thread-marker-7f3a' && client.replaced.length === 0,
     `${call.res?.status ?? call.err} ${JSON.stringify(client.replaced)}`);
+
+  // The dashboard's own writes must survive the forgery guard: apiFetch is how
+  // every tab saves, schedules and approves.
+  client = makeClient({ jar: cookie?.pair, activeTab: 'chat' });
+  const runsBeforeClient = agentRuns.length;
+  call = await settle(client.ctx.apiFetch('/api/chat', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: 'from-the-ui' }),
+  }));
+  check('apiFetch POST with the cookie (the dashboard\'s own write) passes the origin check',
+    call.res?.status === 200 && agentRuns.length === runsBeforeClient + 1, `${call.res?.status ?? call.err}`);
 
   client = makeClient({ jar: cookie?.pair, activeTab: 'chat' });
   call = await settle(client.ctx.apiFetch('/api/auth/verify-pin', {
