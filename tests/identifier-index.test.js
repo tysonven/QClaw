@@ -301,12 +301,17 @@ async function main() {
   check('CAPABILITY: "customer" does not normalise to "customer_id" (the known Stripe gap)',
     normaliseIdentifierName('customer') !== normaliseIdentifierName('customer_id'));
 
-  // CAPABILITY: the same GET written twice is one resolver, not an ambiguity.
-  const dup = deriveIdentifierIndex(parseSkill('d', skillText([
-    'GET /workflows/{{id}} - one workflow',
-    'GET /workflows/{{id}} - one workflow',
-  ]), null).endpoints);
-  check('CAPABILITY: a duplicated GET line is one resolver', bodyFieldResolvers(dup, 'id').length === 1);
+  // The same GET written twice collides on its tool name, so the parser
+  // refuses both (decided 2026-09-19). The derivation still treats one
+  // resource written twice as one resolver when handed endpoints directly.
+  const dupContent = skillText(['GET /workflows/{{id}} - one workflow', 'GET /workflows/{{id}} - one workflow']);
+  check('an identical duplicate line is refused by the parser, both copies',
+    parseSkill('d', dupContent, null) === null
+      && inspectSkills([{ name: 'd', content: dupContent, filename: 'd.md' }], null).broken.length === 1);
+  const dup = deriveIdentifierIndex([
+    { method: 'GET', path: '/workflows/{{id}}' }, { method: 'GET', path: '/workflows/{{id}}' },
+  ]);
+  check('CAPABILITY: handed directly, one resource written twice is one resolver', bodyFieldResolvers(dup, 'id').length === 1);
 
   // The effective level. Declaring earns leniency; the default is the safe one.
   const table = [
@@ -710,7 +715,10 @@ async function main() {
   ].join('\n');
   const strict = inspectSkills([{ name: 'w', content: strictContent, filename: 'w.md' }], null);
   check('strict rule: a comment and a blank line are fine; prose inside ## Endpoints is named, by design',
-    JSON.stringify(strict.invalid[0]?.invalid.map((m) => m.line)) === '[8]', JSON.stringify(strict.invalid));
+    JSON.stringify(strict.invalid[0]?.invalid.filter((m) => m.reason === 'invalid').map((m) => m.line)) === '[8]', JSON.stringify(strict.invalid));
+  check('outside rule: an endpoint line under a later heading is named, not silently dropped (decided 2026-09-19)',
+    JSON.stringify(strict.invalid[0]?.invalid.filter((m) => m.reason === 'outside').map((m) => m.line)) === '[12]'
+      && countdown(strict, 'charlie').incomplete, JSON.stringify(strict.invalid));
   check('strict rule (#183): the section ends at the next ## heading, for the parser, the CLI and the index alike',
     parseSkill('w', strictContent, null).endpoints.map((e) => e.path).join() === '/widgets/{{widget_id}}'
       && countEndpointLines(strictContent) === 1
@@ -764,9 +772,9 @@ async function main() {
   const twoSep = deriveIdentifierIndex(parseSkill('t', skillText(['GET /records/{{contact_record_id}} - one']), null).endpoints);
   check('finding 5 (X4): a name with two separators normalises fully',
     ['contactRecordId', 'contact-record-id', 'CONTACT_RECORD_ID'].every((n) => bodyFieldResolvers(twoSep, n).length === 1));
-  const variantsOfOne = deriveIdentifierIndex(parseSkill('d', skillText([
-    'GET /w/{{id}} - one', 'GET /w/{{id}}/ - one, trailing slash', 'GET /w/{{id}}?expand=1 - one, with a query',
-  ]), null).endpoints);
+  const variantsOfOne = deriveIdentifierIndex([
+    { method: 'GET', path: '/w/{{id}}' }, { method: 'GET', path: '/w/{{id}}/' }, { method: 'GET', path: '/w/{{id}}?expand=1' },
+  ]);
   check('finding 5 (X5): one resource written three ways is one resolver',
     variantsOfOne.resolvers.length === 1, JSON.stringify(variantsOfOne.resolvers));
   const repeated = deriveIdentifierIndex(parseSkill('r', skillText([
@@ -934,6 +942,97 @@ async function main() {
     brokenBoot.printed.some((l) => CDRE('charlie', 'INCOMPLETE. 1 skill\\(s\\) registered nothing').test(l) && l.includes('⚠'))
       && !brokenBoot.printed.some((l) => /countdown.*\d+ of \d+/.test(l)),
     JSON.stringify(brokenBoot.printed.filter((l) => l.includes('countdown'))));
+
+  // ── 7. The third cold review's findings ─────────────────────────────
+  console.log('cold review, round three:');
+
+  // Finding 1: two endpoints with the same tool name. The registry would keep
+  // one silently, so every line in the group is refused and named.
+  const tradingText = read('trading-api');
+  const stale = tradingText.replace('## Permissions', '[mutating] POST /positions/manual-close - Close a position (old wording)\n\n## Permissions');
+  check('PRECONDITION: the stale duplicate was added', stale !== tradingText);
+  const staleParsed = parseSkill('trading-api', stale, null);
+  const staleReport = inspectSkills([{ name: 'trading-api', content: stale, filename: 'trading-api.md' }], null);
+  const staleCd = countdown(staleReport, 'charlie');
+  check('finding 1 (A): a stale duplicate of manual-close refuses BOTH lines; neither registers',
+    !staleParsed.endpoints.some((e) => e.path === '/positions/manual-close')
+      && staleParsed.invalidEndpointLines.filter((m) => m.reason === 'collision').length === 2,
+    JSON.stringify(staleParsed.invalidEndpointLines));
+  check('finding 1 (A): both are named with the line they collide with, and the countdown is INCOMPLETE with no count',
+    formatReport(staleReport).filter((l) => l.includes('get the same tool name "create_positions_manual_close"')).length === 2
+      && staleCd.incomplete && !staleCd.lines.some((l) => /countdown.*\d+ of \d+/.test(l)),
+    JSON.stringify(formatReport(staleReport).filter((l) => l.includes('tool name'))));
+  const regStale = new ToolRegistry({}, {});
+  for (const t of skillToTools(staleParsed)) regStale.registerSkillTool('charlie', 'trading-api', staleParsed, t);
+  check('finding 1 (A): the registry holds no manual-close tool at all, so nothing reaches the gate at the wrong level',
+    !regStale._apiTools.has(MANUAL_CLOSE));
+  const alias = parseSkill('trading-api', tradingText.replace('## Permissions', '[mutating] POST /positions/manual_close - legacy alias\n\n## Permissions'), null);
+  check('finding 1 (B): a path differing only in - versus _ collides and is refused, both lines',
+    !alias.endpoints.some((e) => e.path.startsWith('/positions/manual') && e.path.includes('close'))
+      && alias.invalidEndpointLines.filter((m) => m.reason === 'collision').length === 2);
+  const putPatch = parseSkill('c', skillText([
+    'GET /contacts/{{contact_id}} - one',
+    '[destructive] PUT /contacts/{{contact_id}} - replace',
+    '[mutating] PATCH /contacts/{{contact_id}} - patch',
+  ]), null);
+  check('finding 1 (C): a PUT and a PATCH on one path collide; neither registers, both are named',
+    !putPatch.endpoints.some((e) => e.method !== 'GET')
+      && JSON.stringify(putPatch.invalidEndpointLines.map((m) => [m.line, m.reason, m.with])) === '[[6,"collision",[7]],[7,"collision",[6]]]',
+    JSON.stringify(putPatch.invalidEndpointLines));
+  const collisionOnly = skillText(['[mutating] POST /a - one', '[mutating] POST /a - two']);
+  const colReport = inspectSkills([{ name: 'k', content: collisionOnly, filename: 'k.md' }], null);
+  check('finding 1: a skill whose only endpoints collide registers nothing, and diagnose names the collision',
+    colReport.broken.length === 1 && /tool name/.test(colReport.broken[0].reason) && colReport.broken[0].line === 5,
+    JSON.stringify(colReport.broken[0]));
+  check('LIVE: no real skill has a collision (n8n-api.md\'s duplicate line was removed 2026-09-19)',
+    realSkills().every((sk) => !(parseSkill(sk.name, sk.content, null)?.invalidEndpointLines || []).some((m) => m.reason === 'collision')));
+
+  // Finding 4 survivors, each now pinned.
+  const allBroken = countdown(inspectSkills([
+    { name: 't', content: read('trading-api').replace('Base URL: ', 'Base URL - '), filename: 't.md' },
+  ], null), 'ops');
+  check('K1/K2: an agent whose only HTTP skills are all broken still prints INCOMPLETE, not nothing',
+    allBroken.lines.some((l) => l.startsWith(`${CD('ops')}INCOMPLETE. 1 skill(s) registered nothing`)), JSON.stringify(allBroken.lines));
+  for (const [what, line] of [['a quote line', '> [mutating] POST /q - quoted'], ['an HTML comment', '<!-- [mutating] POST /h - hidden -->'], ['a code fence', '```']]) {
+    const p = parseSkill('w', skillText(['GET /widgets/{{widget_id}} - one', line]), null);
+    check(`C1/C2/C4: ${what} inside ## Endpoints is invalid and named, never a comment`,
+      p.invalidEndpointLines.some((m) => m.line === 6 && m.reason === 'invalid'), JSON.stringify(p.invalidEndpointLines));
+  }
+  const fenced = parseSkill('w', skillText(['GET /widgets/{{widget_id}} - one', '```', '[mutating] POST /example - an example in a fence', '```']), null);
+  check('C4: an endpoint inside a code fence in ## Endpoints is named with the fence lines (the fence is not a comment)',
+    fenced.invalidEndpointLines.filter((m) => m.reason === 'invalid').map((m) => m.line).join() === '6,8', JSON.stringify(fenced.invalidEndpointLines));
+  const sub = parseSkill('w', skillText(['GET /widgets/{{widget_id}} - one', '### Writes', '[mutating] POST /widgets - make']), null);
+  check('S5: a ### sub-heading inside ## Endpoints is a comment; endpoints below it still register',
+    sub.endpoints.map((e) => e.path).join() === '/widgets/{{widget_id}},/widgets' && sub.invalidEndpointLines.length === 0);
+  const twoSections = ['## Auth', 'Base URL: https://x.test', '', '## Endpoints', 'GET /a/{{a_id}} - a', '', '## Permissions', '- http: [x.test]', '', '## Endpoints', '[mutating] POST /b - b'].join('\n');
+  check('S6: a second ## Endpoints section is read too, by the parser and the CLI',
+    parseSkill('w', twoSections, null).endpoints.map((e) => e.path).join() === '/a/{{a_id}},/b' && countEndpointLines(twoSections) === 2);
+  const onlyBaseUrl = { name: 'b', content: ['# b', '## Setup', 'Base URL: https://x.test', 'Some prose.'].join('\n'), filename: 'b.md' };
+  check('B2: a Base URL line alone marks a file as an HTTP skill, so its failure is named',
+    inspectSkills([onlyBaseUrl], null).broken.length === 1, JSON.stringify(inspectSkills([onlyBaseUrl], null).rows));
+  const twoInvalid = inspectSkills([{ name: 'w', content: skillText(['GET /widgets/{{widget_id}} - one', 'prose one', 'prose two']), filename: 'w.md' }], null);
+  check('C6: every invalid line is named, not only the first',
+    formatReport(twoInvalid).filter((l) => l.includes('is not an endpoint')).length === 2);
+  check('G5: a lower-case verb still parses (the grammar is case-insensitive on the verb)',
+    parseEndpointLine('[mutating] post /w - d')?.method === 'POST');
+  const v2 = ['## Auth', 'Base URL: https://x.test', '', '## Endpoints', 'GET /a - a', '', '## EndpointsV2', '[mutating] POST /b - b'].join('\n');
+  check('S2: "## EndpointsV2" is not the Endpoints section; its endpoint line is named as outside',
+    parseSkill('w', v2, null).invalidEndpointLines.some((m) => m.line === 8 && m.reason === 'outside'));
+  const lower = ['## Auth', 'Base URL: https://x.test', '', '## endpoints', 'GET /a - a'].join('\n');
+  check('S3: "## endpoints" (lower case) is not the section: the skill registers nothing and is named broken',
+    parseSkill('w', lower, null) === null && inspectSkills([{ name: 'w', content: lower, filename: 'w.md' }], null).broken.length === 1);
+  const diagSection = ['## Auth', 'Base URL: https://x.test', '', '## Endpoints', '# nothing yet', '', '## Routing', 'POST /x — prose about routing'].join('\n');
+  check('X1/X2: diagnose uses the shared section rule: a line under a later heading is not blamed as an endpoint line',
+    /contains no METHOD \/path lines/.test(inspectSkills([{ name: 'w', content: diagSection, filename: 'w.md' }], null).broken[0]?.reason || ''),
+    JSON.stringify(inspectSkills([{ name: 'w', content: diagSection, filename: 'w.md' }], null).broken[0]));
+  const longLine = 'prose ' + 'x'.repeat(300) + ' END';
+  check('R1: the named text is not truncated',
+    formatReport(inspectSkills([{ name: 'w', content: skillText(['GET /a - a', longLine]), filename: 'w.md' }], null)).some((l) => l.includes(' END"')));
+  // Finding 7: invisible characters are spelled out, so a line holding only a
+  // zero-width space is not shown as "".
+  const zw = formatReport(inspectSkills([{ name: 'w', content: skillText(['GET /a - a', '​']), filename: 'w.md' }], null));
+  check('finding 7: a line holding only a zero-width space is shown as "\\u200B", not as ""',
+    zw.some((l) => l.includes('"\\u200B"')), JSON.stringify(zw));
 }
 
 try {

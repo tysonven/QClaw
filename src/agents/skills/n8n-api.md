@@ -18,7 +18,6 @@ Header: X-N8N-API-KEY: {{secrets.n8n_api_key}}
 # listing: it returns full node graphs (~2 MB for ~80 workflows) and truncates. Use the raw
 # GET only when you already have an id and need the node config.
 GET /workflows/{{id}} - Get details of one workflow by ID (nodes, connections, active state)
-GET /workflows/{{id}} - Get details of one workflow by ID (nodes, connections, active state)
 GET /executions/{{id}} - Get full details of a single execution (error messages, node outputs)
 GET /executions?workflowId={{workflow_id}} - List recent executions for a workflow
 GET /executions?workflowId={{workflow_id}}&status={{status}} - Filter executions by status (success, error, waiting)

@@ -171,10 +171,13 @@ export function parseSkill(name, content, secrets) {
       baseUrl: null,
       headers: {},
       endpoints: [],
-      // Lines in `## Endpoints` that are not an endpoint, a `#` comment or
-      // blank. They register nothing, so the boot report names each one and
-      // the countdown reads INCOMPLETE: otherwise a write that failed to parse
-      // drops out of the count, which then reads lower than the truth.
+      // Endpoint lines that register nothing, each with its reason:
+      //   'invalid'   in `## Endpoints` but not an endpoint, comment or blank
+      //   'collision' an endpoint whose tool name another endpoint also gets
+      //   'outside'   an endpoint line outside `## Endpoints`
+      // The boot report names each one and the countdown reads INCOMPLETE:
+      // otherwise a write that did not register drops out of the count, which
+      // then reads lower than the truth.
       invalidEndpointLines: [],
       permissions: { http: [], shell: [], file: [] },
       notes: [],
@@ -244,11 +247,50 @@ export function parseSkill(name, content, secrets) {
     // lines are in `## Endpoints`.
     //   GET /customers - List customers
     //   [mutating] POST /customers - Create customer
-    for (const { line, text } of endpointsSection(content)) {
+    const sectionLines = endpointsSection(content);
+    for (const { line, text } of sectionLines) {
       const kind = classifyEndpointsLine(text);
       if (kind === 'endpoint') skill.endpoints.push({ ...parseEndpointLine(text), line });
-      else if (kind === 'invalid') skill.invalidEndpointLines.push({ line, text });
+      else if (kind === 'invalid') skill.invalidEndpointLines.push({ line, text, reason: 'invalid' });
     }
+
+    // Two endpoints that would get the same tool name: the registry would keep
+    // one and drop the other with no error, so a stale duplicate of a line can
+    // silently replace its level, or a PUT and a PATCH on one path can leave
+    // one of them with no tool. Neither line can be trusted over the other, so
+    // EVERY endpoint in the group is refused and named (decided 2026-09-19).
+    // An identical duplicate is refused too: merging it would be a rule that
+    // guesses again.
+    const byName = new Map();
+    for (const e of skill.endpoints) {
+      const k = endpointToolSuffix(e);
+      if (!byName.has(k)) byName.set(k, []);
+      byName.get(k).push(e);
+    }
+    const colliding = new Set();
+    for (const [tool, group] of byName) {
+      if (group.length < 2) continue;
+      for (const e of group) {
+        colliding.add(e);
+        skill.invalidEndpointLines.push({
+          line: e.line, text: lines[e.line - 1].trim(), reason: 'collision', tool,
+          with: group.filter((o) => o !== e).map((o) => o.line),
+        });
+      }
+    }
+    skill.endpoints = skill.endpoints.filter((e) => !colliding.has(e));
+
+    // An endpoint line OUTSIDE `## Endpoints` registers nothing. Silent, that
+    // is the zero-tool failure of #149 to #151 on a single line, so it is
+    // named too (decided 2026-09-19). Headings and `#` comments never count.
+    const inSection = new Set(sectionLines.map((l) => l.line));
+    for (let i = 0; i < lines.length; i++) {
+      if (inSection.has(i + 1)) continue;
+      const t = lines[i].trim();
+      if (t.startsWith('#')) continue;
+      if (parseEndpointLine(t)) skill.invalidEndpointLines.push({ line: i + 1, text: t, reason: 'outside' });
+    }
+    skill.invalidEndpointLines.sort((a, b) => a.line - b.line);
 
     // Validate
     if (!skill.baseUrl || skill.endpoints.length === 0) {
@@ -266,27 +308,37 @@ export function parseSkill(name, content, secrets) {
  * @param {object} skill - Parsed skill config
  * @returns {array} - Array of tool definitions
  */
+/**
+ * The part of a tool's name that comes from its endpoint, defined ONCE:
+ *   GET /customers                  -> get_customers
+ *   POST /customers/{{id}}/notes    -> create_customers_id_notes
+ * PUT and PATCH both read as `update`, any `{{param}}` reads as `id`, and
+ * `-`, `/` and `_` all read as `_`, so two different endpoints can get the
+ * same name. The registry keeps only the last tool of a name, silently, so
+ * parseSkill refuses every endpoint in a colliding group (see below).
+ */
+export function endpointToolSuffix(endpoint) {
+  const pathSlug = String(endpoint.path ?? '')
+    .replace(/\{.*?\}/g, 'id') // Replace {{customer_id}} with id
+    .replace(/[^a-z0-9_]/gi, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_|_$/g, '')
+    .toLowerCase();
+
+  const methodVerb = endpoint.method === 'GET' ? 'get' :
+                     endpoint.method === 'POST' ? 'create' :
+                     endpoint.method === 'PUT' ? 'update' :
+                     endpoint.method === 'PATCH' ? 'update' :
+                     endpoint.method === 'DELETE' ? 'delete' : 'call';
+
+  return `${methodVerb}${pathSlug ? '_' + pathSlug : ''}`;
+}
+
 export function skillToTools(skill) {
   const tools = [];
 
   for (const endpoint of skill.endpoints) {
-    // Generate tool name from endpoint
-    // GET /customers → skill_name__get_customers
-    // POST /customers → skill_name__create_customer
-    const pathSlug = endpoint.path
-      .replace(/\{.*?\}/g, 'id') // Replace {{customer_id}} with id
-      .replace(/[^a-z0-9_]/gi, '_')
-      .replace(/_+/g, '_')
-      .replace(/^_|_$/g, '')
-      .toLowerCase();
-
-    const methodVerb = endpoint.method === 'GET' ? 'get' : 
-                       endpoint.method === 'POST' ? 'create' :
-                       endpoint.method === 'PUT' ? 'update' :
-                       endpoint.method === 'PATCH' ? 'update' :
-                       endpoint.method === 'DELETE' ? 'delete' : 'call';
-
-    const toolName = `${skill.name}__${methodVerb}${pathSlug ? '_' + pathSlug : ''}`;
+    const toolName = `${skill.name}__${endpointToolSuffix(endpoint)}`;
 
     // Extract path parameters (e.g. {{customer_id}}) — skip {{secrets.*}} which are resolved at runtime
     const pathParams = [];

@@ -46,6 +46,7 @@ import {
   parseEndpointLine,
   looksLikeEndpointLine,
   endpointsSection,
+  endpointToolSuffix,
   ENDPOINT_LEVELS,
 } from './skill-parser.js';
 
@@ -411,6 +412,16 @@ export function diagnose(content) {
       hint: 'add endpoint lines as "METHOD /path - description" under "## Endpoints"',
     };
   }
+  // Every endpoint line parses, yet nothing registered: they all collide on
+  // tool names, which parseSkill refuses as a group.
+  const suffixes = matching.map((v) => endpointToolSuffix(parseEndpointLine(v.text)));
+  if (matching.length > 0 && suffixes.every((k) => suffixes.filter((o) => o === k).length > 1)) {
+    return {
+      reason: `every endpoint line shares its tool name with another (e.g. "${suffixes[0]}"), so none registered`,
+      line: matching[0].n,
+      hint: 'remove the duplicate lines, or change paths or methods so each endpoint gets its own tool name',
+    };
+  }
   return {
     reason: 'the skill parsed but produced no tools',
     line: null,
@@ -510,6 +521,14 @@ export function inspectSkills(skills, secrets = null) {
   };
 }
 
+// A line quoted in the report, with invisible characters spelled out, so a
+// line holding only a zero-width space is not shown as "".
+function visible(text) {
+  return JSON.stringify(String(text ?? ''))
+    .replace(/[\u00AD\u200B-\u200F\u2028\u2029\u2060-\u2064\uFEFF]/g,
+      (c) => `\\u${c.charCodeAt(0).toString(16).toUpperCase().padStart(4, '0')}`);
+}
+
 /**
  * Format the report for the boot log. Returns an array of lines, empty when
  * everything is healthy, so a clean boot stays quiet.
@@ -545,9 +564,20 @@ export function formatReport(report) {
   }
   for (const r of report.invalid || []) {
     for (const m of r.invalid) {
-      lines.push(
-        `skill "${r.name}" (${r.file}:${m.line}): this line in "## Endpoints" is not an endpoint, a "#" comment or blank, so it registered nothing and the countdown is INCOMPLETE: ${JSON.stringify(m.text)}. Fix: write an endpoint as "[level] METHOD /path - description" with " - " between path and description, or start prose with "# ".`
-      );
+      const where = `skill "${r.name}" (${r.file}:${m.line})`;
+      if (m.reason === 'collision') {
+        lines.push(
+          `${where}: this endpoint and line(s) ${m.with.join(', ')} get the same tool name "${m.tool}", so none of them registered and the countdown is INCOMPLETE: ${visible(m.text)}. Fix: remove the duplicate, or change a path or method so each endpoint gets its own tool name.`
+        );
+      } else if (m.reason === 'outside') {
+        lines.push(
+          `${where}: this endpoint line is outside "## Endpoints", so it registered nothing and the countdown is INCOMPLETE: ${visible(m.text)}. Fix: move it under "## Endpoints", or start it with "# " if it is an example.`
+        );
+      } else {
+        lines.push(
+          `${where}: this line in "## Endpoints" is not an endpoint, a "#" comment or blank, so it registered nothing and the countdown is INCOMPLETE: ${visible(m.text)}. Fix: write an endpoint as "[level] METHOD /path - description" with " - " between path and description, or start prose with "# ".`
+        );
+      }
     }
   }
   return lines;
@@ -608,7 +638,7 @@ export function formatCountdown(report, agent = null, now = new Date()) {
     const ids = c.indexed.length > 0 ? ` (${c.indexed.join(', ')})` : '';
     const body = c.bodyResolvable.length > 0 ? ` (${c.bodyResolvable.join(', ')})` : '';
     const amb = c.ambiguous.length > 0 ? `, ambiguous: ${c.ambiguous.join(', ')}` : '';
-    const bad = c.invalid > 0 ? `; ${c.invalid} line(s) in ## Endpoints are not endpoints` : '';
+    const bad = c.invalid > 0 ? `; ${c.invalid} endpoint line(s) invalid` : '';
     lines.push(
       `  skill "${r.name}" (${r.file}): ${c.writes} writes, ${c.unclassified} unclassified; ` +
       `identifiers indexed ${c.indexed.length}${ids}; ` +
@@ -625,7 +655,7 @@ export function formatCountdown(report, agent = null, now = new Date()) {
   if (incomplete) {
     const why = [
       broken > 0 ? `${broken} skill(s) registered nothing` : null,
-      invalid > 0 ? `${invalid} line(s) in ## Endpoints are not endpoints` : null,
+      invalid > 0 ? `${invalid} endpoint line(s) are invalid` : null,
     ].filter(Boolean).join(' and ');
     lines.push(`${prefix}INCOMPLETE. ${why} (named above). No count of writes is given until they are fixed.`);
   } else {
