@@ -13,11 +13,10 @@ Base URL: https://webhook.flowos.tech/api/v1
 Header: X-N8N-API-KEY: {{secrets.n8n_api_key}}
 
 ## Endpoints
-To LIST workflows or find one by name, call the `n8n_workflow_list` tool — it returns a
-lightweight {id, name, active} array (a few KB). Do NOT use GET /workflows?limit=200 for
-listing: it returns full node graphs (~2 MB for ~80 workflows) and truncates. Use the raw
-GET only when you already have an id and need the node config.
-GET /workflows/{{id}} - Get details of one workflow by ID (nodes, connections, active state)
+# To LIST workflows or find one by name, call the `n8n_workflow_list` tool — it returns a
+# lightweight {id, name, active} array (a few KB). Do NOT use GET /workflows?limit=200 for
+# listing: it returns full node graphs (~2 MB for ~80 workflows) and truncates. Use the raw
+# GET only when you already have an id and need the node config.
 GET /workflows/{{id}} - Get details of one workflow by ID (nodes, connections, active state)
 GET /executions/{{id}} - Get full details of a single execution (error messages, node outputs)
 GET /executions?workflowId={{workflow_id}} - List recent executions for a workflow

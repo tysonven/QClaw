@@ -9,7 +9,7 @@ import { readdirSync, existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { log } from '../core/logger.js';
 import { parseSkill, skillToTools, executeSkillTool } from './skill-parser.js';
-import { inspectSkills, formatReport } from './skill-diagnostics.js';
+import { inspectSkills, formatReport, formatCountdown } from './skill-diagnostics.js';
 import { loadSkills } from './skill-loader.js';
 import { scanSpecialistResults } from '../tools/delegate-to.js';
 import { regenerateWithGates, isGatedTurn, buildProvenanceText } from './gates.js';
@@ -330,6 +330,16 @@ export class Agent {
             if (line.startsWith('  ')) log.warn(line);
             else log.error(line);
           }
+          // The countdown to zero unclassified writes prints on every boot,
+          // including at 0, for any agent that has skill writes: the identifier
+          // gate merges only when the host log shows 0, so 0 must be printed to
+          // be read. Labelled with the agent and dated, silent for an agent
+          // with nothing to count, and INCOMPLETE (with no count) when a skill
+          // registered nothing or a line in ## Endpoints did not parse. Warn
+          // while nonzero or incomplete.
+          const countdown = formatCountdown(report, this.name);
+          const logCountdown = countdown.unclassified > 0 || countdown.incomplete ? log.warn : log.info;
+          for (const line of countdown.lines) logCountdown(line);
         } catch (err) {
           log.warn(`skill diagnostics failed: ${err.message}`);
         }

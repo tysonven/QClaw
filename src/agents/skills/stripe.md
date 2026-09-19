@@ -20,8 +20,12 @@ GET /invoices - List invoices
 GET /invoices/{{invoice_id}} - Get invoice
 GET /payment_intents - List payment intents
 GET /subscriptions - List subscriptions
-POST /customers - Create customer
-POST /invoices - Create invoice draft
+[mutating] POST /customers - Create customer
+# POST /invoices is REMOVED, not undeclared (Tyson, 2026-09-18). Reason: #181,
+# the executor sends Stripe a JSON body and its API takes form encoding. Its
+# `customer` field is also invisible to the identifier index and to the name
+# heuristic, so any level would let it through unchecked. Re-adding the line
+# reopens that: read deriveIdentifierIndex in skill-diagnostics.js first.
 
 ## Permissions
 - http: [api.stripe.com]

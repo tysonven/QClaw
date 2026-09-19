@@ -21,6 +21,7 @@ import { spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { join, dirname } from 'path';
 import { readdirSync, readFileSync } from 'fs';
+import { countEndpointLines } from '../src/agents/skill-parser.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const REPO = join(dirname(__filename), '..');
@@ -51,14 +52,11 @@ function expectedSkills() {
     };
     const name = get('name') || file.replace(/\.md$/, '');
     const category = get('category');
-    // Endpoint count under "## Endpoints"
-    let inSection = false; let count = 0;
-    for (const line of content.split(/\r?\n/)) {
-      if (/^##\s+Endpoints\b/.test(line)) { inSection = true; continue; }
-      if (inSection && /^##\s+/.test(line)) break;
-      if (inSection && /^(GET|POST|PUT|PATCH|DELETE)\s+\//.test(line.trim())) count++;
-    }
-    out.push({ name, category, endpoints: count });
+    // Endpoint count under "## Endpoints", by the parser's own grammar. This
+    // was a fourth copy of that grammar, which is how a `[level]` prefix
+    // would have made the CLI and this test agree with each other and
+    // disagree with the parser.
+    out.push({ name, category, endpoints: countEndpointLines(content) });
   }
   return out;
 }
@@ -90,6 +88,14 @@ for (const sk of expected) {
     check(`CLI shows endpoint count for "${sk.name}"`,
       new RegExp(`${sk.name}.*\\(${sk.endpoints} endpoints\\)`).test(stdout),
       `expected (${sk.endpoints} endpoints) for ${sk.name}`);
+  } else {
+    // Zero is a claim too. A skill whose endpoint-looking lines the parser
+    // rejects (clipper's em dashes, #151) must not be shown with a count, or
+    // the CLI reports a surface that registers nothing.
+    const esc = sk.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const line = stdout.split('\n').find((l) => new RegExp(`^\\s*${esc}(\\s|$)`).test(l)) || '';
+    check(`CLI shows no endpoint count for "${sk.name}"`,
+      !/\(\d+ endpoints\)/.test(line), `line: ${line.trim()}`);
   }
 }
 

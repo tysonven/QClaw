@@ -94,7 +94,15 @@ async function main() {
       && pathParsed.identifiers[0].value === REAL_ID,
     JSON.stringify(pathParsed.identifiers));
   check('pathParamNames ignores {{secrets.*}} and {{config.*}}',
-    JSON.stringify(pathParamNames('/contacts/?locationId={{secrets.x}}&t={{config.y}}&c={{contact_id}}')) === '["contact_id"]');
+    JSON.stringify(pathParamNames('/contacts/{{contact_id}}?locationId={{secrets.x}}&t={{config.y}}')) === '["contact_id"]');
+  // A query-string placeholder is never a path identifier (decided
+  // 2026-09-10). This test used to assert the opposite, which is how the
+  // prompt and the identifier index came to disagree (#184 cold review,
+  // finding 6): the prompt called it a path identifier, the index could not
+  // resolve it.
+  check('pathParamNames: a query-string placeholder is not a path identifier',
+    JSON.stringify(pathParamNames('/contacts/?locationId={{secrets.x}}&c={{contact_id}}')) === '[]',
+    JSON.stringify(pathParamNames('/contacts/?locationId={{secrets.x}}&c={{contact_id}}')));
 
   const urlParsed = extractIdentifiers({ args: { data: '{"market_url": "https://polymarket.com/event/x"}' } });
   check('market_url is treated as an identifier (row 125 keyed on it)',

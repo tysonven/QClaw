@@ -27032,3 +27032,319 @@ cost of asking was a single search.
 A third caller was found the same way and deliberately left working: the config
 template allowlist still permits `{{config.dashboard.authToken}}`, though no
 skill currently uses it.
+
+## 2026-09-18: two success signals that were not the entity
+
+Found auditing for the identifier gate (#144). One finding, in two places. Both
+would have let the gate record an identifier as checked when nothing had
+checked it, and both are the defect the gate exists to prevent: a success
+signal taken from something other than the thing asked about.
+
+### Which GET resolves an identifier
+
+#148's boot diagnostic (QClaw `3c0b5dc`) chose the resolver for an identifier
+as "a GET whose path ends at the parameter". The parsed path includes the
+query string, and the rule keyed on the parameter's name. Run over the real
+skill files at QClaw `3621d09`, it counted as resolvers:
+
+- `{{query}}` on the contact search in all six GHL skills;
+- `{{status}}` and `{{workflow_id}}` on n8n-api's execution filters;
+- `{{secrets.ghl_*_location_id}}` in all six GHL skills.
+
+And n8n-api's `{{id}}` on workflows and on executions was one resolver, because
+the name was the key. A search answers 200 for any value. A validation layer
+built on that rule would have resolved every identifier it was handed.
+
+The design had named `query` and `status`. Running the rule over the files
+found `workflow_id` and the secrets placeholders too.
+
+### What counts as resolved
+
+#143's subject lookup (`src/security/subject-resolvers.js:73` at QClaw
+`3621d09`) reports `status: 'resolved'` whenever it produced any line. For a
+missing position the line it produces is
+`position <id>: NOT FOUND in the trade engine`. The approval prompt shows that
+line correctly, which is all it was built for. The approved design (section 6,
+#144 at `cadc0f5`) proposed wiring that same status to the new `validated`
+column, which would have recorded a not-found identifier as `resolved`.
+
+### Where it stands
+
+- The derivation half is in PR #184 (QClaw `a9c6f7d`): query string stripped,
+  templates excluded, the resolver for a path identifier keyed on its own
+  resource. Mutation-tested: keeping the query string, keying on the name, and
+  letting a secrets placeholder resolve each turn the suite red.
+- The lookup half is decided and not built at the time of writing. #143's
+  lines stay for display. The gate gets its own result, and a resolve counts
+  only when the entity comes back carrying the identifier that was asked for.
+
+> A 2xx, a non-empty list and a line of output are each evidence that
+> something answered. None of them is evidence that the thing asked about
+> exists. Require the entity, and check it carries the identifier that was
+> sent.
+
+Same rule as requiring a positive validity marker on both sides of a guard:
+where the marker is not specific, a plausible default fills the gap.
+
+## 2026-09-18: three mutants that never got to run
+
+The mutation run on #184 reported 25 of 25 mutants killed. That number hides
+the more useful one: three of the 25 would have survived the tests as first
+written. They were found by reading each planned mutant against the tests
+BEFORE the harness ran, not by the run.
+
+- The CLI going back to its own copy of the endpoint grammar (M10). The CLI
+  test only checked skills with a nonzero count, and the one live file where
+  the two grammars disagree, clipper, has a count of zero.
+- Counting a name that two GETs end at as "with a resolver" (M17). No
+  synthetic skill with writes had an ambiguous name.
+- Reading a write's path identifiers from the path including its query string
+  (M24). No fixture had a write with a `{{param}}` in its query string.
+
+Each got a test (QClaw `3934456`, `a4d01b3`) before the harness ran. The run
+then killed all 25 at `a4d01b3`, and again at `df2ffe0` after the declarations
+changed the fixtures under it.
+
+> Walk the mutant list against the tests before running it. A survivor found
+> by reading costs a test; one found by the run costs a test and a rerun; one
+> never found costs a green suite that proves less than it says. A clean
+> mutation report is only as informative as the account of what was tightened
+> to reach it, so give the account.
+
+## 2026-09-18: the gate to turn on the gate could go green for two wrong reasons
+
+Part two of the identifier gate merges when the host's boot log reads 0: zero
+unclassified skill writes. A cold review of #184 (at QClaw `df2ffe0`) found
+two independent ways that line could read 0 while the answer was not 0. It is
+the vacuity class, inside the mechanism built to close it.
+
+- **A write that failed to parse left the count.** An endpoint line the
+  grammar rejects (an unclosed `[mutating`, stacked or fullwidth brackets, a
+  zero-width space, an en or em dash before the description: eighteen
+  spellings) registered no tool and reported nothing. The write dropped out of
+  both sides of "U of W", so the count shrank with it and nothing said why.
+- **An agent with nothing to count printed 0.** Every agent's boot printed a
+  total. The host has an `echo` agent with an empty skills directory (read on
+  `qclaw-agent` 2026-09-18), so every boot would have printed an unlabelled
+  `0 of 0 across 0 skills` beside Charlie's line. Whatever Charlie's state,
+  the log would have held a line reading 0.
+
+Either alone was enough, and they fail independently: fixing one leaves the
+other. Fixed in QClaw `b353358`:
+
+- every endpoint-looking line that fails to parse is named at boot with its
+  file and line;
+- the countdown then says `INCOMPLETE` instead of a number;
+- the line names its agent;
+- an agent with nothing to count prints nothing at all.
+
+The same round closed the review's other blocking findings:
+
+- a bad bracket on a DELETE now reads unclassified;
+- the gate is handed an index only when it covers the tool's own endpoint, so
+  "never derived" reaches it as no index rather than an empty one;
+- resolvers record that they are GETs;
+- the prompt and the index share one rule for path identifiers.
+
+Mutation run at QClaw `f41612d`: 56 mutants, all killed. That covers the
+earlier 25, the review's 14 survivors (including the three that emptied the
+index at `Agent.load()`, at the specialist path and by caching on the skill
+name), and one per fix.
+
+> A condition written as "the log reads 0" is only as good as every line that
+> can print a 0. Before trusting a zero, ask what else prints one: an empty
+> set, a count that shrank, a second writer. A mechanism built to stop a
+> vacuous pass needs the same question asked of itself.
+
+### Two claims of mine, the same shape
+
+- #184's body said "a typo costs a loud refusal, never a missing tool". That
+  was true of the typo in mind, a well-formed bracket holding a misspelt level
+  (`[finacial]`). It was false of the eighteen malformed spellings, which
+  dropped the tool silently. It was found by reproducing the reviewer's
+  finding, not by accepting it.
+- The identifiers column in the classification table Tyson decided from said
+  GHL notes carry only `contact_id` and contact creation carries none. The
+  skill files document `userId` on notes and `locationId` on contact creation.
+  Both look like ids and nothing resolves them, so under the decided
+  notice-by-name rule every note and every contact creation would prompt NOT
+  VERIFIED, every time.
+
+> Both are claims about the code's behaviour that were true of the case in
+> mind and not of the cases not enumerated. Enumerate before claiming: list
+> the inputs the claim covers, then try one that is not on the list.
+
+The second is being fixed by giving the GHL skills a GET for users and for the
+location, so the index can resolve both. That is on hold: the FSC token
+answered 401 to both reads (2026-09-18), and Tyson decides before anything is
+built around it.
+
+## 2026-09-19: a whole broken skill left the count, and declaring what a section may hold
+
+A cold review of #184 (at QClaw `bd99e98`) found another way the identifier
+gate's merge line could read 0 while wrong: **a skill that
+registered nothing dropped out of the countdown entirely**, all its writes
+with it. A `Base URL:` typed as `Base URL -` in trading-api printed a named
+error and then `0 of 37`. On the real files it was already happening:
+ads-agency and content-studio register nothing (#149, #150), and their five
+undeclared writes were not in the `0 of 42` the previous round shipped.
+
+It is the vacuity class again, in the same mechanism as before:
+
+- a dropped line;
+- an empty agent;
+- now a whole broken skill.
+
+Decided by Tyson: a skill that registers nothing makes the countdown
+INCOMPLETE. **Accepted consequence:** the host reads INCOMPLETE until #149 and
+#150 land, so part two cannot merge before them. That is the design's own
+order (section 8 fixes the zero-tool skills before the parser change).
+
+### Stop guessing, declare
+
+The earlier fix for dropped lines was a detector that recognised what a
+malformed endpoint looks like. The review found typos it still missed:
+
+- a bare level word;
+- a misspelt verb;
+- a numbered line;
+- a path without its slash;
+- a lower-case verb.
+
+It also flagged prose under later headings. Each fix to the heuristic would
+have met the next variant. Decided instead: `## Endpoints` may contain
+endpoints, `#` comments and blank lines, and anything else is named at boot
+and makes the countdown INCOMPLETE. **Prose inside `## Endpoints` is a parse
+error by design**; n8n-api.md's four prose lines there became comments. #183
+was fixed alongside: the parser, the diagnostics and `qclaw skill list` now
+share one rule for where the section ends.
+
+> When a detector keeps missing variants, the fault is the guessing. Declare
+> what is allowed and treat everything else as an error; the next variant is
+> then covered before anyone thinks of it.
+
+### A live defect underneath (#192)
+
+The endpoint grammar's separator was `\s*-\s*`, so a path could split at its
+own hyphen. On `main` today, an em dash in the manual-close line parses as a
+second `POST /positions/manual`, which replaces the real one: manual-close
+disappears and "log a manual trade" is re-described as logging a close.
+Seven of the 42 real writes have hyphenated paths. It predates #184, would
+have been invisible until someone tried to close a position by hand, and is
+fixed in #184 by requiring whitespace around the hyphen.
+
+Also from this round: every countdown line now carries the boot time as an
+ISO date. The boot log's timestamps are time of day only, and an earlier
+boot's 0 read as the current one is the frozen-log failure in a new place.
+
+**Verified:**
+
+- Every real skill parses to the same tools, levels, descriptions, base URLs,
+  headers and permissions as before (snapshot diff, identical).
+- The committed code, run over the 20 skill files symlinked into Charlie's
+  directory on the host, prints `INCOMPLETE. 2 skill(s) registered nothing`.
+- Mutation run at QClaw `6fac6cb`: 79 mutants, all applied, all killed. Two
+  first reported NOT APPLIED because their target code had been rewritten;
+  they were re-targeted and run rather than counted.
+
+
+## 2026-09-19: a verification claim nobody could check
+
+#184's body said "79 mutants, all killed", and earlier "56" and "25". The lists
+behind those numbers lived in a session scratchpad. A cold review asked to
+rerun them could not, so each number was a verification claim nobody could
+check. That is the failure this register exists to record, produced here by
+the verification itself.
+
+The harness and every list #184 has run are now committed under
+`scripts/mutation/` (QClaw `3cfd691`):
+
+- `history/` holds each round's list exactly as run, labelled with the commit
+  it ran against;
+- `identifier-gate.mjs` is the list for the current code.
+
+The harness refuses a dirty tree and a repository's main checkout
+(`/root/QClaw` is the live deploy), redirects the tool-call log (#182), and
+fails the run on any mutant that does not apply.
+
+Checked by doing it: the committed round-three lists, run against QClaw
+`6fac6cb` in a fresh worktree, reproduce the recorded result exactly. The
+run gave 76 killed and the same two not applied, then the three re-run
+mutants killed: 79 applied, 79 killed. The current list at QClaw `d14150a`:
+100 applied, 100 killed.
+
+That first reproduction attempt was itself refused, correctly. A
+`node_modules` symlink in the scratch worktree read as untracked, and the
+harness will not mutate a tree with anything untracked in it.
+
+> A count of what the tests killed is only evidence if someone else can
+> produce the same count. Commit the list with the claim, name the commit it
+> ran against, and make a mutant that does not apply fail the run rather than
+> disappear from it.
+
+The same review found the collision case in the merge line. Two endpoint
+lines that get the same tool name left the registry holding whichever came
+last, silently, while the countdown counted both lines and read 0. A stale
+duplicate of the manual-close line could replace its `financial` level with
+`mutating`. Fixed in QClaw `810a4e8`: every line in a colliding group is
+refused and named, and endpoint lines outside `## Endpoints` are named too.
+
+## 2026-09-19: a permission change on a client-facing sub-account, and a scope list that did not predict
+
+**Recorded as a change, not as setup.** Tyson granted `users.readonly` and
+`locations.readonly` to the FSC sub-account's private integration named
+"quantum claw", the one QClaw's `ghl_fsc_api_key` belongs to. Nothing was
+removed. No re-authorisation was prompted and no new token issued. It is part
+of the identifier gate's fix for GHL notes and contact creation, which would
+otherwise prompt NOT VERIFIED on every call (#184).
+
+Before (2026-09-18) and after (2026-09-19T09:16:34Z), the same read-only probe
+on the same token:
+
+```
+before: ghl-fsc | user: HTTP 401, entity id matches: false, "The token is not authorized for this scope." | location: HTTP 401, entity id matches: false, "The token is not authorized for this scope."
+after:  token fingerprint: 37f56094bfdd
+        ghl-fsc user: HTTP 200, entity id matches: true
+        ghl-fsc location: HTTP 200, entity id matches: true
+```
+
+**What it widens:** the FSC sub-account's user records (names, emails,
+roles) and its location record (business details, address, settings) are
+now readable by anyone holding that token. That is a client-facing
+sub-account.
+
+The holders, by fingerprint:
+
+- QClaw's encrypted store (`ghl_fsc_api_key`);
+- `/root/.quantumclaw/.env` (`GHL_FSC_API_KEY`).
+
+n8n's `FSC GHL PIT` is a different token and is untouched.
+
+Before the grant, the two FSC integrations were told apart by measurement,
+not by name:
+
+| | n8n's credential | QClaw's token |
+|---|---|---|
+| In use since | created 2026-03-18 | in QClaw's store by 2026-07-04 |
+| Reads users, locations, messages | not measured | measured as unable |
+
+Tyson checked the integration list against both columns before editing.
+
+### The scope list did not predict what the token could do
+
+The same integration already carried `conversations.write`, yet the FSC
+token got 401 on `POST /conversations/messages` (probe 2026-09-19). GHL's
+scope reference explains it: sending a message needs
+`conversations/message.write`, while `conversations.write` covers
+`POST /conversations/`. The list was accurate, but its names were not. A
+human reading "conversations.write" predicts the wrong answer.
+
+That is the same lesson #186 taught from the other side. Five skill files
+said the message endpoint drafts, and reading them settled nothing. It was
+settled only by sending one message, 2026-09-19T08:16:25Z, to Tyson's own
+contact: GHL recorded an outbound email, with no draft marker.
+
+> A scope list and a skill file are both descriptions of what a token or an
+> endpoint does. Neither is a measurement. When the answer matters, make the
+> call, read what comes back, and record it; do not settle it by reading the
+> label.

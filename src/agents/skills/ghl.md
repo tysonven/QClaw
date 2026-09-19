@@ -17,12 +17,12 @@ Header: Location-Id: {{secrets.ghl_location_id}}
 GET /contacts/?locationId={{secrets.ghl_location_id}}&limit=25 - List contacts
 GET /contacts/search?locationId={{secrets.ghl_location_id}}&query={{query}} - Search contacts by name/email
 GET /contacts/{{contact_id}} - Get contact by ID
-POST /contacts/ - Create contact
-PUT /contacts/{{contact_id}} - Update contact
+[mutating] POST /contacts/ - Create contact
+[mutating] PUT /contacts/{{contact_id}} - Update contact
 GET /opportunities/search?locationId={{secrets.ghl_location_id}} - Search opportunities
-POST /opportunities/ - Create opportunity
-POST /tasks/ - Create task
-POST /notes/ - Create note
+[mutating] POST /opportunities/ - Create opportunity
+[mutating] POST /tasks/ - Create task
+[mutating] POST /notes/ - Create note
 ## Permissions
 - http: [services.leadconnectorhq.com]
 - shell: none

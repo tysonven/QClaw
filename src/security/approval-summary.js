@@ -29,11 +29,13 @@
  *   - "No identifiers found" is printed as such, never left implicit.
  *
  * What counts as an identifier is a NAME heuristic (IDENTIFIER_NAME_RE)
- * plus every `{{param}}` in the tool's path. That is a rendering aid, not a
+ * plus every `{{param}}` in the tool's path before its query string. That is a rendering aid, not a
  * validation rule: a field the heuristic misses still appears under
  * Arguments. The skill-declared identifier convention that replaces the
  * heuristic for validation is a separate design (fix 2 of the audit).
  */
+
+import { pathIdentifierNames } from '../agents/skill-diagnostics.js';
 
 export const IDENTIFIER_NAME_RE = /(^id$|^ids$|_id$|_ids$|Id$|Ids$|^uuid$|_uuid$|_url$|Url$)/;
 
@@ -59,18 +61,15 @@ function isPlainObject(v) {
 }
 
 /**
- * Names of `{{param}}` placeholders in a skill endpoint path, excluding
- * `{{secrets.*}}` and `{{config.*}}` which are resolved by the registry.
+ * Names of the identifier placeholders in a skill endpoint path. Delegates to
+ * the identifier index's rule (skill-diagnostics.js pathIdentifierNames): the
+ * query string is stripped and `{{secrets.*}}` / `{{config.*}}` are excluded.
+ * One rule for both, so the prompt never shows as a path identifier something
+ * the index cannot resolve (#184 cold review, finding 6).
  */
 export function pathParamNames(path) {
-  const names = [];
-  if (typeof path !== 'string') return names;
-  for (const m of path.matchAll(/\{\{([^}]+)\}\}/g)) {
-    const name = m[1].trim();
-    if (name.startsWith('secrets.') || name.startsWith('config.')) continue;
-    names.push(name);
-  }
-  return names;
+  if (typeof path !== 'string') return [];
+  return pathIdentifierNames(path);
 }
 
 /**
