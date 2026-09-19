@@ -50,6 +50,7 @@
     "cookie-parser": "1.4.7",
     "dotenv": "17.3.1",
     "express": "^4.21.0",
+    "express-rate-limit": "8.3.2",
     "grammy": "^1.30.0",
     "jsonwebtoken": "9.0.3",
     "picocolors": "^1.1.1",

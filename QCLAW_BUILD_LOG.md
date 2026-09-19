@@ -27032,3 +27032,351 @@ cost of asking was a single search.
 A third caller was found the same way and deliberately left working: the config
 template allowlist still permits `{{config.dashboard.authToken}}`, though no
 skill currently uses it.
+
+## 2026-09-18: every dashboard tab 401'd after #179, and the test that passed it was fixture-versus-reality, merged a week after we wrote that up
+
+The GHL Marketing tab showed `Failed to load: Unauthorised` while a live draft
+(`f6256d12-eced-486a-93bf-3d3254be007f`, created 11:00:20Z) waited for review.
+Every other tab that calls the API failed the same way. Fixed on
+`fix/dashboard-api-auth`, draft PR #189, unmerged as of this entry.
+
+### The premise, checked rather than accepted
+
+The report attributed the break to #177 and said the Telegram review link
+landed on the login page. Both were wrong, and both corrections mattered:
+
+- **It was #179, not #177.** #177 (QClaw main fdd9c2e) still accepted
+  `?token=` as a legacy path, with a comment saying why: "Also the browser
+  hand-off from the dashboard URL, which is why it stays until the cookie
+  hand-off lands." The hand-off never landed. #179 (QClaw main 16c1914)
+  accepted `?token=` only when `Accept` contained `text/html`.
+- **The bare link does not land on login.** `/` is a public path. Probed at
+  the public URL on 2026-09-18: `/`, and `/?token=bogus`, both return 200 with
+  the dashboard HTML. A bare link opens the dashboard with every tab failing and
+  nothing saying why, which is worse than a login page. It also means "the page
+  loads with the session token" was never evidence the credential worked. The
+  page loads with any token.
+
+### Mechanism and evidence
+
+`ui.html` authenticated every API call by appending `?token=<session token>`.
+`fetch()` sends `Accept: */*`. So every tab's call fell through to
+`rejected-session-query`. Verbatim, `quantumclaw-out.log` on qclaw, boot
+10:34:59Z at QClaw main 3621d09 (ANSI codes stripped):
+
+```
+11:30:24 ⚠ Dashboard auth: /api/threads authenticated with the browser session token via rejected-session-query. Machine callers should send the api token as a Bearer header (#172).
+11:30:24 ⚠ Dashboard auth: /api/pairing/pending authenticated with the browser session token via rejected-session-query. Machine callers should send the api token as a Bearer header (#172).
+11:30:26 ⚠ Dashboard auth: /api/ghl/drafts authenticated with the browser session token via rejected-session-query. Machine callers should send the api token as a Bearer header (#172).
+11:30:29 ⚠ Dashboard auth: /api/crete/content authenticated with the browser session token via rejected-session-query. Machine callers should send the api token as a Bearer header (#172).
+```
+
+The warning said "authenticated" for a rejection and blamed machine callers.
+The caller was the browser. Reproduced on the host at 11:45Z, the same GET three
+ways: session `?token=` with `Accept: */*` got `401 {"error":"Unauthorised"}`;
+the `/login` cookie got 200 with the draft in it; the Bearer api token got 200.
+So the draft could be reviewed that day through `/login` without a deploy.
+
+The chat socket accepted only `?token=`, so after #179 neither way into the
+dashboard worked fully. The `qclaw dashboard` link gave chat but no tabs;
+`/login` gave tabs but no chat.
+
+### The fixture-versus-reality defect, again
+
+#179's test asserted the browser path like this:
+
+```js
+r = resolveDashboardAuth({ ...base, queryToken: SESSION, isBrowser: true });
+check('?token= session token still authenticates a BROWSER', r.ok && r.via === 'query-browser', ...);
+```
+
+`isBrowser` is derived in the middleware from `Accept` containing `text/html`.
+The dashboard's calls are `fetch()`, which never sends it. The test supplied the
+one input that made the branch pass, and no request the dashboard makes has that
+shape. The assertion was true of the function and false of the product.
+
+The verification recorded in the entry above ("the new token opens the dashboard
+in a browser (200)") had the same blind spot from the other side. It was a page
+navigation. A navigation carries `text/html`, the one request shape the branch
+accepted, to a path that answers 200 for any token. It could not have seen what
+`fetch()` gets.
+
+This is the defect of #142/#148 ("a test written to catch fixture-versus-reality
+had the same defect in its own other half", 2026-09-11) and of #135's cold
+review: a check answered a narrower question than the one being asked, and
+agreed with itself. Here the narrower question was "does the function accept
+this input"; the one being asked was "does the dashboard load".
+
+### The rule keeps being stated and then not applied to the next thing
+
+The pattern was written up on 2026-09-11. #179 merged on 2026-09-17, six days
+later, with a test of the same shape. Its build-log entry (#180) was itself
+about verification discipline: it records a prediction that caught a half-fix,
+and grepping for callers before tightening a credential. The same work applied
+two of the disciplines this log has accumulated and missed a third it had
+written down the week before.
+
+> Recording an instance in this log has not stopped the next one. The log is
+> read when an entry is being written, not when a test is. Each entry ends with
+> the rule restated, the rules accumulate, and none of them is in front of
+> whoever writes the next test.
+
+It recurred inside this fix as well, and each time it was caught by executing
+the real code, not by recalling the rule:
+
+- `tests/trading-room-ui.test.js` ran the real Trading Room block against a stub
+  `API: (p) => p`. When the block moved to `apiFetch`, the stub no longer
+  matched anything real, and 8 checks went red. That failure was loud, which is
+  the good case.
+- The first `apiFetch` threw after starting the `/login` redirect. On the
+  trading disable path, that routed an expired-session 401 into the generic
+  "Failed to update trading" instead of "trading may still be ARMED". It was
+  found only by making the trading harness run the real `apiFetch`.
+- A mutant that makes `apiFetch` redirect on any 401 survived the trading test,
+  because nothing asserted that an upstream 401 leaves the reader on the page.
+
+A candidate control, for Tyson to decide, not adopted: for any test of a request
+handler or an auth decision, the PR states what the real caller sends and where
+that was observed. A pure-function table stays useful for precedence, but it
+does not count as evidence that a caller works.
+
+### What changed on the branch (draft PR #189 at ccd117b, unmerged as of this entry)
+
+- `GET /?token=<session token>` exchanges the token for the same
+  `dashboard_session` cookie `/login` issues, then redirects to `/`. That is the
+  hand-off #177 described. A wrong or stale link goes to `/login?error=1`.
+- The UI puts no token in URLs or `sessionStorage`. Every same-origin call goes
+  through `apiFetch`. A 401 marked `X-Dashboard-Auth: login-required` sends the
+  reader to `/login?tab=<tab>`, and the response is still returned so each
+  caller's own failure path runs. Bare 401s are left alone, because the
+  wrong-PIN route and the Supabase proxy routes answer 401 for other reasons.
+- The chat socket accepts the cookie. `src/cli/tui.js` keeps `?token=`.
+- `/#ghl` opens the GHL Marketing tab; `/login` returns the reader to it, with
+  `tab` restricted to `[a-z-]`.
+- The resolver no longer accepts the session token from a URL. Callers of the
+  removed branch were checked first: `ui.html`, the CLI, the TUI, and all 83
+  n8n workflows, saved and published versions both. Three of those workflows
+  call the dashboard over HTTP (GHL and Crete image generation, active; Trade
+  Executor, inactive), all with `Bearer $env.QCLAW_API_TOKEN`.
+
+The first test to run the real `DashboardServer.start()` found an undeclared
+dependency:
+
+```
+Error [ERR_MODULE_NOT_FOUND]: Cannot find package 'express-rate-limit' imported from /Users/tysonvenables/QClaw-worktrees/dashboard-api-auth/src/dashboard/server.js
+```
+
+Production resolves it from a stray `/root/package.json` (8.3.2 in
+`/root/node_modules`, checked on the host 2026-09-18), outside the repo. That
+is why no test had ever called `start()`. It is now declared, pinned to exactly
+what production resolves (8.3.2, with `ip-address` 10.1.0). The lockfile's
+`hasInstallScript` count is 3 before and after, so the deploy's rebuild
+allowlist does not move.
+
+### Tests, anchored to ccd117b
+
+`tests/dashboard-browser-auth.test.js` drives the real `start()` over real HTTP
+and a real WebSocket. Requests carry `Accept: */*` where `fetch()` would send
+them and `text/html` for navigations. The test also runs the real `apiFetch`
+and `openTabFromHash` source taken out of `ui.html`.
+
+- Unmutated, locally on Node 22: browser 43/0, split 17/0, trading 51/0.
+  `npm test` reported 57/57 test files passed, and lint was clean.
+- Against `server.js` and `ui.html` from QClaw main 3621d09, the new test
+  fails. The valid link returns 200 with no cookie, and a tab's `fetch()` gets
+  `401 {"error":"Unauthorised"}`, the live failure.
+- Eleven single-regression mutants were all killed; the table is in #189.
+
+### Cold review, round one: BLOCK, and what it found that the build had walked past
+
+Before leaving draft, the branch went to a cold adversarial review in a fresh
+session at QClaw a16b0e9, for the same reason #184 got one: it changes the auth
+boundary. The verdict was BLOCK. Both findings were reproduced on the
+implementing side before anything was fixed.
+
+**HIGH, introduced by #189: the chat socket accepted the session cookie with no
+Origin check.** `SameSite=Strict` means same-site, not same-origin. Every other
+`flowos.tech` subdomain is same-site, including `webhook.flowos.tech`, which
+serves n8n webhook responses. So a page on one of them could open the socket as
+the signed-in user and drive the agent, which has tools. Base refused this,
+because its socket took only `?token=`, which another page cannot know:
+
+```
+base 3621d09:  WS cookie + Origin https://webhook.flowos.tech -> refused Unauthorised
+head a16b0e9:  WS cookie + Origin https://webhook.flowos.tech -> ACCEPT ran:hi
+```
+
+**The HTTP half was probed rather than read.** The reviewer called the same gap
+over HTTP pre-existing. That was a reading, so it was run on base with a
+`/login` cookie:
+
+```
+base 3621d09:  POST /api/chat cookie + Origin https://webhook.flowos.tech -> 200 {"content":"ran:csrf..."}
+```
+
+- **It is pre-existing.** It has been there since the cookie login landed (QClaw
+  ec3aad0, 2026-04-07), for anyone signed in through `/login`.
+- **#189 widens its reach,** because every browser session now holds a cookie.
+- **It is a cross-site request forgery gap,** not #187's client-identity
+  problem.
+- **The guard covers it in this change anyway.** It is the same code at the
+  same cost; this entry records the cause as it was.
+
+**MEDIUM, introduced by #189: the link hand-off both fed and was gated by the
+login lockout.** Every tunnelled request arrives as `127.0.0.1` (#187), so ten
+anonymous `GET /?token=x` requests locked the owner's own link and `/login` out
+for two minutes, renewably.
+
+**How the HIGH finding arrived.**
+
+- **What the brief contained.** It gave the reviewer the deployment facts: the
+  tunnel, the other live `flowos.tech` subdomains, and that
+  `webhook.flowos.tech` serves n8n responses. It gave the scope: cross-site and
+  cross-origin requests, now that the socket authenticates by cookie.
+- **What it withheld.** It did not give the conclusion.
+- **What the implementing session knew.** It had the same facts while building
+  and did not reach the conclusion. It only suspected the subdomain angle while
+  writing the brief, after the PR was up.
+
+> That is the argument for cold review, and a better one than the process notes
+> in this log. It is not that a second reader is more careful. The author's model
+> of the change is the thing under test, and the author works inside it. Given
+> the facts and the scope, not the conclusion, the reviewer found what the build
+> had walked past.
+
+The tests had the smaller version of the same blind spot. They asserted that
+the cookie socket was accepted, and never that a forged one was refused.
+
+### The round-one fix (QClaw 8742a56 and 1666963, unmerged as of this entry)
+
+- **The origin guard.** A cookie-authenticated WebSocket, or a
+  cookie-authenticated request that is not GET, HEAD or OPTIONS, must carry an
+  Origin from an explicit allowlist. The allowlist is built from values the
+  server owns: `dashboard.tunnelUrl`, the running tunnel URL, and the local URL.
+  - A refusal is a 403 with no login-required marker, because the session is
+    fine and sending the reader to `/login` would loop.
+  - The Bearer api token and `?token=` are not checked, because they are not
+    ambient: a forged request cannot carry them.
+  - Reads are exempt. No CORS headers are set, so a cross-origin page cannot
+    read the response, and no GET route changes state (checked; logout aside).
+    **That last claim is wrong; see the correction under round two.**
+- **`Origin == Host` was rejected, though it was the reviewer's suggested fix.**
+  What cloudflared forwards as Host has not been verified. If it arrives as the
+  local service, an `Origin == Host` check refuses every real browser request,
+  which kills chat and every save in production. The code says not to simplify
+  it back, and a mutant that does so fails the tunnel-URL checks.
+- **The hand-off neither reads nor feeds the lockout.** The lockout's
+  per-visitor premise stays broken until #187. Every path that mints the session
+  token uses `randomBytes(16)`, so the hand-off gives a guesser nothing to work
+  with.
+
+Tests, at 1666963, locally on Node 22:
+
+- **The browser test (62 checks).** Socket and form POST are refused, and run
+  nothing, from a sibling subdomain, a cross-site origin, a missing Origin,
+  `Origin: null`, and a look-alike of the tunnel host. The tunnel URL is
+  accepted, though it never matches the request's Host. The dashboard's own
+  `apiFetch` write passes. Twelve bad links do not lock the owner out.
+- **Against a16b0e9.** With that commit's `server.js`, the browser test fails
+  10 checks.
+- **Mutants.** 21 single-regression mutants were all killed at 8742a56: 10 new,
+  and the round-one 11 re-run.
+- **One harness defect.** A mutant that let a forged request through also
+  failed the checks after it, which shared an agent-run counter. Each check now
+  counts its own runs (1666963).
+- **The full suite.** `npm test` reported 57/57 test files, and lint was clean.
+
+### Cold review, round two: PASS_WITH_CONDITIONS, and its one condition held
+
+A second fresh session reviewed QClaw d6511e2. It confirmed both round-one
+fixes over real HTTP. The only thing newly accepted relative to base was the
+intended one: the cookie on the socket, from an allowed origin. Its verdict
+carried one condition, BLOCK if the dashboard spawns cloudflared itself. On
+qclaw it does: cloudflared's parent process is `quantumclaw`.
+
+- **The token tunnel's URL was scraped from cloudflared's output.**
+  - `_tunnelCloudflare()` resolved to the first `https://` URL anywhere in that
+    output, and `start()` saved it to `dashboard.tunnelUrl`, which round one had
+    just made the Origin allowlist.
+  - One stray line, such as the quic-go UDP buffer warning that links to
+    github.com, would have refused every save, chat message and kill-switch
+    press on the public URL.
+  - All 441 logged production boots scraped the right URL, with the kernel's
+    UDP buffer at the default that makes quic-go print that warning. 441 clean
+    boots is not a property. It is a run of luck on a code path that takes
+    whatever it finds.
+  - Token mode now uses the configured URL only and writes nothing back.
+    Against d6511e2, with a stand-in cloudflared printing that line first:
+
+```
+✗ the tunnel URL is the configured one, not the first URL cloudflared printed https://github.com
+```
+
+- **The config API could move the allowlist, and more.** `POST /api/config`
+  refused exact keys only, while its setter walks any path. Probed locally:
+  - `key: "dashboard"` with an object value replaced the session token
+    (`authToken` REPLACED).
+  - A `__proto__` segment wrote to `Object.prototype`.
+
+  Now refused by path: the whole `dashboard` block, `_dir`/`_file`, and any
+  empty, `__proto__`, `constructor` or `prototype` segment.
+- **Found while fixing that, beyond the review.** `GET /api/config` masked the
+  session token, PIN and tunnel token but not the api token. Probed: a browser
+  session got the real value in clear. The machine credential #172 split out
+  was readable by the browser it was split from, from #177 onward. Now masked.
+- **A signed-in browser following a stale link went to the login error page;
+  main served the dashboard.** A valid session now just drops the token.
+- **An SSH forward on a different local port is refused.** This is documented
+  at `isAllowedOrigin`, not made configurable.
+- **Three refusal checks were missing.** Each survived a mutant: a wrong
+  `?token=` on the socket, an expired cookie over real HTTP, and PUT, PATCH and
+  DELETE under the guard. All three are added.
+
+Tests, at 346d1ee, locally on Node 22:
+
+- The browser test has 86 checks, and `tests/dashboard-tunnel-url.test.js`
+  (new, a stand-in cloudflared on PATH) has 9.
+- Against d6511e2's `server.js` they fail 9 and 8 checks.
+- Nine single-regression mutants were all killed, including the three that
+  survived round two.
+
+### A claim about a whole category, made from a scan that stopped one level short
+
+Round one's fix recorded "no GET route changes state (checked; logout aside)"
+in two places: the message of QClaw commit 8742a56, and this entry. It is
+wrong.
+
+- **What the claim missed.** `GET /api/alerts/check` constructs a
+  `SpikeDetector` (`src/security/spike-detector.js`), which writes
+  `data/spike-alerts.json` when it finds a spike.
+- **Why the scan missed it.** The scan behind the claim read each GET handler's
+  own body for writes, and did not follow calls into other modules. The
+  round-two review read every handler to the bottom and found it.
+- **The impact is low.** It is a local file write, only when a spike is
+  detected, with no notification. It does mean the forgery guard's GET
+  exemption lets a same-site page trigger that write; that is not changed here.
+
+> The shape is the one this register exists for: a claim about a whole
+> category, made from a scan that stopped one level short of where the behaviour
+> lives. A category claim is only as strong as the deepest call the check
+> followed, and which depth that was belongs in the claim.
+
+The commit message of QClaw 8742a56 cannot be corrected without rewriting
+published history. This entry supersedes it.
+
+### Not done in this change
+
+- **Telegram review links.** Both are to change after merge. `Awo65rdSe5BvDHtC`
+  ("GHL Marketing: Content Generator", node `Send to Telegram`, Flow States Ads
+  Bot) goes to `/#ghl`. `tnvXFYvODL1PrhJa` ("Crete - Content Generator", node
+  `Telegram Notify`) goes to `/#crete`. Both messages add: "If it asks for a
+  token, run `qclaw dashboard` on the server." No credential goes in the link:
+  it would sit in Telegram history on every device and in n8n's environment,
+  and a re-mint would break old links. That is the coupling #172 split apart.
+  Both were unchanged as of this entry.
+- **#187.** Every tunnelled request arrives as `127.0.0.1`, so the `/login`
+  lockout is shared by all visitors. It has triggered 4 times in the production
+  log. This change sends browsers through `/login` more often, so it gets worse
+  before it gets better.
+- **#188.** The tunnel connector is spawned by `_tunnelCloudflare()` with its
+  credential on the command line, readable by every local account.

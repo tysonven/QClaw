@@ -1090,10 +1090,11 @@
 
 <script>
 /* ─── State ───────────────────────────────────────────── */
-const _urlToken = new URLSearchParams(location.search).get('token');
-if (_urlToken) sessionStorage.setItem('dashboard_token', _urlToken);
-const TOKEN = _urlToken || sessionStorage.getItem('dashboard_token') || '';
-const API = (path) => path + (path.includes('?') ? '&' : '?') + 'token=' + TOKEN;
+// The browser's credential is the httpOnly dashboard_session cookie, set when
+// the `qclaw dashboard` link is opened or on /login. The token never appears
+// in a URL or in script-readable storage. Earlier builds kept it in
+// sessionStorage; clear that copy.
+try { sessionStorage.removeItem('dashboard_token'); } catch { /* storage blocked */ }
 let ws = null;
 let chatHistory = [];
 let pendingImages = [];
@@ -1113,8 +1114,30 @@ function timeAgo(ts) {
   if (s < 60) return s + 's ago'; if (s < 3600) return Math.floor(s/60) + 'm ago';
   if (s < 86400) return Math.floor(s/3600) + 'h ago'; return Math.floor(s/86400) + 'd ago';
 }
+// The tab currently shown, for returning to it after signing in.
+function currentTab() {
+  const active = document.querySelector('.nav-item.active[data-page]');
+  return active ? active.dataset.page : '';
+}
+// Every same-origin API call goes through here. A 401 marked by the server as
+// "no valid session" sends the reader to /login, which says where the token
+// comes from and returns them to this tab. Other 401s (a wrong PIN, an
+// upstream 401 relayed by a proxy route) are left to the caller.
+//
+// The response is returned unchanged either way, so each caller's own failure
+// path still runs. The trading kill switch depends on that: a disable that
+// comes back 401 must still say "trading may still be ARMED", not be swallowed
+// by the navigation.
+async function apiFetch(path, opts) {
+  const r = await fetch(path, { credentials: 'same-origin', ...(opts || {}) });
+  if (r.status === 401 && r.headers.get('X-Dashboard-Auth') === 'login-required') {
+    const tab = currentTab();
+    location.replace('/login' + (tab ? '?tab=' + encodeURIComponent(tab) : ''));
+  }
+  return r;
+}
 async function api(path, opts) {
-  const r = await fetch(API('/api' + path), opts);
+  const r = await apiFetch('/api' + path, opts);
   if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
   return r.json();
 }
@@ -1130,9 +1153,21 @@ document.querySelectorAll('.nav-item[data-page]').forEach(el => {
     const page = el.dataset.page;
     $('page-' + page).classList.add('active');
     $('topbar-title').textContent = TITLES[page] || page;
+    // Keep the tab in the URL, so a reload or a shared link opens it again.
+    history.replaceState(null, '', '#' + page);
     if (PAGE_LOADERS[page]) PAGE_LOADERS[page]();
   });
 });
+// Deep links: `/#ghl` opens the GHL Marketing tab. The fragment is matched
+// against the nav items rather than built into a selector, so an arbitrary
+// fragment can only fail to match.
+function openTabFromHash() {
+  const page = location.hash.slice(1);
+  if (!page) return;
+  const el = Array.from(document.querySelectorAll('.nav-item[data-page]')).find(n => n.dataset.page === page);
+  if (el && !el.classList.contains('active')) el.click();
+}
+window.addEventListener('hashchange', openTabFromHash);
 // Tips are position:fixed (see .nav-item .tip) — anchor each to its item's
 // live viewport position on hover, so they track the sidebar's scroll offset.
 document.querySelectorAll('.nav-item').forEach(el => {
@@ -1147,7 +1182,7 @@ document.querySelectorAll('.nav-item').forEach(el => {
 /* ─── WebSocket Chat ──────────────────────────────────── */
 function connectWS() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  ws = new WebSocket(proto + '://' + location.host + '/ws?token=' + TOKEN);
+  ws = new WebSocket(proto + '://' + location.host + '/ws');
   ws.onopen = () => {
     $('status-dot').className = 'dot-sm on';
     $('status-tip').textContent = 'Connected';
@@ -1538,7 +1573,7 @@ $('config-refresh-btn').onclick = loadConfig;
 async function deleteSecret(key) {
   if (!confirm('Delete secret: ' + key + '?')) return;
   try {
-    await fetch(API('/api/secrets/' + key), { method: 'DELETE' });
+    await apiFetch('/api/secrets/' + key, { method: 'DELETE' });
     toast('Deleted: ' + key);
     loadConfig();
   } catch(e) { toast(e.message, 'err'); }
@@ -1832,7 +1867,7 @@ async function csUploadImage(file, imageType, previewId, placeholderId, statusId
     fd.append('file', file);
     fd.append('jobId', jobId);
     fd.append('imageType', imageType);
-    const res = await fetch(API('/api/content-studio/upload-image'), { method: 'POST', body: fd });
+    const res = await apiFetch('/api/content-studio/upload-image', { method: 'POST', body: fd });
     if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.error || 'Upload failed'); }
     const { url } = await res.json();
     if (imageType === 'hero') _csHeroUrl = url;
@@ -1897,7 +1932,7 @@ async function csUploadClipToR2(file, idx, blobUrl) {
   try {
     const fd = new FormData();
     fd.append('file', file);
-    const res = await fetch(API('/api/content-studio/upload'), { method: 'POST', body: fd });
+    const res = await apiFetch('/api/content-studio/upload', { method: 'POST', body: fd });
     if (!res.ok) throw new Error('Upload failed');
     const { publicUrl } = await res.json();
     // Store the R2 URL on the button for scheduling
@@ -1924,7 +1959,7 @@ async function csScheduleClip(idx, blobUrl) {
   btn.disabled = true;
   btn.textContent = 'Scheduling...';
   try {
-    const res = await fetch(API('/api/content-studio/schedule-clip'), {
+    const res = await apiFetch('/api/content-studio/schedule-clip', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ clipUrl, caption, platform, scheduledAt, jobId: _csCurrentJobId })
@@ -2004,7 +2039,7 @@ function csStartPolling() {
   if (_csPollTimer) clearInterval(_csPollTimer);
   _csPollTimer = setInterval(async () => {
     try {
-      const jobs = await (await fetch(API('/api/content-studio/jobs?limit=1'))).json();
+      const jobs = await (await apiFetch('/api/content-studio/jobs?limit=1')).json();
       if (!jobs.length) return;
       const job = jobs[0];
       if (job.status === 'completed') {
@@ -2044,7 +2079,7 @@ async function csStartUpload() {
       progressWrap.style.display = 'block';
 
       // 1. Initiate
-      const initRes = await fetch(API('/api/upload/initiate'), {
+      const initRes = await apiFetch('/api/upload/initiate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ filename: _csFile.name, contentType: _csFile.type || 'video/mp4', fileSize: _csFile.size })
@@ -2062,7 +2097,7 @@ async function csStartUpload() {
         const chunk = _csFile.slice(start, end);
         const buffer = await chunk.arrayBuffer();
 
-        const partRes = await fetch(API('/api/upload/part'), {
+        const partRes = await apiFetch('/api/upload/part', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/octet-stream',
@@ -2083,7 +2118,7 @@ async function csStartUpload() {
       }
 
       // 3. Complete
-      const completeRes = await fetch(API('/api/upload/complete'), {
+      const completeRes = await apiFetch('/api/upload/complete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ uploadId, key, parts })
@@ -2097,7 +2132,7 @@ async function csStartUpload() {
       // ── Simple upload for small files (existing behavior) ──
       const formData = new FormData();
       formData.append('file', _csFile);
-      const uploadRes = await fetch(API('/api/content-studio/upload'), { method: 'POST', body: formData });
+      const uploadRes = await apiFetch('/api/content-studio/upload', { method: 'POST', body: formData });
       if (!uploadRes.ok) { const err = await uploadRes.json().catch(() => ({})); throw new Error(err.error || 'Upload failed'); }
       const result = await uploadRes.json();
       r2FileKey = result.r2FileKey;
@@ -2131,7 +2166,7 @@ async function csStartUpload() {
 
 async function csLoadJobs() {
   try {
-    const jobs = await (await fetch(API('/api/content-studio/jobs?limit=10'))).json();
+    const jobs = await (await apiFetch('/api/content-studio/jobs?limit=10')).json();
     if (!Array.isArray(jobs) || !jobs.length) {
       $('cs-jobs-body').innerHTML = '<tr><td colspan="4" style="color:var(--text-dim)">No jobs yet</td></tr>';
       return;
@@ -2149,7 +2184,7 @@ async function csLoadJobs() {
 
 async function csViewJob(id) {
   try {
-    const job = await (await fetch(API('/api/content-studio/jobs/' + id))).json();
+    const job = await (await apiFetch('/api/content-studio/jobs/' + id)).json();
     if (job.error) { toast(job.error, 'err'); return; }
     csShowResults(job);
     $('cs-results').scrollIntoView({ behavior: 'smooth' });
@@ -2208,7 +2243,7 @@ function initTrading() {
 
 async function trLoadBalance() {
   try {
-    const data = await (await fetch(API('/api/trading/balance'))).json();
+    const data = await (await apiFetch('/api/trading/balance')).json();
     if (data.error) return;
     $('tr-balance').textContent = '$' + (data.usdc_balance ?? 0).toFixed(2);
     const pnl = data.realised_pnl ?? 0;
@@ -2255,7 +2290,7 @@ function trSetConfigError(msg) {
 
 async function trLoadConfig() {
   try {
-    const res = await fetch(API('/api/trading/config'));
+    const res = await apiFetch('/api/trading/config');
     const cfg = await res.json().catch(() => null);
     // A route-level {error} body used to fall through the old `if (cfg && !cfg.error)`
     // guard silently, leaving HTML defaults on screen. Treat it as failure.
@@ -2286,7 +2321,7 @@ async function trLoadConfig() {
 // leaves absent columns untouched, so this is how the kill switch is sent without
 // dragging any limit value along with it.
 async function trPostConfigRaw(body) {
-  return fetch(API('/api/trading/config'), {
+  return apiFetch('/api/trading/config', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body)
@@ -2394,7 +2429,7 @@ async function trConfirmEnable() {
   const otp = $('tr-otp-input').value.trim();
   if (!/^\d{6}$/.test(otp)) { toast('Enter the 6-digit OTP from Telegram', 'err'); return; }
   try {
-    const res = await fetch(API('/api/trading/confirm-enable'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ otp }) });
+    const res = await apiFetch('/api/trading/confirm-enable', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ otp }) });
     const data = await res.json().catch(() => ({}));
     if (res.ok && data.status === 'trading_enabled') {
       _trPending = false;
@@ -2439,7 +2474,7 @@ async function trLoadEngine() {
   const grid = $('tr-engine-grid');
   const badge = $('tr-engine-badge');
   try {
-    const res = await fetch(API('/api/trading/engine'));
+    const res = await apiFetch('/api/trading/engine');
     const h = await res.json();
     if (!res.ok || !h || h.error) throw new Error(h && h.error ? h.error : 'HTTP ' + res.status);
 
@@ -2487,7 +2522,7 @@ async function trRunSimulation() {
 
   btn.disabled = true; btn.textContent = 'Running...';
   try {
-    const res = await fetch(API('/api/trading/simulate'), {
+    const res = await apiFetch('/api/trading/simulate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ asset, target, question: $('tr-sim-question').value || undefined, horizon_days: parseInt($('tr-sim-horizon').value) || 30 })
@@ -2520,7 +2555,7 @@ async function trRunSimulation() {
 
 async function trLoadPositions() {
   try {
-    const positions = await (await fetch(API('/api/trading/positions'))).json();
+    const positions = await (await apiFetch('/api/trading/positions')).json();
     if (!Array.isArray(positions) || !positions.length) {
       $('tr-positions-body').innerHTML = '<tr><td colspan="6" style="color:var(--text-dim)">No open positions</td></tr>';
       return;
@@ -2571,7 +2606,7 @@ async function trLoadPositions() {
 
 async function trLoadSimulations() {
   try {
-    const sims = await (await fetch(API('/api/trading/simulations'))).json();
+    const sims = await (await apiFetch('/api/trading/simulations')).json();
     if (!Array.isArray(sims) || !sims.length) {
       $('tr-sims-body').innerHTML = '<tr><td colspan="9" style="color:var(--text-dim)">No simulations yet</td></tr>';
       return;
@@ -2614,7 +2649,7 @@ let creteItems = [];
 const creteEsc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
 async function creteFetch(path, opts = {}) {
-  const r = await fetch(API(path), {
+  const r = await apiFetch(path, {
     ...opts,
     headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) }
   });
@@ -2766,7 +2801,7 @@ let ghlItems = [];
 const ghlEsc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
 async function ghlFetch(path, opts = {}) {
-  const r = await fetch(API(path), {
+  const r = await apiFetch(path, {
     ...opts,
     headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) }
   });
@@ -3006,7 +3041,7 @@ let _dspRefreshTimer = null;
 const dspEsc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
 async function dspFetch(path) {
-  const r = await fetch(API(path));
+  const r = await apiFetch(path);
   const data = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
   return data;
@@ -3119,6 +3154,7 @@ function initDispatches() {
 }
 
 /* ─── Init ────────────────────────────────────────────── */
+openTabFromHash();
 connectWS();
 loadThreads();
 checkPairings();
