@@ -27187,6 +27187,104 @@ and `openTabFromHash` source taken out of `ui.html`.
   `401 {"error":"Unauthorised"}`, the live failure.
 - Eleven single-regression mutants were all killed; the table is in #189.
 
+### Cold review, round one: BLOCK, and what it found that the build had walked past
+
+Before leaving draft, the branch went to a cold adversarial review in a fresh
+session at QClaw a16b0e9, for the same reason #184 got one: it changes the auth
+boundary. The verdict was BLOCK. Both findings were reproduced on the
+implementing side before anything was fixed.
+
+**HIGH, introduced by #189: the chat socket accepted the session cookie with no
+Origin check.** `SameSite=Strict` means same-site, not same-origin. Every other
+`flowos.tech` subdomain is same-site, including `webhook.flowos.tech`, which
+serves n8n webhook responses. So a page on one of them could open the socket as
+the signed-in user and drive the agent, which has tools. Base refused this,
+because its socket took only `?token=`, which another page cannot know:
+
+```
+base 3621d09:  WS cookie + Origin https://webhook.flowos.tech -> refused Unauthorised
+head a16b0e9:  WS cookie + Origin https://webhook.flowos.tech -> ACCEPT ran:hi
+```
+
+**The HTTP half was probed rather than read.** The reviewer called the same gap
+over HTTP pre-existing. That was a reading, so it was run on base with a
+`/login` cookie:
+
+```
+base 3621d09:  POST /api/chat cookie + Origin https://webhook.flowos.tech -> 200 {"content":"ran:csrf..."}
+```
+
+- **It is pre-existing.** It has been there since the cookie login landed (QClaw
+  ec3aad0, 2026-04-07), for anyone signed in through `/login`.
+- **#189 widens its reach,** because every browser session now holds a cookie.
+- **It is a cross-site request forgery gap,** not #187's client-identity
+  problem.
+- **The guard covers it in this change anyway.** It is the same code at the
+  same cost; this entry records the cause as it was.
+
+**MEDIUM, introduced by #189: the link hand-off both fed and was gated by the
+login lockout.** Every tunnelled request arrives as `127.0.0.1` (#187), so ten
+anonymous `GET /?token=x` requests locked the owner's own link and `/login` out
+for two minutes, renewably.
+
+**How the HIGH finding arrived.**
+
+- **What the brief contained.** It gave the reviewer the deployment facts: the
+  tunnel, the other live `flowos.tech` subdomains, and that
+  `webhook.flowos.tech` serves n8n responses. It gave the scope: cross-site and
+  cross-origin requests, now that the socket authenticates by cookie.
+- **What it withheld.** It did not give the conclusion.
+- **What the implementing session knew.** It had the same facts while building
+  and did not reach the conclusion. It only suspected the subdomain angle while
+  writing the brief, after the PR was up.
+
+> That is the argument for cold review, and a better one than the process notes
+> in this log. It is not that a second reader is more careful. The author's model
+> of the change is the thing under test, and the author works inside it. Given
+> the facts and the scope, not the conclusion, the reviewer found what the build
+> had walked past.
+
+The tests had the smaller version of the same blind spot. They asserted that
+the cookie socket was accepted, and never that a forged one was refused.
+
+### The round-one fix (QClaw 8742a56 and 1666963, unmerged as of this entry)
+
+- **The origin guard.** A cookie-authenticated WebSocket, or a
+  cookie-authenticated request that is not GET, HEAD or OPTIONS, must carry an
+  Origin from an explicit allowlist. The allowlist is built from values the
+  server owns: `dashboard.tunnelUrl`, the running tunnel URL, and the local URL.
+  - A refusal is a 403 with no login-required marker, because the session is
+    fine and sending the reader to `/login` would loop.
+  - The Bearer api token and `?token=` are not checked, because they are not
+    ambient: a forged request cannot carry them.
+  - Reads are exempt. No CORS headers are set, so a cross-origin page cannot
+    read the response, and no GET route changes state (checked; logout aside).
+- **`Origin == Host` was rejected, though it was the reviewer's suggested fix.**
+  What cloudflared forwards as Host has not been verified. If it arrives as the
+  local service, an `Origin == Host` check refuses every real browser request,
+  which kills chat and every save in production. The code says not to simplify
+  it back, and a mutant that does so fails the tunnel-URL checks.
+- **The hand-off neither reads nor feeds the lockout.** The lockout's
+  per-visitor premise stays broken until #187. Every path that mints the session
+  token uses `randomBytes(16)`, so the hand-off gives a guesser nothing to work
+  with.
+
+Tests, at 1666963, locally on Node 22:
+
+- **The browser test (62 checks).** Socket and form POST are refused, and run
+  nothing, from a sibling subdomain, a cross-site origin, a missing Origin,
+  `Origin: null`, and a look-alike of the tunnel host. The tunnel URL is
+  accepted, though it never matches the request's Host. The dashboard's own
+  `apiFetch` write passes. Twelve bad links do not lock the owner out.
+- **Against a16b0e9.** With that commit's `server.js`, the browser test fails
+  10 checks.
+- **Mutants.** 21 single-regression mutants were all killed at 8742a56: 10 new,
+  and the round-one 11 re-run.
+- **One harness defect.** A mutant that let a forged request through also
+  failed the checks after it, which shared an agent-run counter. Each check now
+  counts its own runs (1666963).
+- **The full suite.** `npm test` reported 57/57 test files, and lint was clean.
+
 ### Not done in this change
 
 - **Telegram review links.** Both are to change after merge. `Awo65rdSe5BvDHtC`
