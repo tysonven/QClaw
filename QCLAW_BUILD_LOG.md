@@ -27178,3 +27178,72 @@ The second is being fixed by giving the GHL skills a GET for users and for the
 location, so the index can resolve both. That is on hold: the FSC token
 answered 401 to both reads (2026-09-18), and Tyson decides before anything is
 built around it.
+
+## 2026-09-19: the third blind zero, and declaring what a section may hold
+
+The second cold review of #184 (at QClaw `bd99e98`) found a third way the
+identifier gate's merge line could read 0 while wrong: **a skill that
+registered nothing dropped out of the countdown entirely**, all its writes
+with it. A `Base URL:` typed as `Base URL -` in trading-api printed a named
+error and then `0 of 37`. On the real files it was already happening:
+ads-agency and content-studio register nothing (#149, #150), and their five
+undeclared writes were not in the `0 of 42` the previous round shipped.
+
+That is the vacuity class a third time in the same mechanism:
+
+- a dropped line;
+- an empty agent;
+- now a whole broken skill.
+
+Decided by Tyson: a skill that registers nothing makes the countdown
+INCOMPLETE. **Accepted consequence:** the host reads INCOMPLETE until #149 and
+#150 land, so part two cannot merge before them. That is the design's own
+order (section 8 fixes the zero-tool skills before the parser change).
+
+### Stop guessing, declare
+
+The first round's fix for dropped lines was a detector that recognised what
+a malformed endpoint looks like. The second review found typos it still
+missed:
+
+- a bare level word;
+- a misspelt verb;
+- a numbered line;
+- a path without its slash;
+- a lower-case verb.
+
+It also flagged prose under later headings. Each fix to the heuristic would
+have met the next variant. Decided instead: `## Endpoints` may contain
+endpoints, `#` comments and blank lines, and anything else is named at boot
+and makes the countdown INCOMPLETE. **Prose inside `## Endpoints` is a parse
+error by design**; n8n-api.md's four prose lines there became comments. #183
+was fixed alongside: the parser, the diagnostics and `qclaw skill list` now
+share one rule for where the section ends.
+
+> When a detector keeps missing variants, the fault is the guessing. Declare
+> what is allowed and treat everything else as an error; the next variant is
+> then covered before anyone thinks of it.
+
+### A live defect underneath (#192)
+
+The endpoint grammar's separator was `\s*-\s*`, so a path could split at its
+own hyphen. On `main` today, an em dash in the manual-close line parses as a
+second `POST /positions/manual`, which replaces the real one: manual-close
+disappears and "log a manual trade" is re-described as logging a close.
+Seven of the 42 real writes have hyphenated paths. It predates #184, would
+have been invisible until someone tried to close a position by hand, and is
+fixed in #184 by requiring whitespace around the hyphen.
+
+Also from this round: every countdown line now carries the boot time as an
+ISO date. The boot log's timestamps are time of day only, and an earlier
+boot's 0 read as the current one is the frozen-log failure in a new place.
+
+**Verified:**
+
+- Every real skill parses to the same tools, levels, descriptions, base URLs,
+  headers and permissions as before (snapshot diff, identical).
+- The committed code, run over the 20 skill files symlinked into Charlie's
+  directory on the host, prints `INCOMPLETE. 2 skill(s) registered nothing`.
+- Mutation run at QClaw `6fac6cb`: 79 mutants, all applied, all killed. Two
+  first reported NOT APPLIED because their target code had been rewritten;
+  they were re-targeted and run rather than counted.
