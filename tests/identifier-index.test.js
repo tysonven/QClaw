@@ -970,15 +970,21 @@ async function main() {
   check('finding 1 (B): a path differing only in - versus _ collides and is refused, both lines',
     !alias.endpoints.some((e) => e.path.startsWith('/positions/manual') && e.path.includes('close'))
       && alias.invalidEndpointLines.filter((m) => m.reason === 'collision').length === 2);
-  const putPatch = parseSkill('c', skillText([
+  const putPatchContent = skillText([
     'GET /contacts/{{contact_id}} - one',
     '[destructive] PUT /contacts/{{contact_id}} - replace',
     '[mutating] PATCH /contacts/{{contact_id}} - patch',
-  ]), null);
+  ]);
+  const putPatch = parseSkill('c', putPatchContent, null);
   check('finding 1 (C): a PUT and a PATCH on one path collide; neither registers, both are named',
     !putPatch.endpoints.some((e) => e.method !== 'GET')
       && JSON.stringify(putPatch.invalidEndpointLines.map((m) => [m.line, m.reason, m.with])) === '[[6,"collision",[7]],[7,"collision",[6]]]',
     JSON.stringify(putPatch.invalidEndpointLines));
+  const putPatchReport = formatReport(inspectSkills([{ name: 'c', content: putPatchContent, filename: 'c.md' }], null));
+  check('finding 1 (C): the report names each line with the OTHER line it collides with',
+    putPatchReport.some((l) => l.startsWith('skill "c" (c.md:6): this endpoint and line(s) 7 get the same tool name "update_contacts_id"'))
+      && putPatchReport.some((l) => l.startsWith('skill "c" (c.md:7): this endpoint and line(s) 6 get the same tool name "update_contacts_id"')),
+    JSON.stringify(putPatchReport));
   const collisionOnly = skillText(['[mutating] POST /a - one', '[mutating] POST /a - two']);
   const colReport = inspectSkills([{ name: 'k', content: collisionOnly, filename: 'k.md' }], null);
   check('finding 1: a skill whose only endpoints collide registers nothing, and diagnose names the collision',
