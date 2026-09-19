@@ -211,8 +211,9 @@ try {
     ['Origin: null', { Origin: 'null' }],
     ['a look-alike of the tunnel host', { Origin: 'https://dash.example.test.evil.example' }],
   ]) {
+    const before = agentRuns.length;
     w = await wsOutcome('/ws', { Cookie: cookie?.pair || '', ...hdrs });
-    check(`socket with the cookie and ${label} is refused`, w.outcome === 'error' && agentRuns.length === runsBefore, JSON.stringify(w));
+    check(`socket with the cookie and ${label} is refused`, w.outcome === 'error' && agentRuns.length === before, JSON.stringify(w));
   }
   // The allowlist, not the Host header: this Origin never matches the Host
   // (127.0.0.1:<port>), and must still be accepted.
@@ -228,6 +229,8 @@ try {
     headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...FETCH, ...headers },
     body: 'message=forged',
   });
+  // Each check counts its own agent runs, so one request let through cannot
+  // cascade into the checks after it.
   runsBefore = agentRuns.length;
   res = await chatPost({ Cookie: cookie?.pair || '', Origin: SIBLING });
   body = await res.json().catch(() => null);
@@ -235,8 +238,10 @@ try {
     res.status === 403 && body?.error === 'Cross-origin request refused' && agentRuns.length === runsBefore, `${res.status} ${JSON.stringify(body)}`);
   check('...and carries no login-required marker (the session is fine; /login would loop)',
     res.headers.get('x-dashboard-auth') === null, String(res.headers.get('x-dashboard-auth')));
+  runsBefore = agentRuns.length;
   res = await chatPost({ Cookie: cookie?.pair || '' });
   check('form POST with the cookie and no Origin -> 403, runs nothing', res.status === 403 && agentRuns.length === runsBefore, String(res.status));
+  runsBefore = agentRuns.length;
   res = await chatPost({ Cookie: cookie?.pair || '', Origin: origin });
   check('POST with the cookie from the dashboard\'s own origin runs the agent',
     res.status === 200 && agentRuns.length === runsBefore + 1, `${res.status} ${agentRuns.length - runsBefore}`);
