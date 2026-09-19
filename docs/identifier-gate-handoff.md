@@ -181,7 +181,8 @@ is too large and gets SPLIT rather than patched.
   - Crete, Kairos and SproutCode: pass authorisation (404, contact id missing).
 - **#186 sends, to Kairos contact `yjjrbumMkTbLAU7Y0F4V`:**
   - the skill's documented body gave 422 `CONVERSATIONS_MSG_NO_CONTENT` and created nothing;
-  - GHL's real fields (`subject`, `html`, `message`) gave 201, and GHL recorded an outbound email with no draft marker.
+  - GHL's real fields (`subject`, `html`, `message`) gave 201, and GHL recorded an outbound email with no draft marker;
+  - **the email ARRIVED** at tyson.venables@gmail.com from `reply@m.kairos-wines.com`, token `QC186-20260919081625` (observed by Tyson, 2026-09-19). **The endpoint SENDS.** #186 is settled.
 
 **Asserted, not verified:**
 
@@ -191,7 +192,6 @@ is too large and gets SPLIT rather than patched.
 
 **Not tested:**
 
-- **Whether the #186 email arrived** at `tyson.venables@gmail.com`: subject token `QC186-20260919081625`. Tyson is checking; only that settles draft versus send.
 - **The host boot itself.**
 - **GHL resolver latency.**
 - **Part two.**
@@ -209,13 +209,31 @@ is too large and gets SPLIT rather than patched.
    - Do not start a further round either way.
 3. **Stop there.** Tyson un-drafts and merges.
 
-**Waiting on Tyson, not on a session:**
+4. **After that, two small PRs, each from its own worktree off `main`, approved by Tyson 2026-09-19.** Neither is part two.
 
-- **The Gmail check** for `QC186-20260919081625`.
-- **A direct instruction on #186's skill files.** Another session (tysonvenables-2a) relayed that Tyson asked for "fix the five skill files ... then back to #184's review round" and that it reached the wrong session. It was NOT acted on, because a relayed instruction is information, not approval.
-  - Its audit, checked: "draft" appears in 3 places in each of the five brand skills, and the likely origin is `lanes.md` lines 19 and 33, which state the draft-only policy as fact.
-  - Its claim that the approval prompt shows "DRAFT" is wrong. The prompt code never reads the endpoint description; the wrong word reaches Tyson through what Charlie says.
-- **Where finding 7's two GETs land:** in #184, in part two, or in their own PR.
+   **(a) #186: make the message endpoint's description true.** Approved: "fix them, and it is bigger than five files".
+
+   - **The five brand skills.** In `ghl-crete`, `ghl-flowos`, `ghl-fsc`, `ghl-kairos` and `ghl-sproutcode`, the endpoint must be described as one that SENDS, cannot be recalled, and must never be called a draft. Cite #186 and the `QC186-20260919081625` send in the file, so nobody rewrites it back.
+     - "Draft" appears in three places in each file: the frontmatter description ("email drafts"), the `POST /conversations/messages` line ("Create email DRAFT …"), and the usage note ("This queues a DRAFT only; Tyson sends after review").
+     - Include Flow OS and FSC. Their tokens cannot write messages today (401, probed 2026-09-19), so the wording is wrong there too, and becomes dangerous the day either token is granted the scope.
+   - **`src/agents/skills/lanes.md` is the likely source.** Line 19 says "Async client comms drafts (review-required, never sent without approval)", and line 33 says "Drafts only, sent by humans or pre-authorised schedules". Both state a policy as if the endpoint implemented it. Fix them at the source.
+   - **Check what the approval prompt actually says.** That is the text in front of Tyson at the moment of approval.
+     - A peer session claimed, and Tyson repeated, that the prompt is BUILT from the endpoint description. That was checked by reading the code on 2026-09-19 and does not hold: `src/security/approval-summary.js` and `approval-gate.js` never read the description. The prompt is `<agent> wants to POST /conversations/messages (skill ghl-…)`, then the identifiers, the subject lines and the arguments, under the header's tool name `…create_conversations_messages`.
+     - That is a code reading, not an observation. Prove it at a seam: render `renderTelegramText` for a real `ghl-kairos` messages call through the executor path, in a test, and assert the word "draft" is absent and that the prompt says what is being sent. Consider saying "sends an email to <contact>" in the prompt for this endpoint.
+   - **The skill files also claim** that all writes "require Telegram approval before executing, enforced at runtime by ApprovalGate (PR #58)". The gate requiring approval for skill POSTs is covered by tests (including #184's executor-seam test). A live Telegram round trip has never been tested. Say which is which.
+   - **Do NOT correct the documented body fields** (`emailSubject` and `emailBody` should be `subject` and `html` or `message`) without asking Tyson first. Correcting them turns a tool that creates nothing into one that sends. That is a capability decision, not a wording fix.
+   - **Conflicts with #184:** #184 also edits these endpoint lines (the `[destructive]` prefix). Branch after #184 merges, or branch from `main` and expect a small conflict. A PR based on #184's branch gets no CI (#136).
+
+   **(b) Finding 7: add `GET /users/{{user_id}}` and `GET /locations/{{location_id}}` to the six GHL skills.** It is its own PR, small, and before part two. Tyson's reasons: it is an estate change rather than a gate change, it needs the FSC grant live to test, and bundling it would give part two a dependency on a permission made an hour earlier.
+
+   - **Verify the FSC grant again before building.** It was verified 2026-09-19T09:16:34Z, output below. Rerun the same read-only check; it is cheap.
+     ```
+     token fingerprint: 37f56094bfdd
+     ghl-fsc user: HTTP 200, entity id matches: true
+     ghl-fsc location: HTTP 200, entity id matches: true
+     ```
+   - **Which tokens read both** (probed 2026-09-18 and 2026-09-19): legacy `ghl`, `ghl-flowos`, `ghl-crete`, `ghl-kairos`, `ghl-sproutcode`, and now `ghl-fsc`. Legacy `ghl` and `ghl-flowos` hold the SAME token (fingerprint `40b7edf055ad`).
+   - **Test against the real API with the positive marker:** HTTP 200 and the returned entity's `id` equals the one asked for. Recheck that the new lines collide with nothing (#184's collision rule), and that the index then resolves body `userId` and `locationId`.
 
 **Part two, when it starts, carries:**
 
