@@ -27259,6 +27259,7 @@ the cookie socket was accepted, and never that a forged one was refused.
     ambient: a forged request cannot carry them.
   - Reads are exempt. No CORS headers are set, so a cross-origin page cannot
     read the response, and no GET route changes state (checked; logout aside).
+    **That last claim is wrong; see the correction under round two.**
 - **`Origin == Host` was rejected, though it was the reviewer's suggested fix.**
   What cloudflared forwards as Host has not been verified. If it arrives as the
   local service, an `Origin == Host` check refuses every real browser request,
@@ -27284,6 +27285,84 @@ Tests, at 1666963, locally on Node 22:
   failed the checks after it, which shared an agent-run counter. Each check now
   counts its own runs (1666963).
 - **The full suite.** `npm test` reported 57/57 test files, and lint was clean.
+
+### Cold review, round two: PASS_WITH_CONDITIONS, and its one condition held
+
+A second fresh session reviewed QClaw d6511e2. It confirmed both round-one
+fixes over real HTTP. The only thing newly accepted relative to base was the
+intended one: the cookie on the socket, from an allowed origin. Its verdict
+carried one condition, BLOCK if the dashboard spawns cloudflared itself. On
+qclaw it does: cloudflared's parent process is `quantumclaw`.
+
+- **The token tunnel's URL was scraped from cloudflared's output.**
+  - `_tunnelCloudflare()` resolved to the first `https://` URL anywhere in that
+    output, and `start()` saved it to `dashboard.tunnelUrl`, which round one had
+    just made the Origin allowlist.
+  - One stray line, such as the quic-go UDP buffer warning that links to
+    github.com, would have refused every save, chat message and kill-switch
+    press on the public URL.
+  - All 441 logged production boots scraped the right URL, with the kernel's
+    UDP buffer at the default that makes quic-go print that warning. 441 clean
+    boots is not a property. It is a run of luck on a code path that takes
+    whatever it finds.
+  - Token mode now uses the configured URL only and writes nothing back.
+    Against d6511e2, with a stand-in cloudflared printing that line first:
+
+```
+✗ the tunnel URL is the configured one, not the first URL cloudflared printed https://github.com
+```
+
+- **The config API could move the allowlist, and more.** `POST /api/config`
+  refused exact keys only, while its setter walks any path. Probed locally:
+  - `key: "dashboard"` with an object value replaced the session token
+    (`authToken` REPLACED).
+  - A `__proto__` segment wrote to `Object.prototype`.
+
+  Now refused by path: the whole `dashboard` block, `_dir`/`_file`, and any
+  empty, `__proto__`, `constructor` or `prototype` segment.
+- **Found while fixing that, beyond the review.** `GET /api/config` masked the
+  session token, PIN and tunnel token but not the api token. Probed: a browser
+  session got the real value in clear. The machine credential #172 split out
+  was readable by the browser it was split from, from #177 onward. Now masked.
+- **A signed-in browser following a stale link went to the login error page;
+  main served the dashboard.** A valid session now just drops the token.
+- **An SSH forward on a different local port is refused.** This is documented
+  at `isAllowedOrigin`, not made configurable.
+- **Three refusal checks were missing.** Each survived a mutant: a wrong
+  `?token=` on the socket, an expired cookie over real HTTP, and PUT, PATCH and
+  DELETE under the guard. All three are added.
+
+Tests, at 346d1ee, locally on Node 22:
+
+- The browser test has 86 checks, and `tests/dashboard-tunnel-url.test.js`
+  (new, a stand-in cloudflared on PATH) has 9.
+- Against d6511e2's `server.js` they fail 9 and 8 checks.
+- Nine single-regression mutants were all killed, including the three that
+  survived round two.
+
+### A claim about a whole category, made from a scan that stopped one level short
+
+Round one's fix recorded "no GET route changes state (checked; logout aside)"
+in two places: the message of QClaw commit 8742a56, and this entry. It is
+wrong.
+
+- **What the claim missed.** `GET /api/alerts/check` constructs a
+  `SpikeDetector` (`src/security/spike-detector.js`), which writes
+  `data/spike-alerts.json` when it finds a spike.
+- **Why the scan missed it.** The scan behind the claim read each GET handler's
+  own body for writes, and did not follow calls into other modules. The
+  round-two review read every handler to the bottom and found it.
+- **The impact is low.** It is a local file write, only when a spike is
+  detected, with no notification. It does mean the forgery guard's GET
+  exemption lets a same-site page trigger that write; that is not changed here.
+
+> The shape is the one this register exists for: a claim about a whole
+> category, made from a scan that stopped one level short of where the behaviour
+> lives. A category claim is only as strong as the deepest call the check
+> followed, and which depth that was belongs in the claim.
+
+The commit message of QClaw 8742a56 cannot be corrected without rewriting
+published history. This entry supersedes it.
 
 ### Not done in this change
 
