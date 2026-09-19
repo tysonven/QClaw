@@ -27288,3 +27288,63 @@ last, silently, while the countdown counted both lines and read 0. A stale
 duplicate of the manual-close line could replace its `financial` level with
 `mutating`. Fixed in QClaw `810a4e8`: every line in a colliding group is
 refused and named, and endpoint lines outside `## Endpoints` are named too.
+
+## 2026-09-19: a permission change on a client-facing sub-account, and a scope list that did not predict
+
+**Recorded as a change, not as setup.** Tyson granted `users.readonly` and
+`locations.readonly` to the FSC sub-account's private integration named
+"quantum claw", the one QClaw's `ghl_fsc_api_key` belongs to. Nothing was
+removed. No re-authorisation was prompted and no new token issued. It is part
+of the identifier gate's fix for GHL notes and contact creation, which would
+otherwise prompt NOT VERIFIED on every call (#184).
+
+Before (2026-09-18) and after (2026-09-19T09:16:34Z), the same read-only probe
+on the same token:
+
+```
+before: ghl-fsc | user: HTTP 401, entity id matches: false, "The token is not authorized for this scope." | location: HTTP 401, entity id matches: false, "The token is not authorized for this scope."
+after:  token fingerprint: 37f56094bfdd
+        ghl-fsc user: HTTP 200, entity id matches: true
+        ghl-fsc location: HTTP 200, entity id matches: true
+```
+
+**What it widens:** the FSC sub-account's user records (names, emails,
+roles) and its location record (business details, address, settings) are
+now readable by anyone holding that token. That is a client-facing
+sub-account.
+
+The holders, by fingerprint:
+
+- QClaw's encrypted store (`ghl_fsc_api_key`);
+- `/root/.quantumclaw/.env` (`GHL_FSC_API_KEY`).
+
+n8n's `FSC GHL PIT` is a different token and is untouched.
+
+Before the grant, the two FSC integrations were told apart by measurement,
+not by name:
+
+| | n8n's credential | QClaw's token |
+|---|---|---|
+| In use since | created 2026-03-18 | in QClaw's store by 2026-07-04 |
+| Reads users, locations, messages | not measured | measured as unable |
+
+Tyson checked the integration list against both columns before editing.
+
+### The scope list did not predict what the token could do
+
+The same integration already carried `conversations.write`, yet the FSC
+token got 401 on `POST /conversations/messages` (probe 2026-09-19). GHL's
+scope reference explains it: sending a message needs
+`conversations/message.write`, while `conversations.write` covers
+`POST /conversations/`. The list was accurate, but its names were not. A
+human reading "conversations.write" predicts the wrong answer.
+
+That is the same lesson #186 taught from the other side. Five skill files
+said the message endpoint drafts, and reading them settled nothing. It was
+settled only by sending one message, 2026-09-19T08:16:25Z, to Tyson's own
+contact: GHL recorded an outbound email, with no draft marker.
+
+> A scope list and a skill file are both descriptions of what a token or an
+> endpoint does. Neither is a measurement. When the answer matters, make the
+> call, read what comes back, and record it; do not settle it by reading the
+> label.
