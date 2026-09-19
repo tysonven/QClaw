@@ -256,6 +256,13 @@ export function safeLoginTab(tab) {
  *
  * A missing, `null` or malformed Origin is refused.
  *
+ * Other local origins are refused too, deliberately: the local URL allowed is
+ * the one this server listens on. An SSH forward to a different local port
+ * (`ssh -L 8080:127.0.0.1:4000`, then http://localhost:8080) gets 403 on every
+ * save and a refused chat socket; forward to the same port number instead
+ * (`ssh -L 4000:127.0.0.1:4000`), or use the public URL. The refusal is logged
+ * with the allowed list, so the cause is one log line away.
+ *
  * @param {string|undefined} origin  the request's Origin header
  * @param {Array<string|null|undefined>} allowedUrls  URLs whose origins are allowed
  */
@@ -475,8 +482,16 @@ export class DashboardServer {
           this._issueSessionCookie(res);
           return res.redirect('/');
         }
-        // A stale or mistyped link: say so on the login page, rather than serve
-        // a dashboard whose every tab then fails.
+        // A stale link opened by a browser that is already signed in: the session
+        // is fine, so drop the token from the address bar instead of reporting a
+        // failure. (Main served the dashboard here; sending a signed-in reader to
+        // "That token was not accepted" was a regression.)
+        const existing = req.cookies?.dashboard_session;
+        if (existing) {
+          try { jwt.verify(existing, this.sessionSecret); return res.redirect('/'); } catch { /* expired or forged */ }
+        }
+        // A stale or mistyped link with no session: say so on the login page,
+        // rather than serve a dashboard whose every tab then fails.
         return res.redirect('/login?error=1');
       }
       res.send(this._renderDashboard());
@@ -645,20 +660,18 @@ ${error ? '<p class="err">That token was not accepted. Run <code>qclaw dashboard
     if (tunnelType && tunnelType !== 'none') {
       try {
         this.tunnelUrl = await this._startTunnel(tunnelType, actualPort);
-        this.dashUrl = `${this.tunnelUrl}/?token=${this.sessionToken}`;
-        log.success(`Tunnel: ${this.tunnelUrl}`);
-
-        // Save persistent tunnel URL to config (so it survives restarts)
-        const hasTunnelToken = this.config.dashboard?.tunnelToken
-          || this.qclaw.credentials?.get?.('cloudflare_tunnel_token')
-          || process.env.CLOUDFLARE_TUNNEL_TOKEN;
-        if (hasTunnelToken && this.tunnelUrl) {
-          try {
-            const { saveConfig } = await import('../core/config.js');
-            this.config.dashboard.tunnelUrl = this.tunnelUrl;
-            saveConfig(this.config);
-          } catch { /* non-fatal */ }
+        if (this.tunnelUrl) {
+          this.dashUrl = `${this.tunnelUrl}/?token=${this.sessionToken}`;
+          log.success(`Tunnel: ${this.tunnelUrl}`);
+        } else {
+          // A token tunnel connected, but its public hostname is not configured.
+          // It is not guessed: set it, or the public dashboard cannot be used with
+          // a session cookie (its Origin is not on the allowlist).
+          log.warn('Tunnel connected, but dashboard.tunnelUrl is not set. Set it to the tunnel\'s public URL ' +
+            '(e.g. https://dash.example.com) in config.json; until then the public dashboard refuses cookie sessions.');
         }
+        // Nothing discovered at runtime is written back to config: dashboard.tunnelUrl
+        // is the Origin allowlist, and it changes only when someone edits config.json.
       } catch (err) {
         log.warn(`Tunnel (${tunnelType}) failed: ${err.message} — dashboard is local only`);
       }
@@ -1102,6 +1115,9 @@ ${error ? '<p class="err">That token was not accepted. Run <code>qclaw dashboard
       if (safe.dashboard) {
         safe.dashboard = { ...safe.dashboard };
         if (safe.dashboard.authToken) safe.dashboard.authToken = '***';
+        // The machine credential (#172). Unmasked since #177 added it, so any
+        // browser session, and any script on the page, could read it here.
+        if (safe.dashboard.apiToken) safe.dashboard.apiToken = '***';
         if (safe.dashboard.pin) safe.dashboard.pin = '***';
         if (safe.dashboard.tunnelToken) safe.dashboard.tunnelToken = '***';
       }
@@ -1111,9 +1127,17 @@ ${error ? '<p class="err">That token was not accepted. Run <code>qclaw dashboard
     this.app.post('/api/config', async (req, res) => {
       try {
         const { key, value } = req.body;
-        if (!key) return res.status(400).json({ error: 'key required' });
-        const blocked = ['_dir', '_file', 'dashboard.authToken', 'dashboard.apiToken', 'dashboard.pin'];
-        if (blocked.includes(key)) return res.status(403).json({ error: 'Cannot modify this key via API' });
+        if (!key || typeof key !== 'string') return res.status(400).json({ error: 'key required' });
+        // Refused by path, not by exact key. The setter below walks whatever
+        // path it is given, so an exact-key list was bypassable: `key: "dashboard"`
+        // with an object value replaced every token in the block, and a
+        // "__proto__" segment wrote to Object.prototype. The dashboard block holds
+        // the credentials and the Origin allowlist (tunnelUrl); it is changed on
+        // the host, never through this API, which the allowlist itself guards.
+        const segments = key.split('.');
+        const protectedRoot = ['_dir', '_file', 'dashboard'].includes(segments[0]);
+        const unsafeSegment = segments.some(s => s === '' || s === '__proto__' || s === 'constructor' || s === 'prototype');
+        if (protectedRoot || unsafeSegment) return res.status(403).json({ error: 'Cannot modify this key via API' });
 
         const { saveConfig } = await import('../core/config.js');
         const keys = key.split('.');
@@ -2900,6 +2924,16 @@ ${error ? '<p class="err">That token was not accepted. Run <code>qclaw dashboard
       log.info('Using persistent Cloudflare tunnel...');
       const args = ['tunnel', '--no-autoupdate', 'run', '--token', tunnelToken];
 
+      // The public hostname of a token tunnel is set in the Cloudflare dashboard
+      // and cloudflared does not print it, so the only trustworthy source is
+      // dashboard.tunnelUrl. Nothing is taken from cloudflared's output. This
+      // used to resolve to the FIRST https:// URL anywhere in that output (a
+      // quic-go UDP buffer warning links to github.com), and start() saved it
+      // back to config. That URL is now the Origin allowlist (isAllowedOrigin),
+      // so one stray log line would refuse every save, chat message and
+      // kill-switch press on the public URL until someone edited config.json.
+      const configuredUrl = this.config.dashboard?.tunnelUrl || null;
+
       return new Promise((resolve, reject) => {
         const proc = spawn('cloudflared', args, {
           stdio: ['ignore', 'pipe', 'pipe']
@@ -2909,21 +2943,9 @@ ${error ? '<p class="err">That token was not accepted. Run <code>qclaw dashboard
         let resolved = false;
 
         const handleOutput = (data) => {
-          const output = data.toString();
-          // Named tunnels log the URL differently
-          const match = output.match(/https:\/\/[a-z0-9.-]+\.[a-z]+/);
-          if (match && !resolved && !match[0].includes('api.cloudflare.com')) {
+          if (!resolved && data.toString().includes('Registered tunnel connection')) {
             resolved = true;
-            resolve(match[0]);
-          }
-          // Also check for connection success message
-          if (!resolved && output.includes('Registered tunnel connection')) {
-            // The URL is configured in the Cloudflare dashboard, extract from config
-            const savedUrl = this.config.dashboard?.tunnelUrl;
-            if (savedUrl) {
-              resolved = true;
-              resolve(savedUrl);
-            }
+            resolve(configuredUrl);
           }
         };
 
@@ -2942,11 +2964,10 @@ ${error ? '<p class="err">That token was not accepted. Run <code>qclaw dashboard
         // Named tunnels may take longer to connect
         setTimeout(() => {
           if (!resolved) {
-            // If we have a saved URL, use it (the tunnel is probably connected but didn't log the URL)
-            const savedUrl = this.config.dashboard?.tunnelUrl;
-            if (savedUrl) {
+            // If we have a configured URL, use it (the tunnel is probably connected but has not logged it yet)
+            if (configuredUrl) {
               resolved = true;
-              resolve(savedUrl);
+              resolve(configuredUrl);
             } else {
               proc.kill();
               reject(new Error('cloudflared timed out after 45s — check your tunnel token'));

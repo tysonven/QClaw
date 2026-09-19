@@ -23,6 +23,7 @@ import { fileURLToPath } from 'node:url';
 import { createServer as createNetServer } from 'node:net';
 import vm from 'node:vm';
 import WebSocket from 'ws';
+import jwt from 'jsonwebtoken';
 
 // start() copies $HOME/.quantumclaw/.env into process.env. Point HOME at an
 // empty directory so a developer's real dashboard credentials cannot leak in
@@ -67,7 +68,7 @@ const TUNNEL = 'https://dash.example.test';
 // have run nothing rather than merely to have returned an error.
 const agentRuns = [];
 const qclaw = {
-  config: { _dir: home, dashboard: { port, host: '127.0.0.1', tunnel: 'none', tunnelUrl: TUNNEL, authToken: SESSION, apiToken: API, pin: PIN } },
+  config: { _dir: home, _file: join(home, 'config.json'), dashboard: { port, host: '127.0.0.1', tunnel: 'none', tunnelUrl: TUNNEL, authToken: SESSION, apiToken: API, pin: PIN } },
   agents: {
     count: 1,
     list: () => [],
@@ -263,6 +264,63 @@ try {
     res.status === 302 && res.headers.get('location') === '/' && !!sessionCookieFrom(res), `${res.status} ${res.headers.get('location')}`);
   res = await postForm('/api/auth/login', { password: SESSION });
   check('...and /login with the correct token still signs in', res.headers.get('location') === '/', String(res.headers.get('location')));
+
+  console.log('\nRound three: edges the round-two review found untested');
+  // A browser that is already signed in follows an old `qclaw dashboard` link.
+  res = await get('/?token=a-stale-link-token', { ...NAV, Cookie: cookie?.pair || '' });
+  check('a stale link with a valid session goes to / (no error page)',
+    res.status === 302 && res.headers.get('location') === '/', `${res.status} ${res.headers.get('location')}`);
+  const expired = 'dashboard_session=' + jwt.sign({ authenticated: true, exp: Math.floor(Date.now() / 1000) - 60 }, process.env.DASHBOARD_SESSION_SECRET);
+  res = await get('/?token=a-stale-link-token', { ...NAV, Cookie: expired });
+  check('...but with an expired session it is still the login error', res.headers.get('location') === '/login?error=1', String(res.headers.get('location')));
+
+  // An expired cookie over real HTTP, the way a tab's fetch() sends it.
+  res = await get('/api/threads', { ...FETCH, Cookie: expired });
+  check('an expired cookie gets 401, marked login-required',
+    res.status === 401 && res.headers.get('x-dashboard-auth') === 'login-required', `${res.status} ${res.headers.get('x-dashboard-auth')}`);
+  check('...and the dead cookie is cleared', res.headers.getSetCookie().some(c => c.startsWith('dashboard_session=;')), JSON.stringify(res.headers.getSetCookie()));
+  w = await wsOutcome('/ws', { Cookie: expired, Origin: origin });
+  check('an expired cookie cannot open the socket, even from the dashboard\'s own origin', w.outcome === 'error' && w.frames[0]?.error === 'Unauthorised', JSON.stringify(w));
+
+  // The socket's query token must be the session token, exactly.
+  for (const [label, t] of [['a wrong token', 'not-the-session-token'], ['the api token', API], ['an empty token', '']]) {
+    w = await wsOutcome(`/ws?token=${encodeURIComponent(t)}`);
+    check(`socket with ${label} in ?token= is refused`, w.outcome === 'error' && w.frames[0]?.error === 'Unauthorised', JSON.stringify(w));
+  }
+
+  // Every state-changing method is guarded, not only POST. (No PATCH route
+  // exists; the guard runs before routing, so a forged PATCH is still refused.)
+  for (const [method, path] of [['PUT', '/api/ghl/drafts/x/schedule'], ['PATCH', '/api/threads'], ['DELETE', '/api/secrets/x']]) {
+    res = await fetch(origin + path, { method, redirect: 'manual', headers: { ...FETCH, Cookie: cookie?.pair || '', Origin: SIBLING } });
+    check(`${method} with the cookie from a sibling subdomain -> 403`, res.status === 403, String(res.status));
+    res = await fetch(origin + path, { method, redirect: 'manual', headers: { ...FETCH, Cookie: cookie?.pair || '', Origin: origin } });
+    check(`${method} with the cookie from the dashboard's own origin passes the guard`, res.status !== 403, String(res.status));
+  }
+
+  console.log('\nConfig API: the allowlist cannot be changed through the API it guards');
+  const setConfig = (key, value) => fetch(origin + '/api/config', {
+    method: 'POST', headers: { ...FETCH, 'Content-Type': 'application/json', Authorization: `Bearer ${API}` },
+    body: JSON.stringify({ key, value }),
+  }).then(r => r.status);
+  for (const [key, value, why] of [
+    ['dashboard.tunnelUrl', SIBLING, 'the allowlist itself'],
+    ['dashboard', { tunnelUrl: SIBLING, authToken: 'replaced' }, 'the whole dashboard block, as an object'],
+    ['dashboard.authToken', 'replaced', 'the session token'],
+    ['dashboard.port', '1', 'any other dashboard key'],
+    ['__proto__.polluted_by_test', 'yes', 'a __proto__ path'],
+    ['agent.constructor.prototype.polluted_by_test', 'yes', 'a constructor.prototype path'],
+    ['agent..name', 'x', 'an empty path segment'],
+  ]) {
+    check(`POST /api/config refuses ${why} (${JSON.stringify(key)})`, await setConfig(key, value) === 403);
+  }
+  check('...and nothing changed: allowlist, session token, Object.prototype',
+    qclaw.config.dashboard.tunnelUrl === TUNNEL && qclaw.config.dashboard.authToken === SESSION && ({}).polluted_by_test === undefined,
+    JSON.stringify({ t: qclaw.config.dashboard.tunnelUrl, p: ({}).polluted_by_test }));
+  check('an ordinary key can still be set', await setConfig('agent.name', 'TestAgent') === 200 && qclaw.config.agent?.name === 'TestAgent');
+  res = await get('/api/config', { ...FETCH, Cookie: cookie?.pair || '' });
+  body = await res.json().catch(() => null);
+  check('a browser session reads the api token masked, like the session token',
+    body?.dashboard?.apiToken === '***' && body?.dashboard?.authToken === '***', JSON.stringify(body?.dashboard));
 
   console.log('\nui.html: the real client code');
   const uiPath = join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'dashboard', 'ui.html');
